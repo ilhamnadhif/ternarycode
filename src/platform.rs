@@ -14,6 +14,9 @@ const INHERITED_MARKERS: &[&str] = &[
     "TERNARYCODE_SOCK",
     "TERNARYCODE_PANE",
     "TERNARYCODE_TOKEN",
+    // Set on the copy started apart from a terminal (`cli::launch_detached`; `main` reads it
+    // first): a TernaryCode started from a pane is not that copy.
+    "TERNARYCODE_DETACHED",
 ];
 
 /// Removes the markers above from this process's environment. Call at the start of `main`,

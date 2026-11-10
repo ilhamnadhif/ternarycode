@@ -176,6 +176,10 @@ const ID: &[(&str, &str)] = &[
     ("Cannot install hooks", "Hook tidak bisa dipasang"),
     ("This agent cannot be installed yet.", "Agent ini belum bisa dipasang."),
     ("Hooks installed for {}.", "Hook untuk {} sudah dipasang."),
+    (
+        "Hooks installed for {}, but their record could not be saved ({}): Uninstall will not restore {}.",
+        "Hook untuk {} sudah dipasang, tetapi catatannya tidak bisa disimpan ({}): Uninstall tidak akan mengembalikan {}.",
+    ),
     ("{} restored exactly as it was.", "{} dikembalikan persis seperti semula."),
     (
         "TernaryCode's hooks removed from {}; your later changes were kept.",

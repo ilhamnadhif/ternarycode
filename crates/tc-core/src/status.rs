@@ -3,6 +3,7 @@
 //! own input, and the shell's exit. Every status records where it came from; without a
 //! trustworthy signal it is `Unknown`, never a guess.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::agent::AgentKind;
@@ -109,6 +110,14 @@ pub enum Event {
 /// A command that ran at least this long is worth a "finished" notice.
 pub const LONG_COMMAND: Duration = Duration::from_secs(10);
 
+/// The open question reported again this soon is the same question, not a new one (Claude
+/// reports a permission prompt by two hooks).
+pub const ASK_REPEAT: Duration = Duration::from_secs(10);
+
+/// Numbers for [`Tracker::ask`], unique in the process: a pane whose shell restarts gets a new
+/// tracker, which must not repeat an ask already notified.
+static ASKS: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Clone, Debug)]
 pub struct Tracker {
     pub status: Status,
@@ -119,6 +128,11 @@ pub struct Tracker {
     pub unseen: bool,
     /// Short text from the signal (for example the agent's permission question).
     pub message: Option<String>,
+    /// The latest ask for the user's attention (0: none yet): a new number whenever a signal
+    /// asks anew, a second question while the first is still open included (`since` stays
+    /// put while the status does). Notifications are posted once per ask.
+    pub ask: u64,
+    asked_at: Option<Instant>,
     pub fg: Foreground,
     fg_since: Instant,
     /// The agent in the foreground, when there is one.
@@ -148,6 +162,8 @@ impl Tracker {
             since: now,
             unseen: false,
             message: None,
+            ask: 0,
+            asked_at: None,
             fg: Foreground::Shell,
             fg_since: now,
             agent: None,
@@ -194,6 +210,19 @@ impl Tracker {
     }
 
     fn set(&mut self, status: Status, source: Source, attention: bool, now: Instant) -> bool {
+        if attention {
+            // Asked again in the same status: the open question reported a moment later, or a
+            // finished turn or failure still waiting to be seen, is the same ask.
+            let again = status == self.status
+                && match status {
+                    Status::NeedsInput => self.asked_at.is_some_and(|t| now.duration_since(t) < ASK_REPEAT),
+                    _ => self.unseen,
+                };
+            if !again {
+                self.ask = ASKS.fetch_add(1, Ordering::Relaxed) + 1;
+            }
+            self.asked_at = Some(now);
+        }
         let changed = status != self.status || source != self.source || attention != self.unseen;
         if status != self.status {
             self.since = now;
@@ -555,6 +584,47 @@ mod tests {
         q.apply(Event::Shell(ShellMark::CommandStart), t0);
         q.apply(Event::Shell(ShellMark::CommandFinished(Some(1))), t0);
         assert_eq!(q.status, Status::Idle);
+    }
+
+    #[test]
+    fn every_new_question_is_a_new_ask() {
+        let t0 = Instant::now();
+        let s = |n: u64| t0 + Duration::from_secs(n);
+        let mut t = Tracker::new(t0);
+        t.apply(prog("claude", Some(AgentKind::Claude)), t0);
+        t.apply(hook(HookSignal::Working), t0);
+        assert_eq!(t.ask, 0, "nothing asked yet");
+        t.apply(hook(HookSignal::NeedsInput), s(1));
+        let first = t.ask;
+        assert_ne!(first, 0);
+        // The same prompt by its second hook: the same ask.
+        t.apply(hook(HookSignal::NeedsInput), s(2));
+        assert_eq!(t.ask, first);
+        // Another question while the first is still open: the status and `since` stay, the
+        // ask is new.
+        let since = t.since;
+        t.apply(hook(HookSignal::NeedsInput), s(30));
+        assert_eq!((t.status, t.since), (Status::NeedsInput, since));
+        let second = t.ask;
+        assert_ne!(second, first);
+        // A finished turn is an ask; reported twice, still one.
+        t.apply(hook(HookSignal::TurnDone), s(31));
+        let done = t.ask;
+        assert_ne!(done, second);
+        t.apply(hook(HookSignal::TurnDone), s(32));
+        assert_eq!(t.ask, done);
+        // A failure seen, then the same failure again: a new ask.
+        let mut f = Tracker::new(t0);
+        f.apply(Event::Exited(Some(2)), t0);
+        let failed = f.ask;
+        f.set_focused(true, t0);
+        f.set_focused(false, t0);
+        f.apply(Event::Exited(Some(2)), s(1));
+        assert_ne!(f.ask, failed);
+        // A new tracker (the shell restarted) never repeats an earlier ask.
+        let mut r = Tracker::new(t0);
+        r.apply(Event::Notify { message: None }, t0);
+        assert!(![0, first, second, done, failed].contains(&r.ask));
     }
 
     #[test]

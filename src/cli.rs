@@ -171,14 +171,15 @@ pub fn pane_path() -> Option<std::ffi::OsString> {
 
 /// Started from a terminal, with no TernaryCode running: starts the app apart from the
 /// terminal with the same targets and returns true (this process then exits). macOS goes
-/// through Launch Services for an app bundle, so it opens as if from the Finder.
-pub fn launch_detached(targets: &[String]) -> bool {
+/// through Launch Services for an app bundle, so it opens as if from the Finder. `detached`:
+/// this process is such a copy (`TERNARYCODE_DETACHED` was set; read before the environment
+/// is cleaned for the panes).
+pub fn launch_detached(targets: &[String], detached: bool) -> bool {
     #[cfg(unix)]
     {
         use std::io::IsTerminal;
         use std::os::unix::process::CommandExt;
-        if std::env::var_os("TERNARYCODE_DETACHED").is_some()
-            || !(std::io::stdin().is_terminal() || std::io::stdout().is_terminal())
+        if detached || !(std::io::stdin().is_terminal() || std::io::stdout().is_terminal())
         {
             return false;
         }
@@ -216,7 +217,7 @@ pub fn launch_detached(targets: &[String]) -> bool {
     }
     #[cfg(not(unix))]
     {
-        let _ = targets;
+        let _ = (targets, detached);
         false
     }
 }

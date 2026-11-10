@@ -22,7 +22,9 @@ use crate::i18n::tf;
 
 /// Messages from runtime threads to the UI thread.
 pub enum UiMsg {
-    Pane(PaneId, SessionEvent),
+    /// An event of a pane's session, and the start of its shell it came from
+    /// ([`Pane::generation`]).
+    Pane(PaneId, u64, SessionEvent),
     Hook(HookMsg),
 }
 
@@ -108,6 +110,8 @@ pub struct Pane {
     pub shared: SharedTerm,
     pub feeder: Arc<Mutex<Feeder>>,
     pub session: Option<Session>,
+    /// Counts the shells started here: events of an earlier one are not this terminal's.
+    pub generation: u64,
     pub view: TermView,
     pub tracker: Tracker,
     /// Set by the user (rename).
@@ -178,6 +182,7 @@ impl Pane {
             shared,
             feeder,
             session: None,
+            generation: 0,
             view: TermView::new(widget::pane_widget_id(id)),
             tracker: Tracker::new(Instant::now()),
             title: None,
@@ -218,8 +223,17 @@ impl Pane {
         self.session.is_none() && self.exit.is_none()
     }
 
-    /// Starts (or restarts) the shell in this pane's terminal.
+    /// Starts (or restarts) the shell in this pane's terminal. Nothing while one runs: a second
+    /// shell would orphan the first, both feeding this terminal.
     pub fn start_shell(&mut self, spawn: &SpawnCtx) {
+        if self.alive() {
+            return;
+        }
+        // A session that ended but was kept is let go first; whatever it still sends is dropped.
+        if let Some(old) = self.session.take() {
+            old.pty.hang_up(Duration::from_millis(1500));
+        }
+        self.generation += 1;
         let size = {
             let term = self.shared.term.lock();
             use tc_term::alacritty_terminal::grid::Dimensions;
@@ -262,7 +276,7 @@ impl Pane {
             Ok(pty) => {
                 let tx = spawn.tx.clone();
                 let ctx = spawn.ctx.clone();
-                let id = self.id;
+                let (id, generation) = (self.id, self.generation);
                 let shown = self.shown.clone();
                 let on_event: Arc<dyn Fn(SessionEvent) + Send + Sync> = Arc::new(move |e| {
                     // Signals (agent status, notifications), the bell and the end of the session
@@ -274,7 +288,7 @@ impl Pane {
                         SessionEvent::Output(f) => (!f.signals.is_empty() || f.bell, f.repaint),
                         _ => (true, false),
                     };
-                    let _ = tx.send(UiMsg::Pane(id, e));
+                    let _ = tx.send(UiMsg::Pane(id, generation, e));
                     if urgent {
                         ctx.request_repaint();
                     } else if output {
@@ -671,7 +685,9 @@ fn place(cwd: &Path, root: &Path) -> Option<String> {
 fn login_shell(_env: &HashMap<String, String>) -> Option<(String, Vec<String>)> {
     let user = std::env::var("USER").ok().filter(|u| !u.is_empty())?;
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
-    let exec = format!("exec -a -{} {shell}", shell_name());
+    // A script for zsh: a path with spaces or quotes must stay one word.
+    let quote = crate::platform::shell_quote;
+    let exec = format!("exec -a {} {}", quote(&format!("-{}", shell_name())), quote(&shell));
     Some((
         "/usr/bin/login".into(),
         vec!["-qflp".into(), user, "/bin/zsh".into(), "-fc".into(), exec],

@@ -152,6 +152,8 @@ pub struct App {
     pub base_env: Vec<(String, String)>,
     /// Whether Codex may get per-launch hooks (the user has none of their own).
     pub codex_hooks: bool,
+    /// The per-launch settings file was written (its variables are in `base_env`).
+    per_launch: bool,
     pub settings: Settings,
     pub projects: Vec<Project>,
     pub active: Option<ProjectId>,
@@ -171,7 +173,8 @@ pub struct App {
     saved_workspace: Vec<u8>,
     settings_dirty: bool,
     pub window_focused: bool,
-    notified: HashMap<PaneId, Instant>,
+    /// The ask (see `Tracker::ask`) each pane was last notified for, or seen at.
+    notified: HashMap<PaneId, u64>,
     badge: usize,
     #[cfg(target_os = "macos")]
     menu: Option<(ui::menu::AppMenu, Receiver<muda::MenuEvent>)>,
@@ -204,8 +207,9 @@ pub struct App {
     /// A name typed in the Add Project dialog, for the project about to be added.
     pub pending_rename: Option<(PathBuf, String)>,
     shells_ready_logged: bool,
-    /// When the last frame was drawn.
-    last_ui: Instant,
+    /// Frames in a row whose logic, or drawing, panicked (each retry waits longer).
+    logic_panics: u32,
+    ui_panics: u32,
     /// The pane taking the keyboard in the Grid.
     pub grid_focus: Option<PaneId>,
     /// Columns of the Grid (0 = automatic).
@@ -218,6 +222,12 @@ pub struct App {
     pub lsp_repaint_after: Option<Duration>,
     /// When the editor was last on screen (its colouring memory goes after a while without).
     pub editor_seen_at: Instant,
+    /// That memory was let go since the editor was last on screen (once per time away).
+    editor_released: bool,
+    /// The scheme whose colours the terminals answer OSC 4/10/11 queries with.
+    term_scheme: &'static str,
+    /// The scrollback setting the panes were last given.
+    scrollback_applied: usize,
     pub editors: HashMap<ProjectId, crate::editor::Editor>,
     /// The file tree of each project shown so far.
     pub explorers: HashMap<ProjectId, crate::explorer::Explorer>,
@@ -279,9 +289,9 @@ impl App {
             )
             .ok()
         };
-        let mut base_env = hook_bin
-            .pane_env(&paths::integrations_dir())
-            .unwrap_or_default();
+        let pane_env = hook_bin.pane_env(&paths::integrations_dir());
+        let per_launch = pane_env.is_ok();
+        let mut base_env = pane_env.unwrap_or_default();
         // Shell integration (OSC 133): scripts in the data folder, activated through the
         // environment only; the user's dotfiles load as usual.
         if settings.shell_integration {
@@ -322,6 +332,8 @@ impl App {
             hook_bin,
             base_env,
             codex_hooks,
+            per_launch,
+            scrollback_applied: settings.scrollback,
             settings,
             projects: Vec::new(),
             active: None,
@@ -362,13 +374,16 @@ impl App {
             cell: None,
             pending_rename: None,
             shells_ready_logged: false,
-            last_ui: Instant::now(),
+            logic_panics: 0,
+            ui_panics: 0,
             grid_focus: None,
             grid_columns: 0,
             grid_active_only: false,
             lsp: crate::lsp::Lsp::default(),
             lsp_repaint_after: None,
             editor_seen_at: Instant::now(),
+            editor_released: false,
+            term_scheme: "",
             editors: HashMap::new(),
             explorers: HashMap::new(),
             pane_search: None,
@@ -525,6 +540,17 @@ impl App {
         for id in ids {
             self.fit_to_focus(ctx, id, false);
         }
+    }
+
+    /// Every way into the Focus view: from the Grid, the panes get their Focus size back (Gate
+    /// C) and the Grid's keyboard tile is forgotten. Set `active` first (its panes are sized as
+    /// they are drawn).
+    fn show_focus(&mut self) {
+        if std::mem::replace(&mut self.view, View::Focus) == View::Grid {
+            let ctx = self.ctx.clone();
+            self.fit_all_to_focus(&ctx);
+        }
+        self.grid_focus = None;
     }
 
     fn new_pane(&mut self, ctx: &egui::Context, project: ProjectId, cwd: PathBuf, size: tc_term::core::GridSize) -> PaneId {
@@ -694,6 +720,16 @@ impl App {
             for p in self.panes.values_mut() {
                 p.tracker.long_command = long;
             }
+            // A new scrollback length is every pane's (the budget trims those out of view
+            // again when it must).
+            if self.settings.scrollback != self.scrollback_applied {
+                let (lines, blink) = (self.settings.scrollback, self.settings.cursor_blink);
+                self.scrollback_applied = lines;
+                for p in self.panes.values_mut() {
+                    p.scrollback_limit = lines;
+                    tc_term::core::limit_scrollback(&p.shared, lines, tc_term::prefs::CursorStyle::Block, blink);
+                }
+            }
             if let Ok(data) = serde_json::to_vec_pretty(&self.settings) {
                 self.saver.queue(&self.rt, paths::settings_file(), data);
             }
@@ -776,6 +812,18 @@ impl App {
         }
     }
 
+    /// The pane "this pane" commands act on (split, find, where ⌘J starts from): the target
+    /// pane, else (in the Grid with no tile typed into) the open project's focused pane.
+    fn command_pane(&self) -> Option<PaneId> {
+        self.target_pane().or_else(|| self.current_pane())
+    }
+
+    /// The project "this project" commands act on (new tab, agents): the command pane's (a
+    /// Grid tile's project is not made the open one).
+    fn command_project(&self) -> Option<ProjectId> {
+        self.command_pane().and_then(|id| self.panes.get(&id)).map(|p| p.project).or(self.active)
+    }
+
     /// A widget other than a terminal pane has the keyboard (a text field, the editor).
     fn text_field_focused(&self, ctx: &egui::Context) -> bool {
         match ctx.memory(|m| m.focused()) {
@@ -819,24 +867,22 @@ impl App {
         q
     }
 
-    /// The most urgent status among a project's panes.
+    /// The most urgent status among a project's panes: in the attention queue's order (the
+    /// sidebar and ⌘J agree), then a pane at work.
     pub fn project_status(&self, project: &Project) -> Option<(Status, bool)> {
-        let rank = |s: Status| match s {
-            Status::NeedsInput => 0,
-            Status::Failed(_) => 1,
-            Status::Done => 2,
-            Status::CommandDone => 3,
-            Status::Running => 4,
-            Status::Unknown => 5,
-            _ => 9,
+        let rank = |s: Status| match (s.priority(), s) {
+            (Some(p), _) => Some((0, p)),
+            (None, Status::Running) => Some((1, 0)),
+            (None, Status::Unknown) => Some((1, 1)),
+            _ => None,
         };
         project
             .panes()
             .iter()
             .filter_map(|id| self.panes.get(id))
             .map(|p| (p.tracker.status, p.tracker.wants_attention()))
+            .filter(|(s, _)| rank(*s).is_some())
             .min_by_key(|(s, attention)| (!attention, rank(*s)))
-            .filter(|(s, _)| rank(*s) < 9)
     }
 
     // ----- focus ------------------------------------------------------------------------------
@@ -852,7 +898,7 @@ impl App {
             p.tabs[tab].focused = pane;
         }
         self.active = Some(project);
-        self.view = View::Focus;
+        self.show_focus();
         self.focus_request = Some(pane);
         self.mark_dirty();
     }
@@ -863,10 +909,13 @@ impl App {
         let now = Instant::now();
         let mut git_refresh = Vec::new();
         let mut ended = Vec::new();
+        // The agent a pane would offer to resume changed: saved soon, so a crash keeps it.
+        let mut resume_changed = false;
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                UiMsg::Pane(id, event) => {
-                    if let Some(pane) = self.panes.get_mut(&id) {
+                UiMsg::Pane(id, generation, event) => {
+                    // An earlier shell of the pane is not its terminal's any more.
+                    if let Some(pane) = self.panes.get_mut(&id).filter(|p| p.generation == generation) {
                         let was_program = !matches!(pane.tracker.fg, tc_core::status::Foreground::Shell);
                         let exited = matches!(event, tc_term::pty::SessionEvent::Exited(_));
                         pane.on_session_event(event, now);
@@ -882,10 +931,12 @@ impl App {
                     if let Some(pane) = self.panes.get_mut(&msg.pane) {
                         let turn_done = matches!(msg.event.as_str(), "Stop" | "AfterAgent" | "session.idle")
                             || msg.kind.as_deref() == Some("agent-turn-complete");
+                        let agent = pane.last_agent;
                         pane.on_hook(&msg, now);
                         if turn_done {
                             git_refresh.push(pane.project);
                         }
+                        resume_changed |= pane.last_agent != agent;
                     }
                 }
             }
@@ -935,7 +986,10 @@ impl App {
         let mut next_due: Option<Instant> = None;
         for pane in self.panes.values_mut() {
             let was_program = !matches!(pane.tracker.fg, tc_core::status::Foreground::Shell);
-            if pane.check_foreground(now)
+            let agent = pane.last_agent;
+            let checked = pane.check_foreground(now);
+            resume_changed |= pane.last_agent != agent;
+            if checked
                 && was_program
                 && matches!(pane.tracker.fg, tc_core::status::Foreground::Shell)
             {
@@ -953,6 +1007,9 @@ impl App {
         }
         if let Some(d) = next_due {
             ctx.request_repaint_after(d.saturating_duration_since(now));
+        }
+        if resume_changed {
+            self.mark_dirty();
         }
         // Soon rather than now: a script running many short commands asks once.
         for id in git_refresh {
@@ -1027,6 +1084,11 @@ impl App {
                 .is_some_and(|e| e.visible && !e.files.is_empty());
         if shown {
             self.editor_seen_at = Instant::now();
+            self.editor_released = false;
+            return;
+        }
+        // Once per time away: a document stays open (`doc` is kept) after its memory went.
+        if self.editor_released {
             return;
         }
         let docs = self.editors.values().flat_map(|e| e.files.iter()).any(|f| f.doc.is_some());
@@ -1039,6 +1101,7 @@ impl App {
             return;
         }
         self.free_editor_memory();
+        self.editor_released = true;
     }
 
     pub fn free_editor_memory(&mut self) {
@@ -1067,19 +1130,18 @@ impl App {
     }
 
     fn open_file(&mut self, path: PathBuf, line: Option<usize>) {
+        // The open project when the file is in it (a project inside another one included).
         let Some(project) = self
-            .projects
-            .iter()
-            .find(|p| path.starts_with(&p.path))
-            .map(|p| p.id)
+            .active
+            .filter(|id| self.project(*id).is_some_and(|p| path.starts_with(&p.path)))
+            .or_else(|| self.projects.iter().find(|p| path.starts_with(&p.path)).map(|p| p.id))
             .or(self.active)
         else {
             return;
         };
-        if self.active != Some(project) {
-            self.active = Some(project);
-            self.view = View::Focus;
-        }
+        self.active = Some(project);
+        // The editor is in the Focus view.
+        self.show_focus();
         if let Some(explorer) = self.explorer_mut(project) {
             explorer.reveal(&path);
         }
@@ -1131,13 +1193,19 @@ impl App {
         let active = self.active;
         let mut posts = Vec::new();
         for pane in self.panes.values() {
+            // Asked while the user looks at the pane: no notification for it later either.
+            if pane.tracker.is_focused() {
+                self.notified.insert(pane.id, pane.tracker.ask);
+                continue;
+            }
             if !pane.tracker.wants_attention() {
                 continue;
             }
-            if self.notified.get(&pane.id) == Some(&pane.tracker.since) {
+            // Once per ask (a second question in a status that stays NeedsInput is one too).
+            if self.notified.get(&pane.id) == Some(&pane.tracker.ask) {
                 continue;
             }
-            self.notified.insert(pane.id, pane.tracker.since);
+            self.notified.insert(pane.id, pane.tracker.ask);
             let wanted = match pane.tracker.status {
                 Status::NeedsInput => n.needs_input,
                 Status::Failed(_) => n.failed,
@@ -1229,17 +1297,26 @@ impl App {
         self.projects.push(project);
         self.refresh_git(id);
         self.active = Some(id);
-        self.view = View::Focus;
+        self.show_focus();
         self.focus_request = Some(pane);
         self.mark_dirty();
     }
 
     /// `ternarycode <target>` from a terminal (or Finder): a folder becomes a project (or opens
-    /// the one it is); a name opens the project called that (its name, else its folder's name,
-    /// else the one name it starts or contains), else adds the folder of that name found beside
-    /// the projects there already.
+    /// the one it is), a file opens in the editor with its folder as the project (as when
+    /// dropped); a name opens the project called that (its name, else its folder's name, else
+    /// the one name it starts or contains), else adds the folder of that name found beside the
+    /// projects there already.
     fn open_target(&mut self, ctx: &egui::Context, target: &str) {
         let path = Path::new(target);
+        if path.is_file()
+            && path.is_absolute()
+            && let Some(dir) = path.parent()
+        {
+            self.add_project(ctx, dir.to_path_buf(), None);
+            self.dispatch(ctx, Action::OpenFile(paths::canonical(path), None));
+            return;
+        }
         if path.is_absolute() {
             self.add_project(ctx, path.to_path_buf(), None);
             return;
@@ -1278,6 +1355,9 @@ impl App {
         self.watchers.unwatch(id);
         self.editors.remove(&id);
         self.explorers.remove(&id);
+        self.git_due.remove(&id);
+        self.git_again.remove(&id);
+        self.conflict_warned.remove(&id);
         for pane in project.panes() {
             self.drop_pane(pane);
         }
@@ -1299,24 +1379,25 @@ impl App {
             h.unregister(id);
         }
         self.jumps.forget(id);
+        self.notified.remove(&id);
+        if self.grid_focus == Some(id) {
+            self.grid_focus = None;
+        }
     }
 
     fn split(&mut self, ctx: &egui::Context, dir: SplitDir) -> Option<PaneId> {
-        let project = self.active?;
-        let current = self.current_pane()?;
-        let cwd = self
-            .panes
-            .get(&current)
-            .map(|p| p.cwd.clone())
-            .or_else(|| self.project(project).map(|p| p.path.clone()))?;
+        // In the Grid, the tile typed into (its project need not be the open one).
+        let current = self.command_pane()?;
+        let (project, cwd) = self.panes.get(&current).map(|p| (p.project, p.cwd.clone()))?;
+        let tab_ix = self.project(project)?.tab_of(current)?;
         // The new pane's size in the split layout, before its shell starts.
         const PLACEHOLDER: PaneId = PaneId::MAX;
-        let mut planned = self.project(project)?.tab()?.layout.clone();
+        let mut planned = self.project(project)?.tabs[tab_ix].layout.clone();
         planned.split(current, PLACEHOLDER, dir);
         let size = self.grid_in(&planned, PLACEHOLDER);
         let new = self.new_pane(ctx, project, cwd, size);
         let p = self.project_mut(project)?;
-        let tab = p.tab_mut()?;
+        let tab = &mut p.tabs[tab_ix];
         tab.layout.split(current, new, dir);
         tab.focused = new;
         self.focus_request = Some(new);
@@ -1329,9 +1410,10 @@ impl App {
         self.new_tab_in(ctx, None)
     }
 
-    /// A new tab whose shell starts in `cwd` (the project folder by default).
+    /// A new tab whose shell starts in `cwd` (the project folder by default), in the project
+    /// commands act on (in the Grid, that of the tile typed into).
     fn new_tab_in(&mut self, ctx: &egui::Context, cwd: Option<PathBuf>) -> Option<PaneId> {
-        let project = self.active?;
+        let project = self.command_project()?;
         let cwd = cwd.filter(|d| d.is_dir()).unwrap_or(self.project(project)?.path.clone());
         let size = self.grid_in(&Layout::Pane(0), 0);
         let new = self.new_pane(ctx, project, cwd, size);
@@ -1401,7 +1483,8 @@ impl App {
             return;
         }
         let crowded = self
-            .active_project()
+            .command_project()
+            .and_then(|id| self.project(id))
             .and_then(Project::tab)
             .is_some_and(|tab| tab.layout.panes().len() >= 3);
         let pane = if crowded {
@@ -1411,19 +1494,24 @@ impl App {
         };
         let Some(pane) = pane else { return };
         let command = self.launch_command(&preset, &preset.command);
+        let mut project = None;
         if let Some(p) = self.panes.get_mut(&pane) {
             p.preset = Some(preset.id.clone());
             p.type_command(command);
+            project = Some(p.project);
         }
-        if let Some(project) = self.active {
+        if let Some(project) = project {
             self.actions
                 .push(Action::SetProjectPreset(project, Some(preset.id)));
         }
     }
 
     pub fn launch_command(&self, preset: &Preset, command: &str) -> String {
+        // Without the per-launch settings file (it could not be written) the flags would pass
+        // empty arguments: the agent starts as typed.
         let integration = preset
             .agent
+            .filter(|_| self.per_launch)
             .map(|a| self.settings.integration(a))
             .unwrap_or(Integration::Off);
         integrate::launch_command(command, preset.agent, integration, self.codex_hooks)
@@ -1454,6 +1542,11 @@ impl App {
     }
 
     fn restart_shell(&mut self, ctx: &egui::Context, id: PaneId) {
+        // Only a pane without a shell: a sleeping pane drawn as Enter is pressed asks both to
+        // wake and to restart.
+        if self.panes.get(&id).is_none_or(Pane::alive) {
+            return;
+        }
         let spawn_hook = self.hooks.as_ref().map(|h| {
             (
                 h.path().to_string_lossy().into_owned(),
@@ -1584,13 +1677,11 @@ impl App {
             }
             Action::OpenTarget(target) => self.open_target(ctx, &target),
             Action::SelectProject(id) => {
-                if self.project(id).is_some() {
+                if let Some(path) = self.project(id).map(|p| p.path.clone()) {
+                    // A folder that could not be watched (not there at launch) is tried again.
+                    self.watchers.watch(id, path, self.app_tx.clone(), ctx.clone());
                     self.active = Some(id);
-                    let was = self.view;
-                    self.view = View::Focus;
-                    if was == View::Grid {
-                        self.fit_all_to_focus(ctx);
-                    }
+                    self.show_focus();
                     self.focus_request = self.current_pane();
                     self.mark_dirty();
                 }
@@ -1627,8 +1718,17 @@ impl App {
                 self.mark_dirty();
             }
             Action::RenamePane(id, title) => {
+                let mut project = None;
                 if let Some(p) = self.panes.get_mut(&id) {
                     p.title = Some(title.trim().to_string()).filter(|t| !t.is_empty());
+                    project = Some(p.project);
+                }
+                // A tab shows its own title before its focused pane's: a stale one (from the saved
+                // workspace) would hide the rename.
+                if let Some(p) = project.and_then(|pid| self.project_mut(pid)) {
+                    for tab in p.tabs.iter_mut().filter(|t| t.focused == id) {
+                        tab.title = None;
+                    }
                 }
                 self.mark_dirty();
             }
@@ -1680,6 +1780,7 @@ impl App {
                         (p.active_tab + n - 1) % n
                     };
                     self.focus_request = self.current_pane();
+                    self.mark_dirty();
                 }
             }
             Action::MoveTab { from, to } => {
@@ -1826,11 +1927,12 @@ impl App {
                     tab.focused = tab.layout.neighbor(tab.focused, action == Action::NextPane);
                     let f = tab.focused;
                     self.focus_request = Some(f);
+                    self.mark_dirty();
                 }
             }
             Action::RunPreset(id) => self.run_preset(ctx, &id),
             Action::RunAgent => {
-                let default = self.active_project().and_then(|p| p.preset.clone());
+                let default = self.command_project().and_then(|id| self.project(id)).and_then(|p| p.preset.clone());
                 match default {
                     Some(id) => self.run_preset(ctx, &id),
                     None => self.open_palette(PaletteMode::Presets),
@@ -1845,7 +1947,7 @@ impl App {
             Action::RestartShell(id) => self.restart_shell(ctx, id),
             Action::NextAttention => {
                 let queue = self.attention_queue();
-                match self.jumps.next(self.current_pane(), &queue) {
+                match self.jumps.next(self.command_pane(), &queue) {
                     Some(pane) => self.focus_pane(pane),
                     None => self.toast(t("No agent is waiting for you.").into()),
                 }
@@ -1864,10 +1966,10 @@ impl App {
             Action::SwitchProject => self.open_palette(PaletteMode::Projects),
             Action::PickPreset => self.open_palette(PaletteMode::Presets),
             Action::SetView(v) => {
-                let was = self.view;
-                self.view = v;
-                if was == View::Grid && v == View::Focus {
-                    self.fit_all_to_focus(ctx);
+                if v == View::Focus {
+                    self.show_focus();
+                } else {
+                    self.view = v;
                 }
                 self.grid_focus = None;
                 self.focus_request = if v == View::Focus { self.current_pane() } else { None };
@@ -1908,7 +2010,7 @@ impl App {
                 if let Some(Dialog::Install(plan, _)) = self.dialog.take() {
                     match integrate::apply(&plan, &paths::integrations_dir().join("backup")) {
                         Ok(record) => {
-                            let _ = tc_core::persist::save_json(
+                            let saved = tc_core::persist::save_json(
                                 &Self::install_record_path(plan.agent),
                                 &record,
                             );
@@ -1916,10 +2018,14 @@ impl App {
                                 .integrations
                                 .insert(plan.agent.slug().into(), Integration::Installed);
                             self.settings_changed();
-                            self.toast(tf(
-                                "Hooks installed for {}.",
-                                &[plan.agent.label()],
-                            ));
+                            self.toast(match saved {
+                                Ok(()) => tf("Hooks installed for {}.", &[plan.agent.label()]),
+                                // Without the record, Uninstall cannot put the file back.
+                                Err(e) => tf(
+                                    "Hooks installed for {}, but their record could not be saved ({}): Uninstall will not restore {}.",
+                                    &[plan.agent.label(), &e.to_string(), &paths::contract_tilde(&plan.path)],
+                                ),
+                            });
                         }
                         Err(e) => {
                             self.dialog = Some(Dialog::Message(
@@ -2017,7 +2123,7 @@ impl App {
                 if let Some(e) = self.editor_mut() {
                     e.visible = !e.visible;
                 }
-                self.view = View::Focus;
+                self.show_focus();
                 if !self.editors.get(&self.active.unwrap_or_default()).is_some_and(|e| e.visible) {
                     self.focus_request = self.current_pane();
                 }
@@ -2045,7 +2151,7 @@ impl App {
                         .unwrap_or_else(|_| path.clone());
                     let text = format!("{} ", platform::shell_quote(&shown.to_string_lossy()));
                     pane.input(text.into_bytes());
-                    self.view = View::Focus;
+                    self.show_focus();
                     self.focus_request = Some(id);
                 }
             }
@@ -2119,7 +2225,7 @@ impl App {
                 Err(e) => self.toast(e),
             },
             Action::NewTabAt(dir) => {
-                self.view = View::Focus;
+                self.show_focus();
                 self.new_tab_in(ctx, Some(dir));
             }
             Action::QuickOpen => self.open_palette(PaletteMode::Files),
@@ -2135,8 +2241,11 @@ impl App {
                 }
             }
             Action::Find => {
-                if let Some(pane) = self.current_pane() {
-                    self.view = View::Focus;
+                if let Some(pane) = self.command_pane() {
+                    // From the Grid: the tile typed into, in the Focus view (its find bar is there).
+                    if self.view == View::Grid {
+                        self.focus_pane(pane);
+                    }
                     self.pane_search = Some(PaneSearch {
                         pane,
                         query: String::new(),
@@ -2400,10 +2509,8 @@ impl App {
     /// hooks, foreground checks, statuses, notifications, the badge, saving. eframe calls this
     /// before each frame and, while the window is hidden, whenever a repaint is requested.
     fn frame_logic(&mut self, ctx: &egui::Context) {
-        // No frame drawn lately: the window is hidden or minimized, nobody looks at a pane.
-        if self.last_ui.elapsed() > Duration::from_millis(300) {
-            self.window_focused = false;
-        }
+        self.window_focused = window_looked_at(ctx);
+        self.sync_term_palette(ctx);
         self.handle_menu();
         self.handle_instance();
         self.handle_notification_clicks();
@@ -2435,6 +2542,18 @@ impl App {
         self.release_editor_memory(ctx);
         self.enforce_scrollback_budget();
         self.schedule_wakeups(ctx);
+    }
+
+    /// Terminals answer colour queries (OSC 4/10/11) with the scheme in use: programs that ask
+    /// after a theme switch, or after the system turned dark under "System", get the new one.
+    fn sync_term_palette(&mut self, ctx: &egui::Context) {
+        let scheme = self.scheme(ctx.global_style().visuals.dark_mode);
+        if self.term_scheme != scheme.name {
+            self.term_scheme = scheme.name;
+            for p in self.panes.values() {
+                *p.shared.palette.lock() = scheme.into();
+            }
+        }
     }
 
     /// When an agent appears in a pane, the working tree is recorded (off the UI thread, outside
@@ -2472,13 +2591,22 @@ impl App {
     }
 
     /// Keeps all panes' scrollback within the budget (NFR "Memori"): panes out of view lose
-    /// their oldest lines first, the least recently active first.
+    /// their oldest lines first, the least recently active first. A pane back on screen may
+    /// keep the configured length again.
     fn enforce_scrollback_budget(&mut self) {
         let now = Instant::now();
         if now.duration_since(self.budget_checked) < Duration::from_secs(10) {
             return;
         }
         self.budget_checked = now;
+        let blink = self.settings.cursor_blink;
+        let configured = self.settings.scrollback;
+        // On screen in the last frame (a Grid tile too), not only the open project's tab.
+        let shown = |p: &Pane| p.shown.load(std::sync::atomic::Ordering::Relaxed) != crate::pane::Shown::Hidden as u8;
+        for pane in self.panes.values_mut().filter(|p| shown(p) && p.scrollback_limit < configured) {
+            pane.scrollback_limit = configured;
+            tc_term::core::limit_scrollback(&pane.shared, configured, tc_term::prefs::CursorStyle::Block, blink);
+        }
         let budget = self.settings.scrollback_budget_mb.max(16) * 1024 * 1024;
         let mut total: usize = self
             .panes
@@ -2488,19 +2616,13 @@ impl App {
         if total <= budget {
             return;
         }
-        let visible: Vec<PaneId> = self
-            .active_project()
-            .and_then(Project::tab)
-            .map(|t| t.layout.panes())
-            .unwrap_or_default();
         let mut order: Vec<(Instant, PaneId)> = self
             .panes
             .values()
-            .filter(|p| !visible.contains(&p.id))
+            .filter(|p| !shown(p))
             .map(|p| (p.last_output, p.id))
             .collect();
         order.sort();
-        let blink = self.settings.cursor_blink;
         for (_, id) in order {
             if total <= budget {
                 break;
@@ -2539,6 +2661,15 @@ impl App {
         if let Some(due) = self.panes.values().filter_map(|p| p.fg_due).min() {
             ctx.request_repaint_after(due.saturating_duration_since(now));
         }
+        // A write that failed (disk full, folder gone) is tried again a little later.
+        for path in self.saver.take_failed() {
+            if path == paths::workspace_file() {
+                self.saved_workspace.clear();
+            } else if path == paths::settings_file() {
+                self.settings_dirty = true;
+            }
+            self.save_due.get_or_insert(now + Duration::from_secs(5));
+        }
         if let Some(due) = self.save_due {
             if now >= due {
                 self.save_now();
@@ -2563,8 +2694,7 @@ impl App {
                 ctx.repaint_causes()
             );
         }
-        self.last_ui = Instant::now();
-        self.window_focused = ctx.input(|i| i.focused);
+        self.window_focused = window_looked_at(&ctx);
         self.remember_window(&ctx);
         self.handle_dropped_files(&ctx);
         self.handle_shortcuts(&ctx);
@@ -2605,9 +2735,16 @@ impl App {
         crate::devtest_run::frame_drawn(&ctx, drawing.elapsed());
         // Panes say how they were drawn as they are drawn; the reader threads see it once the
         // frame is done (so a read during the frame still sees the last one).
-        for (id, p) in &self.panes {
+        for (id, p) in self.panes.iter_mut() {
             let how = self.shown_now.get(id).copied().unwrap_or(crate::pane::Shown::Hidden);
             p.shown.store(how as u8, std::sync::atomic::Ordering::Relaxed);
+            // Not drawn any more (its tab or project left) while it had the keyboard: a program
+            // that asked for focus reports hears that it lost focus.
+            if how == crate::pane::Shown::Hidden {
+                let alive = p.alive();
+                let out = p.view.blur(&p.shared, alive);
+                p.write(out);
+            }
         }
         self.shown_now.clear();
 
@@ -2618,6 +2755,22 @@ impl App {
         // looked at).
         self.update_attention(&ctx);
         self.schedule_wakeups(&ctx);
+    }
+}
+
+/// Someone may be looking at the window: it has the keyboard and is on screen (not hidden,
+/// minimized or covered). Asked of the window itself, not told by frames drawn: an idle window
+/// draws none, and the logic also runs while it is hidden (FR-L1).
+fn window_looked_at(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.raw.focused && i.viewport().visible() != Some(false))
+}
+
+/// How long the next try waits after `n` frames in a row panicked: none for a one-off, then
+/// longer each time, up to two seconds (a bug hit on every frame must not spin the CPU).
+fn panic_backoff(n: u32) -> Duration {
+    match n {
+        0..=2 => Duration::ZERO,
+        _ => Duration::from_millis(50 << (n - 3).min(6)).min(Duration::from_secs(2)),
     }
 }
 
@@ -2634,7 +2787,10 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame_logic(ctx)));
         if result.is_err() {
-            ctx.request_repaint();
+            self.logic_panics = self.logic_panics.saturating_add(1);
+            ctx.request_repaint_after(panic_backoff(self.logic_panics));
+        } else {
+            self.logic_panics = 0;
         }
     }
 
@@ -2653,7 +2809,10 @@ impl eframe::App for App {
                 "Something went wrong and TernaryCode recovered. A report was saved in {}.",
                 &[&paths::contract_tilde(&paths::logs_dir())],
             ));
-            ui.ctx().request_repaint();
+            self.ui_panics = self.ui_panics.saturating_add(1);
+            ui.ctx().request_repaint_after(panic_backoff(self.ui_panics));
+        } else {
+            self.ui_panics = 0;
         }
         self.first_frame = false;
     }
@@ -2661,6 +2820,8 @@ impl eframe::App for App {
     #[cfg(target_os = "macos")]
     fn on_exit(&mut self) {
         self.save_and_wait();
+        // Language servers too, whichever way the app ends (they would outlive it).
+        self.lsp_stop_all();
         for pane in self.panes.values_mut() {
             pane.hang_up();
         }
@@ -2669,6 +2830,7 @@ impl eframe::App for App {
     #[cfg(not(target_os = "macos"))]
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_and_wait();
+        self.lsp_stop_all();
         for pane in self.panes.values_mut() {
             pane.hang_up();
         }

@@ -21,6 +21,8 @@ fn main() -> eframe::Result {
         _ => {}
     }
     ternarycode::app::mark_process_start();
+    // Read before the cleanup takes it out (panes must not inherit it).
+    let detached = std::env::var_os("TERNARYCODE_DETACHED").is_some();
     ternarycode::platform::clean_inherited_env();
     install_crash_log();
     ternarycode::platform::raise_open_files_limit();
@@ -29,7 +31,7 @@ fn main() -> eframe::Result {
     settings.sanitize();
     let targets = ternarycode::instance::targets(args);
     // From a terminal, with no TernaryCode running: start it apart from the terminal.
-    if !ternarycode::instance::is_running() && ternarycode::cli::launch_detached(&targets) {
+    if !ternarycode::instance::is_running() && ternarycode::cli::launch_detached(&targets, detached) {
         return Ok(());
     }
     let (lock, inbox) = match ternarycode::instance::acquire(&targets) {
@@ -141,12 +143,20 @@ fn window_icon() -> egui::IconData {
     eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon_256.png")).unwrap_or_default()
 }
 
-/// Writes a report to the logs folder when something panics, then runs the default hook.
+/// Writes a report to the logs folder when something panics, then runs the default hook. One
+/// report per place in the code and a few per run: a bug hit on every frame (the app recovers
+/// from it) would otherwise write one a second.
 fn install_crash_log() {
+    const MAX_REPORTS: usize = 10;
     let default = std::panic::take_hook();
+    let reported = std::sync::Mutex::new(std::collections::HashSet::new());
     std::panic::set_hook(Box::new(move |info| {
+        let place = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+        let first = reported
+            .lock()
+            .is_ok_and(|mut seen| seen.len() < MAX_REPORTS && seen.insert(place));
         let dir = ternarycode::paths::logs_dir();
-        if std::fs::create_dir_all(&dir).is_ok() {
+        if first && std::fs::create_dir_all(&dir).is_ok() {
             let thread = std::thread::current()
                 .name()
                 .unwrap_or("unnamed")

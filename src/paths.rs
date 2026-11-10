@@ -102,6 +102,8 @@ pub use tc_term::prefs::{contract_tilde, expand_tilde};
 pub struct Saver {
     pending: std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<u8>>>,
     writing: std::sync::Mutex<()>,
+    /// Files whose last write failed: the app writes them again.
+    failed: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
 }
 
 impl Saver {
@@ -122,7 +124,46 @@ impl Saver {
             Err(_) => return,
         };
         for (path, data) in jobs {
-            let _ = write_private(&path, &data);
+            let ok = write_private(&path, &data).is_ok();
+            if let Ok(mut failed) = self.failed.lock() {
+                if ok {
+                    failed.remove(&path);
+                } else {
+                    failed.insert(path);
+                }
+            }
         }
+    }
+
+    /// The files whose last write failed, once (nothing is retried here).
+    pub fn take_failed(&self) -> Vec<PathBuf> {
+        self.failed.lock().map(|mut f| f.drain().collect()).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_write_is_reported_once_and_a_good_one_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("file");
+        std::fs::write(&blocker, b"x").unwrap();
+        // Its folder is a file: the write fails.
+        let bad = blocker.join("workspace.json");
+        let saver = Saver::default();
+        saver.pending.lock().unwrap().insert(bad.clone(), b"{}".to_vec());
+        saver.flush();
+        assert_eq!(saver.take_failed(), std::slice::from_ref(&bad));
+        assert!(saver.take_failed().is_empty(), "reported once");
+        // Failed, then written after all: nothing to retry.
+        saver.pending.lock().unwrap().insert(bad.clone(), b"{}".to_vec());
+        saver.flush();
+        std::fs::remove_file(&blocker).unwrap();
+        saver.pending.lock().unwrap().insert(bad.clone(), b"{}".to_vec());
+        saver.flush();
+        assert!(saver.take_failed().is_empty());
+        assert!(bad.is_file());
     }
 }
