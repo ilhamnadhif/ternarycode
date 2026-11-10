@@ -429,6 +429,8 @@ const ID: &[(&str, &str)] = &[
     ("Warning", "Peringatan"),
     ("stopped (code {})", "berhenti (kode {})"),
     ("{} changed while the language server worked; nothing was applied. Try again.", "{} berubah selama language server bekerja; tidak ada yang diterapkan. Coba lagi."),
+    ("{} is open read-only; nothing was applied.", "{} terbuka hanya-baca; tidak ada yang diterapkan."),
+    ("Saved {} without formatting: {} did not answer.", "{} disimpan tanpa diformat: {} tidak menjawab."),
     ("{} is not installed: {}", "{} belum terpasang: {}"),
     ("{} is starting…", "{} sedang dimulai…"),
     ("{} references", "{} referensi"),

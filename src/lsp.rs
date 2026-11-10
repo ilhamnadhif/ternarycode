@@ -7,7 +7,7 @@
 //! file was closed. Its messages reach the UI thread as `AppMsg::Lsp`. Servers are installed by
 //! the user: a missing one shows its install command in the editor's status line.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -27,6 +27,10 @@ use crate::i18n::{t, tf};
 pub const IDLE_STOP: Duration = Duration::from_secs(600);
 /// Edits are sent once typing pauses this long (or before a request).
 const CHANGE_DELAY: Duration = Duration::from_millis(150);
+/// Format on save waits this long for the server, then saves the file as it is.
+const FORMAT_WAIT: Duration = Duration::from_secs(2);
+/// A file made this recently that a server has not heard of is reported as created.
+const FRESH: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ServerKey {
@@ -59,6 +63,10 @@ pub struct Server {
     pub pid: Option<u32>,
     /// Which start of the server this is (messages of an earlier one are ignored).
     generation: u64,
+    /// Files it published diagnostics for (they go when it stops).
+    published: HashSet<PathBuf>,
+    /// Files it was told exist (`workspace/didChangeWatchedFiles`).
+    seen: HashSet<PathBuf>,
 }
 
 struct Doc {
@@ -83,13 +91,15 @@ enum Pending {
     Goto(Goto),
     References,
     Hover { path: PathBuf, at: usize },
-    Completion { path: PathBuf, start: usize },
+    /// `seq`: which completion request (only the latest one's answer is shown); `rev`: the
+    /// file's revision it was asked at.
+    Completion { path: PathBuf, start: usize, seq: u64, rev: u64 },
     Signature { path: PathBuf },
     PrepareRename { path: PathBuf, at: usize },
     Rename { revs: Revs },
     CodeActions { path: PathBuf, revs: Revs },
     Execute,
-    Format { path: PathBuf, rev: u64, then_save: bool },
+    Format { path: PathBuf, rev: u64, then_save: bool, asked: Instant },
     /// The file's symbols, for the file asked about (not whichever is active when they come).
     Symbols { path: PathBuf },
     WorkspaceSymbols,
@@ -209,6 +219,11 @@ pub struct Lsp {
     pub path_env: Option<OsString>,
     pub ide: Ide,
     next_generation: u64,
+    /// Completion requests sent so far (an answer to an older one is dropped).
+    completion_seq: u64,
+    /// The server's last list was incomplete: its file, where its word starts and the revision
+    /// last asked for. Typing on in that word asks again rather than only narrowing it.
+    incomplete: Option<(PathBuf, usize, u64)>,
 }
 
 impl Lsp {
@@ -402,6 +417,8 @@ impl App {
             init: None,
             pid: None,
             generation: self.lsp.next_generation,
+            published: HashSet::new(),
+            seen: HashSet::new(),
         };
         self.lsp.next_generation += 1;
         let generation = server.generation;
@@ -441,6 +458,10 @@ impl App {
 
     /// Stops every server (the setting was switched off, or the app quits).
     pub fn lsp_stop_all(&mut self) {
+        let keys: Vec<ServerKey> = self.lsp.servers.keys().cloned().collect();
+        for key in &keys {
+            self.lsp_gone(key);
+        }
         for (_, s) in self.lsp.servers.drain() {
             if let Some(c) = &s.client {
                 c.shutdown();
@@ -449,6 +470,30 @@ impl App {
         self.lsp.pending.clear();
         self.lsp.diagnostics.clear();
         self.lsp.ide = Ide::default();
+        self.lsp.incomplete = None;
+    }
+
+    /// A server stops (idle, restarted, exited): what it was asked gets no answer, so a file
+    /// waiting to be formatted on save is saved as it is; its diagnostics would never update.
+    fn lsp_gone(&mut self, key: &ServerKey) {
+        let mut unsaved = Vec::new();
+        self.lsp.pending.retain(|(k, _), p| {
+            if k != key {
+                return true;
+            }
+            if let Pending::Format { path, then_save: true, .. } = p {
+                unsaved.push(path.clone());
+            }
+            false
+        });
+        if let Some(s) = self.lsp.servers.get_mut(key) {
+            for path in s.published.drain() {
+                self.lsp.diagnostics.remove(&path);
+            }
+        }
+        for path in unsaved {
+            self.save_unformatted(&path, Some(key.name));
+        }
     }
 
     /// Each frame: buffers that changed go to their servers once typing paused; files closed
@@ -473,15 +518,61 @@ impl App {
             }
         }
         for key in stop {
+            self.lsp_gone(&key);
             if let Some(s) = self.lsp.servers.remove(&key)
                 && let Some(c) = &s.client
             {
                 c.shutdown();
             }
         }
+        // Format on save the server did not answer in time: saved as it is (a late answer is
+        // dropped with the request).
+        let mut late = Vec::new();
+        for (id, p) in &self.lsp.pending {
+            if let Pending::Format { then_save: true, asked, .. } = p {
+                let left = FORMAT_WAIT.saturating_sub(now.duration_since(*asked));
+                if left.is_zero() {
+                    late.push(id.clone());
+                } else {
+                    wake = Some(wake.map_or(left, |w| w.min(left)));
+                }
+            }
+        }
+        for id in late {
+            if let Some(Pending::Format { path, .. }) = self.lsp.pending.remove(&id) {
+                self.save_unformatted(&path, Some(id.0.name));
+            }
+        }
+        self.lsp_complete_again(ctx);
         if let Some(w) = wake {
             ctx.request_repaint_after(w);
         }
+    }
+
+    /// An incomplete completion list is asked for again once its word changed: narrowing what
+    /// the server sent may miss what it has for the word typed now.
+    fn lsp_complete_again(&mut self, ctx: &egui::Context) {
+        let Some((path, start, asked)) = self.lsp.incomplete.clone() else { return };
+        // Only while its list is open: once that closed (an item taken, Esc, nothing left),
+        // typing starts a new one.
+        let open = self.lsp.ide.completion.as_ref().is_some_and(|c| c.path == path && c.start == start);
+        let here = self.ide_target().filter(|_| open);
+        let rev = open_text(&self.editors, &path).map(|(_, r)| r);
+        let Some(((active, caret), rev)) = here.zip(rev).filter(|((p, _), _)| *p == path) else {
+            self.lsp.incomplete = None;
+            return;
+        };
+        if rev == asked {
+            return;
+        }
+        // The caret left the word (or it was deleted): done.
+        if caret <= start || word_start(&self.editors, &active, caret) != start {
+            self.lsp.incomplete = None;
+            return;
+        }
+        // Asked once per revision, even when no server can take it now.
+        self.lsp.incomplete = Some((path, start, rev));
+        self.ide_cmd(ctx, IdeCmd::Complete(false));
     }
 
     /// Sends buffer changes: all that waited `CHANGE_DELAY` (or every one, `now`); opens files
@@ -491,16 +582,16 @@ impl App {
         let editors = &self.editors;
         let mut retry: Option<Duration> = None;
         for s in self.lsp.servers.values_mut() {
-            if s.state != ServerState::Ready {
-                continue;
-            }
-            let Some(client) = &s.client else { continue };
+            // One not ready (starting, missing, stopped) is sent nothing, but forgets files
+            // closed meanwhile: with none left it stops when idle like any other.
+            let client = s.client.as_ref().filter(|_| s.state == ServerState::Ready);
             let mut closed = Vec::new();
             for (path, doc) in s.docs.iter_mut() {
                 let Some((text, rev)) = open_text(editors, path) else {
                     closed.push(path.clone());
                     continue;
                 };
+                let Some(client) = client else { continue };
                 let uri = tc_lsp::pos::uri(path);
                 match doc.sent {
                     None => {
@@ -531,7 +622,9 @@ impl App {
             }
             for path in closed {
                 s.docs.remove(&path);
-                client.notify("textDocument/didClose", json!({"textDocument": {"uri": tc_lsp::pos::uri(&path).as_str()}}));
+                if let Some(client) = client {
+                    client.notify("textDocument/didClose", json!({"textDocument": {"uri": tc_lsp::pos::uri(&path).as_str()}}));
+                }
             }
         }
         if let Some(r) = retry {
@@ -551,13 +644,30 @@ impl App {
 
     /// Files changed on disk under a project (an agent, git): servers that watch files hear.
     pub fn lsp_files_changed(&mut self, paths: &[PathBuf]) {
-        for (key, s) in &self.lsp.servers {
+        let now = std::time::SystemTime::now();
+        for (key, s) in self.lsp.servers.iter_mut() {
             let Some(c) = s.client.as_ref().filter(|_| s.state == ServerState::Ready) else { continue };
-            let changes: Vec<Value> = paths
+            let mut changes: Vec<Value> = Vec::new();
+            for p in paths
                 .iter()
                 .filter(|p| p.starts_with(&key.root) && servers::for_path(p).is_some_and(|(sp, _)| sp.name == s.spec.name))
-                .map(|p| json!({"uri": tc_lsp::pos::uri(p).as_str(), "type": if p.exists() { 2 } else { 3 }}))
-                .collect();
+            {
+                // 1 created, 2 changed, 3 deleted. The events don't say which: a file is new
+                // when the server never heard of it and it was made just now (or when the
+                // system keeps no creation time).
+                let kind = match std::fs::metadata(p) {
+                    Err(_) => {
+                        s.seen.remove(p);
+                        3
+                    }
+                    Ok(m) => {
+                        let fresh = m.created().map_or(true, |b| now.duration_since(b).is_ok_and(|age| age < FRESH));
+                        let known = !s.seen.insert(p.clone()) || s.docs.contains_key(p);
+                        if fresh && !known { 1 } else { 2 }
+                    }
+                };
+                changes.push(json!({"uri": tc_lsp::pos::uri(p).as_str(), "type": kind}));
+            }
             if !changes.is_empty() {
                 c.notify("workspace/didChangeWatchedFiles", json!({"changes": changes}));
             }
@@ -586,7 +696,7 @@ impl App {
                             self.toast(tf("{}: {}", &[key.name, &e.message]));
                             // Format on save that failed still saves (unformatted).
                             if let Pending::Format { path, then_save: true, .. } = p {
-                                self.save_unformatted(&path);
+                                self.save_unformatted(&path, None);
                             }
                         }
                     }
@@ -612,7 +722,7 @@ impl App {
                         });
                     }
                 }
-                self.lsp.pending.retain(|(k, _), _| *k != key);
+                self.lsp_gone(&key);
             }
         }
     }
@@ -633,7 +743,10 @@ impl App {
                 }
                 self.lsp_sync(true);
             }
-            Err(e) => s.state = ServerState::Failed(e.message),
+            Err(e) => {
+                s.state = ServerState::Failed(e.message);
+                self.lsp_gone(key);
+            }
         }
     }
 
@@ -642,10 +755,13 @@ impl App {
             "textDocument/publishDiagnostics" => {
                 let Ok(p) = serde_json::from_value::<lt::PublishDiagnosticsParams>(params) else { return };
                 let Some(path) = tc_lsp::pos::path(&p.uri) else { return };
-                let enc = self.lsp.servers.get(key).map_or(Encoding::Utf16, |s| s.enc);
+                let Some(s) = self.lsp.servers.get_mut(key) else { return };
+                let enc = s.enc;
                 if p.diagnostics.is_empty() {
+                    s.published.remove(&path);
                     self.lsp.diagnostics.remove(&path);
                 } else {
+                    s.published.insert(path.clone());
                     let mut d = p.diagnostics;
                     d.sort_by_key(|d| (d.range.start.line, d.range.start.character));
                     self.lsp.diagnostics.insert(path, (enc, d));
@@ -773,12 +889,16 @@ impl App {
                 if let Some((path, _)) = self.ide_target()
                     && let Some(key) = self.lsp.key_of(&path)
                 {
-                    if let Some(s) = self.lsp.servers.remove(&key)
-                        && let Some(c) = &s.client
-                    {
-                        c.kill();
+                    self.lsp_gone(&key);
+                    if let Some(s) = self.lsp.servers.remove(&key) {
+                        if let Some(c) = &s.client {
+                            c.kill();
+                        }
+                        // Every file it served goes to the new one, not only the active one.
+                        for p in s.docs.keys() {
+                            self.lsp_open(ctx, p);
+                        }
                     }
-                    self.lsp_open(ctx, &path);
                 }
                 return;
             }
@@ -817,10 +937,21 @@ impl App {
             IdeCmd::HoverAt(at) => self.lsp_request(&key, "textDocument/hover", pos, Pending::Hover { path: path.clone(), at }),
             IdeCmd::Complete(_) => {
                 let start = word_start(&self.editors, &path, caret);
+                let rev = open_text(&self.editors, &path).map_or(0, |(_, r)| r);
+                // Invoked (1): the list is filtered here as typing goes on. Typing on in the word
+                // of an incomplete list asks for it again (3).
+                let again = match self.lsp.incomplete.as_mut() {
+                    Some((p, s, asked)) if *p == path && *s == start => {
+                        *asked = rev;
+                        true
+                    }
+                    _ => false,
+                };
                 let mut p = pos;
-                // Invoked (1): the list is filtered here as typing goes on.
-                p["context"] = json!({"triggerKind": 1});
-                self.lsp_request(&key, "textDocument/completion", p, Pending::Completion { path: path.clone(), start })
+                p["context"] = json!({"triggerKind": if again { 3 } else { 1 }});
+                self.lsp.completion_seq += 1;
+                let seq = self.lsp.completion_seq;
+                self.lsp_request(&key, "textDocument/completion", p, Pending::Completion { path: path.clone(), start, seq, rev })
             }
             IdeCmd::Signature => self.lsp_request(&key, "textDocument/signatureHelp", pos, Pending::Signature { path: path.clone() }),
             IdeCmd::Rename => {
@@ -854,10 +985,11 @@ impl App {
                 self.lsp_request(&key, "textDocument/codeAction", p, Pending::CodeActions { path: path.clone(), revs })
             }
             IdeCmd::Format => {
-                let rev = open_text(&self.editors, &path).map_or(0, |(_, r)| r);
+                let (text, rev) = open_text(&self.editors, &path).unwrap_or(("", 0));
                 let mut p = doc;
-                p["options"] = json!({"tabSize": 4, "insertSpaces": true, "trimTrailingWhitespace": true, "insertFinalNewline": true});
-                self.lsp_request(&key, "textDocument/formatting", p, Pending::Format { path: path.clone(), rev, then_save: false })
+                p["options"] = format_options(text);
+                let pending = Pending::Format { path: path.clone(), rev, then_save: false, asked: Instant::now() };
+                self.lsp_request(&key, "textDocument/formatting", p, pending)
             }
             IdeCmd::Symbols => self.lsp_request(&key, "textDocument/documentSymbol", doc, Pending::Symbols { path: path.clone() }),
             IdeCmd::WorkspaceSymbols => {
@@ -883,14 +1015,14 @@ impl App {
         if !can {
             return false;
         }
-        let rev = open_text(&self.editors, &path).map_or(0, |(_, r)| r);
-        let p = json!({"textDocument": {"uri": tc_lsp::pos::uri(&path).as_str()},
-            "options": {"tabSize": 4, "insertSpaces": true, "trimTrailingWhitespace": true, "insertFinalNewline": true}});
-        self.lsp_request(&key, "textDocument/formatting", p, Pending::Format { path, rev, then_save: true })
+        let (text, rev) = open_text(&self.editors, &path).unwrap_or(("", 0));
+        let p = json!({"textDocument": {"uri": tc_lsp::pos::uri(&path).as_str()}, "options": format_options(text)});
+        self.lsp_request(&key, "textDocument/formatting", p, Pending::Format { path, rev, then_save: true, asked: Instant::now() })
     }
 
-    /// Saves a file as it is (formatting it first failed).
-    fn save_unformatted(&mut self, path: &Path) {
+    /// Saves a file as it is: formatting it first failed, or `server` gave no answer (it
+    /// stopped, or took longer than `FORMAT_WAIT`).
+    fn save_unformatted(&mut self, path: &Path, server: Option<&str>) {
         let result = self
             .editors
             .values_mut()
@@ -900,7 +1032,10 @@ impl App {
         match result {
             Some((Ok(()), name)) => {
                 self.lsp_saved(path);
-                self.toast(tf("Saved {}.", &[&name]));
+                self.toast(match server {
+                    Some(server) => tf("Saved {} without formatting: {} did not answer.", &[&name, server]),
+                    None => tf("Saved {}.", &[&name]),
+                });
             }
             Some((Err(crate::editor::SaveError::ChangedOnDisk), _)) => {
                 self.toast(t("Not saved: the file changed on disk. Choose what to keep in the editor.").into())
@@ -953,12 +1088,17 @@ impl App {
                     self.lsp.ide.hover = Some(HoverPopup { path, at, blocks });
                 }
             }
-            Pending::Completion { path, start } => {
-                let items = match serde_json::from_value::<Option<lt::CompletionResponse>>(v) {
-                    Ok(Some(lt::CompletionResponse::Array(a))) => a,
-                    Ok(Some(lt::CompletionResponse::List(l))) => l.items,
-                    _ => Vec::new(),
+            Pending::Completion { path, start, seq, rev } => {
+                // Asked again since (typing went on): only the latest answer fits the text.
+                if seq != self.lsp.completion_seq {
+                    return;
+                }
+                let (items, incomplete) = match serde_json::from_value::<Option<lt::CompletionResponse>>(v) {
+                    Ok(Some(lt::CompletionResponse::Array(a))) => (a, false),
+                    Ok(Some(lt::CompletionResponse::List(l))) => (l.items, l.is_incomplete),
+                    _ => (Vec::new(), false),
                 };
+                self.lsp.incomplete = incomplete.then(|| (path.clone(), start, rev));
                 let mut popup = CompletionPopup { path, start, items, shown: Vec::new(), selected: 0, enc };
                 self.refilter(&mut popup);
                 self.lsp.ide.completion = (!popup.shown.is_empty()).then_some(popup);
@@ -1032,7 +1172,7 @@ impl App {
                 }
             }
             Pending::Execute => {}
-            Pending::Format { path, rev, then_save } => {
+            Pending::Format { path, rev, then_save, .. } => {
                 let edits = serde_json::from_value::<Option<Vec<lt::TextEdit>>>(v).ok().flatten().unwrap_or_default();
                 let mut saved_name = None;
                 let mut failed = None;
@@ -1055,7 +1195,7 @@ impl App {
                 if let Some(e) = failed {
                     self.toast(e);
                     if then_save {
-                        self.save_unformatted(&path);
+                        self.save_unformatted(&path, None);
                     }
                     return;
                 }
@@ -1294,9 +1434,9 @@ impl App {
                 }
                 None => false,
             } || fe.version.is_some_and(|v| doc.is_some_and(|d| d.version != v));
+            let name = || fe.path.file_name().map_or_else(|| fe.path.display().to_string(), |n| n.to_string_lossy().into_owned());
             if stale {
-                let name = fe.path.file_name().map_or_else(|| fe.path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                return Err(tf("{} changed while the language server worked; nothing was applied. Try again.", &[&name]));
+                return Err(tf("{} changed while the language server worked; nothing was applied. Try again.", &[&name()]));
             }
             let open = open.map(|(t, _)| t);
             let before = match &open {
@@ -1304,6 +1444,12 @@ impl App {
                 None => std::fs::read_to_string(&fe.path).map_err(|e| format!("{}: {e}", fe.path.display()))?,
             };
             let after = tc_lsp::edit::apply(&before, &fe.edits, enc)?;
+            // An open file that can't be saved (too large, cut short, not UTF-8 or not
+            // writable) would keep the edit in memory only.
+            let read_only = || self.editors.values().flat_map(|e| e.files.iter()).any(|f| f.path == fe.path && (f.read_only || f.truncated));
+            if after != before && open.is_some() && read_only() {
+                return Err(tf("{} is open read-only; nothing was applied.", &[&name()]));
+            }
             if after != before {
                 plan.push((fe.path.clone(), before, after, open.is_some()));
             }
@@ -1341,7 +1487,7 @@ impl App {
         let mut skipped = 0;
         for (path, before, after) in u.files {
             if let Some(f) = self.editors.values_mut().flat_map(|e| e.files.iter_mut()).find(|f| f.path == path) {
-                if f.text == after {
+                if f.text == after && !f.read_only {
                     let was_clean = !f.dirty();
                     f.text = before;
                     f.rev += 1;
@@ -1428,9 +1574,11 @@ pub fn accept_completion(text: &str, popup: &CompletionPopup, item: &lt::Complet
     let (mut from, mut to) = (popup.start.min(caret), caret);
     let mut insert = item.insert_text.clone().unwrap_or_else(|| item.label.clone());
     if let Some(edit) = &item.text_edit {
+        // Of the two ranges, the one that inserts (as VS Code does by default): the rest of
+        // the word after the caret stays.
         let (range, new) = match edit {
             lt::CompletionTextEdit::Edit(e) => (e.range, e.new_text.clone()),
-            lt::CompletionTextEdit::InsertAndReplace(e) => (e.replace, e.new_text.clone()),
+            lt::CompletionTextEdit::InsertAndReplace(e) => (e.insert, e.new_text.clone()),
         };
         let (a, _) = ix.chars(text, &range, popup.enc);
         from = a.min(caret);
@@ -1525,18 +1673,51 @@ fn symbol_kind(k: lt::SymbolKind) -> &'static str {
     }
 }
 
-/// Writes through a temporary file in the same folder, so a crash leaves the old file whole.
+/// Writes a file not open in the editor (as a save does: whole or not at all, keeping its
+/// permissions and symbolic links).
 fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = dir.join(format!(".{name}.tc-tmp"));
-    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", path.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    crate::editor::write_atomic(path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Formatting options that keep the file's indentation: tabs when most indented lines start
+/// with one, else spaces, as many as a line most often goes in by (4 when nothing tells).
+fn format_options(text: &str) -> Value {
+    let (mut tabs, mut spaces) = (0, 0);
+    let mut steps = [0usize; 9];
+    let mut prev = 0;
+    for line in text.lines() {
+        let body = line.trim_start_matches([' ', '\t']);
+        if body.is_empty() {
+            continue;
+        }
+        let indent = line.len() - body.len();
+        if line.starts_with('\t') {
+            tabs += 1;
+            continue;
+        }
+        if indent > 0 {
+            spaces += 1;
+        }
+        // The ` * ` lines of a block comment are not a level in.
+        if body.starts_with('*') {
+            continue;
+        }
+        if indent > prev && indent - prev < steps.len() {
+            steps[indent - prev] += 1;
+        }
+        prev = indent;
+    }
+    let spaces = spaces >= tabs;
+    let size = (1..steps.len())
+        .filter(|n| spaces && steps[*n] > 0)
+        .max_by_key(|n| (steps[*n], std::cmp::Reverse(*n)))
+        .unwrap_or(4);
+    json!({"tabSize": size, "insertSpaces": spaces, "trimTrailingWhitespace": true, "insertFinalNewline": true})
 }
 
 #[cfg(test)]
 mod tests {
-    use super::word_range;
+    use super::*;
 
     #[test]
     fn words_are_found_around_a_char() {
@@ -1545,5 +1726,40 @@ mod tests {
         assert_eq!(word_range(text, 11), Some((4, 11)));
         assert_eq!(word_range(text, 12), None);
         assert_eq!(word_range(text, 22), Some((22, 26)));
+    }
+
+    #[test]
+    fn formatting_keeps_the_files_indentation() {
+        let opts = |text: &str| {
+            let o = format_options(text);
+            (o["tabSize"].as_u64().unwrap(), o["insertSpaces"].as_bool().unwrap())
+        };
+        let ts = "/**\n * Doc.\n */\nexport function f() {\n  if (x) {\n    return {\n      a: 1,\n    };\n  }\n}\n";
+        assert_eq!(opts(ts), (2, true));
+        let rs = "fn main() {\n    let x = 1;\n    if x {\n        y();\n    }\n}\n";
+        assert_eq!(opts(rs), (4, true));
+        let go = "func f() {\n\tif x {\n\t\ty()\n\t}\n}\n";
+        assert_eq!(opts(go), (4, false));
+        assert_eq!(opts(""), (4, true));
+        assert_eq!(opts("a\nb\n"), (4, true));
+    }
+
+    #[test]
+    fn completion_inserts_with_the_insert_range() {
+        let enc = Encoding::Utf16;
+        let at = |c| lt::Position::new(0, c);
+        let item = lt::CompletionItem {
+            label: "foobar".into(),
+            text_edit: Some(lt::CompletionTextEdit::InsertAndReplace(lt::InsertReplaceEdit {
+                new_text: "foobar".into(),
+                insert: lt::Range::new(at(4), at(6)),
+                replace: lt::Range::new(at(4), at(9)),
+            })),
+            ..Default::default()
+        };
+        let popup = CompletionPopup { path: PathBuf::new(), start: 4, items: Vec::new(), shown: Vec::new(), selected: 0, enc };
+        // `let fo|bar;`: the word after the caret stays, the caret goes after what was inserted.
+        let (text, caret) = accept_completion("let fobar;", &popup, &item, 6).unwrap();
+        assert_eq!((text.as_str(), caret), ("let foobarbar;", 10));
     }
 }
