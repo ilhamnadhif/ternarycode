@@ -2,7 +2,7 @@
 //! order, snippets as plain text (with the cursor where the first stop was), and hover
 //! documentation as plain text blocks.
 
-use lsp_types::{Documentation, HoverContents, MarkedString, MarkupContent};
+use lsp_types::{HoverContents, MarkedString, MarkupContent};
 
 /// How well `label` matches `typed` (higher is better): a prefix beats a word start beats a
 /// subsequence; case-insensitive. None when it does not match at all. Empty `typed` matches.
@@ -411,14 +411,6 @@ pub fn hover_blocks(contents: &HoverContents) -> Vec<Block> {
         HoverContents::Scalar(m) => marked(m),
         HoverContents::Array(ms) => ms.iter().flat_map(marked).collect(),
         HoverContents::Markup(MarkupContent { value, .. }) => markdown(value),
-    }
-}
-
-/// Documentation as blocks.
-pub fn doc_blocks(doc: &Documentation) -> Vec<Block> {
-    match doc {
-        Documentation::String(s) => markdown(s),
-        Documentation::MarkupContent(m) => markdown(&m.value),
     }
 }
 

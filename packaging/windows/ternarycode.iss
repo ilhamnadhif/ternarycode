@@ -1,6 +1,6 @@
 ; Inno Setup script for the Windows installer (TernaryCode-<version>-windows-x64-setup.exe).
 ;
-;   iscc /DAppVersion=1.4.0 /DSourceExe=..\..\target\release\ternarycode.exe /DOutputDir=..\..\dist packaging\windows\ternarycode.iss
+;   iscc /DAppVersion=1.4.0 /DSourceExe=..\..\target\release\ternarycode.exe /DSourceHook=..\..\target\release\ternarycode-hook.exe /DOutputDir=..\..\dist packaging\windows\ternarycode.iss
 ;
 ; Installs for the current user by default (no administrator rights needed), or for all users
 ; when chosen in the first dialog. An update installs over the previous version (same AppId)

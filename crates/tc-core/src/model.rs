@@ -259,9 +259,6 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Brings settings written by an older version to the current UI defaults. Revision 1 made
-    /// the dark theme the default: "System" saved before it was the old default, not a choice.
-    /// Returns whether anything changed (the file should be saved).
     /// Brings values typed into the file by hand into range (a font size of 0 would make the
     /// app unusable before Settings could be opened to fix it). Returns whether one changed.
     pub fn sanitize(&mut self) -> bool {
@@ -277,6 +274,10 @@ impl Settings {
         *self != before
     }
 
+    /// Brings settings written by an older version to the current UI defaults (and into range,
+    /// see [`Settings::sanitize`]). Revision 1 made the dark theme the default: "System" saved
+    /// before it was the old default, not a choice. Returns whether anything changed (the file
+    /// should be saved).
     pub fn migrate(&mut self) -> bool {
         let fixed = self.sanitize();
         if self.ui_rev >= UI_REV {

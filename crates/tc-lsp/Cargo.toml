@@ -17,7 +17,6 @@ doc = false
 [dependencies]
 lsp-types = "0.97.0"
 parking_lot = "0.12.5"
-serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "process"] }
 

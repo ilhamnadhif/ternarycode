@@ -4,7 +4,7 @@
 //! cargo run --release -p tc-git --example bench_snapshot -- [path to a repository]
 //! ```
 //!
-//! Without an argument it uses the TernaryShell checkout next to this workspace.
+//! Without an argument it uses this workspace's own repository.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,7 +14,7 @@ fn main() {
     let path = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../ternaryshell"));
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
     let root = tc_git::repo_root(&path)
         .unwrap_or_else(|| panic!("{} is not inside a git working tree", path.display()));
     let index = PathBuf::from(

@@ -607,7 +607,6 @@ impl Counters {
 struct WordPara {
     para: Para,
     num: Option<(String, u8)>,
-    explicit_style: bool,
     /// Tables open when the paragraph started (one opened since is in its text box).
     tables: usize,
     /// What its text boxes hold, shown after it.
@@ -670,11 +669,10 @@ pub fn read_docx(path: &Path) -> Result<RichDoc, String> {
                     }
                     b"r" => props = RunProps::default(),
                     b"pStyle" if in_ppr => {
-                        if let (Some(p), Some(v)) = (paras.last_mut(), attr(&e, b"val")) {
-                            if let Some(s) = styles.get(&v).copied().or_else(|| style_of_name(&v)) {
-                                p.para.style = s;
-                            }
-                            p.explicit_style = true;
+                        if let (Some(p), Some(v)) = (paras.last_mut(), attr(&e, b"val"))
+                            && let Some(s) = styles.get(&v).copied().or_else(|| style_of_name(&v))
+                        {
+                            p.para.style = s;
                         }
                     }
                     b"jc" if in_ppr && !in_rpr => {
