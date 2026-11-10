@@ -12,13 +12,14 @@ use tc_doc::office::{Block, Para, ParaStyle, Picture, Span};
 
 use super::{icons, kit, style};
 use crate::app::App;
-use crate::docview::{Content, DocView, Pic, State};
+use crate::docview::{Content, DocMatch, DocView, MAX_DOC_MATCHES, Pic, State};
 use crate::i18n::{t, tf};
 
 const BAR_H: f32 = 34.0;
 const STATUS_H: f32 = 26.0;
 const TABS_H: f32 = 30.0;
 const CELL_BAR_H: f32 = 30.0;
+const FIND_H: f32 = 36.0;
 const ZOOMS: [f32; 13] = [0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
 
 /// What a click in the document's toolbar asks of the app.
@@ -44,10 +45,33 @@ impl App {
         view.poll(&ctx);
         let bar = Rect::from_min_size(body.min, vec2(body.width(), BAR_H));
         let status = Rect::from_min_max(pos2(body.left(), body.bottom() - STATUS_H), body.max);
-        let content = Rect::from_min_max(pos2(body.left(), bar.bottom()), pos2(body.right(), status.top()));
+        let find_h = if view.find.is_some() { FIND_H } else { 0.0 };
+        let find_rect = Rect::from_min_size(pos2(body.left(), bar.bottom()), vec2(body.width(), find_h));
+        let content = Rect::from_min_max(pos2(body.left(), find_rect.bottom()), pos2(body.right(), status.top()));
+        // A click in the document gives it the keyboard (a terminal takes the keyboard back
+        // whenever nobody has it): ⌘F then searches here and ⌘W closes the document. Widgets
+        // inside (a sheet's grid) take it from there.
+        let doc_id = egui::Id::new(("doc-view", project));
+        let doc_area = ui.interact(content, doc_id, Sense::click());
+        if ui.input(|i| i.pointer.primary_pressed()) && ui.rect_contains_pointer(content) {
+            doc_area.request_focus();
+        }
+        if doc_area.has_focus() {
+            self.editor_seen = true;
+        }
+        #[cfg(debug_assertions)]
+        crate::devtest::record("doc-body", content);
         let mut ask = None;
         toolbar(ui, view, bar, &mut ask);
         status_line(ui, view, status);
+        if view.find.is_some() {
+            refresh_find(view);
+            if find_bar(ui, view, find_rect, project) {
+                // The search field has the keyboard: the editor's keys (⌘W…) apply.
+                self.editor_seen = true;
+            }
+            follow_sheet_match(view);
+        }
         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
             ui.set_clip_rect(content);
             // Pinch or Ctrl+wheel over the document zooms it.
@@ -206,6 +230,191 @@ fn failed(ui: &mut Ui, rect: Rect, error: &str, ask: &mut Option<Ask>) {
     });
 }
 
+// ----- search ---------------------------------------------------------------------------------
+
+/// The search bar under the toolbar. Returns whether its field has the keyboard.
+fn find_bar(ui: &mut Ui, view: &mut DocView, rect: Rect, project: ProjectId) -> bool {
+    let p = style::pal(ui);
+    let Some(f) = view.find.as_mut() else { return false };
+    let id = egui::Id::new(("doc-find", project));
+    let mut close = ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    let mut focused = false;
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, p.chrome);
+    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 5.0))).layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let r = ui.add(egui::TextEdit::singleline(&mut f.query).id(id).hint_text(t("Find in document")).desired_width(240.0));
+            #[cfg(debug_assertions)]
+            crate::devtest::record("doc-find", r.rect);
+            if f.focus {
+                r.request_focus();
+                kit::select_text(ui.ctx(), id, 0, f.query.chars().count());
+                f.focus = false;
+            }
+            focused = r.has_focus();
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let back = ui.input(|i| i.modifiers.shift);
+                f.step(!back);
+                r.request_focus();
+                focused = true;
+            }
+            let n = f.matches.len();
+            let more = if n >= MAX_DOC_MATCHES { "+" } else { "" };
+            let (info, color) = if f.query.trim().is_empty() {
+                (String::new(), p.text_muted)
+            } else if n == 0 && f.searching {
+                (t("Searching…").to_string(), p.text_muted)
+            } else if n == 0 {
+                (t("No results").to_string(), p.err)
+            } else {
+                match f.current {
+                    Some(c) => (tf("{} of {}", &[&(c + 1).to_string(), &format!("{n}{more}")]), p.text_muted),
+                    None => (tf("{} results", &[&format!("{n}{more}")]), p.text_muted),
+                }
+            };
+            ui.label(egui::RichText::new(info).size(style::SMALL).color(color));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if kit::icon_button_ex(ui, icons::X, t("Close"), false, 24.0).clicked() {
+                    close = true;
+                }
+                if kit::icon_button_ex(ui, icons::ARROW_DOWN, t("Next"), false, 24.0).clicked() {
+                    f.step(true);
+                }
+                if kit::icon_button_ex(ui, icons::ARROW_UP, t("Previous"), false, 24.0).clicked() {
+                    f.step(false);
+                }
+            });
+        },
+    );
+    if close {
+        view.find = None;
+        ui.memory_mut(|m| m.surrender_focus(id));
+        return false;
+    }
+    focused
+}
+
+/// Finds the query again when it or the document changed (more of a PDF's text read, another
+/// layout). Typing jumps to the first match.
+fn refresh_find(view: &mut DocView) {
+    let stamp = match &view.state {
+        State::Ready(Content::Pdf) => view.pdf.as_ref().map_or(0, |p| p.text.iter().filter(|t| t.is_some()).count() as u64),
+        State::Ready(Content::Text(_) | Content::Slides(_)) => view.layout.as_ref().map_or(u64::MAX, |l| l.items.len() as u64),
+        _ => 0,
+    };
+    let Some(f) = view.find.as_mut() else { return };
+    let query = f.query.trim().to_lowercase();
+    let key = (query.clone(), stamp);
+    if f.key.as_ref() == Some(&key) {
+        return;
+    }
+    let new_query = f.key.as_ref().is_none_or(|(q, _)| *q != query);
+    f.key = Some(key);
+    f.searching = false;
+    let mut found = Vec::new();
+    if !query.is_empty() {
+        match &view.state {
+            State::Ready(Content::Pdf) => {
+                if let Some(pdf) = &view.pdf {
+                    f.searching = pdf.text.iter().any(Option::is_none);
+                    'pages: for (page, text) in pdf.text.iter().enumerate() {
+                        for rects in text.as_ref().map(|t| t.find(&query)).unwrap_or_default() {
+                            found.push(DocMatch::Pdf { page, rects });
+                            if found.len() >= MAX_DOC_MATCHES {
+                                break 'pages;
+                            }
+                        }
+                    }
+                }
+            }
+            State::Ready(Content::Text(_) | Content::Slides(_)) => {
+                if let Some(layout) = &view.layout {
+                    let q: Vec<char> = query.chars().collect();
+                    for (item, it) in layout.items.iter().enumerate() {
+                        let Item::Text { galley, .. } = it else { continue };
+                        let text: Vec<char> = galley.text().chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
+                        let mut i = 0;
+                        while i + q.len() <= text.len() && found.len() < MAX_DOC_MATCHES {
+                            if text[i..i + q.len()] == q[..] {
+                                found.push(DocMatch::Text { item, start: i, end: i + q.len() });
+                                i += q.len();
+                            } else {
+                                i += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            State::Ready(Content::Sheet(book)) => {
+                'sheets: for (sheet, s) in book.sheets.iter().enumerate() {
+                    for row in 0..s.rows {
+                        for col in 0..s.cols {
+                            if s.cell(row, col).text().to_lowercase().contains(&query) {
+                                found.push(DocMatch::Cell { sheet, row, col });
+                                if found.len() >= MAX_DOC_MATCHES {
+                                    break 'sheets;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let had = f.matches.len();
+    f.matches = found;
+    if new_query || had == 0 {
+        f.current = None;
+        if !f.matches.is_empty() {
+            f.step(true);
+        }
+    } else if let Some(c) = f.current {
+        f.current = Some(c.min(f.matches.len().saturating_sub(1)));
+    }
+}
+
+/// A sheet's search moves the selected cell to the current match (and its sheet).
+fn follow_sheet_match(view: &mut DocView) {
+    let Some(f) = view.find.as_mut() else { return };
+    if f.jump
+        && let Some(DocMatch::Cell { sheet, row, col }) = f.current.and_then(|c| f.matches.get(c)).cloned()
+    {
+        f.jump = false;
+        view.sheet = sheet;
+        view.cell = Some((row, col));
+        view.scroll_to_cell = true;
+    }
+}
+
+/// The boxes of chars `start..end` of a laid-out text, one per row, relative to its origin.
+fn char_boxes(galley: &Galley, start: usize, end: usize) -> Vec<Rect> {
+    let mut out: Vec<Rect> = Vec::new();
+    for i in start..end {
+        let a = galley.pos_from_cursor(egui::text::CCursor::new(i));
+        let b = galley.pos_from_cursor(egui::text::CCursor::new(i + 1));
+        // The next char may start the next row: this one then ends at its row's end.
+        let r = if (b.min.y - a.min.y).abs() < 0.5 {
+            Rect::from_min_max(a.min, pos2(b.min.x, a.max.y))
+        } else {
+            Rect::from_min_max(a.min, pos2(a.min.x + a.height() * 0.5, a.max.y))
+        };
+        match out.last_mut() {
+            Some(l) if (l.min.y - r.min.y).abs() < 0.5 => *l = l.union(r),
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
+/// Highlight colours: every match, and the current one (marker yellow and orange, readable
+/// on white pages and on both themes).
+fn match_colors() -> (Color32, Color32) {
+    (Color32::from_rgba_unmultiplied(255, 200, 40, 80), Color32::from_rgba_unmultiplied(255, 130, 0, 150))
+}
+
 // ----- PDF -----------------------------------------------------------------------------------
 
 /// A render scale rounded to quarter steps of a doubling, so small zoom or size changes keep
@@ -242,6 +451,36 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
     {
         area = area.vertical_scroll_offset(top - margin);
     }
+    // The search's current match, a third down the view.
+    let find_jump = view.find.as_mut().filter(|f| f.jump).and_then(|f| {
+        f.jump = false;
+        match f.matches.get(f.current?)? {
+            DocMatch::Pdf { page, rects } => Some((*page, rects.first()?[1])),
+            _ => None,
+        }
+    });
+    if let Some((page, y)) = find_jump
+        && let Some(top) = tops.get(page)
+    {
+        area = area.vertical_scroll_offset((top + y * k - rect.height() / 3.0).max(0.0));
+    }
+    let (all, current) = match_colors();
+    let current_match = view.find.as_ref().and_then(|f| f.current);
+    let page_matches: Vec<(usize, Vec<[f32; 4]>, bool)> = view
+        .find
+        .as_ref()
+        .map(|f| {
+            f.matches
+                .iter()
+                .enumerate()
+                .filter_map(|(i, m)| match m {
+                    DocMatch::Pdf { page, rects } => Some((*page, rects.clone(), Some(i) == current_match)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(pdf) = view.pdf.as_mut() else { return };
     let ppp = ui.ctx().pixels_per_point();
     let scale = quantize(k * ppp);
     let pages = pdf.pages.clone();
@@ -275,6 +514,12 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
                 }
                 None => {
                     painter.text(page.center(), Align2::CENTER_CENTER, tf("Page {}", &[&(i + 1).to_string()]), egui::FontId::proportional(style::SMALL), p.text_faint);
+                }
+            }
+            for (_, rects, is_current) in page_matches.iter().filter(|(pg, _, _)| *pg == i) {
+                for r in rects {
+                    let hr = Rect::from_min_max(page.min + vec2(r[0] * k, r[1] * k), page.min + vec2(r[2] * k, r[3] * k)).expand(1.0);
+                    painter.rect_filled(hr, CornerRadius::same(2), if *is_current { current } else { all });
                 }
             }
         }
@@ -597,21 +842,49 @@ fn rich_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
     let ctx = ui.ctx().clone();
     let mut wanted = Vec::new();
     let mut shown = HashSet::new();
-    egui::ScrollArea::vertical()
-        .id_salt(("doc", view.path.clone()))
-        .auto_shrink([false, false])
-        .show_viewport(ui, |ui, vp| {
+    let (all, current) = match_colors();
+    let cur = view.find.as_ref().and_then(|f| f.current);
+    let text_matches: Vec<(usize, usize, usize, bool)> = view
+        .find
+        .as_ref()
+        .map(|f| {
+            f.matches
+                .iter()
+                .enumerate()
+                .filter_map(|(i, m)| match m {
+                    DocMatch::Text { item, start, end } => Some((*item, *start, *end, Some(i) == cur)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut area = egui::ScrollArea::vertical().id_salt(("doc", view.path.clone())).auto_shrink([false, false]);
+    // The search's current match, a third down the view.
+    if let Some(f) = view.find.as_mut().filter(|f| f.jump)
+        && let Some(DocMatch::Text { item, start, .. }) = f.current.and_then(|c| f.matches.get(c)).cloned()
+        && let Some(Item::Text { rect: ir, galley }) = view.layout.as_ref().and_then(|l| l.items.get(item))
+    {
+        f.jump = false;
+        let y = ir.min.y + galley.pos_from_cursor(egui::text::CCursor::new(start)).min.y;
+        area = area.vertical_scroll_offset((y - rect.height() / 3.0).max(0.0));
+    }
+    area.show_viewport(ui, |ui, vp| {
             let Some(layout) = view.layout.as_ref() else { return };
             let (r, _) = ui.allocate_exact_size(vec2(rect.width(), layout.height), Sense::hover());
             let o = r.min.to_vec2();
             let painter = ui.painter();
-            for item in &layout.items {
+            for (ix, item) in layout.items.iter().enumerate() {
                 let ir = item.rect();
                 if ir.max.y < vp.min.y || ir.min.y > vp.max.y {
                     continue;
                 }
                 match item {
                     Item::Text { rect, galley } => {
+                        for (_, start, end, is_current) in text_matches.iter().filter(|m| m.0 == ix) {
+                            for b in char_boxes(galley, *start, *end) {
+                                painter.rect_filled(b.translate(rect.min.to_vec2() + o).expand(1.0), CornerRadius::same(2), if *is_current { current } else { all });
+                            }
+                        }
                         painter.galley(rect.min + o, galley.clone(), p.text);
                     }
                     Item::Fill { rect, color, radius, stroke } => {
@@ -720,11 +993,30 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
             let col0 = xs.partition_point(|x| *x <= vp.min.x - rn_w).saturating_sub(1);
             let col1 = xs.partition_point(|x| *x < vp.max.x - rn_w).min(widths.len());
             let grid = Stroke::new(1.0, style::soft(p.border, 0.9));
+            let (all, current) = match_colors();
+            let cur = view.find.as_ref().and_then(|f| f.current);
+            let hits: std::collections::HashMap<(usize, usize), bool> = view
+                .find
+                .as_ref()
+                .map(|f| {
+                    f.matches
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, m)| match m {
+                            DocMatch::Cell { sheet, row, col } if *sheet == view.sheet => Some(((*row, *col), Some(i) == cur)),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             for row in row0..row1 {
                 let y = o.y + head_h + row as f32 * row_h;
                 painter.hline(o.x + rn_w + xs[col0]..=o.x + rn_w + xs[col1], y + row_h - 0.5, grid);
                 for col in col0..col1 {
                     let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[col], y), vec2(widths[col], row_h));
+                    if let Some(is_current) = hits.get(&(row, col)) {
+                        painter.rect_filled(cr.shrink(1.0), CornerRadius::ZERO, if *is_current { current } else { all });
+                    }
                     let cell = sheet.cell(row, col);
                     let text = cell.text();
                     if text.is_empty() {

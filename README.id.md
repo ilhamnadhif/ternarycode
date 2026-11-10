@@ -44,13 +44,14 @@ sekitar 0,2 detik, CPU 0 % saat diam, dan sepuluh pane terbuka memakai sekitar 7
 - **Lompat ke yang butuh Anda.** `⌘J` membuka agent paling mendesak yang menunggu, `⇧⌘J`
   kembali. Status bar menyebut namanya, Dock menampilkan badge, dan notifikasi muncul saat jendela
   di latar belakang. Fokus keyboard tidak pernah pindah sendiri.
-- **Grid** menampilkan semua project secara live, berdampingan, tanpa me-resize satu terminal pun:
-  UI agent layar penuh tidak menggambar ulang saat Anda berganti tampilan. **Aktif** hanya
-  menampilkan project yang sedang menjalankan sesuatu atau menunggu.
+- **Grid** menampilkan semua project secara live, berdampingan, dengan terminal yang memenuhi
+  kartunya. **Aktif** hanya menampilkan project yang sedang menjalankan sesuatu atau menunggu.
 - **Editor di samping terminal**, dengan language server yang sudah Anda punya (rust-analyzer,
   gopls, typescript-language-server, Dart, pyright, clangd…): ⌘-klik ke definisi, referensi,
   rename lintas file, code action, autocomplete, hover, dan daftar problem.
-- **Dokumen langsung terbuka**: PDF, Word, PowerPoint, Excel, CSV, dan gambar, hanya-baca dan cepat.
+- **Dokumen langsung terbuka**: PDF, Word, PowerPoint, Excel, CSV, dan gambar, hanya-baca dan cepat,
+  dan bisa dicari dengan `⌘F`.
+- **`ternarycode nama-project`** di terminal mana pun membuka project (atau folder) itu di jendela.
 - **Review** apa yang diubah agent sejak ia mulai, atau sejak commit terakhir.
 - **Memperbarui dirinya sendiri** dari rilis GitHub, cukup satu klik.
 
@@ -89,7 +90,8 @@ Bisa juga unduh `.dmg`, buka, lalu seret **TernaryCode** ke **Applications**.
 Jalankan **`TernaryCode-<versi>-windows-x64-setup.exe`**. Setup memasang untuk user Anda tanpa hak
 administrator (pilih **Install for all users** di jendela pertamanya untuk memasang ke Program
 Files), menambahkan TernaryCode ke Start menu, dan bisa menaruh `ternarycode` di PATH sehingga
-`ternarycode .` membuka folder saat ini sebagai project. Atau ekstrak **`.zip`** portabel di mana saja.
+`ternarycode .` membuka folder saat ini sebagai project (nyala secara default). Atau ekstrak **`.zip`**
+portabel di mana saja.
 
 Pane menjalankan PowerShell 7 (`pwsh`) kalau terpasang, kalau tidak Windows PowerShell, dengan
 shell integration yang dimuat tanpa mengubah profil atau execution policy Anda. Agent berjalan
@@ -111,6 +113,21 @@ sudo dnf install ./TernaryCode-<versi>-linux-x86_64.rpm                # Fedora,
 chmod +x TernaryCode-<versi>-linux-x86_64.AppImage && ./TernaryCode-<versi>-linux-x86_64.AppImage
 tar -xzf TernaryCode-<versi>-linux-x86_64.tar.gz -C ~/.local --strip-components=1   # lalu: ternarycode
 ```
+
+### Membuka project dari terminal
+
+```sh
+ternarycode .              # folder ini, sebagai project
+ternarycode ~/code/toko    # folder mana pun
+ternarycode toko           # project bernama "toko" (atau folder "toko" di samping project Anda)
+```
+
+Project terbuka di jendela yang sedang berjalan (TernaryCode dijalankan kalau belum, terpisah dari
+terminal, jadi menutup terminal tidak ikut menutup app). Perintah ini berfungsi di setiap pane
+TernaryCode; untuk terminal lain, TernaryCode menaruhnya di `PATH` Anda saat dibuka di macOS
+(`bin` Homebrew, `/usr/local/bin`, atau `~/.local/bin`, mana yang bisa Anda tulis; kalau tidak,
+**Settings → General → Command line**), paket Linux memasangnya, dan setup Windows menambahkannya ke
+`PATH`.
 
 ### Pembaruan
 
@@ -188,6 +205,10 @@ dan **PowerPoint** (`.pptx`) sebagai teks rapi dengan heading, list, tabel, dan 
 serta **gambar**. Semuanya dibaca dengan Rust murni di luar thread UI; hanya yang tampil di layar
 yang disimpan di memori.
 
+`⌘F` (`Ctrl+Shift+F`) setelah mengklik dokumen akan mencarinya: kata di halaman PDF disorot tepat di
+tempatnya, teks Word dan PowerPoint disorot di tempat, dan di spreadsheet pilihan sel berpindah ke
+sel yang cocok, lintas sheet. `Enter` dan `⇧Enter` pindah ke hasil berikutnya dan sebelumnya.
+
 ### Review
 
 `⇧⌘R` menampilkan apa yang berubah: sejak agent di pane ini mulai (snapshot diambil di luar index
@@ -210,7 +231,7 @@ sejenisnya tetap sampai ke terminal. Command palette (`⌘K` / `Ctrl+Shift+K`) m
 | `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | split kanan · split bawah |
 | `⌘O` · `⌘E` · `⌘S` | `Ctrl+Shift+O` · `Ctrl+Shift+Y` · `Ctrl+Shift+S` | buka file · tampilkan editor · simpan |
 | `⇧⌘R` | `Ctrl+Shift+R` | review perubahan |
-| `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | cari di pane · di semua pane |
+| `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | cari di pane, file, atau dokumen · di semua pane |
 | `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` | sidebar · project 1–9 |
 | `F12` · `⇧F12` · `F2` · `⌘.` | sama | definisi · referensi · rename · code action |
 

@@ -603,6 +603,39 @@ impl App {
                 let n: u32 = self.panes.values().map(|p| p.resizes).sum();
                 eprintln!("DEVTEST RESIZES {arg}: {n}");
             }
+            // `expect-fill 3`: pane 3's terminal has the size of where it is drawn (its Grid tile,
+            // or its place in the Focus view).
+            "expect-fill" => {
+                let id: u64 = arg.trim().parse().unwrap_or(0);
+                let want = if self.view == tc_core::model::View::Grid {
+                    let cell = tc_term::widget::cell_size(&self.ctx, self.settings.font_size);
+                    devtest::rect_of(&format!("tile-pane:{id}")).map(|r| tc_term::widget::grid_for(r, cell))
+                } else {
+                    self.panes.get(&id).and_then(|p| p.view.grid)
+                };
+                let got = self.panes.get(&id).map(|p| {
+                    use tc_term::alacritty_terminal::grid::Dimensions;
+                    let term = p.shared.term.lock();
+                    tc_term::core::GridSize { cols: term.columns(), rows: term.screen_lines() }
+                });
+                self.devtest.check(want.is_some() && got == want, &format!("expect-fill {id}: terminal {got:?}, place {want:?}"));
+            }
+            // `dump-pane 3`: pane 3's screen, size, cursor and prompt marks, in the log.
+            "dump-pane" => {
+                if let Some(p) = arg.trim().parse::<u64>().ok().and_then(|id| self.panes.get(&id)) {
+                    let text = screen_text(&p.shared);
+                    let (cols, rows, cursor, history) = {
+                        use tc_term::alacritty_terminal::grid::Dimensions;
+                        let term = p.shared.term.lock();
+                        (term.columns(), term.screen_lines(), term.grid().cursor.point, term.grid().history_size())
+                    };
+                    let prompt = p.shared.prompt.lock();
+                    eprintln!(
+                        "DEVTEST DUMP pane {arg}: {cols}x{rows} cursor {cursor:?} history {history} at_prompt {} redraw {:?} start {:?} input {:?} resizes {}\n{text}\n---- end",
+                        prompt.at_prompt, prompt.redraw, prompt.start, prompt.input, p.resizes
+                    );
+                }
+            }
             // `expect-resizes 3 0`: how often pane 3's PTY was resized.
             "expect-resizes" => {
                 let (pane, n) = arg.trim().split_once(' ').unwrap_or((arg.trim(), "0"));

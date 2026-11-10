@@ -64,16 +64,11 @@ run lazy-1 50 "sleep 1000;; action add-project $G/g1;; sleep 700;; action add-pr
 mkdir -p "$WORK/data-lazy-2"; cp "$WORK/data-lazy-1/workspace.json" "$WORK/data-lazy-2/" 2>/dev/null
 # The wheel over the tile taking the keyboard scrolls its terminal, not the Grid; over another
 # tile it scrolls the Grid, and the tiles scrolled into view start their shells.
-run lazy-2 40 "sleep 2500;; expect-started 4;; expect-shown tile:g1;; expect-shown tile:g4;; expect-hidden tile:g5;; expect-hidden tile:g6;; shot e2e-grid-2x2;; click tile:g1;; sleep 300;; scroll tile:g1 -1000;; sleep 800;; expect-hidden tile:g5;; scroll tile:g2 -1000;; sleep 1000;; expect-shown tile:g5;; expect-shown tile:g6;; expect-started 6;; expect-typing g1;; shot e2e-grid-scrolled;; sleep 600;; resizes from-grid;; action select 5;; sleep 1200;; resizes in-focus;; quit"
-# Panes restored and shown in the Grid already have their Focus size: opening one resizes nothing.
-if [ -z "$ONLY" ] || [[ lazy-2 == *"$ONLY"* ]]; then
-    b=$(sed -n 's/DEVTEST RESIZES from-grid: //p' "$WORK/lazy-2.log"); a=$(sed -n 's/DEVTEST RESIZES in-focus: //p' "$WORK/lazy-2.log")
-    if [ -n "$b" ] && [ "$b" = "$a" ]; then echo "ok    lazy-2: Grid panes open in Focus without a resize ($b before, $a after)"; PASS=$((PASS+1));
-    else echo "FAIL  lazy-2 resizes: from-grid=$b in-focus=$a"; FAIL=$((FAIL+1)); fi
-fi
+# Each restored terminal fills its tile; opened from the Grid, it takes its Focus size.
+run lazy-2 40 "sleep 2500;; expect-started 4;; expect-shown tile:g1;; expect-shown tile:g4;; expect-hidden tile:g5;; expect-hidden tile:g6;; expect-fill 2;; expect-fill 8;; shot e2e-grid-2x2;; click tile:g1;; sleep 300;; scroll tile:g1 -1000;; sleep 800;; expect-hidden tile:g5;; scroll tile:g2 -1000;; sleep 1000;; expect-shown tile:g5;; expect-shown tile:g6;; expect-started 6;; expect-typing g1;; expect-fill 12;; shot e2e-grid-scrolled;; sleep 600;; action select 5;; sleep 1200;; expect-fill 12;; quit"
 
-# A split closed from the Grid (Ctrl+D in a tile): the pane left takes its full Focus size at
-# once (one resize), and opening the project then resizes nothing more.
+# A split closed from the Grid (Ctrl+D in a tile): the pane left fills the whole tile, and
+# opening the project gives it its Focus size.
 # Documents in the editor: a PDF renders its pages, a CSV and a Word file read into a table and
 # text, a picture shows; a CSV can be edited as text.
 DOCS="$WORK/docs"; mkdir -p "$DOCS"
@@ -81,11 +76,13 @@ printf 'name,qty,code\nalpha,3,007\nbeta,4.5,\n' > "$DOCS/data.csv"
 python3 - "$DOCS" <<'PY'
 import sys, zipfile
 d = sys.argv[1]
+res = "/Resources << /Font << /F1 6 0 R >> >>"
 objs = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R >>"]
-body = b"0 0 1 rg 100 100 200 200 re f"
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R %s >>" % res,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R %s >>" % res]
+body = b"0 0 1 rg 100 100 200 200 re f 0 0 0 rg BT /F1 24 Tf 72 700 Td (Quarterly Report) Tj ET"
 objs.append("<< /Length %d >>\nstream\n%s\nendstream" % (len(body), body.decode()))
+objs.append("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
 out, offs = b"%PDF-1.4\n", []
 for i, o in enumerate(objs):
     offs.append(len(out)); out += ("%d 0 obj\n%s\nendobj\n" % (i + 1, o)).encode()
@@ -105,10 +102,13 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 6, 
 open(d + "/dot.png", "wb").write(png)
 PY
 run docs 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOCS/report.pdf;; wait-doc kind=pdf state=ready pages=2;; wait-doc rendered>0;; shot e2e-doc-pdf;; open-file $DOCS/data.csv;; wait-doc kind=csv state=ready rows=3 cols=3;; open-file $DOCS/notes.docx;; wait-doc kind=word state=ready blocks=2;; open-file $DOCS/dot.png;; wait-doc kind=image pictures=1;; open-file $DOCS/data.csv;; wait-doc rows=3;; quit"
+# ⌘F in a document (after a click in it took the keyboard from the terminal): a PDF's text on
+# both pages, then Enter to the second; a sheet's cell (selected); a Word file's words.
+run doc-find 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOCS/report.pdf;; wait-doc kind=pdf state=ready pages=2;; click doc-body;; sleep 200;; action find;; sleep 300;; keys quarterly;; wait-doc matches=2 current=1;; key enter;; wait-doc current=2;; shot e2e-doc-find-pdf;; key esc;; open-file $DOCS/data.csv;; wait-doc kind=csv state=ready;; click doc-body;; action find;; sleep 300;; keys beta;; wait-doc matches=1 cell=2,0;; key esc;; open-file $DOCS/notes.docx;; wait-doc kind=word state=ready;; click doc-body;; action find;; sleep 300;; keys docs;; wait-doc matches=1 current=1;; shot e2e-doc-find-word;; quit"
 
 # The sidebar keeps the width it is dragged to (it used to shrink back to its narrowest).
 run sidebar-resize 40 "sleep 1000;; action add-project $P1;; sleep 1200;; expect-width sidebar 230 250;; mouse down sidebar@1.0,0.5;; sleep 100;; mouse drag sidebar@1.4,0.5;; sleep 150;; mouse up sidebar@1.0,0.5;; sleep 1500;; expect-width sidebar 320 345;; sleep 1500;; expect-width sidebar 320 345;; quit"
-run grid-fit 50 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 1500;; wait-tabs 0:2,3;; expect-resizes 2 2;; action grid;; sleep 1000;; mouse down tile:alpha@0.75,0.5;; mouse up tile:alpha@0.75,0.5;; sleep 300;; key ctrl+d;; wait-tabs 0:2;; sleep 800;; expect-resizes 2 3;; shot e2e-grid-fit;; action focus;; sleep 1000;; expect-resizes 2 3;; quit"
+run grid-fit 50 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 1500;; wait-tabs 0:2,3;; action grid;; sleep 1000;; expect-fill 2;; expect-fill 3;; mouse down tile:alpha@0.75,0.5;; mouse up tile:alpha@0.75,0.5;; sleep 300;; key ctrl+d;; wait-tabs 0:2;; sleep 800;; expect-fill 2;; shot e2e-grid-fit;; action focus;; sleep 1000;; expect-fill 2;; quit"
 
 # A zsh prompt survives resizes whole (v1.2): split, close the split, open and close the editor;
 # the screen keeps one prompt per command and no piece of an old one (shell integration marks
@@ -136,7 +136,7 @@ LSP=/nonexistent/tc-no-lsp run lsp-missing 40 "sleep 1000;; action add-project $
 # Grid filter (v1.2): "Active" keeps only projects running something or waiting.
 run grid-active 50 "sleep 1000;; action add-project $P1;; sleep 900;; action add-project $P2;; sleep 1200;; keys sleep 30\\r;; wait-status running;; sleep 2500;; action grid;; sleep 800;; expect-shown tile:beta;; expect-shown tile:alpha;; action grid-active;; sleep 600;; expect-shown tile:beta;; expect-hidden tile:alpha;; shot e2e-grid-active;; action grid-all;; sleep 600;; expect-shown tile:alpha;; quit"
 
-run grid 60 "sleep 1000;; action add-project $P1;; sleep 900;; action split-right;; sleep 800;; action add-project $P2;; sleep 900;; action split-down;; sleep 800;; action add-project $R;; sleep 1200;; resizes before;; action grid;; sleep 1200;; shot e2e-grid;; action focus;; sleep 1200;; resizes after;; quit"
+run grid 60 "sleep 1000;; action add-project $P1;; sleep 900;; action split-right;; sleep 800;; keys echo alpha-left\\r;; action add-project $P2;; sleep 900;; action split-down;; sleep 800;; action add-project $R;; sleep 1200;; action grid;; sleep 1200;; expect-fill 2;; expect-fill 3;; expect-fill 5;; expect-fill 6;; expect-fill 8;; shot e2e-grid;; action focus;; sleep 1200;; expect-fill 8;; action select 0;; sleep 1200;; expect-fill 2;; expect-fill 3;; wait-screen alpha-left;; quit"
 
 run editor 60 "sleep 1000;; action add-project $P1;; sleep 1200;; open-file $P1/notes.txt;; sleep 800;; write-file $P1/notes.txt notes v2 by agent\\n;; wait-editor v2 by agent;; open-file $P1/src/main.rs:2;; sleep 800;; click editor-text;; sleep 300;; key cmd+down;; keys // mine\\r;; wait-editor // mine;; write-file $P1/src/main.rs fn main() { agent(); }\\n;; wait-conflict;; expect-not-file $P1/src/main.rs // mine;; action force-save;; sleep 500;; expect-file $P1/src/main.rs // mine;; quit"
 
@@ -172,11 +172,5 @@ run shell-integration 60 "sleep 1000;; action add-project $P1;; sleep 2500;; key
 
 run find 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys seq 1 300\\r;; sleep 800;; action find;; sleep 400;; keys 150;; key enter;; sleep 400;; key esc;; action find-all;; sleep 400;; keys 27;; sleep 800;; key esc;; quit"
 
-# The grid scenario must not resize any PTY.
-if [ -z "$ONLY" ] || [[ grid == *"$ONLY"* ]]; then
-    b=$(sed -n 's/DEVTEST RESIZES before: //p' "$WORK/grid.log"); a=$(sed -n 's/DEVTEST RESIZES after: //p' "$WORK/grid.log")
-    if [ -n "$b" ] && [ "$b" = "$a" ]; then echo "ok    grid: no PTY resize across Grid/Focus ($b before, $a after)"; PASS=$((PASS+1));
-    else echo "FAIL  grid resizes: before=$b after=$a"; FAIL=$((FAIL+1)); fi
-fi
 echo "---- $PASS passed, $FAIL failed (logs: $WORK)"
 [ "$FAIL" -eq 0 ]

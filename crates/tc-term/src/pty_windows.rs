@@ -99,6 +99,8 @@ pub struct LocalPty {
     /// a parent that is gone (Windows reuses ids).
     started: u64,
     console: Mutex<Option<Console>>,
+    /// The size last asked for (applied again once the program has written something).
+    size: Mutex<GridSize>,
     /// Our ends of the pipes (output to read, input to write) until `start` takes them.
     pipes: Mutex<Option<(File, File)>>,
     exit: Mutex<Option<ExitInfo>>,
@@ -375,6 +377,7 @@ impl LocalPty {
             process,
             started,
             console: Mutex::new(Some(console)),
+            size: Mutex::new(opts.size),
             pipes: Mutex::new(Some((File::from(out_read), File::from(in_write)))),
             exit: Mutex::new(None),
         }))
@@ -391,6 +394,14 @@ impl LocalPty {
 
     /// Tells the pseudoconsole the new size (the program sees a window-size event).
     pub fn resize(&self, size: GridSize, _cell_w: u16, _cell_h: u16) {
+        *self.size.lock() = size;
+        self.apply_size();
+    }
+
+    /// Gives the pseudoconsole the size last asked for. A resize made while it is still
+    /// starting can be missed, so this runs again when the first output arrives.
+    fn apply_size(&self) {
+        let size = *self.size.lock();
         if let Some(console) = self.console.lock().as_ref() {
             // SAFETY: an open pseudoconsole; a failure is harmless.
             unsafe { ResizePseudoConsole(console.0, coord(size)) };
@@ -612,14 +623,22 @@ pub fn start(
     // Reader: blocking reads, handed to the session task. Once that is gone it keeps reading
     // (and drops what it reads) until the end, so closing the pseudoconsole never waits on it.
     let (chunk_tx, mut chunks) = mpsc::channel::<Vec<u8>>(4);
+    // Weak: the thread must not keep the PTY (and so the pseudoconsole it waits on) alive.
+    let settle = Arc::downgrade(&pty);
     std::thread::Builder::new()
         .name("ternarycode-pty-out".into())
         .spawn(move || {
             let mut buf = vec![0u8; READ_BUF];
+            let mut first = true;
             loop {
                 match output.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        if std::mem::take(&mut first)
+                            && let Some(pty) = settle.upgrade()
+                        {
+                            pty.apply_size();
+                        }
                         let _ = chunk_tx.blocking_send(buf[..n].to_vec());
                     }
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}

@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod cli;
 #[cfg(debug_assertions)]
 pub mod devtest;
 #[cfg(debug_assertions)]

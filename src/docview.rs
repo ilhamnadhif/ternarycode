@@ -47,6 +47,54 @@ pub struct Pdf {
     pub page: usize,
     /// Scroll to this page on the next frame.
     pub jump: Option<usize>,
+    /// Each page's text, once a search asked for it.
+    pub text: Vec<Option<tc_doc::pdf::PageText>>,
+    text_asked: bool,
+}
+
+/// ⌘F in a document: what is searched for and where it was found.
+#[derive(Default)]
+pub struct DocFind {
+    pub query: String,
+    /// Put the keyboard in the field on the next frame.
+    pub focus: bool,
+    pub matches: Vec<DocMatch>,
+    pub current: Option<usize>,
+    /// The query and the state of the document the matches are for.
+    pub key: Option<(String, u64)>,
+    /// Bring the current match into view on the next frame.
+    pub jump: bool,
+    /// A PDF's text is still being read: more matches may come.
+    pub searching: bool,
+}
+
+/// Matches stop being counted here.
+pub const MAX_DOC_MATCHES: usize = 5000;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DocMatch {
+    /// In a Word or PowerPoint file: chars `start..end` of laid-out text `item`.
+    Text { item: usize, start: usize, end: usize },
+    Cell { sheet: usize, row: usize, col: usize },
+    /// On a PDF page: one box per line, in points from the page's top left.
+    Pdf { page: usize, rects: Vec<[f32; 4]> },
+}
+
+impl DocFind {
+    /// Moves to the next (or previous) match, wrapping around.
+    pub fn step(&mut self, forward: bool) {
+        let n = self.matches.len();
+        if n == 0 {
+            self.current = None;
+            return;
+        }
+        self.current = Some(match self.current {
+            None => 0,
+            Some(c) if forward => (c + 1) % n,
+            Some(c) => (c + n - 1) % n,
+        });
+        self.jump = true;
+    }
 }
 
 pub struct DocView {
@@ -71,6 +119,8 @@ pub struct DocView {
     /// The sheet's scroll offset, and whether to bring the selected cell into view.
     pub sheet_scroll: egui::Vec2,
     pub scroll_to_cell: bool,
+    /// ⌘F: searching the document.
+    pub find: Option<DocFind>,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
 }
@@ -95,6 +145,7 @@ impl DocView {
             reload: false,
             sheet_scroll: egui::Vec2::ZERO,
             scroll_to_cell: false,
+            find: None,
             tx,
             rx,
         };
@@ -121,6 +172,8 @@ impl DocView {
                     asked: HashMap::new(),
                     page,
                     jump: (page > 0).then_some(page),
+                    text: Vec::new(),
+                    text_asked: false,
                 });
                 self.zoom = zoom;
                 self.state = State::Loading;
@@ -176,8 +229,19 @@ impl DocView {
                 match e {
                     tc_doc::pdf::Event::Opened { pages } => {
                         pdf.page = pdf.page.min(pages.len().saturating_sub(1));
+                        pdf.text = vec![None; pages.len()];
                         pdf.pages = pages;
                         self.state = State::Ready(Content::Pdf);
+                        // A search was open before the file was read again.
+                        if self.find.is_some() {
+                            pdf.text_asked = true;
+                            pdf.renderer.request_text();
+                        }
+                    }
+                    tc_doc::pdf::Event::Text { index, text } => {
+                        if let Some(slot) = pdf.text.get_mut(index) {
+                            *slot = Some(text);
+                        }
                     }
                     tc_doc::pdf::Event::Page { index, scale, image } => {
                         // Still wanted at that scale (the view may have moved on).
@@ -193,6 +257,18 @@ impl DocView {
         if let Some(img) = self.image.take() {
             let tex = texture(ctx, "doc-image", &img);
             self.pictures.insert(0, Pic::Ready(tex));
+        }
+    }
+
+    /// Opens the search (⌘F), or puts the keyboard back in it. A PDF's text is read from now on.
+    pub fn open_find(&mut self) {
+        self.find.get_or_insert_with(Default::default).focus = true;
+        if let Some(pdf) = self.pdf.as_mut()
+            && !pdf.text_asked
+            && !pdf.pages.is_empty()
+        {
+            pdf.text_asked = true;
+            pdf.renderer.request_text();
         }
     }
 
@@ -282,6 +358,13 @@ impl DocView {
             _ => {}
         }
         out.push(format!("pictures={}", self.pictures.values().filter(|p| matches!(p, Pic::Ready(_))).count()));
+        if let Some(f) = &self.find {
+            out.push(format!("matches={}", f.matches.len()));
+            out.push(format!("current={}", f.current.map_or(0, |c| c + 1)));
+        }
+        if let Some((r, c)) = self.cell {
+            out.push(format!("cell={r},{c}"));
+        }
         out.join(" ")
     }
 

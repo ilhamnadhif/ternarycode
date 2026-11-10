@@ -213,14 +213,14 @@ pub fn user_path() -> OsString {
 
 /// Windows: programs see the user's PATH already (it is in the registry, not a shell's files).
 #[cfg(windows)]
-fn login_shell_path() -> Option<OsString> {
+pub fn login_shell_path() -> Option<OsString> {
     None
 }
 
 /// `PATH` printed by the user's interactive login shell (it reads their startup files), between
 /// markers so whatever those print around it is ignored.
 #[cfg(unix)]
-fn login_shell_path() -> Option<OsString> {
+pub fn login_shell_path() -> Option<OsString> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     let mut child = Command::new(shell)
         .args(["-ilc", "printf '\\n__TC_PATH__%s__TC_END__\\n' \"$PATH\""])

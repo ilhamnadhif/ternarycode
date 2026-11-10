@@ -719,7 +719,12 @@ fn show_inner(
     // Pixel sizes go out in physical pixels everywhere (pty request, window-change, CSI 14 t),
     // and are re-sent when only the font changes.
     let cell_px = ((cell.x * ppp).round() as u32, (cell.y * ppp).round() as u32);
-    if fixed.is_none() && (view.grid != Some(size) || view.cell_px != Some(cell_px)) {
+    // Also when the terminal was resized elsewhere (the Grid sizes it to its tile).
+    let actual = fixed.is_none().then(|| {
+        let term = shared.term.lock();
+        GridSize { cols: term.columns(), rows: term.screen_lines() }
+    });
+    if fixed.is_none() && (view.grid != Some(size) || view.cell_px != Some(cell_px) || actual != Some(size)) {
         view.grid = Some(size);
         view.cell_px = Some(cell_px);
         tcore::resize(shared, size, cell_px.0 as f32, cell_px.1 as f32);

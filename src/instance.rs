@@ -50,6 +50,23 @@ fn socket_path() -> PathBuf {
     std::env::temp_dir().join(format!("ternarycode-{hash:016x}.sock"))
 }
 
+/// Whether TernaryCode already runs for this user (its lock is held).
+pub fn is_running() -> bool {
+    let _ = paths::ensure_private_dir(paths::data_dir());
+    let Ok(lock) = OpenOptions::new().create(true).write(true).truncate(false).open(lock_path()) else {
+        return false;
+    };
+    match lock.try_lock() {
+        // Free: let go of it at once (the app about to start takes it).
+        Ok(()) => {
+            let _ = lock.unlock();
+            false
+        }
+        Err(TryLockError::WouldBlock) => true,
+        Err(_) => false,
+    }
+}
+
 /// Becomes the primary instance, or forwards `args` to the running one.
 pub fn acquire(args: &[String]) -> Instance {
     let _ = paths::ensure_private_dir(paths::data_dir());
@@ -239,6 +256,8 @@ where
                     return;
                 }
                 if let Some(ctx) = &*ctx.lock() {
+                    // Back from the Dock or the taskbar when it was put away.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     ctx.request_repaint();
                 }
@@ -267,8 +286,9 @@ impl StreamTimeout for std::net::TcpStream {
     }
 }
 
-/// The project folders among the process arguments (made absolute, since the running instance
-/// has another working directory). `open` and options are skipped, including the value of
+/// What the process arguments ask to open: folders (made absolute, since the running instance
+/// has another working directory) and project names (`ternarycode my-app`: a word that is not
+/// a path here is passed on as it is). `open` and options are skipped, including the value of
 /// macOS's `-NS…` / `-Apple…` options and the `-psn_…` serial number Finder used to pass.
 pub fn targets(args: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut out = Vec::new();
@@ -279,7 +299,12 @@ pub fn targets(args: impl IntoIterator<Item = String>) -> Vec<String> {
         } else if arg == "open" {
             continue;
         } else if !arg.starts_with('-') && !arg.trim().is_empty() {
-            out.push(crate::app::absolute(&arg).to_string_lossy().into_owned());
+            let word = !arg.contains(['/', '\\']) && !arg.starts_with('~') && arg != "." && arg != "..";
+            if word && !std::path::Path::new(&arg).exists() {
+                out.push(arg.trim().to_string());
+            } else {
+                out.push(crate::app::absolute(&arg).to_string_lossy().into_owned());
+            }
         }
     }
     out
@@ -295,5 +320,9 @@ mod tests {
         let got = targets(args.iter().map(|s| s.to_string()));
         assert_eq!(got.len(), 1);
         assert!(std::path::Path::new(&got[0]).is_absolute());
+        // A word that is no path here names a project.
+        let got = targets(["no-such-folder-here-xyz".to_string(), ".".to_string()]);
+        assert_eq!(got[0], "no-such-folder-here-xyz");
+        assert!(std::path::Path::new(&got[1]).is_absolute());
     }
 }

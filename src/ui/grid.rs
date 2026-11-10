@@ -1,9 +1,11 @@
 //! Grid (FR-V2–V5, V7): every project's terminal at once, two columns
 //! and two rows to a screen, scrolling for more ("Active" keeps only projects where something
-//! runs or waits). Each tile shows the project's most relevant pane at its real grid size, scaled
-//! down: the PTY is never resized, so agents' full-screen interfaces don't redraw when the view
-//! changes. A tile is drawn only when it is in view, and a sleeping pane's shell starts when its
-//! tile is first drawn (as opening the project would).
+//! runs or waits). Each tile shows the project's most relevant tab with its terminals sized to
+//! the tile, so they fill it (user decision, 10 November 2026: a terminal kept at its Focus size
+//! and scaled left empty space or cut columns). Going back to Focus gives them their Focus size
+//! again; an agent redraws once per switch, as in any terminal that is resized. A tile is drawn
+//! only when it is in view, and a sleeping pane's shell starts when its tile is first drawn (as
+//! opening the project would), at the tile's size.
 
 use std::time::{Duration, Instant};
 
@@ -220,8 +222,6 @@ impl App {
     /// else only the one taking the keyboard gets it.
     fn tile(&mut self, ui: &mut Ui, project_id: ProjectId, rect: Rect, wheel_free: bool) {
         let p = style::pal(ui);
-        // Its panes at their Focus size (as the project would open now).
-        self.fit_to_focus(&ui.ctx().clone(), project_id, true);
         let Some(project) = self.project(project_id) else {
             return;
         };
@@ -424,6 +424,14 @@ impl App {
             Some(l) => l.arrange(body),
             None => (vec![(pane_id, body)], Vec::new()),
         };
+        // The terminals take the tile's size (before they are drawn, so a sleeping shell starts
+        // at it).
+        let sizes = rects.iter().map(|(id, r)| (*id, widget::grid_for(*r, cell))).collect();
+        self.resize_panes(&ui.ctx().clone(), sizes);
+        #[cfg(debug_assertions)]
+        for (id, r) in &rects {
+            crate::devtest::record(format!("tile-pane:{id}"), *r);
+        }
         for d in &dividers {
             painter.rect_filled(d.rect, CornerRadius::ZERO, p.border.gamma_multiply(0.8));
         }
@@ -434,8 +442,8 @@ impl App {
         ui.painter_at(rect.expand(2.0)).rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
     }
 
-    /// One pane inside a tile: drawn at its real grid size (never resized), not smaller than
-    /// `min_scale`, typing goes to it once clicked. A sleeping pane starts its shell now, at the
+    /// One pane inside a tile, sized to it (`tile`), typing goes to it once clicked; drawn
+    /// scaled down only when the font is so large that the terminal is at its smallest grid. A sleeping pane starts its shell now, at the
     /// size its grid already has. `wheel`: the mouse wheel scrolls it (else the Grid).
     #[allow(clippy::too_many_arguments)]
     fn grid_pane(

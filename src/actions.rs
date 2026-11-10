@@ -10,6 +10,8 @@ use tc_core::{PaneId, ProjectId};
 pub enum Action {
     AddProject,
     AddProjectPath(PathBuf),
+    /// `ternarycode <target>` from a terminal: a folder (absolute) or a project's name.
+    OpenTarget(String),
     SelectProject(ProjectId),
     SelectProjectIndex(usize),
     RemoveProject(ProjectId),

@@ -18,6 +18,8 @@ use eframe::egui::{self, Rect};
 pub struct Script {
     steps: VecDeque<String>,
     wait_until: Option<Instant>,
+    /// The window was brought to the front for the script.
+    raised: bool,
     pub passed: usize,
     pub failed: usize,
 }
@@ -42,6 +44,11 @@ impl Script {
     pub fn next(&mut self, ctx: &egui::Context) -> Option<String> {
         if self.steps.is_empty() {
             return None;
+        }
+        // Once, before the first step: the script's keys and clicks go to this window, and a
+        // window behind another app's is not drawn.
+        if !std::mem::replace(&mut self.raised, true) {
+            bring_to_front();
         }
         // A `sleep` step wakes the app when it ends (not every 30 ms: that would make CPU
         // measurements of the app measure the script); other steps poll.
@@ -147,7 +154,7 @@ pub fn shown(name: &str) -> bool {
 // were skipped; the rest of the script (actions, checks) runs everywhere.
 
 #[cfg(target_os = "macos")]
-pub use native::{click, key, mouse, type_text};
+pub use native::{bring_to_front, click, key, mouse, type_text};
 
 #[cfg(target_os = "macos")]
 mod native {
@@ -156,6 +163,18 @@ mod native {
     use objc2::rc::Retained;
     use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
     use objc2_foundation::{NSPoint, NSString};
+
+    /// Makes the app active and its window the key window, in front.
+    pub fn bring_to_front() {
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        let app = NSApplication::sharedApplication(mtm);
+        #[allow(deprecated)]
+        app.activateIgnoringOtherApps(true);
+        if let Some(w) = window() {
+            w.makeKeyAndOrderFront(None);
+            w.orderFrontRegardless();
+        }
+    }
 
     fn window() -> Option<Retained<NSWindow>> {
         let mtm = MainThreadMarker::new()?;
@@ -374,6 +393,9 @@ mod native {
 fn skipped(step: &str) {
     eprintln!("DEVTEST LOG: {step}: input injection is macOS-only, skipped");
 }
+
+#[cfg(not(target_os = "macos"))]
+pub fn bring_to_front() {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn type_text(_text: &str) {

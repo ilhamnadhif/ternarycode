@@ -43,13 +43,14 @@ It is one small native binary (no Electron, no webview, no Node.js): the window 
 - **Jump to what needs you.** `⌘J` goes to the most urgent waiting agent and `⇧⌘J` back. The
   status bar names it, the Dock shows a badge, and a notification arrives when the window is in
   the background. Keyboard focus never moves by itself.
-- **The Grid** shows every project live, side by side, without resizing a single terminal:
-  full-screen agent UIs never redraw when you switch views. **Active** keeps only the projects
-  where something runs or waits.
+- **The Grid** shows every project live, side by side, each terminal filling its tile. **Active**
+  keeps only the projects where something runs or waits.
 - **An editor beside the terminal**, with language servers you already have (rust-analyzer, gopls,
   typescript-language-server, Dart, pyright, clangd…): ⌘-click to a definition, references,
   rename across files, code actions, completion, hover and problems.
-- **Documents open right there**: PDF, Word, PowerPoint, Excel, CSV and images, read-only and fast.
+- **Documents open right there**: PDF, Word, PowerPoint, Excel, CSV and images, read-only and fast,
+  and `⌘F` searches them.
+- **`ternarycode my-app`** in any terminal opens that project (or folder) in the window.
 - **Review** what an agent changed since it started, or since your last commit.
 - **Updates itself** from GitHub releases, with one click.
 
@@ -88,7 +89,7 @@ Or download the `.dmg`, open it and drag **TernaryCode** onto **Applications**.
 Run **`TernaryCode-<version>-windows-x64-setup.exe`**. It installs for your user without
 administrator rights (choose **Install for all users** in its first window to use Program Files),
 adds TernaryCode to the Start menu, and can put `ternarycode` on the PATH so `ternarycode .` opens
-the current folder as a project. Or unpack the portable **`.zip`** anywhere.
+the current folder as a project (on by default). Or unpack the portable **`.zip`** anywhere.
 
 Panes run PowerShell 7 (`pwsh`) when it is installed, otherwise Windows PowerShell, with shell
 integration loaded without touching your profile or execution policy. Agents run as they do in any
@@ -110,6 +111,20 @@ sudo dnf install ./TernaryCode-<version>-linux-x86_64.rpm              # Fedora,
 chmod +x TernaryCode-<version>-linux-x86_64.AppImage && ./TernaryCode-<version>-linux-x86_64.AppImage
 tar -xzf TernaryCode-<version>-linux-x86_64.tar.gz -C ~/.local --strip-components=1   # then: ternarycode
 ```
+
+### Open projects from a terminal
+
+```sh
+ternarycode .              # this folder, as a project
+ternarycode ~/code/shop    # any folder
+ternarycode shop           # the project named "shop" (or the folder "shop" beside your projects)
+```
+
+The project opens in the running window (TernaryCode starts if it isn't running, apart from the
+terminal, so closing the terminal doesn't close it). The command works in every TernaryCode pane;
+for other terminals, TernaryCode puts it on your `PATH` at launch on macOS (Homebrew's `bin`,
+`/usr/local/bin` or `~/.local/bin`, whichever you can write; otherwise **Settings → General →
+Command line**), the Linux packages install it, and the Windows setup adds it to `PATH`.
 
 ### Updates
 
@@ -186,6 +201,11 @@ Click a file in the tree and it opens in place: **PDF** pages rendered at your z
 view, and **images**. Everything is read in pure Rust, off the UI thread; only what is on screen is
 kept in memory.
 
+`⌘F` (`Ctrl+Shift+F`) after clicking in a document searches it: words on PDF pages are highlighted
+where they are printed, Word and PowerPoint text is highlighted in place, and in a spreadsheet the
+selection moves from cell to matching cell, across sheets. `Enter` and `⇧Enter` go to the next and
+previous match.
+
 ### Review
 
 `⇧⌘R` shows what changed: since the agent in this pane started (a snapshot taken outside your git
@@ -208,7 +228,7 @@ reach the terminal. The command palette (`⌘K` / `Ctrl+Shift+K`) lists everythi
 | `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | split right · split down |
 | `⌘O` · `⌘E` · `⌘S` | `Ctrl+Shift+O` · `Ctrl+Shift+Y` · `Ctrl+Shift+S` | open file · show editor · save |
 | `⇧⌘R` | `Ctrl+Shift+R` | review changes |
-| `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | find in pane · in all panes |
+| `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | find in the pane, file or document · in all panes |
 | `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` | sidebar · project 1–9 |
 | `F12` · `⇧F12` · `F2` · `⌘.` | same | definition · references · rename · code actions |
 

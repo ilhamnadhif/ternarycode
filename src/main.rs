@@ -28,6 +28,10 @@ fn main() -> eframe::Result {
         tc_core::persist::load_json(&ternarycode::paths::settings_file());
     settings.sanitize();
     let targets = ternarycode::instance::targets(args);
+    // From a terminal, with no TernaryCode running: start it apart from the terminal.
+    if !ternarycode::instance::is_running() && ternarycode::cli::launch_detached(&targets) {
+        return Ok(());
+    }
     let (lock, inbox) = match ternarycode::instance::acquire(&targets) {
         ternaryshell_like::Instance::Forwarded => return Ok(()),
         ternaryshell_like::Instance::Primary { lock, inbox } => (lock, inbox),

@@ -95,6 +95,23 @@ impl App {
                         self.actions.push(crate::actions::Action::CheckForUpdates);
                     }
                 });
+                row(ui, t("Command line"), |ui| match crate::cli::installed() {
+                    Some(path) => {
+                        ui.label(RichText::new(format!("ternarycode → {}", crate::paths::contract_tilde(&path))).color(p.text_muted))
+                            .on_hover_text(t("Type ternarycode <folder or project name> in any terminal to open it here."));
+                    }
+                    None => {
+                        #[cfg(target_os = "macos")]
+                        if kit::secondary(ui, None, t("Install ternarycode Command…")).clicked() {
+                            match crate::cli::install_with_admin() {
+                                Ok(path) => self.toast(tf("Installed: {}", &[&path.display().to_string()])),
+                                Err(e) => self.toast(e),
+                            }
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        ui.label(RichText::new(t("Not on PATH (works in TernaryCode's own panes)")).color(p.text_muted));
+                    }
+                });
                 row(ui, t("Version"), |ui| {
                     ui.label(RichText::new(format!("TernaryCode {}", crate::update::CURRENT)).color(p.text_muted));
                 });

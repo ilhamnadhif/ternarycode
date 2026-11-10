@@ -294,6 +294,15 @@ impl App {
                 base_env.extend(tc_agent::shell::env(&dir, &shell, |k| std::env::var(k).ok()));
             }
         }
+        // `ternarycode` in every pane (the app's own folder on PATH); and in other terminals
+        // once it is linked onto the user's PATH (off the UI thread: it asks the login shell).
+        if let Some(path) = crate::cli::pane_path() {
+            base_env.retain(|(k, _)| k != "PATH");
+            base_env.push(("PATH".into(), path.to_string_lossy().into_owned()));
+        }
+        if !cfg!(test) {
+            let _ = std::thread::Builder::new().name("ternarycode-cli".into()).spawn(crate::cli::ensure_installed);
+        }
         let codex_config = paths::home_dir().join(".codex/config.toml");
         let codex_hooks = !std::fs::read_to_string(codex_config)
             .is_ok_and(|s| integrate::codex_has_own_hooks(&s));
@@ -386,7 +395,7 @@ impl App {
         app.restore(ctx);
         app.lsp_find_path();
         for path in open {
-            app.actions.push(Action::AddProjectPath(path));
+            app.actions.push(Action::OpenTarget(path.to_string_lossy().into_owned()));
         }
         app
     }
@@ -477,8 +486,6 @@ impl App {
             None => full,
         };
         let cell = tc_term::widget::cell_size(ctx, self.settings.font_size);
-        let ppp = ctx.pixels_per_point();
-        let cell_px = ((cell.x * ppp).round(), (cell.y * ppp).round());
         let Some(p) = self.project(project) else { return };
         let mut sizes = Vec::new();
         let tabs: Vec<&crate::project::Tab> = if tab_in_view { p.tab().into_iter().collect() } else { p.tabs.iter().collect() };
@@ -489,6 +496,14 @@ impl App {
                 sizes.push((id, tc_term::widget::grid_for(ui::focus::term_rect(r, single), cell)));
             }
         }
+        self.resize_panes(ctx, sizes);
+    }
+
+    /// Gives panes these grid sizes (terminal and PTY); a pane already that size is left alone.
+    pub fn resize_panes(&mut self, ctx: &egui::Context, sizes: Vec<(PaneId, tc_term::core::GridSize)>) {
+        let cell = tc_term::widget::cell_size(ctx, self.settings.font_size);
+        let ppp = ctx.pixels_per_point();
+        let cell_px = ((cell.x * ppp).round(), (cell.y * ppp).round());
         for (id, size) in sizes {
             let Some(pane) = self.panes.get_mut(&id) else { continue };
             let now = {
@@ -500,6 +515,15 @@ impl App {
                 tc_term::core::resize(&pane.shared, size, cell_px.0, cell_px.1);
                 pane.resize_pty(size, size.cols as u32 * cell_px.0 as u32, size.rows as u32 * cell_px.1 as u32);
             }
+        }
+    }
+
+    /// Back from the Grid: every project's panes take their Focus size again, so switching
+    /// projects in the Focus view never resizes a terminal.
+    fn fit_all_to_focus(&mut self, ctx: &egui::Context) {
+        let ids: Vec<ProjectId> = self.projects.iter().map(|p| p.id).collect();
+        for id in ids {
+            self.fit_to_focus(ctx, id, false);
         }
     }
 
@@ -1210,6 +1234,42 @@ impl App {
         self.mark_dirty();
     }
 
+    /// `ternarycode <target>` from a terminal (or Finder): a folder becomes a project (or opens
+    /// the one it is); a name opens the project called that (its name, else its folder's name,
+    /// else the one name it starts or contains), else adds the folder of that name found beside
+    /// the projects there already.
+    fn open_target(&mut self, ctx: &egui::Context, target: &str) {
+        let path = Path::new(target);
+        if path.is_absolute() {
+            self.add_project(ctx, path.to_path_buf(), None);
+            return;
+        }
+        let want = target.to_lowercase();
+        let folder = |p: &Project| p.path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let tests: [&dyn Fn(&Project) -> bool; 4] = [
+            &|p| p.name.to_lowercase() == want,
+            &|p| folder(p) == want,
+            &|p| p.name.to_lowercase().starts_with(&want) || folder(p).starts_with(&want),
+            &|p| p.name.to_lowercase().contains(&want) || folder(p).contains(&want),
+        ];
+        for (i, test) in tests.iter().enumerate() {
+            let found: Vec<ProjectId> = self.projects.iter().filter(|p| test(p)).map(|p| p.id).collect();
+            // Exact names: the first; partial ones only when they point at one project.
+            if (i < 2 && !found.is_empty()) || found.len() == 1 {
+                self.dispatch(ctx, Action::SelectProject(found[0]));
+                return;
+            }
+        }
+        let parents: std::collections::BTreeSet<PathBuf> =
+            self.projects.iter().filter_map(|p| p.path.parent().map(Path::to_path_buf)).collect();
+        let beside: Vec<PathBuf> = parents.iter().map(|d| d.join(target)).filter(|d| d.is_dir()).collect();
+        if let [dir] = beside.as_slice() {
+            self.add_project(ctx, dir.clone(), None);
+        } else {
+            self.toast(tf("No project or folder named {}.", &[target]));
+        }
+    }
+
     fn remove_project(&mut self, id: ProjectId) {
         let Some(idx) = self.projects.iter().position(|p| p.id == id) else {
             return;
@@ -1447,6 +1507,16 @@ impl App {
         out
     }
 
+    /// The editor shows a document and no terminal has the keyboard (⌘F then searches it).
+    fn doc_has_keyboard(&self, ctx: &egui::Context) -> bool {
+        let Some(e) = self.active.and_then(|id| self.editors.get(&id)) else { return false };
+        if !e.visible || e.file().and_then(|f| f.doc.as_ref()).is_none() {
+            return false;
+        }
+        let focused = ctx.memory(|m| m.focused());
+        !self.panes.keys().any(|id| focused == Some(tc_term::widget::pane_widget_id(*id)))
+    }
+
     /// Starts the update's installer and quits; the new version opens by itself and restores
     /// the workspace.
     fn install_update(&mut self, ctx: &egui::Context) {
@@ -1512,10 +1582,15 @@ impl App {
                     .map(|(_, n)| n);
                 self.add_project(ctx, path, name);
             }
+            Action::OpenTarget(target) => self.open_target(ctx, &target),
             Action::SelectProject(id) => {
                 if self.project(id).is_some() {
                     self.active = Some(id);
+                    let was = self.view;
                     self.view = View::Focus;
+                    if was == View::Grid {
+                        self.fit_all_to_focus(ctx);
+                    }
                     self.focus_request = self.current_pane();
                     self.mark_dirty();
                 }
@@ -1789,7 +1864,11 @@ impl App {
             Action::SwitchProject => self.open_palette(PaletteMode::Projects),
             Action::PickPreset => self.open_palette(PaletteMode::Presets),
             Action::SetView(v) => {
+                let was = self.view;
                 self.view = v;
+                if was == View::Grid && v == View::Focus {
+                    self.fit_all_to_focus(ctx);
+                }
                 self.grid_focus = None;
                 self.focus_request = if v == View::Focus { self.current_pane() } else { None };
                 self.mark_dirty();
@@ -2044,6 +2123,12 @@ impl App {
                 self.new_tab_in(ctx, Some(dir));
             }
             Action::QuickOpen => self.open_palette(PaletteMode::Files),
+            // A document shown in the editor, with the keyboard not in a terminal: search it.
+            Action::Find if self.view == View::Focus && self.doc_has_keyboard(ctx) => {
+                if let Some(v) = self.active.and_then(|id| self.editors.get_mut(&id)).and_then(|e| e.file_mut()).and_then(|f| f.doc.as_deref_mut()) {
+                    v.open_find();
+                }
+            }
             Action::Find if self.editor_keyboard && self.view == View::Focus => {
                 if let Some(e) = self.active.and_then(|id| self.editors.get_mut(&id)) {
                     e.find.get_or_insert_with(Default::default).focus = true;
@@ -2305,7 +2390,7 @@ impl App {
         if let Some(rx) = &self.instance_rx {
             while let Ok(args) = rx.try_recv() {
                 for a in args {
-                    self.actions.push(Action::AddProjectPath(PathBuf::from(a)));
+                    self.actions.push(Action::OpenTarget(a));
                 }
             }
         }

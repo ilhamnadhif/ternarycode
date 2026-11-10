@@ -54,7 +54,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "addtopath"; Description: "Add ternarycode to PATH (open a project from a terminal: ternarycode .)"; GroupDescription: "Command line:"; Flags: unchecked
+Name: "addtopath"; Description: "Add ternarycode to PATH (open a project from any terminal: ternarycode . or ternarycode my-app)"; GroupDescription: "Command line:"
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "ternarycode.exe"; Flags: ignoreversion
