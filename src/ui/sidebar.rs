@@ -457,7 +457,10 @@ impl App {
                     Status::Idle | Status::Ended => p.text_faint,
                     _ => status::color(s, p),
                 };
-                (status::icon(s), x.label(), c)
+                // Active (an agent without hooks) shows the terminal icon, as on pane headers,
+                // tabs and Grid tiles.
+                let icon = if s == Status::Unknown { icons::TERMINAL } else { status::icon(s) };
+                (icon, x.label(), c)
             }),
         };
         ProjectRow {
