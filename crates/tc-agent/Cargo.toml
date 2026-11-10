@@ -1,0 +1,28 @@
+[package]
+name = "tc-agent"
+version = "0.1.0"
+edition = "2024"
+description = "TernaryCode agent integration: foreground process info, the hook protocol, socket server and client, and per-agent hook setup"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "ternarycode-hook"
+path = "src/bin/hook.rs"
+
+[dependencies]
+getrandom = "0.4.3"
+libc = "0.2.190"
+parking_lot = "0.12.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+tc-core = { path = "../tc-core" }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+
+# Windows: the hook pipe is tokio's; processes are read through these.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Wdk_System_Threading", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tc-term = { path = "../tc-term" }
+tempfile = "3.27.0"

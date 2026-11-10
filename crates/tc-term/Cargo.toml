@@ -1,0 +1,26 @@
+[package]
+name = "tc-term"
+version = "0.1.0"
+edition = "2024"
+description = "TernaryCode terminal core: alacritty grid, OSC scanner, local PTY and the egui widget"
+license = "MIT"
+publish = false
+
+[dependencies]
+alacritty_terminal = "0.26.0"
+dirs = "7.0.0"
+egui = { version = "0.36.2", default-features = false, features = ["default_fonts"] }
+libc = "0.2.190"
+memchr = "2.8.3"
+memmap2 = "0.9.11"
+parking_lot = "0.12.5"
+serde = { version = "1.0.229", features = ["derive"] }
+skrifa = "0.44.0"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
+
+# The pseudoconsole (ConPTY) and the process list for the foreground program.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

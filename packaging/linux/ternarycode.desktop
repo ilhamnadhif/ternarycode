@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=TernaryCode
+GenericName=Terminal Workspace
+Comment=Terminal workspace for running many projects and AI coding agents
+Exec=ternarycode %F
+Icon=ternarycode
+StartupWMClass=ternarycode
+Terminal=false
+Categories=Development;System;TerminalEmulator;
+Keywords=terminal;agent;claude;codex;gemini;project;editor;git;

@@ -1,0 +1,97 @@
+[workspace]
+members = ["crates/*"]
+# `cargo build` also builds `ternarycode-hook`, which must sit next to the app binary.
+default-members = [".", "crates/tc-agent"]
+resolver = "3"
+
+[package]
+name = "ternarycode"
+version = "0.1.0"
+edition = "2024"
+description = "Terminal-first workspace for running many projects and AI coding agents in one window"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+dirs = "7.0.0"
+# Metal (wgpu) on macOS, OpenGL elsewhere, as in TernaryShell.
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts"] }
+libc = "0.2.190"
+notify = "8.2.2"
+parking_lot = "0.12.5"
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+# The checksum of a downloaded update (src/update.rs).
+sha2 = "0.11.1"
+sys-locale = "0.3.2"
+# Syntax colours in the editor, pure Rust (fancy-regex instead of Oniguruma; PRD section 16).
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
+tc-agent = { path = "crates/tc-agent" }
+tc-core = { path = "crates/tc-core" }
+tc-doc = { path = "crates/tc-doc" }
+tc-git = { path = "crates/tc-git" }
+tc-lsp = { path = "crates/tc-lsp" }
+tc-term = { path = "crates/tc-term" }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu"] }
+muda = "0.21.2"
+winit = "0.30"
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSSet", "NSFileManager", "NSURL"] }
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "bitflags", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+block2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSEvent", "NSApplication", "NSResponder", "NSWindow", "NSView", "NSGraphicsContext", "NSDockTile", "NSRunningApplication"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "x11", "wayland"] }
+
+# OpenGL, and Direct3D 12 (only that wgpu backend) for machines without OpenGL 2 (virtual
+# machines, Remote Desktop, no graphics driver), as in TernaryShell. windows-sys: the Recycle Bin.
+# getrandom: the token of the single-instance port (src/instance.rs).
+[target.'cfg(windows)'.dependencies]
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "wgpu_no_default_features"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell"] }
+getrandom = "0.4.3"
+
+# The icon and version information of ternarycode.exe (Explorer, the taskbar, Start menu).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+# Dependencies are built optimized even in dev builds: the terminal parser and the renderer are
+# far too slow unoptimized.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+# Keep unwinding: a panic while drawing one frame must not take every pane down.
+panic = "unwind"
+# Release build with the scripted UI checks enabled (debug assertions), for measuring Gate B with
+# `TERNARYCODE_DEV_SCRIPT`: `cargo build --profile measure`.
+[profile.measure]
+inherits = "release"
+debug-assertions = true
+lto = "thin"
+codegen-units = 16
+
+[profile.release.package.winit]
+opt-level = "s"
+[profile.release.package.muda]
+opt-level = "s"
+[profile.release.package.rfd]
+opt-level = "s"
+[profile.release.package.objc2-app-kit]
+opt-level = "s"
+[profile.release.package.objc2-foundation]
+opt-level = "s"

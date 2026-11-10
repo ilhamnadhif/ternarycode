@@ -1,0 +1,25 @@
+[package]
+name = "tc-lsp"
+version = "0.1.0"
+edition = "2024"
+description = "TernaryCode language server client: JSON-RPC over stdio, the built-in server list, positions and edits"
+license = "MIT"
+publish = false
+
+# A language server that answers from plain text, for the app's end-to-end checks
+# (`TERNARYCODE_LSP_OVERRIDE`). Never shipped.
+[[bin]]
+name = "tc-fake-lsp"
+path = "src/bin/fake.rs"
+test = false
+doc = false
+
+[dependencies]
+lsp-types = "0.97.0"
+parking_lot = "0.12.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "process"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

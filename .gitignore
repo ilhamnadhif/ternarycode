@@ -1,0 +1,7 @@
+/target
+/dist
+.DS_Store
+.claude/
+# Kept on this computer only: the PRD and the gate notes.
+/PRD *.md
+/docs/gate-*.md
