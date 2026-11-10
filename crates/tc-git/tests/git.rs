@@ -339,23 +339,24 @@ fn works_without_commits() {
 #[test]
 fn paths_with_spaces_unicode_quotes_and_glob_characters() {
     let repo = Repo::new();
-    let names = [
+    let mut names = vec![
         "dir with space/file name.txt",
         "café/naïve résumé.md",
         "日本語.txt",
-        "weird \"quote\" and\ttab.txt",
-        "back\\slash.txt",
-        "star*.txt",
         "starX.txt",
     ];
-    for name in names {
+    // Characters Windows does not allow in file names.
+    if cfg!(unix) {
+        names.extend(["weird \"quote\" and\ttab.txt", "back\\slash.txt", "star*.txt"]);
+    }
+    for &name in &names {
         repo.write(name, format!("{name}\n"));
     }
     repo.write("old name.txt", numbered(1..=10));
     repo.commit_all("first");
     let start = snapshot(&repo.root).unwrap();
 
-    for name in names {
+    for &name in &names {
         repo.write(name, format!("{name}\nedited {name}\n"));
     }
     repo.remove("old name.txt");
@@ -364,12 +365,12 @@ fn paths_with_spaces_unicode_quotes_and_glob_characters() {
     let end = snapshot(&repo.root).unwrap();
 
     let found = changes(&repo.root, &start.tree, &end.tree).unwrap();
-    let mut expected: Vec<&str> = names.to_vec();
+    let mut expected: Vec<&str> = names.clone();
     expected.extend(["new näme.txt", "ünïcode new.txt"]);
     expected.sort();
     assert_eq!(paths(&found), expected);
 
-    for name in names {
+    for &name in &names {
         let change = find(&found, name);
         assert_eq!(change.kind, ChangeKind::Modified, "{name}");
         assert_eq!((change.additions, change.deletions), (Some(1), Some(0)));

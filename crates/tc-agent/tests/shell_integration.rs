@@ -86,6 +86,9 @@ impl Fixture {
             ("TERM_PROGRAM".into(), "TernaryCode".into()),
             ("LANG".into(), "en_US.UTF-8".into()),
             ("BASH_SILENCE_DEPRECATION_WARNING".into(), "1".into()),
+            // Debian and Ubuntu's /etc/zsh/zshrc runs compinit, which stops at a question when
+            // the machine has group-writable function folders (CI runners do).
+            ("skip_global_compinit".into(), "1".into()),
         ];
         env.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         env
@@ -544,8 +547,13 @@ echo "xdg=$XDG_DATA_DIRS saved=$TERNARYCODE_FISH_XDG_DIR" >> $HOME/log
         .and_then(|v| v.trim().split('.').next()?.parse().ok())
         .unwrap_or(0);
     let pane = session(&env, &fish_login, &fx.cwd, LINES);
-    // config.fish ran once, with XDG_DATA_DIRS back to unset.
-    assert_eq!(fx.log(), ["config", "xdg= saved="].map(String::from));
+    // config.fish ran once, with XDG_DATA_DIRS back to what it is without the integration (the
+    // system's own vendor scripts, such as snapd's, may still set it) and nothing of ours left.
+    let integrated_log = fx.log();
+    assert_eq!(integrated_log.len(), 2, "{integrated_log:?}");
+    assert_eq!(integrated_log[0], "config");
+    assert!(integrated_log[1].ends_with(" saved="), "{integrated_log:?}");
+    assert!(!integrated_log[1].contains(&*fx.dir.to_string_lossy()), "{integrated_log:?}");
     let screen = pane.screen();
     assert!(screen.contains("ALIAS_42"), "{screen}");
     // fish 4.0+ writes its own marks (and B since 4.3): only check what every version has.
@@ -562,7 +570,7 @@ echo "xdg=$XDG_DATA_DIRS saved=$TERNARYCODE_FISH_XDG_DIR" >> $HOME/log
     // Without the integration, fish before 4.0 writes no marks.
     let _ = fs::remove_file(fx.home.join("log"));
     let plain = session(&base, &fish_login, &fx.cwd, LINES);
-    assert_eq!(fx.log(), ["config", "xdg= saved="].map(String::from));
+    assert_eq!(fx.log(), integrated_log, "the user's config sees the same as without the integration");
     if major < 4 {
         assert_eq!(plain.marks(), vec![], "{}", plain.screen());
     }
