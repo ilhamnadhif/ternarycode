@@ -857,7 +857,8 @@ mod tests {
         let run = run(
             &rt,
             "set /p line=& mode con & echo got:!line!",
-            GridSize { cols: 40, rows: 5 },
+            // Tall enough for all of `mode con`'s lines (the terminal itself is not resized).
+            GridSize { cols: 40, rows: 24 },
         );
         run.session
             .pty
