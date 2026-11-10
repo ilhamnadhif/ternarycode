@@ -81,6 +81,17 @@ else
 fi
 codesign --verify --strict --verbose=1 "$APP"
 
+# A .zip can't be stapled, and the installer and the in-app updater take it: the app itself is
+# notarized and stapled first, so the .zip and the DMG carry its ticket.
+if [ -n "${TERNARYCODE_NOTARY_PROFILE:-}" ]; then
+    echo "==> Notarizing the app"
+    SUBMIT="$(mktemp -d)"
+    ditto -c -k --sequesterRsrc --keepParent "$APP" "$SUBMIT/$APP_NAME.zip"
+    xcrun notarytool submit "$SUBMIT/$APP_NAME.zip" --keychain-profile "$TERNARYCODE_NOTARY_PROFILE" --wait
+    rm -rf "$SUBMIT"
+    xcrun stapler staple "$APP"
+fi
+
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 
 echo "==> Creating DMG"
@@ -91,7 +102,7 @@ hdiutil create -quiet -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO 
 rm -rf "$STAGE"
 
 if [ -n "${TERNARYCODE_NOTARY_PROFILE:-}" ]; then
-    echo "==> Notarizing"
+    echo "==> Notarizing the DMG"
     xcrun notarytool submit "$DMG" --keychain-profile "$TERNARYCODE_NOTARY_PROFILE" --wait
     xcrun stapler staple "$DMG"
 else

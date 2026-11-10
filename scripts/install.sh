@@ -6,7 +6,8 @@
 #
 # The app is downloaded with curl, so macOS does not quarantine it and it opens without the
 # "unidentified developer" prompt. Everything is fetched over HTTPS and checked (the SHA-256
-# GitHub publishes, the code signature, the bundle id) before the installed copy is touched.
+# GitHub publishes, the code signature, the bundle id) before the installed copy is touched; a
+# file GitHub published no SHA-256 for is not installed.
 # The old copy is moved aside and put back if the new one can't be moved in. sudo is used only
 # when /Applications or the installed app is not writable.
 set -euo pipefail
@@ -76,17 +77,19 @@ NAME="$(json "assets.$ASSET.name")"
 URL="$(json "assets.$ASSET.browser_download_url")"
 DIGEST="$(json "assets.$ASSET.digest" || true)"
 case "$URL" in https://*) ;; *) die "unexpected download address: $URL" ;; esac
+# Without it nothing ties the file to the release (an ad-hoc signature proves nothing about who
+# made it): refused, as the in-app updater does.
+case "$DIGEST" in
+    sha256:?*) ;;
+    *) die "GitHub published no SHA-256 checksum for $NAME, so it cannot be verified and is not installed; see https://github.com/$REPO/releases/tag/v$VERSION" ;;
+esac
 
 say "Downloading $NAME"
 fetch --progress-bar -o "$TMP/$NAME" "$URL"
-if [ -n "$DIGEST" ]; then
-    expected="$(printf '%s' "${DIGEST#sha256:}" | tr 'A-F' 'a-f')"
-    actual="$(shasum -a 256 "$TMP/$NAME" | awk '{print $1}')"
-    [ "$actual" = "$expected" ] || die "the download does not match the SHA-256 GitHub published"
-    say "Checksum verified"
-else
-    say "GitHub published no checksum for this file; relying on the code signature"
-fi
+expected="$(printf '%s' "${DIGEST#sha256:}" | tr 'A-F' 'a-f')"
+actual="$(shasum -a 256 "$TMP/$NAME" | awk '{print $1}')"
+[ "$actual" = "$expected" ] || die "the download does not match the SHA-256 GitHub published"
+say "Checksum verified"
 
 if [ -n "$ZIP" ]; then
     ditto -x -k "$TMP/$NAME" "$TMP/unpacked"

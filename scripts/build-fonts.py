@@ -43,10 +43,18 @@ OUT_CODES = os.path.join(ROOT, "src/ui/icon_codes.rs")
 
 
 def phosphor_dir():
-    found = sorted(glob.glob(os.path.expanduser("~/.cargo/registry/src/*/egui-phosphor-*/")))
+    found = []
+    for d in glob.glob(os.path.expanduser("~/.cargo/registry/src/*/egui-phosphor-*/")):
+        name = os.path.basename(os.path.normpath(d))
+        m = re.fullmatch(r"egui-phosphor-(\d+)\.(\d+)\.(\d+)(-[^+]+)?(\+.*)?", name)
+        if m:
+            # The newest by version, not by name (0.10.0 comes after 0.9.0), a release after its
+            # pre-releases.
+            version = (int(m[1]), int(m[2]), int(m[3]), m[4] is None, m[4] or "")
+            found.append((version, d))
     if not found:
         sys.exit("egui-phosphor is not in the cargo registry (run `cargo fetch` in a project using it)")
-    return found[-1]
+    return max(found)[1]
 
 
 def main():
