@@ -25,6 +25,8 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-2022]
     runs-on: ${{ matrix.os }}
+    # A stuck step (a runner's package mirror, a test waiting forever) fails the job in time.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -34,7 +36,7 @@ jobs:
       # The shell integration tests run each shell they find.
       - name: Shells
         if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh fish >/dev/null
+        run: scripts/ci-apt.sh zsh fish
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace --no-fail-fast
 
@@ -50,6 +52,7 @@ jobs:
           - { runner: ubuntu-24.04, arch: x86_64 }
           - { runner: ubuntu-24.04-arm, arch: aarch64 }
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: Build (glibc 2.28)
@@ -59,7 +62,7 @@ jobs:
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null
               . "$HOME/.cargo/env"
               cargo build --release --locked'
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq dpkg-dev rpm >/dev/null
+      - run: scripts/ci-apt.sh dpkg-dev rpm
       - name: Package (.tar.gz, .deb, .rpm, .AppImage)
         run: scripts/package-linux.sh
       - name: Install and run on other distributions
@@ -88,6 +91,7 @@ jobs:
   bundle-windows:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -119,6 +123,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [test, bundle-linux, bundle-windows]
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:

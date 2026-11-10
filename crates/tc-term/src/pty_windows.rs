@@ -799,9 +799,19 @@ mod tests {
     }
 
     fn screen(feeder: &Arc<Mutex<Feeder>>) -> String {
+        text_from(feeder, false)
+    }
+
+    /// The screen with the scrollback above it.
+    fn screen_and_history(feeder: &Arc<Mutex<Feeder>>) -> String {
+        text_from(feeder, true)
+    }
+
+    fn text_from(feeder: &Arc<Mutex<Feeder>>, history: bool) -> String {
         let f = feeder.lock();
         let term = f.shared.term.lock();
-        (0..term.screen_lines() as i32)
+        let top = if history { term.topmost_line().0 } else { 0 };
+        (top..term.screen_lines() as i32)
             .map(|l| {
                 let row = &term.grid()[Line(l)];
                 (0..term.columns())
@@ -902,14 +912,16 @@ mod tests {
     #[test]
     fn an_early_resize_is_kept() {
         let rt = rt();
-        let run = run(&rt, "set /p line=& mode con", GridSize { cols: 40, rows: 24 });
+        // Only the width changes: the test's terminal keeps its size, and a console taller than
+        // it would draw past its bottom (and over the report).
+        let run = run(&rt, "set /p line=& mode con", GridSize { cols: 40, rows: 30 });
         run.session
             .pty
             .resize(GridSize { cols: 100, rows: 30 }, 8, 16);
         std::thread::sleep(Duration::from_millis(300));
         run.session.write(b"x\r".to_vec());
         assert!(wait_exit(&run).success());
-        let text = screen(&run.feeder);
+        let text = screen_and_history(&run.feeder);
         assert!(text.lines().any(|l| l.contains("Columns") && l.contains("100")), "{text}");
     }
 
