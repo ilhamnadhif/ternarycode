@@ -15,11 +15,14 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{ClearMode, CursorShape, CursorStyle, Handler, Processor, Rgb};
+use alacritty_terminal::vte::ansi::{
+    ClearMode, CursorShape, CursorStyle, Handler, KeyboardModes, Processor, Rgb,
+};
 use egui::Color32;
 use parking_lot::Mutex;
 
 use super::scheme::Scheme;
+use crate::input::KeyModes;
 use crate::osc::{OscScanner, OscSignal, PromptMark, Redraw};
 use crate::prefs::CursorStyle as CursorPref;
 
@@ -147,10 +150,14 @@ pub struct TermShared {
     /// Cell size in pixels and grid size, for CSI 14 t and the SSH window-change request.
     pub window: Mutex<WindowSize>,
     pub palette: Mutex<QueryPalette>,
+    /// The options the terminal has (alacritty does not say), for `clear_keyboard_modes`.
+    config: Mutex<Config>,
 }
 
 pub type SharedTerm = Arc<TermShared>;
 
+/// The terminal's options. The kitty keyboard protocol is always on: alacritty empties its
+/// stacks whenever the option changes, so every `Config` given to a terminal has it.
 pub fn term_config(scrollback: usize, cursor: CursorPref, blink: bool) -> Config {
     let shape = match cursor {
         CursorPref::Block => CursorShape::Block,
@@ -163,6 +170,7 @@ pub fn term_config(scrollback: usize, cursor: CursorPref, blink: bool) -> Config
             shape,
             blinking: blink,
         },
+        kitty_keyboard: true,
         ..Config::default()
     }
 }
@@ -175,7 +183,11 @@ pub fn new_terminal(
 ) -> (SharedTerm, mpsc::Receiver<Event>) {
     let (tx, rx) = mpsc::channel();
     let limit = config.scrolling_history;
-    let term = Term::new(config, &size, Listener(tx));
+    let config = Config {
+        kitty_keyboard: true,
+        ..config
+    };
+    let term = Term::new(config.clone(), &size, Listener(tx));
     let shared = Arc::new(TermShared {
         term: FairMutex::new(term),
         notes: Mutex::new(UiNotes::default()),
@@ -190,8 +202,81 @@ pub fn new_terminal(
             cell_height: 16,
         }),
         palette: Mutex::new(palette),
+        config: Mutex::new(config),
     });
     (shared, rx)
+}
+
+/// Empties both screens' keyboard mode stacks: alacritty does that when the protocol is turned
+/// off in its options, and has no other way to.
+fn clear_keyboard_modes(shared: &TermShared, term: &mut Term<Listener>) {
+    let config = shared.config.lock().clone();
+    term.set_options(Config {
+        kitty_keyboard: false,
+        ..config.clone()
+    });
+    term.set_options(config);
+}
+
+/// Keyboard mode pushes allowed before the stacks are emptied (`KeyboardPushes`), so that
+/// neither ever holds more than this and one.
+const MAX_PUSHES: usize = 4000;
+
+/// Counts the kitty keyboard mode pushes (`CSI > flags u`) in the output since the stacks were
+/// last emptied. alacritty 0.26 keeps up to 4096 per screen; one push more makes it take the
+/// oldest from the title stack instead, which panics when that is empty (the pane's reader would
+/// stop). Matches what `vte` takes for the sequence: control characters and bytes it ignores
+/// may sit inside it, and an ESC anywhere starts a new one.
+#[derive(Default)]
+struct KeyboardPushes {
+    state: PushState,
+    count: usize,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum PushState {
+    #[default]
+    Ground,
+    Esc,
+    Csi,
+    Params,
+}
+
+impl KeyboardPushes {
+    /// Scans `bytes` up to the push that reaches `MAX_PUSHES`. Returns how many bytes it went
+    /// through, and whether the stacks are to be emptied there.
+    fn scan(&mut self, bytes: &[u8]) -> (usize, bool) {
+        let mut i = 0;
+        while i < bytes.len() {
+            if self.state == PushState::Ground {
+                let Some(p) = memchr::memchr(0x1b, &bytes[i..]) else {
+                    break;
+                };
+                i += p;
+            }
+            let b = bytes[i];
+            i += 1;
+            self.state = match (self.state, b) {
+                (_, 0x1b) => PushState::Esc,
+                (_, 0x18 | 0x1a) => PushState::Ground,
+                (state, 0x00..=0x1f | 0x7f..) => state,
+                (PushState::Esc, b'[') => PushState::Csi,
+                (PushState::Csi, b'>') => PushState::Params,
+                (PushState::Params, b'0'..=b'9' | b';' | b':') => PushState::Params,
+                (PushState::Params, b'u') => {
+                    self.count += 1;
+                    if self.count >= MAX_PUSHES {
+                        self.count = 0;
+                        self.state = PushState::Ground;
+                        return (i, true);
+                    }
+                    PushState::Ground
+                }
+                _ => PushState::Ground,
+            };
+        }
+        (bytes.len(), false)
+    }
 }
 
 fn rgb(c: Color32) -> Rgb {
@@ -224,6 +309,7 @@ pub struct Feeder {
     pub shared: SharedTerm,
     parser: Processor,
     osc: OscScanner,
+    pushes: KeyboardPushes,
     events: mpsc::Receiver<Event>,
     bell: bool,
 }
@@ -234,6 +320,7 @@ impl Feeder {
             shared,
             parser: Processor::new(),
             osc: OscScanner::new(),
+            pushes: KeyboardPushes::default(),
             events,
             bell: false,
         }
@@ -273,9 +360,13 @@ impl Feeder {
     }
 
     /// Parses `bytes`; returns whether the screen changed.
-    fn advance(&mut self, bytes: &[u8]) -> bool {
+    fn advance(&mut self, mut bytes: &[u8]) -> bool {
         let mut repaint = false;
-        for chunk in bytes.chunks(FEED_CHUNK) {
+        while !bytes.is_empty() {
+            // A chunk, or up to the keyboard mode push after which the stacks are emptied.
+            let (len, full) = self.pushes.scan(&bytes[..bytes.len().min(FEED_CHUNK)]);
+            let (chunk, rest) = bytes.split_at(len);
+            bytes = rest;
             let mut term = self.shared.term.lock();
             let room = self.make_room(&mut term);
             self.parser.advance(&mut *term, chunk);
@@ -285,6 +376,21 @@ impl Feeder {
                 if pending {
                     self.shared.prompt.lock().dropped(term.grid().history_size());
                     term.grid_mut().clear_history();
+                }
+            }
+            if full {
+                // `MAX_PUSHES` keyboard mode pushes since the stacks were last emptied: they are
+                // emptied, keeping the flags in effect. The pushes a synchronized update holds
+                // were counted too: they are parsed first.
+                if self.parser.sync_bytes_count() > 0 {
+                    let room = self.make_room(&mut term);
+                    self.parser.stop_sync(&mut *term);
+                    self.count_dropped(&mut term, room);
+                }
+                let flags = KeyModes::of(*term.mode()).kitty;
+                clear_keyboard_modes(&self.shared, &mut term);
+                if flags != 0 {
+                    term.push_keyboard_mode(KeyboardModes::from_bits_truncate(flags));
                 }
             }
             drop(term);
@@ -443,7 +549,9 @@ pub fn limit_scrollback(shared: &TermShared, lines: usize, cursor: CursorPref, b
     let mut term = shared.term.lock();
     let mut prompt = shared.prompt.lock();
     let before = term.grid().history_size();
-    term.set_options(term_config(lines, cursor, blink));
+    let config = term_config(lines, cursor, blink);
+    term.set_options(config.clone());
+    *shared.config.lock() = config;
     prompt.dropped(before.saturating_sub(term.grid().history_size()));
     prompt.limit = lines;
     prompt.raised = false;
@@ -573,8 +681,8 @@ pub fn write_status(feeder: &mut Feeder, text: &str) {
 /// Ends a session in this terminal before showing `text`: shows any pending synchronized
 /// output, drops half-received escape sequences, and switches off the modes a full-screen
 /// program may have left on (alternate screen, mouse and focus reporting, bracketed paste,
-/// application cursor keys, hidden cursor, scroll region). The last output stays visible and a
-/// reconnect starts from a clean terminal.
+/// application cursor keys, the keyboard protocol, hidden cursor, scroll region). The last output
+/// stays visible and a reconnect starts from a clean terminal.
 pub fn end_session(feeder: &mut Feeder, text: &str) {
     {
         let mut term = feeder.shared.term.lock();
@@ -592,6 +700,9 @@ pub fn end_session(feeder: &mut Feeder, text: &str) {
     const RESET: &str = "\x1b[r\x1b[?6l\x1b[4l\x1b(B\x1b[?1l\x1b>\x1b[?25h\x1b[?7h\
         \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[0m";
     let _ = feeder.feed(RESET.as_bytes());
+    // No keyboard mode is left on either screen's stack: the next program gets legacy keys.
+    clear_keyboard_modes(&feeder.shared, &mut feeder.shared.term.lock());
+    feeder.pushes = KeyboardPushes::default();
     // Resetting the scroll region and origin mode moved the cursor to the top: put it back.
     let _ = feeder.feed(format!("\x1b[{line};{column}H").as_bytes());
     write_status(feeder, text);
@@ -682,6 +793,73 @@ mod tests {
             })
             .collect();
         assert!(text.contains("closed"), "{text:?}");
+    }
+
+    /// What Shift+Enter sends to the program in this terminal now.
+    fn shift_enter(f: &Feeder) -> Vec<u8> {
+        use crate::input::{KeyEvent, Mods, encode_event};
+        let modes = KeyModes::of(*f.shared.term.lock().mode());
+        let shift = Mods {
+            shift: true,
+            ..Default::default()
+        };
+        encode_event(&KeyEvent::press(egui::Key::Enter, shift), None, modes).unwrap()
+    }
+
+    #[test]
+    fn the_keyboard_protocol_follows_the_program() {
+        let mut f = make();
+        assert_eq!(shift_enter(&f), b"\r");
+        f.feed(b"\x1b[>1u");
+        assert_eq!(shift_enter(&f), b"\x1b[13;2u");
+        assert_eq!(f.feed(b"\x1b[?u").reply, b"\x1b[?1u");
+        // The alternate screen has a stack of its own.
+        f.feed(b"\x1b[?1049h");
+        assert_eq!(shift_enter(&f), b"\r");
+        f.feed(b"\x1b[>11u");
+        assert_eq!(f.feed(b"\x1b[?u").reply, b"\x1b[?11u");
+        f.feed(b"\x1b[?1049l");
+        assert_eq!(f.feed(b"\x1b[?u").reply, b"\x1b[?1u");
+        // Popped: legacy keys again.
+        f.feed(b"\x1b[<u");
+        assert_eq!(shift_enter(&f), b"\r");
+        assert_eq!(f.feed(b"\x1b[?u").reply, b"\x1b[?0u");
+        // A new scrollback limit keeps the protocol on, and its stack.
+        f.feed(b"\x1b[>1u");
+        limit_scrollback(&f.shared, 50, CursorPref::Block, false);
+        assert_eq!(shift_enter(&f), b"\x1b[13;2u");
+    }
+
+    #[test]
+    fn end_session_leaves_no_keyboard_mode() {
+        let mut f = make();
+        // A program pushed on both screens and was killed before popping.
+        f.feed(b"\x1b[>1u\x1b[?1049h\x1b[>11u");
+        end_session(&mut f, "closed");
+        assert_eq!(shift_enter(&f), b"\r");
+        assert_eq!(f.feed(b"\x1b[?u").reply, b"\x1b[?0u");
+        f.feed(b"\x1b[?1049h");
+        assert_eq!(f.feed(b"\x1b[?u").reply, b"\x1b[?0u");
+    }
+
+    /// Endless keyboard mode pushes (alacritty panics past 4096) leave the terminal working with
+    /// the flags in effect: in pieces, with bytes `vte` skips inside them, in a synchronized
+    /// update.
+    #[test]
+    fn endless_keyboard_mode_pushes_are_survived() {
+        let mut f = make();
+        f.feed(&b"\x1b[>1u".repeat(10_000));
+        assert_eq!(shift_enter(&f), b"\x1b[13;2u");
+        let mut data = b"\x1b[?2026h".to_vec();
+        data.extend(b"\x1b[>\x0711u".repeat(10_000));
+        data.extend_from_slice(b"\x1b[?2026l");
+        for piece in data.chunks(7) {
+            f.feed(piece);
+        }
+        assert_eq!(f.feed(b"\x1b[?u").reply, b"\x1b[?11u");
+        f.feed(b"\r\nstill here");
+        let line = f.shared.term.lock().grid().cursor.point.line.0;
+        assert_eq!(row_text(&f, line), "still here");
     }
 
     /// Output larger than one chunk is parsed completely, and the OSC signals inside it (even

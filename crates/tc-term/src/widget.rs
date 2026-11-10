@@ -447,6 +447,18 @@ fn mods_of(m: egui::Modifiers) -> Mods {
     }
 }
 
+/// A Ctrl+key egui made a clipboard event of (Windows, Linux), as the program gets the key.
+fn ctrl_key(key: Key, modifiers: egui::Modifiers, modes: KeyModes) -> Vec<u8> {
+    let bytes = if modes.kitty == 0 {
+        // The control character alone, whatever else is held.
+        input::encode_key(key, Mods { ctrl: true, ..Mods::default() }, modes)
+    } else {
+        let mods = Mods { ctrl: true, ..mods_of(modifiers) };
+        input::encode_event(&input::KeyEvent::press(key, mods), None, modes)
+    };
+    bytes.unwrap_or_default()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
@@ -805,27 +817,41 @@ fn show_inner(
         // Option as Meta: text typed with Option held goes out as ESC + the character the
         // layout produces without Option (winit delivers it that way), for any layout.
         let meta = style.option_as_meta && ui.input(|i| i.modifiers.alt && !i.modifiers.ctrl);
-        let modes = KeyModes {
-            app_cursor: mode.contains(TermMode::APP_CURSOR),
-        };
+        let modes = KeyModes::of(mode);
         // Taken in the first frame that reads keys after the request, whether the paste came or
         // not (an empty clipboard sends none): a later Ctrl+V is a key again.
         let menu_paste = std::mem::take(&mut view.paste_requested);
         let mut typed = Vec::new();
+        // With the kitty keyboard protocol a key waits for the next event: the text it typed comes
+        // right after it, and goes out with the key instead of on its own.
+        let mut held: Option<input::KeyEvent> = None;
         for event in events {
+            if let Some(key) = held.take() {
+                let text = match &event {
+                    Event::Text(t) => Some(t.as_str()),
+                    _ => None,
+                };
+                if let Some(bytes) = input::encode_event(&key, text, modes) {
+                    typed.extend(bytes);
+                    if text.is_some() {
+                        continue;
+                    }
+                }
+            }
             match event {
                 Event::Key {
                     key,
-                    pressed: true,
+                    physical_key,
+                    pressed,
+                    repeat,
                     modifiers,
-                    ..
                 } => {
                     // ⌘ combinations are the app's (macOS). On Windows and Linux Ctrl goes to the
                     // remote program; the app's own shortcuts were taken out before.
                     if modifiers.mac_cmd {
                         continue;
                     }
-                    let mods = mods_of(modifiers);
+                    let mut mods = mods_of(modifiers);
                     if modifiers.shift && !mode.contains(TermMode::ALT_SCREEN) {
                         let scroll = match key {
                             Key::PageUp => Some(Scroll::PageUp),
@@ -835,18 +861,44 @@ fn show_inner(
                             _ => None,
                         };
                         if let Some(s) = scroll {
-                            term.scroll_display(s);
+                            if pressed {
+                                term.scroll_display(s);
+                            }
                             continue;
                         }
                     }
                     if !alive {
-                        if key == Key::Enter {
+                        if pressed && key == Key::Enter {
                             out.reconnect = true;
                         }
                         continue;
                     }
-                    if let Some(bytes) = input::encode_key(key, mods, modes) {
-                        typed.extend(bytes);
+                    if modes.kitty == 0 {
+                        if pressed && let Some(bytes) = input::encode_key(key, mods, modes) {
+                            typed.extend(bytes);
+                        }
+                        continue;
+                    }
+                    // Option that is not Meta types characters: on a text key it is no modifier.
+                    if !style.option_as_meta && !mods.ctrl && input::is_text_key(key) {
+                        mods.alt = false;
+                    }
+                    let action = match (pressed, repeat) {
+                        (false, _) => input::KeyAction::Release,
+                        (true, true) => input::KeyAction::Repeat,
+                        (true, false) => input::KeyAction::Press,
+                    };
+                    let key = input::KeyEvent {
+                        key,
+                        physical: physical_key,
+                        mods,
+                        action,
+                    };
+                    if pressed {
+                        held = Some(key);
+                    } else {
+                        // A release types nothing.
+                        typed.extend(input::encode_event(&key, None, modes).unwrap_or_default());
                     }
                 }
                 Event::Text(text) => {
@@ -871,7 +923,7 @@ fn show_inner(
                             mode.contains(TermMode::BRACKETED_PASTE),
                         ));
                     } else {
-                        typed.push(0x16); // Ctrl+V
+                        typed.extend(ctrl_key(Key::V, ui.input(|i| i.modifiers), modes));
                     }
                 }
                 Event::Copy | Event::Cut => {
@@ -887,7 +939,8 @@ fn show_inner(
                             }
                         }
                     } else if alive {
-                        typed.push(if event == Event::Copy { 0x03 } else { 0x18 }); // Ctrl+C / Ctrl+X
+                        let key = if event == Event::Copy { Key::C } else { Key::X };
+                        typed.extend(ctrl_key(key, ui.input(|i| i.modifiers), modes));
                     }
                 }
                 Event::Ime(ImeEvent::Preedit { text, .. }) => view.preedit = text,
@@ -899,6 +952,9 @@ fn show_inner(
                 }
                 _ => {}
             }
+        }
+        if let Some(key) = held.take() {
+            typed.extend(input::encode_event(&key, None, modes).unwrap_or_default());
         }
         if !typed.is_empty() {
             term.scroll_display(Scroll::Bottom);
@@ -1615,6 +1671,68 @@ mod tests {
         } else {
             assert_eq!(plain, b"\x1b[200~x\x1b[201~");
         }
+    }
+
+    /// Keys go out as the program asked: in the kitty protocol a key carries the text it typed
+    /// (which is not typed again), plain text stays text, and releases are sent when asked for.
+    #[test]
+    fn keys_follow_the_keyboard_protocol() {
+        let ctx = egui::Context::default();
+        let (shared, rx) = new_terminal(term_config(100, Default::default(), false), GridSize { cols: 40, rows: 10 }, (&SCHEMES[0]).into());
+        let mut feeder = Feeder::new(shared.clone(), rx);
+        let style = TermStyle {
+            font_size: 13.0,
+            cell: vec2(8.0, 16.0),
+            scheme: &SCHEMES[0],
+            real_bold: false,
+            real_italic: false,
+            option_as_meta: true,
+            copy_on_select: false,
+            cursor_blink: false,
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 200.0));
+        let mut view = TermView::new(pane_widget_id(1));
+        let mut frame = |mut events: Vec<Event>| {
+            let modifiers = match events.first() {
+                Some(Event::Key { modifiers, .. }) => *modifiers,
+                _ => egui::Modifiers::NONE,
+            };
+            events.insert(0, Event::ModifiersChanged(modifiers));
+            let raw = egui::RawInput { screen_rect: Some(rect), focused: true, events, ..Default::default() };
+            let mut input = Vec::new();
+            let mut out = ctx.run_ui(raw, |ui| input = show(ui, rect, &mut view, &shared, &style, true, true, true).input);
+            out.textures_delta.clear();
+            input
+        };
+        let key = |key: Key, modifiers: egui::Modifiers, pressed: bool| Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let (none, shift, alt) = (egui::Modifiers::NONE, egui::Modifiers::SHIFT, egui::Modifiers::ALT);
+        // A key and its release, with the text it typed.
+        let typed = |k: Key, m: egui::Modifiers, text: Option<&str>| {
+            let mut events = vec![key(k, m, true)];
+            events.extend(text.map(|t| Event::Text(t.into())));
+            events.push(key(k, m, false));
+            events
+        };
+        frame(vec![]);
+        frame(vec![]);
+        // Legacy: Shift+Enter is Enter.
+        assert_eq!(frame(typed(Key::Enter, shift, None)), b"\r");
+        assert_eq!(frame(typed(Key::A, alt, Some("a"))), b"\x1ba");
+        feeder.feed(b"\x1b[>1u");
+        assert_eq!(frame(typed(Key::Enter, shift, None)), b"\x1b[13;2u");
+        assert_eq!(frame(typed(Key::A, alt, Some("a"))), b"\x1b[97;3u");
+        assert_eq!(frame(typed(Key::A, shift, Some("A"))), b"A");
+        // Every key as an escape code, releases too.
+        feeder.feed(b"\x1b[=10u");
+        assert_eq!(frame(typed(Key::A, none, Some("a"))), b"\x1b[97u\x1b[97;1:3u");
+        // Text without a key event (an input method) is typed as it is.
+        assert_eq!(frame(vec![Event::Text("é".into())]), "é".as_bytes());
     }
 
     /// A screen of `rows` rows with text on the listed ones.

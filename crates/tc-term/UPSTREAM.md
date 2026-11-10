@@ -17,6 +17,23 @@ PRD bagian 16). TernaryShell tidak diubah.
 | `src/fonts.rs` | `src/ui/fonts.rs` |
 | `assets/fonts/` | `assets/fonts/` |
 
+## Perubahan terhadap asal
+
+Perilaku yang sengaja berbeda dari TernaryShell; jangan ditimpa saat port.
+
+- Protokol keyboard kitty (`src/input.rs`, `src/widget.rs`, `src/core.rs`): `term_config` dan
+  `new_terminal` selalu memasang `kitty_keyboard: true` (alacritty mengosongkan stack-nya setiap
+  kali opsi itu berubah lewat `set_options`, jadi setiap `Config` harus memilikinya). Tombol
+  di-encode oleh `input::encode_event` sesuai flag yang dipasang program; tanpa flag tetap
+  `encode_key` legacy yang lama. Di widget, tombol menunggu event berikutnya: teks yang diketiknya
+  ikut di kode escape-nya dan tidak diketik lagi. Ctrl+C/X/V yang dijadikan event clipboard oleh
+  egui (Windows, Linux) ikut di-encode.
+- `end_session` mengosongkan stack mode keyboard kedua layar (`clear_keyboard_modes`), supaya
+  program berikutnya di pane itu mulai dengan tombol legacy.
+- `Feeder` menghitung push `CSI > flags u` (`KeyboardPushes`) dan mengosongkan stack setiap 4000
+  push: alacritty 0.26 panic pada push ke-4097 (ia mengambil dari `title_stack`, bukan dari stack
+  keyboard). Hapus bila versi alacritty yang dipakai sudah memperbaikinya.
+
 ## Cara port perbaikan
 
 Setiap rilis, jalankan:
