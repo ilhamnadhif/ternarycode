@@ -38,7 +38,6 @@ fn applescript_string(s: &str) -> String {
 /// A command for one of the system's tools, without a console window flashing up on Windows
 /// (the app has no console of its own there).
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
-    #[allow(unused_mut)]
     let mut cmd = std::process::Command::new(program);
     no_window(&mut cmd);
     cmd
