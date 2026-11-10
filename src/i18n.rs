@@ -51,8 +51,13 @@ pub fn t(en: &'static str) -> &'static str {
 
 /// `t` and then each `{}` replaced by the next argument.
 pub fn tf(en: &'static str, args: &[&str]) -> String {
+    fill(t(en), args)
+}
+
+/// `text` with each `{}` replaced by the next argument.
+fn fill(text: &str, args: &[&str]) -> String {
     let mut out = String::new();
-    let mut rest = t(en);
+    let mut rest = text;
     let mut args = args.iter();
     while let Some(pos) = rest.find("{}") {
         out.push_str(&rest[..pos]);
@@ -70,10 +75,10 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
 
 include!("i18n_table.rs");
 
-/// "1 project" or "3 projects": `one` and `many` are the English forms (`many` with `{}`); both
-/// are looked up in the translation table.
-pub fn count(n: usize, one: &'static str, many: &'static str) -> String {
-    if n == 1 { t(one).to_string() } else { tf(many, &[&n.to_string()]) }
+/// "1 project" or "3 projects", from forms already translated (`many` with `{}`): callers
+/// write `t("1 project")`, where the tests' scan of the sources finds the strings.
+pub fn count(n: usize, one: &str, many: &str) -> String {
+    if n == 1 { one.to_string() } else { fill(many, &[&n.to_string()]) }
 }
 
 #[cfg(test)]
