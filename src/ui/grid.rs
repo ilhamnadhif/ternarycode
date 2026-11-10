@@ -1,6 +1,7 @@
 //! Grid (FR-V2–V5, V7): every project's terminal at once, two columns
 //! and two rows to a screen, scrolling for more ("Active" keeps only projects where something
-//! runs or waits). Each tile shows the project's most relevant tab with its terminals sized to
+//! runs or waits). Each tile shows the project's tab in view (the one Focus has open), its header
+//! speaking of that tab only (other tabs that wait get a hint), with its terminals sized to
 //! the tile, so they fill it (user decision, 10 November 2026: a terminal kept at its Focus size
 //! and scaled left empty space or cut columns). Going back to Focus gives them their Focus size
 //! again; an agent redraws once per switch, as in any terminal that is resized. A tile is drawn
@@ -66,11 +67,8 @@ pub fn grid_shape(n: usize, fixed: u32) -> (usize, usize) {
 }
 
 impl App {
-    /// The pane a tile shows: one that needs attention, else one running an agent, else the
-    /// project's focused pane.
-    pub fn tile_pane(&self, project: ProjectId) -> Option<PaneId> {
-        let p = self.project(project)?;
-        let panes = p.panes();
+    /// The pane that speaks for `panes`: one that needs attention, else one running an agent.
+    fn telling_pane(&self, panes: &[PaneId]) -> Option<PaneId> {
         let wants = panes
             .iter()
             .filter_map(|id| self.panes.get(id))
@@ -84,7 +82,39 @@ impl App {
                 .find(|x| x.tracker.agent.is_some())
                 .map(|x| x.id)
         };
-        wants.or_else(agent).or_else(|| p.current_pane())
+        wants.or_else(agent)
+    }
+
+    /// The pane a tile's header describes: of the tab the tile shows, one that needs attention,
+    /// else one running an agent, else the tab's focused pane. Other tabs that wait are told
+    /// apart (`waiting_elsewhere`): the header never speaks of a pane not in view.
+    pub fn tile_pane(&self, project: ProjectId) -> Option<PaneId> {
+        let tab = self.project(project)?.tab()?;
+        self.telling_pane(&tab.layout.panes()).or(Some(tab.focused))
+    }
+
+    /// The same over all of a project's tabs: the pane its sidebar row speaks of.
+    pub fn project_pane(&self, project: ProjectId) -> Option<PaneId> {
+        let p = self.project(project)?;
+        self.telling_pane(&p.panes()).or_else(|| p.current_pane())
+    }
+
+    /// Panes of a project's other tabs (not the one in view) that need attention: how many, and
+    /// the most urgent status among them.
+    fn waiting_elsewhere(&self, project: ProjectId) -> Option<(usize, Status)> {
+        let p = self.project(project)?;
+        let waiting: Vec<Status> = p
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != p.active_tab)
+            .flat_map(|(_, tab)| tab.layout.panes())
+            .filter_map(|id| self.panes.get(&id))
+            .filter(|x| x.tracker.wants_attention())
+            .map(|x| x.tracker.status)
+            .collect();
+        let most = waiting.iter().copied().min_by_key(|s| s.priority())?;
+        Some((waiting.len(), most))
     }
 
     /// The project's most active pane counts for it; an agent to resume makes it active.
@@ -229,17 +259,19 @@ impl App {
         let name = project.name.clone();
         let color = project.color32();
         let branch = project.git.as_ref().map(|g| g.branch.clone());
-        let count = project.panes().len();
         let pane_status = pane_id.and_then(|id| self.panes.get(&id)).map(|x| {
             (
                 x.tracker.status,
                 x.tracker.wants_attention(),
                 x.tracker.message.clone(),
                 x.label(),
+                status::described(&x.tracker),
             )
         });
+        let elsewhere = self.waiting_elsewhere(project_id);
         // The tab in view, with all its panes (a split project shows its split).
         let layout = project.tab().map(|t| t.layout.clone());
+        let count = layout.as_ref().map_or(0, |l| l.panes().len());
         // An agent that ran in one of them and can be continued.
         let resume = layout.as_ref().and_then(|l| {
             l.panes().into_iter().find_map(|id| {
@@ -323,6 +355,12 @@ impl App {
         if count > 1 {
             meta.push((format!("{} {count}", icons::SQUARE_SPLIT_HORIZONTAL), small.clone(), p.text_faint));
         }
+        // Another tab waits: said here, nearest the buttons (the last to give way), without
+        // switching the tile to it.
+        if let Some((n, s)) = elsewhere {
+            let text = format!("{} {}", status::icon(s), tf("+{} in other tabs", &[&n.to_string()]));
+            meta.push((text, small.clone(), status::color(s, &p)));
+        }
         let mut meta_left = right;
         let mut placed = Vec::new();
         for (text, font, color) in meta.into_iter().rev() {
@@ -346,13 +384,16 @@ impl App {
         let gw = g.size().x;
         left.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
         x += gw + 10.0;
-        if let Some((s, attention, message, label)) = &pane_status {
-            // What runs there, and its status when it says something (not idle).
+        if let Some((s, attention, message, label, said)) = &pane_status {
+            // What runs there, and its status when it says something (not idle). Quiet, the
+            // terminal icon, as on a pane's header in Focus.
             let quiet = matches!(s, Status::Idle | Status::Unknown);
-            let (icon, c) = match s {
-                Status::Idle => (icons::TERMINAL, p.text_faint),
-                _ => (status::icon(*s), status::color(*s, &p)),
+            let (icon, c) = if quiet {
+                (icons::TERMINAL, p.text_faint)
+            } else {
+                (status::icon(*s), status::color(*s, &p))
             };
+            let status_left = x;
             left.text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, icon, style::icon_font(12.5), c);
             x += 17.0;
             let text = match (s, message) {
@@ -367,7 +408,14 @@ impl App {
             );
             job.wrap = egui::text::TextWrapping::truncate_at_width((left_limit - x).max(0.0));
             let sg = left.layout_job(job);
+            let status_right = (x + sg.size().x).min(left_limit);
             left.galley(pos2(x, cy - sg.size().y / 2.0), sg, p.text_muted);
+            // Where the status came from, on hover (the header's double click still opens).
+            let status_rect = Rect::from_min_max(pos2(status_left, header.top()), pos2(status_right, header.bottom()));
+            if status_rect.width() > 0.0 {
+                ui.interact(status_rect, egui::Id::new(("tile-status", project_id)), Sense::hover())
+                    .on_hover_text(said.as_str());
+            }
             if *attention {
                 painter.rect_filled(
                     Rect::from_min_size(rect.min + vec2(0.0, 10.0), vec2(3.0, rect.height() - 20.0)),
@@ -383,22 +431,23 @@ impl App {
             painter.rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
             return;
         };
-        let cell = widget::cell_size(ui.ctx(), self.settings.font_size);
-        let style = widget::TermStyle {
-            font_size: self.settings.font_size,
-            cell,
-            scheme,
-            real_bold: false,
-            real_italic: false,
-            option_as_meta: self.settings.option_as_meta,
-            copy_on_select: self.settings.copy_on_select,
-            cursor_blink: self.settings.cursor_blink,
-        };
-        let input_enabled = self.dialog.is_none() && self.palette.is_none();
+        let style = self.term_style(ui);
+        let cell = style.cell;
+        let input_enabled = self.terminals_take_keys();
         let min_scale = MIN_SCALE;
         // Too low for even a few lines at a readable size: a compact summary.
         if body.height() < cell.y * min_scale * 3.0 + 12.0 {
+            // On screen all the same: its shells start as in a full tile (at the size they have,
+            // a grid this low being no size for an agent), and its output shows as a preview's.
+            for id in layout.as_ref().map_or_else(|| vec![pane_id], |l| l.panes()) {
+                if self.panes.get(&id).is_some_and(|x| x.dormant()) {
+                    self.actions.push(Action::WakePane(id));
+                    ui.ctx().request_repaint();
+                }
+            }
             let Some(pane) = self.panes.get(&pane_id) else { return };
+            let how = crate::pane::Shown::of(ui, pane_id, &pane.view, crate::pane::Shown::Preview);
+            self.shown_now.insert(pane_id, how);
             // Compact: the last lines at a readable size; a click opens the project.
             let bg = scheme.background;
             painter.rect_filled(body, CornerRadius::same(style::RADIUS_LG - 2), bg);

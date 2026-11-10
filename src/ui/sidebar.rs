@@ -280,10 +280,11 @@ impl App {
                                 if !pr.kind.label().is_empty() {
                                     s = format!("{s}\n{}", pr.kind.label());
                                 }
-                                if let Some((_, text, _)) = chip
-                                    && let Some(pane) = self.tile_pane(pr.id).and_then(|x| self.panes.get(&x))
+                                // What the chip shows, and where its status came from.
+                                if chip.is_some()
+                                    && let Some(pane) = self.project_pane(pr.id).and_then(|x| self.panes.get(&x))
                                 {
-                                    s = format!("{s}\n{} · {text}", pane.label());
+                                    s = format!("{s}\n{} · {}", pane.label(), status::described(&pane.tracker));
                                 }
                                 s
                             })
@@ -445,7 +446,7 @@ impl App {
         let asleep = panes.iter().all(|id| self.panes.get(id).is_none_or(crate::pane::Pane::dormant));
         let status = self.project_status(pr).map(|(s, _)| s);
         // The chip: what waits; else the agent or program at work.
-        let pane = self.tile_pane(pr.id).and_then(|id| self.panes.get(&id));
+        let pane = self.project_pane(pr.id).and_then(|id| self.panes.get(&id));
         let busy = pane.filter(|x| x.tracker.agent.is_some() || matches!(x.tracker.fg, tc_core::status::Foreground::Program { .. }));
         let chip = match (pane, status) {
             (Some(x), Some(s)) if x.tracker.wants_attention() => Some((status::icon(s), status::text(s), status::color(s, p))),

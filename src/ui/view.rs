@@ -87,6 +87,13 @@ impl App {
         self.toast_ui(&ctx);
     }
 
+    /// Terminals take keys only while nothing floating over them does: a dialog, the palette,
+    /// the Review or the attention list. The panes are drawn first, so they would read an Esc
+    /// meant for those (and send it to the agent) before it closes them.
+    pub fn terminals_take_keys(&self) -> bool {
+        self.dialog.is_none() && self.palette.is_none() && self.review.is_none() && !self.attention_open
+    }
+
     fn central(&mut self, ui: &mut Ui) {
         if self.projects.is_empty() {
             let full = ui.max_rect();

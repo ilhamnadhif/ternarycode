@@ -2,7 +2,7 @@
 //! the source shown in tooltips.
 
 use eframe::egui::Color32;
-use tc_core::status::{Source, Status};
+use tc_core::status::{Source, Status, Tracker};
 
 use super::icons;
 use super::style::Palette;
@@ -53,6 +53,17 @@ pub fn source(src: Source) -> String {
         Source::Bell => t("terminal bell").into(),
         Source::Shell => t("shell integration").into(),
         Source::Input => t("your input").into(),
+    }
+}
+
+/// A pane's status and where it came from, for tooltips: "Needs input · from Claude Code hook,
+/// 3 s ago" (only the status when nothing said it).
+pub fn described(tracker: &Tracker) -> String {
+    let src = source(tracker.source);
+    if src.is_empty() {
+        text(tracker.status)
+    } else {
+        tf("{} · from {}, {} ago", &[&text(tracker.status), &src, &age(tracker.since)])
     }
 }
 

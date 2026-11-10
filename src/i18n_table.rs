@@ -78,6 +78,7 @@ const ID: &[(&str, &str)] = &[
     ("Continue {}'s last session here", "Lanjutkan sesi terakhir {} di sini"),
     ("No agent is waiting for you.", "Tidak ada agent yang menunggu kamu."),
     (" (+{} more)", " (+{} lagi)"),
+    ("+{} in other tabs", "+{} di tab lain"),
     ("Show everything that waits for you", "Tampilkan semua yang menunggu kamu"),
     ("Waiting for you", "Menunggu kamu"),
     ("Close", "Tutup"),

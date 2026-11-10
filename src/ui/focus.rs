@@ -135,7 +135,8 @@ impl App {
         let color = project.color32();
         let git = project.git.clone();
         let active_tab = project.active_tab;
-        let tabs: Vec<(usize, String, Option<Status>, PaneId)> = project
+        // Each tab with the status its icon shows and, for its tooltip, where that came from.
+        let tabs: Vec<_> = project
             .tabs
             .iter()
             .enumerate()
@@ -149,18 +150,19 @@ impl App {
                     .iter()
                     .filter_map(|id| self.panes.get(id))
                     .filter(|pane| pane.tracker.wants_attention())
-                    .map(|pane| pane.tracker.status)
-                    .min_by_key(|s| s.priority())
+                    .min_by_key(|pane| pane.tracker.status.priority())
                     .or_else(|| {
                         self.panes
                             .get(&tab.focused)
-                            .map(|pane| pane.tracker.status)
-                            .filter(|s| !matches!(s, Status::Idle | Status::Unknown))
-                    });
+                            .filter(|pane| !matches!(pane.tracker.status, Status::Idle | Status::Unknown))
+                    })
+                    .map(|pane| (pane.tracker.status, status::described(&pane.tracker)));
                 (i, label, waiting, tab.focused)
             })
             .collect();
         let mut tab_rects: Vec<Rect> = Vec::with_capacity(tabs.len());
+        // The part of the strip in view (tabs scrolled out of it are no place to drop on).
+        let mut strip_shown: Option<Rect> = None;
         let body = self.top_bar(ui, full, |app, ui| {
             kit::dot(ui, color, 4.5);
             ui.label(RichText::new(&name).font(style::semibold(14.0)).color(p.text));
@@ -172,35 +174,86 @@ impl App {
                 }
             }
             kit::vdivider(ui, 18.0);
-            for (i, label, waiting, focused) in &tabs {
-                let dragging = app.tab_drag == Some(*i);
-                let (r, close) = terminal_tab(ui, label, *waiting, *i == active_tab, dragging, tabs.len() > 1);
-                if close {
-                    app.actions.push(Action::CloseTab(*i));
-                }
-                #[cfg(debug_assertions)]
-                crate::devtest::record(format!("tab:{i}"), r.rect);
-                tab_rects.push(r.rect);
-                if r.hovered() || r.is_pointer_button_down_on() {
-                    app.tabs_hot = true;
-                }
-                if r.clicked() && !close {
-                    app.actions.push(Action::SelectTab(*i));
-                }
-                if r.middle_clicked() && tabs.len() > 1 {
-                    app.actions.push(Action::CloseTab(*i));
-                }
-                // Dragged: along the strip to reorder, onto a pane to split it (handled below,
-                // once the panes are laid out).
-                if r.drag_started() && tabs.len() > 1 {
-                    app.tab_drag = Some(*i);
-                }
-                let r = r.on_hover_text(t("Drag to reorder, or onto a pane to split it"));
-                if r.double_clicked() {
-                    let current = app.panes.get(focused).and_then(|p| p.title.clone()).unwrap_or_default();
-                    app.dialog = Some(crate::app::Dialog::RenamePane(*focused, current));
-                }
-            }
+            // More tabs than fit scroll sideways (wheel or trackpad), a fade at the edge that
+            // hides some; the tab in view is scrolled to when it changes. "+" stays outside.
+            let row = ui.max_rect();
+            let plus_w = 26.0 + ui.spacing().item_spacing.x;
+            let strip = Rect::from_min_max(
+                pos2(ui.cursor().min.x, row.center().y - 14.0),
+                pos2((row.right() - plus_w).max(ui.cursor().min.x), row.center().y + 14.0),
+            );
+            let seen_id = egui::Id::new(("tab-strip-active", pid));
+            let scroll_to_active = ui.data(|d| d.get_temp::<(usize, usize)>(seen_id)) != Some((active_tab, tabs.len()));
+            ui.data_mut(|d| d.insert_temp(seen_id, (active_tab, tabs.len())));
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(strip)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                |ui| {
+                    ui.style_mut().always_scroll_the_only_direction = true;
+                    // Our own fades: egui's take the colour of the panel behind, not the bar's.
+                    ui.spacing_mut().scroll.fade.strength = 0.0;
+                    let out = egui::ScrollArea::horizontal()
+                        .id_salt(("tab-strip", pid))
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .scroll_source(egui::scroll_area::ScrollSource::MOUSE_WHEEL)
+                        .show(ui, |ui| {
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                for (i, label, waiting, focused) in &tabs {
+                                    let dragging = app.tab_drag == Some(*i);
+                                    let on = *i == active_tab;
+                                    let (r, close) =
+                                        terminal_tab(ui, label, waiting.as_ref().map(|w| w.0), on, dragging, tabs.len() > 1);
+                                    if close {
+                                        app.actions.push(Action::CloseTab(*i));
+                                    }
+                                    if on && scroll_to_active {
+                                        r.scroll_to_me(None);
+                                    }
+                                    #[cfg(debug_assertions)]
+                                    crate::devtest::record(format!("tab:{i}"), r.rect);
+                                    tab_rects.push(r.rect);
+                                    if r.hovered() || r.is_pointer_button_down_on() {
+                                        app.tabs_hot = true;
+                                    }
+                                    if r.clicked() && !close {
+                                        app.actions.push(Action::SelectTab(*i));
+                                    }
+                                    if r.middle_clicked() && tabs.len() > 1 {
+                                        app.actions.push(Action::CloseTab(*i));
+                                    }
+                                    // Dragged: along the strip to reorder, onto a pane to split it
+                                    // (handled below, once the panes are laid out).
+                                    if r.drag_started() && tabs.len() > 1 {
+                                        app.tab_drag = Some(*i);
+                                    }
+                                    let hint = t("Drag to reorder, or onto a pane to split it");
+                                    let tip = match waiting {
+                                        Some((_, said)) => format!("{said}\n{hint}"),
+                                        None => hint.to_string(),
+                                    };
+                                    let r = r.on_hover_text(tip);
+                                    if r.double_clicked() {
+                                        let current = app.panes.get(focused).and_then(|p| p.title.clone()).unwrap_or_default();
+                                        app.dialog = Some(crate::app::Dialog::RenamePane(*focused, current));
+                                    }
+                                }
+                            });
+                        });
+                    let shown = out.inner_rect;
+                    strip_shown = Some(shown);
+                    let offset = out.state.offset.x;
+                    let fade_w = 24.0_f32.min(shown.width() / 2.0);
+                    if offset > 0.5 {
+                        let r = Rect::from_min_max(shown.min, pos2(shown.left() + fade_w, shown.bottom()));
+                        kit::fade(ui.painter(), r, p.chrome, false);
+                    }
+                    if offset + shown.width() < out.content_size.x - 0.5 {
+                        let r = Rect::from_min_max(pos2(shown.right() - fade_w, shown.top()), shown.max);
+                        kit::fade(ui.painter(), r, p.chrome, true);
+                    }
+                },
+            );
             if kit::icon_button_ex(ui, icons::PLUS, &kit::tip(t("New Tab"), Action::NewTab), false, 26.0).clicked() {
                 app.actions.push(Action::NewTab);
             }
@@ -271,26 +324,10 @@ impl App {
             ui.painter().rect_filled(d.rect, CornerRadius::ZERO, p.border);
         }
 
-        let dark = ui.visuals().dark_mode;
-        let scheme = self.scheme(dark);
-        let cell = widget::cell_size(ui.ctx(), self.settings.font_size);
-        self.cell = Some(cell);
-        let choice = tc_term::fonts::effective_choice(&tc_term::prefs::FontChoice {
-            name: self.settings.font_name.clone(),
-            path: self.settings.font_path.clone(),
-            index: 0,
-        });
-        let style = widget::TermStyle {
-            font_size: self.settings.font_size,
-            cell,
-            scheme,
-            real_bold: tc_term::fonts::has_real_face(&choice, true, false),
-            real_italic: tc_term::fonts::has_real_face(&choice, false, true),
-            option_as_meta: self.settings.option_as_meta,
-            copy_on_select: self.settings.copy_on_select,
-            cursor_blink: self.settings.cursor_blink,
-        };
-        let input_enabled = self.dialog.is_none() && self.palette.is_none();
+        let style = self.term_style(ui);
+        let scheme = style.scheme;
+        self.cell = Some(style.cell);
+        let input_enabled = self.terminals_take_keys();
         let window_focused = self.window_focused;
         let now = Instant::now();
         for (pane_id, rect) in rects {
@@ -369,14 +406,42 @@ impl App {
         if self.focus_request.is_some_and(|f| !self.panes.contains_key(&f)) {
             self.focus_request = None;
         }
-        self.tab_drop(ui, &tab_rects, &pane_areas, active_tab);
+        self.tab_drop(ui, &tab_rects, strip_shown, &pane_areas, active_tab);
         self.find_bar(ui);
+    }
+
+    /// How terminals are drawn, in Focus and in the Grid alike: the settings' font (its real
+    /// bold and italic faces where it has them) and the scheme of the current theme.
+    pub(super) fn term_style(&self, ui: &Ui) -> widget::TermStyle<'static> {
+        let choice = tc_term::fonts::effective_choice(&tc_term::prefs::FontChoice {
+            name: self.settings.font_name.clone(),
+            path: self.settings.font_path.clone(),
+            index: 0,
+        });
+        widget::TermStyle {
+            font_size: self.settings.font_size,
+            cell: widget::cell_size(ui.ctx(), self.settings.font_size),
+            scheme: self.scheme(ui.visuals().dark_mode),
+            real_bold: tc_term::fonts::has_real_face(&choice, true, false),
+            real_italic: tc_term::fonts::has_real_face(&choice, false, true),
+            option_as_meta: self.settings.option_as_meta,
+            copy_on_select: self.settings.copy_on_select,
+            cursor_blink: self.settings.cursor_blink,
+        }
     }
 
     /// A tab or a pane header being dragged. A tab: a line where it would land in the strip,
     /// or the half of a pane it would take (it becomes a split of the tab in view). A pane: the
     /// half of another pane it would move beside, or the tab strip (it becomes a tab).
-    fn tab_drop(&mut self, ui: &mut Ui, tab_rects: &[Rect], panes: &[(PaneId, Rect)], active_tab: usize) {
+    /// `strip_shown`: the part of the strip in view, when it scrolls.
+    fn tab_drop(
+        &mut self,
+        ui: &mut Ui,
+        tab_rects: &[Rect],
+        strip_shown: Option<Rect>,
+        panes: &[(PaneId, Rect)],
+        active_tab: usize,
+    ) {
         enum Source {
             Tab(usize),
             Pane(PaneId),
@@ -401,7 +466,8 @@ impl App {
             .iter()
             .copied()
             .reduce(|a, b| a.union(b))
-            .map(|r| r.expand2(vec2(40.0, 8.0)));
+            // Tabs scrolled out of view lie under the toolbar or off the window.
+            .map(|r| strip_shown.map_or(r, |s| r.intersect(s)).expand2(vec2(40.0, 8.0)));
         let over_pane = panes.iter().find(|(_, r)| r.contains(pos)).copied();
         let mut drop: Option<Action> = None;
         if strip.is_some_and(|r| r.contains(pos)) {
@@ -499,16 +565,20 @@ impl App {
         let p = style::pal(ui);
         // Esc closes the bar (taken before the text field, which would swallow it).
         let mut close = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        // Kept inside the pane, however narrow (else it covers the pane beside it, or leaves the
+        // window): the field gives up width first.
+        let field_w = (rect.width() - 200.0).clamp(60.0, 170.0);
         egui::Area::new(egui::Id::new("find-bar"))
             .order(egui::Order::Foreground)
-            .fixed_pos(rect.right_top() + vec2(-330.0, 6.0))
+            .fixed_pos(pos2((rect.right() - 330.0).max(rect.left() + 6.0), rect.top() + 6.0))
+            .constrain_to(rect)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let r = ui.add(
                             egui::TextEdit::singleline(&mut search.query)
                                 .hint_text(t("Find in this pane"))
-                                .desired_width(170.0),
+                                .desired_width(field_w),
                         );
                         if search.opened {
                             r.request_focus();
@@ -577,8 +647,7 @@ impl App {
         let label = pane.label();
         let place = pane.place(&root);
         let message = pane.tracker.message.clone().filter(|_| s == Status::NeedsInput);
-        let src = status::source(pane.tracker.source);
-        let since = pane.tracker.since;
+        let tip = status::described(&pane.tracker);
         let hovered = ui.rect_contains_pointer(rect);
 
         // Buttons first, from the right (split and close only while hovered); the text on the
@@ -664,11 +733,6 @@ impl App {
             painter.galley(pos2(x, cy - mg.size().y / 2.0), mg, p.text_muted);
         }
         let status_rect = Rect::from_min_max(rect.min, pos2(x.min(clip.right()), rect.max.y));
-        let tip = if src.is_empty() {
-            status::text(s)
-        } else {
-            tf("{} · from {}, {} ago", &[&status::text(s), &src, &status::age(since)])
-        };
         // The whole header (left of its buttons) can be dragged to move the pane.
         let grab = Rect::from_min_max(rect.min, pos2(clip.right(), rect.max.y));
         let label_resp = ui

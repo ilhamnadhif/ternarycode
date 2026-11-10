@@ -43,7 +43,8 @@ impl App {
                     let r = bar_item(ui, Some(status::icon(s)), &text, c, Some(jump_key()), room);
                     #[cfg(debug_assertions)]
                     crate::devtest::record("attention-summary", r.rect);
-                    if r.on_hover_text(t("Show everything that waits for you")).clicked() {
+                    let tip = format!("{}\n{}", status::described(&pane.tracker), t("Show everything that waits for you"));
+                    if r.on_hover_text(tip).clicked() {
                         self.actions.push(Action::ToggleAttention);
                     }
                 }
@@ -92,7 +93,7 @@ impl App {
         let queue = self.attention_queue();
         let mut close = false;
         let screen = ctx.content_rect();
-        egui::Area::new(egui::Id::new("attention-panel"))
+        let panel = egui::Area::new(egui::Id::new("attention-panel"))
             .order(egui::Order::Foreground)
             .pivot(Align2::LEFT_BOTTOM)
             .fixed_pos(screen.left_bottom() + vec2(8.0, -super::view::STATUS_H - 4.0))
@@ -119,6 +120,8 @@ impl App {
                             let Some(pane) = self.panes.get(&e.pane) else { continue };
                             let project = self.project(pane.project).map(|x| x.name.clone()).unwrap_or_default();
                             let c = status::color(e.status, &p);
+                            // The hover fill goes under the row, known only once the row is laid out.
+                            let fill = ui.painter().add(egui::Shape::Noop);
                             let r = ui
                                 .horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 8.0;
@@ -140,7 +143,10 @@ impl App {
                                 .response;
                             let r = ui.interact(r.rect, egui::Id::new(("att", e.pane)), Sense::click());
                             if r.hovered() {
-                                ui.painter().rect_filled(r.rect.expand(2.0), egui::CornerRadius::same(6), p.faint_row());
+                                ui.painter().set(
+                                    fill,
+                                    egui::Shape::rect_filled(r.rect.expand(2.0), egui::CornerRadius::same(6), p.faint_row()),
+                                );
                             }
                             if r.clicked() {
                                 self.actions.push(Action::FocusPane(e.pane));
@@ -149,8 +155,21 @@ impl App {
                             ui.add_space(4.0);
                         }
                     });
-            });
-        if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            })
+            .response;
+        // A click anywhere else closes it, but for the status bar item that toggles it (that
+        // click, queued this frame, closes it already).
+        let toggled = self.actions.iter().any(|a| matches!(a, Action::ToggleAttention));
+        if panel.clicked_elsewhere() && !toggled {
+            close = true;
+        }
+        // Esc closes it and goes no further. Not while a dialog, the palette or the Review is
+        // over it: that Esc is theirs.
+        let on_top = self.dialog.is_none() && self.palette.is_none() && self.review.is_none();
+        if on_top && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            close = true;
+        }
+        if close {
             self.attention_open = false;
         }
     }
