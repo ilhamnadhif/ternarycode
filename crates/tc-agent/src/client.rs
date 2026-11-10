@@ -76,14 +76,24 @@ pub fn message(
     ))
 }
 
-/// Writes `msg` to the pane's socket.
+/// Writes `msg` to the pane's socket. Connecting can wait too (on Linux, while the app takes no
+/// connections and its backlog is full), and has no timeout of its own: it runs on a thread
+/// that is given up after `SOCKET_TIMEOUT` (and left behind).
 #[cfg(unix)]
 pub(crate) fn send(sock: &str, msg: &HookMsg) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(msg)?;
     line.push(b'\n');
-    let mut stream = std::os::unix::net::UnixStream::connect(sock)?;
-    stream.set_write_timeout(Some(SOCKET_TIMEOUT))?;
-    stream.write_all(&line)
+    let sock = sock.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::os::unix::net::UnixStream::connect(&sock).and_then(|mut stream| {
+            stream.set_write_timeout(Some(SOCKET_TIMEOUT))?;
+            stream.write_all(&line)
+        });
+        let _ = tx.send(result);
+    });
+    rx.recv_timeout(SOCKET_TIMEOUT)
+        .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
 }
 
 /// Writes `msg` to the pane's named pipe. Every instance of it can be busy for a moment (the
