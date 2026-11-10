@@ -31,7 +31,7 @@ __tc_loaded=1
 builtin export -n PROMPT_COMMAND 2>/dev/null
 
 # 0: nothing due; 1: at the prompt, C due; 2: C written, D due; 3: like 1, but the rest of the
-# first prompt's PROMPT_COMMAND (whose commands are in __tc_first) is still to run.
+# first prompt's PROMPT_COMMAND (whose commands not run yet are in __tc_first) is still running.
 __tc_state=0
 __tc_first=
 __tc_prev_debug=
@@ -92,6 +92,8 @@ __tc_prompt_end() {
 }
 
 # Shell code as a list of words: separators become spaces, one space between words, one around.
+# Redirections are words of their own, as $BASH_COMMAND prints them (`2>/dev/null` as
+# `2> /dev/null`).
 __tc_words() {
     builtin local s="$1"
     s=${s//$'\n'/ }
@@ -101,6 +103,8 @@ __tc_words() {
     s=${s//|/ }
     s=${s//\(/ }
     s=${s//\)/ }
+    s=${s//</ < }
+    s=${s//>/ > }
     while [[ $s == *'  '* ]]; do
         s=${s//  / }
     done
@@ -118,11 +122,18 @@ __tc_debug() {
         (${#FUNCNAME[@]} == 1 || ${FUNCNAME[1]-} == __bp_original_debug_trap) &&
         ${BASH_SUBSHELL-0} == 0 && -z ${COMP_LINE-} && -z ${READLINE_LINE+x} &&
         $BASH_COMMAND != __tc_* ]]; then
-        # In state 3, commands of the first prompt's PROMPT_COMMAND do not count.
-        if [[ $__tc_state == 1 ]] || {
-            __tc_words "$BASH_COMMAND"
-            [[ $__tc_first != *"$__tc_out"* ]]
-        }; then
+        # In state 3, commands of the first prompt's PROMPT_COMMAND do not count. They run in
+        # order: one found in what is left of it is one of them, and what is left now starts
+        # after it. Once nothing is left, every command is the user's, even one that is in
+        # PROMPT_COMMAND too (`history` after `history -a`).
+        if [[ $__tc_state == 3 ]] && __tc_words "$BASH_COMMAND" &&
+            [[ $__tc_first == *"$__tc_out"* ]]; then
+            __tc_first=" ${__tc_first#*"$__tc_out"}"
+            if [[ $__tc_first == ' ' ]]; then
+                __tc_first=
+                __tc_state=1
+            fi
+        else
             __tc_state=2
             if [[ -n $__tc_ps1_marked && $PS1 == "$__tc_ps1_marked" ]]; then
                 PS1=$__tc_ps1_saved

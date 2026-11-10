@@ -512,6 +512,30 @@ PS1='[$?]TCPROMPT\$ '
     assert_eq!(pane.marks(), expected, "{screen}");
 }
 
+/// .bashrc appends commands to PROMPT_COMMAND (one with a redirection, which bash prints
+/// differently in $BASH_COMMAND), and the first command typed is made of words that are in it:
+/// it still gets C and D. The rest of the first prompt's PROMPT_COMMAND writes no C.
+#[test]
+fn bash_first_command_like_one_in_prompt_command() {
+    let fx = Fixture::new();
+    fx.write(
+        ".bashrc",
+        r#"alias tcalias='echo ALIAS_$((40+2))'
+PS1='[$?]TCPROMPT\$ '
+PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }history -a 2>/dev/null; echo -ne '\033]0;${PWD##*/}\007'"
+"#,
+    );
+    let env = fx.integrated(BASH, fx.base_env(&[]));
+    let mut lines = vec!["echo", "history"];
+    lines.extend(LINES);
+    let pane = session(&env, &[BASH, "-i"], &fx.cwd, &lines);
+    let screen = pane.screen();
+    assert!(screen.contains("ALIAS_42"), "{screen}");
+    let mut expected = vec![A, B, C, d(0), A, B, C, d(0), A, B];
+    expected.extend(command_marks());
+    assert_eq!(pane.marks(), expected, "{screen}");
+}
+
 // fish
 
 #[test]

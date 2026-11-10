@@ -6,15 +6,19 @@ $Global:__TernaryCode = @{ Running = $false; Wrapped = $false; Esc = [char]27; B
 
 function Global:__TernaryCodeWrapReadLine {
     $t = $Global:__TernaryCode
-    $t.Wrapped = $true
+    # Without PSReadLine (not loaded yet) there is nothing to wrap: tried again at the next prompt.
     $original = Get-Command PSConsoleHostReadLine -CommandType Function -ErrorAction Ignore
     if (-not $original) { return }
+    $t.Wrapped = $true
     $t.ReadLine = $original.ScriptBlock
     function Global:PSConsoleHostReadLine {
         $t = $Global:__TernaryCode
         $line = & $t.ReadLine
-        $t.Running = $true
-        [Console]::Write("$($t.Esc)]133;C$($t.Bel)")
+        # An empty line runs nothing: no C (and so no D), as in the other shells.
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            $t.Running = $true
+            [Console]::Write("$($t.Esc)]133;C$($t.Bel)")
+        }
         $line
     }
 }
