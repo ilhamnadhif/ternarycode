@@ -31,15 +31,17 @@ impl App {
             return;
         }
 
-        // Documents in other tabs let go of their pictures (made again when shown).
+        // A document lets go of its pictures when its tab is left (made again when shown):
+        // once, not on every frame, or its search starts over each time it is shown again.
         if let Some(e) = self.editors.get_mut(&project) {
-            let active = e.active;
-            for (i, f) in e.files.iter_mut().enumerate() {
-                if i != active
-                    && let Some(d) = f.doc.as_mut()
-                {
+            let shown_id = egui::Id::new(("editor-shown", project));
+            let shown = e.file().map(|f| f.path.clone());
+            let before = ui.data(|d| d.get_temp::<Option<PathBuf>>(shown_id)).flatten();
+            if before != shown {
+                if let Some(d) = before.and_then(|b| e.files.iter_mut().find(|f| f.path == b)).and_then(|f| f.doc.as_mut()) {
                     d.release();
                 }
+                ui.data_mut(|d| d.insert_temp(shown_id, shown));
             }
         }
         if self.editors.get(&project).and_then(|e| e.file()).is_some_and(|f| f.doc.is_some()) {
@@ -313,7 +315,9 @@ impl App {
                         }
                         find_focused = r.has_focus();
                         if r.changed() {
-                            // Typing searches from the caret on.
+                            // Typing searches from the caret on, for the query just typed (the
+                            // matches above were found for the one before).
+                            f.refresh(file);
                             go = Some(true);
                             f.current = None;
                         }
@@ -483,14 +487,22 @@ impl App {
                 job.wrap.max_width = f32::INFINITY;
                 ui.fonts_mut(|f| f.layout_job(job))
             };
-            let mut output = egui::TextEdit::multiline(&mut file.text)
+            // A read-only file is shown through a `&str`, which no key can change: it still
+            // takes the keyboard, so it can be selected, copied, searched and navigated.
+            let mut shown: &str;
+            let buffer: &mut dyn egui::TextBuffer = if read_only {
+                shown = file.text.as_str();
+                &mut shown
+            } else {
+                &mut file.text
+            };
+            let mut output = egui::TextEdit::multiline(buffer)
                 .id(egui::Id::new(("editor-text", path.clone())))
                 .code_editor()
                 .font(font.clone())
                 .desired_width(f32::INFINITY)
                 .desired_rows(40)
                 .lock_focus(true)
-                .interactive(!read_only)
                 // With a frame given, egui takes the margin from the frame.
                 .frame(egui::Frame::NONE.inner_margin(egui::Margin {
                     left: gutter.min(127.0) as i8,
@@ -506,7 +518,7 @@ impl App {
             }
             #[cfg(debug_assertions)]
             crate::devtest::record("editor-text", resp.rect);
-            if resp.changed() {
+            if resp.changed() && !read_only {
                 file.rev += 1;
                 file.lines = crate::editor::count_lines(&file.text);
                 file.compare_diff = None;
@@ -632,14 +644,13 @@ impl App {
                 for path in recent {
                     let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    // The icon in its file type's colour, as on the tabs and in the file tree.
                     let (icon, color) = icons::file_icon(&name, false, false, &p);
-                    let r = ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("{icon}  {rel}")).size(style::BODY - 0.5).color(p.text_muted),
-                        )
-                        .sense(Sense::click()),
-                    );
-                    let _ = color;
+                    let font = egui::FontId::proportional(style::BODY - 0.5);
+                    let mut job = egui::text::LayoutJob::default();
+                    job.append(icon, 0.0, egui::TextFormat::simple(font.clone(), color));
+                    job.append(&format!("  {rel}"), 0.0, egui::TextFormat::simple(font, p.text_muted));
+                    let r = ui.add(egui::Label::new(job).sense(Sense::click()));
                     if r.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }

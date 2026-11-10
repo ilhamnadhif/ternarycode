@@ -146,7 +146,8 @@ pub fn overlay(
 
     // ----- typing: completion and signature help ---------------------------------------------
     let caret = out.cursor_range.map(|c| c.primary.index.0);
-    if let (Some(c), true) = (caret, resp.changed() && resp.has_focus() && lsp_on) {
+    // (A read-only text says it changed when typed into, though it did not.)
+    if let (Some(c), true) = (caret, resp.changed() && resp.has_focus() && lsp_on && !file.read_only) {
         let line = ix.line_of(c);
         let col = c - ix.line_start(line);
         let before = ix.line_text(text, line).chars().nth(col.wrapping_sub(1));
@@ -227,6 +228,9 @@ pub fn overlay(
         }
     }
     let command = ui.input(|i| i.modifiers.command);
+    // The hover popup stays while the pointer is on it, or in the gap on the way to it (over
+    // the next line's words), so a long one can be scrolled.
+    let over_popup = ide.hover_rect.zip(ui.ctx().pointer_hover_pos()).is_some_and(|(r, p)| r.expand(6.0).contains(p));
     match on_word {
         Some((start, rect)) if command && lsp_on => {
             // ⌘ held: the symbol is a link to its definition.
@@ -237,7 +241,7 @@ pub fn overlay(
             }
             ide.hover_wait = None;
         }
-        Some((start, _)) if lsp_on && !ui.input(|i| i.pointer.any_down()) => {
+        Some((start, _)) if lsp_on && !over_popup && !ui.input(|i| i.pointer.any_down()) => {
             let key = (file.path.clone(), start);
             let waiting = ide.hover_wait.as_ref().is_some_and(|(p, s, _)| *p == key.0 && *s == start);
             if !waiting {
@@ -260,8 +264,6 @@ pub fn overlay(
         }
         _ => {
             ide.hover_wait = None;
-            // Off the symbol: the popup stays while the pointer is on it.
-            let over_popup = ide.hover_rect.zip(ui.ctx().pointer_hover_pos()).is_some_and(|(r, p)| r.expand(6.0).contains(p));
             if !over_popup {
                 ide.hover = None;
                 ide.hover_asked = None;
@@ -346,7 +348,9 @@ impl App {
                     kit::select_text(ctx, text_id, at, at);
                 }
                 ide.completion = None;
-                if item.label.ends_with('(') || file.text.chars().nth(caret.saturating_sub(0)).is_some_and(|c| c == '(') {
+                // A call was completed with the caret inside its parentheses: its signature.
+                let after_paren = file.caret_index.and_then(|c| c.checked_sub(1)).and_then(|i| file.text.chars().nth(i)) == Some('(');
+                if item.label.ends_with('(') || after_paren {
                     cmds.push(IdeCmd::Signature);
                 }
             }
@@ -375,10 +379,12 @@ impl App {
             return;
         }
         let cmd = Modifiers::COMMAND;
+        // A key's most specific shortcut first: `consume_key` ignores an extra Shift or Alt,
+        // so plain F12 would also take ⇧F12.
         let shortcuts: [(Key, Modifiers, IdeCmd); 12] = [
-            (Key::F12, none, IdeCmd::Goto(Goto::Definition)),
-            (Key::F12, cmd, IdeCmd::Goto(Goto::Implementation)),
             (Key::F12, Modifiers::SHIFT, IdeCmd::References),
+            (Key::F12, cmd, IdeCmd::Goto(Goto::Implementation)),
+            (Key::F12, none, IdeCmd::Goto(Goto::Definition)),
             (Key::F2, none, IdeCmd::Rename),
             (Key::Period, cmd, IdeCmd::CodeActions),
             (Key::F, Modifiers::SHIFT | Modifiers::ALT, IdeCmd::Format),
@@ -491,22 +497,33 @@ impl App {
 
         // Hover: the diagnostics under the pointer, then the server's information.
         let hover = ide.hover.as_ref().filter(|h| h.path == path);
+        // With the pointer on the popup (off the word) it stays where it was, with the
+        // diagnostics it showed, so a long one can be scrolled.
+        let diags_id = egui::Id::new("ide-hover-diags");
+        let kept = ide.hover_rect.filter(|r| ctx.pointer_hover_pos().is_some_and(|p| r.expand(6.0).contains(p)));
+        let (at, diags) = match kept {
+            Some(r) => (Some(r.min), ctx.data(|d| d.get_temp::<Vec<(Color32, String)>>(diags_id)).unwrap_or_default()),
+            None => {
+                ctx.data_mut(|d| d.insert_temp(diags_id, geom.diags.clone()));
+                (geom.word.map(|w| w.left_bottom() + vec2(0.0, 4.0)), geom.diags.clone())
+            }
+        };
         ide.hover_rect = None;
-        if (hover.is_some() || !geom.diags.is_empty())
-            && let Some(word) = geom.word.or(ide.hover_rect)
+        if (hover.is_some() || !diags.is_empty())
+            && let Some(at) = at
         {
             let r = egui::Area::new(egui::Id::new("ide-hover"))
                 .order(egui::Order::Tooltip)
-                .fixed_pos(word.left_bottom() + vec2(0.0, 4.0))
+                .fixed_pos(at)
                 .show(ctx, |ui| {
                     frame.show(ui, |ui| {
                         ui.set_max_width(540.0);
                         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                            for (c, msg) in &geom.diags {
+                            for (c, msg) in &diags {
                                 ui.label(egui::RichText::new(msg).color(*c));
                             }
                             if let Some(h) = hover {
-                                if !geom.diags.is_empty() {
+                                if !diags.is_empty() {
                                     ui.separator();
                                 }
                                 for b in &h.blocks {
@@ -583,7 +600,10 @@ impl App {
             match done {
                 Some(true) => {
                     let name = field.text.trim().to_string();
-                    if !name.is_empty() {
+                    if name.is_empty() {
+                        // Nothing to rename to: the field closes, as with Esc.
+                        ide.rename = None;
+                    } else {
                         cmds.push(IdeCmd::RenameTo(name));
                     }
                     ctx.memory_mut(|m| m.request_focus(egui::Id::new(("editor-text", path.to_path_buf()))));

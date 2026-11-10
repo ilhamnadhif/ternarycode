@@ -301,7 +301,12 @@ fn find_bar(ui: &mut Ui, view: &mut DocView, rect: Rect, project: ProjectId) -> 
 fn refresh_find(view: &mut DocView) {
     let stamp = match &view.state {
         State::Ready(Content::Pdf) => view.pdf.as_ref().map_or(0, |p| p.text.iter().filter(|t| t.is_some()).count() as u64),
-        State::Ready(Content::Text(_) | Content::Slides(_)) => view.layout.as_ref().map_or(u64::MAX, |l| l.items.len() as u64),
+        // No layout yet (let go while the tab was not shown, made again below): the matches
+        // stay as they are, so coming back keeps the current one.
+        State::Ready(Content::Text(_) | Content::Slides(_)) => match view.layout.as_ref() {
+            Some(l) => l.items.len() as u64,
+            None => return,
+        },
         _ => 0,
     };
     let Some(f) = view.find.as_mut() else { return };
@@ -978,18 +983,25 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
     let mut keys_moved = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
         ui.set_clip_rect(grid_rect);
-        let mut area = egui::ScrollArea::both().id_salt(("sheet", view.path.clone(), view.sheet)).auto_shrink([false, false]);
-        if std::mem::take(&mut view.scroll_to_cell)
-            && let Some(target) = scroll_target(view.cell, view.sheet_scroll, &xs, row_h, head_h, rn_w, grid_rect)
-        {
-            area = area.scroll_offset(target);
+        let salt = ("sheet", view.path.clone(), view.sheet);
+        let mut area = egui::ScrollArea::both().id_salt(&salt).auto_shrink([false, false]);
+        if std::mem::take(&mut view.scroll_to_cell) {
+            // Each sheet scrolls on its own: from this one's offset, not that of the sheet shown
+            // last (a match on another sheet may have just switched to this one).
+            let id = ui.make_persistent_id(egui::IdSalt::new(&salt));
+            view.sheet_scroll = egui::scroll_area::State::load(ui.ctx(), id).map_or(egui::Vec2::ZERO, |s| s.offset);
+            if let Some(target) = scroll_target(view.cell, view.sheet_scroll, &xs, row_h, head_h, rn_w, grid_rect) {
+                area = area.scroll_offset(target);
+            }
         }
-        let out = area.show_viewport(ui, |ui, vp| {
+        area.show_viewport(ui, |ui, vp| {
             let (r, resp) = ui.allocate_exact_size(total.max(vp.size()), Sense::click());
             let o = r.min;
             let painter = ui.painter();
-            let row0 = (((vp.min.y - head_h) / row_h).floor().max(0.0)) as usize;
             let row1 = ((vp.max.y / row_h).ceil() as usize).min(sheet.rows);
+            // The offset is clamped only at the frame's end: zoomed out at the bottom of a long
+            // sheet, the view can start below the last row for a frame.
+            let row0 = ((((vp.min.y - head_h) / row_h).floor().max(0.0)) as usize).min(row1);
             let col0 = xs.partition_point(|x| *x <= vp.min.x - rn_w).saturating_sub(1);
             let col1 = xs.partition_point(|x| *x < vp.max.x - rn_w).min(widths.len());
             let grid = Stroke::new(1.0, style::soft(p.border, 0.9));
@@ -1119,7 +1131,6 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
                 }
             }
         });
-        view.sheet_scroll = out.state.offset;
     });
     if let Some(cell) = select {
         view.cell = Some(cell);
