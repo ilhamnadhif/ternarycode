@@ -123,6 +123,7 @@ const ID: &[(&str, &str)] = &[
     ("{} pages", "{} halaman"),
     ("{} rows × {} columns", "{} baris × {} kolom"),
     ("{} sheets", "{} sheet"),
+    ("Only the first {} rows are shown.", "Hanya {} baris pertama yang ditampilkan."),
     ("{} slides", "{} slide"),
     ("Click a cell to see all of its text.", "Klik sel untuk melihat seluruh isinya."),
     ("Edit as Text", "Edit sebagai Teks"),

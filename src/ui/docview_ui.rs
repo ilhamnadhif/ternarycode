@@ -191,13 +191,25 @@ fn status_line(ui: &mut Ui, view: &DocView, rect: Rect) {
     let p = style::pal(ui);
     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.canvas);
     ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
-    ui.painter().text(
+    let summary = ui.painter().text(
         pos2(rect.left() + 14.0, rect.center().y),
         Align2::LEFT_CENTER,
         view.summary(),
         egui::FontId::proportional(style::SMALL),
         p.text_faint,
     );
+    // A sheet cut short (too many cells, or a CSV record that could not be read) would look
+    // complete otherwise.
+    if let State::Ready(Content::Sheet(b)) = &view.state
+        && let Some(s) = b.sheets.get(view.sheet).filter(|s| s.truncated)
+    {
+        let text = format!("{}  {}", icons::WARNING, tf("Only the first {} rows are shown.", &[&s.rows.to_string()]));
+        let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(style::SMALL), p.warn);
+        // Short of the selected cell's name at the right.
+        job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - summary.right() - 110.0).max(0.0));
+        let g = ui.painter().layout_job(job);
+        ui.painter().galley(pos2(summary.right() + 12.0, rect.center().y - g.size().y / 2.0), g, p.warn);
+    }
     let right = match (&view.state, view.cell) {
         (State::Ready(Content::Sheet(b)), Some((r, c))) => b.sheets.get(view.sheet).map(|s| cell_name(s, r, c)),
         _ => None,
