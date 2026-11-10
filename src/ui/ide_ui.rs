@@ -158,6 +158,12 @@ pub fn overlay(
                     Some(pop) => {
                         crate::lsp::refilter_in(text, c, pop);
                         if pop.shown.is_empty() {
+                            // Nothing left of an incomplete list: the server may have more for
+                            // what is typed now. Asked again (its answer opens the list), not
+                            // only at the next key.
+                            if pop.incomplete {
+                                cmds.push(IdeCmd::Complete(false));
+                            }
                             ide.completion = None;
                         }
                     }

@@ -158,6 +158,9 @@ pub struct CompletionPopup {
     pub shown: Vec<usize>,
     pub selected: usize,
     pub enc: Encoding,
+    /// The server said the list is incomplete: when typing narrows it to nothing, it is asked
+    /// again rather than closed (it may have what was typed).
+    pub incomplete: bool,
 }
 
 pub struct SignaturePopup {
@@ -1097,7 +1100,7 @@ impl App {
                     _ => (Vec::new(), false),
                 };
                 self.lsp.incomplete = incomplete.then(|| (path.clone(), start, rev));
-                let mut popup = CompletionPopup { path, start, items, shown: Vec::new(), selected: 0, enc };
+                let mut popup = CompletionPopup { path, start, items, shown: Vec::new(), selected: 0, enc, incomplete };
                 self.refilter(&mut popup);
                 self.lsp.ide.completion = (!popup.shown.is_empty()).then_some(popup);
             }
@@ -1750,7 +1753,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        let popup = CompletionPopup { path: PathBuf::new(), start: 4, items: Vec::new(), shown: Vec::new(), selected: 0, enc };
+        let popup = CompletionPopup { path: PathBuf::new(), start: 4, items: Vec::new(), shown: Vec::new(), selected: 0, enc, incomplete: false };
         // `let fo|bar;`: the word after the caret stays, the caret goes after what was inserted.
         let (text, caret) = accept_completion("let fobar;", &popup, &item, 6).unwrap();
         assert_eq!((text.as_str(), caret), ("let foobarbar;", 10));
