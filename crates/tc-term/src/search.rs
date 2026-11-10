@@ -4,9 +4,10 @@
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Direction, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
+use alacritty_terminal::term::Term;
 use alacritty_terminal::term::search::{Match, RegexSearch};
 
-use crate::core::TermShared;
+use crate::core::{Listener, TermShared};
 
 /// The query as a regular expression matching it literally.
 pub fn escape(query: &str) -> String {
@@ -23,11 +24,18 @@ pub fn escape(query: &str) -> String {
 /// The next match before (`backward`) or after `from`; from the bottom (or top) when `from` is
 /// `None`. Wraps around.
 pub fn find(shared: &TermShared, query: &str, from: Option<&Match>, backward: bool) -> Option<Match> {
+    let mut regex = compile(query)?;
+    next(&shared.term.lock(), &mut regex, from, backward)
+}
+
+fn compile(query: &str) -> Option<RegexSearch> {
     if query.is_empty() {
         return None;
     }
-    let mut regex = RegexSearch::new(&escape(query)).ok()?;
-    let term = shared.term.lock();
+    RegexSearch::new(&escape(query)).ok()
+}
+
+fn next(term: &Term<Listener>, regex: &mut RegexSearch, from: Option<&Match>, backward: bool) -> Option<Match> {
     let origin = match (from, backward) {
         (Some(m), true) => {
             let p = *m.start();
@@ -42,7 +50,7 @@ pub fn find(shared: &TermShared, query: &str, from: Option<&Match>, backward: bo
         }
         (Some(m), false) => {
             let p = *m.end();
-            p.add(&*term, alacritty_terminal::index::Boundary::None, 1)
+            p.add(term, alacritty_terminal::index::Boundary::None, 1)
         }
         (None, true) => Point::new(term.bottommost_line(), term.last_column()),
         (None, false) => Point::new(term.topmost_line(), Column(0)),
@@ -52,27 +60,32 @@ pub fn find(shared: &TermShared, query: &str, from: Option<&Match>, backward: bo
     } else {
         (Direction::Right, Side::Left)
     };
-    term.search_next(&mut regex, origin, direction, side, None)
+    term.search_next(regex, origin, direction, side, None)
 }
 
-/// Up to `limit` matches, newest first, each with its line of text.
+/// Up to `limit` matches, newest first, each with its line of text. One hold of the lock and
+/// one compiled query for all of them: output arriving in between would move the lines, and
+/// the wrap-around would no longer be seen.
 pub fn find_all(shared: &TermShared, query: &str, limit: usize) -> Vec<(Match, String)> {
     let mut out: Vec<(Match, String)> = Vec::new();
+    let Some(mut regex) = compile(query) else {
+        return out;
+    };
+    let term = shared.term.lock();
     let mut from: Option<Match> = None;
     while out.len() < limit {
-        let Some(m) = find(shared, query, from.as_ref(), true) else { break };
+        let Some(m) = next(&term, &mut regex, from.as_ref(), true) else { break };
         if out.iter().any(|(x, _)| x == &m) {
             break; // wrapped around
         }
-        let text = line_text(shared, m.start().line.0);
+        let text = line_text(&term, m.start().line.0);
         out.push((m.clone(), text));
         from = Some(m);
     }
     out
 }
 
-fn line_text(shared: &TermShared, line: i32) -> String {
-    let term = shared.term.lock();
+fn line_text(term: &Term<Listener>, line: i32) -> String {
     let row = &term.grid()[alacritty_terminal::index::Line(line)];
     (0..term.columns())
         .map(|c| row[Column(c)].c)

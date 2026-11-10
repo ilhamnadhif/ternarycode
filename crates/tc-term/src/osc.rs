@@ -272,9 +272,14 @@ fn parse(num: u32, text: &str) -> Option<OscSignal> {
             Some(OscSignal::Cwd(path))
         }
         9 => {
-            // ConEmu sub-commands are `9;<n>;…`; only progress (4) matters.
+            // ConEmu sub-commands are `9;<n>` and `9;<n>;…` for n from 1 to 12; only progress
+            // (4) matters. Any other text, numbers too, is a notification.
             let digits = text.bytes().take_while(u8::is_ascii_digit).count();
-            if digits > 0 && (text.len() == digits || text.as_bytes()[digits] == b';') {
+            let sub = matches!(
+                &text[..digits],
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12"
+            );
+            if sub && (text.len() == digits || text.as_bytes()[digits] == b';') {
                 if &text[..digits] != "4" {
                     return None;
                 }
@@ -446,6 +451,20 @@ mod tests {
                     value: None
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn notifications_may_be_numbers() {
+        let notify = |body: &str| OscSignal::Notify {
+            title: None,
+            body: body.into(),
+        };
+        // Not a ConEmu sub-command: shown. ConEmu's own (a cwd, a tab title, a bare 12) are not.
+        assert_eq!(
+            scan_split_everywhere(b"\x1b]9;42\x07\x1b]9;2024;release done\x07\x1b]9;0;x\x07\x1b]9;13;y\x07\
+                \x1b]9;9;C:\\dir\x07\x1b]9;3;tab\x07\x1b]9;12\x07"),
+            vec![notify("42"), notify("2024;release done"), notify("0;x"), notify("13;y")]
         );
     }
 

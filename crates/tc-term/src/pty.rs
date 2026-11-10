@@ -237,15 +237,22 @@ fn child_signals() -> watch::Receiver<u64> {
     let tx = TX.get_or_init(|| {
         let (tx, _) = watch::channel(0u64);
         let sender = tx.clone();
-        tokio::spawn(async move {
-            let Ok(mut sig) =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())
-            else {
+        // On a thread of its own with its own runtime: a task on the caller's runtime would end
+        // with that runtime (each test builds one), and later sessions would get no SIGCHLD.
+        let _ = std::thread::Builder::new().name("sigchld".into()).spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_io().build() else {
                 return;
             };
-            while sig.recv().await.is_some() {
-                sender.send_modify(|n| *n = n.wrapping_add(1));
-            }
+            rt.block_on(async move {
+                let Ok(mut sig) =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())
+                else {
+                    return;
+                };
+                while sig.recv().await.is_some() {
+                    sender.send_modify(|n| *n = n.wrapping_add(1));
+                }
+            });
         });
         tx
     });
@@ -600,6 +607,24 @@ mod tests {
         assert!(gone, "pid {pid} was not reaped");
     }
 
+    /// SIGCHLD still reaches a session on a runtime started after another one ended (each test
+    /// builds its own): a background job holding the terminal open (Linux keeps it open after
+    /// the shell left; macOS revokes it) does not delay the exit.
+    #[test]
+    fn the_exit_is_seen_after_another_runtime_ended() {
+        let first = rt();
+        let ended = run(&first, "exit 0", GridSize { cols: 40, rows: 5 });
+        wait_exit(&ended);
+        drop(ended);
+        drop(first);
+        let rt = rt();
+        let start = std::time::Instant::now();
+        // The shell waits a moment, so the session listens before it exits.
+        let run = run(&rt, "trap '' HUP; sleep 3 & sleep 0.3; exit 4", GridSize { cols: 40, rows: 5 });
+        assert_eq!(wait_exit(&run).0, ExitInfo::Code(4));
+        assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+    }
+
     /// Throughput through a real PTY: `cat` of a 100 MB file (release build:
     /// `cargo test -p tc-term --release -- --ignored --nocapture pty_throughput`).
     #[test]
@@ -624,8 +649,13 @@ mod tests {
             GridSize { cols: 120, rows: 40 },
         );
         let mut bytes_events = 0usize;
-        while let SessionEvent::Output(_) = run.events.recv_timeout(Duration::from_secs(60)).unwrap() {
-            bytes_events += 1;
+        loop {
+            match run.events.recv_timeout(Duration::from_secs(60)).unwrap() {
+                SessionEvent::Output(_) => bytes_events += 1,
+                // Foreground checks come along too: not the end.
+                SessionEvent::Foreground => {}
+                SessionEvent::Exited(_) => break,
+            }
         }
         let secs = start.elapsed().as_secs_f64();
         println!(

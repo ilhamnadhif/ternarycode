@@ -101,6 +101,33 @@ pub struct PromptState {
     pub input: Option<usize>,
     /// The prompt was cleared by a resize the shell has not heard of yet, and what was there.
     cleared: Option<ClearedPrompt>,
+    /// History lines the terminal keeps (its own setting is private to alacritty).
+    limit: usize,
+    /// The main screen's history has room past `limit` (`Feeder::make_room`): while a chunk is
+    /// parsed, or while a full-screen program started in it keeps the main screen out of reach.
+    raised: bool,
+}
+
+impl PromptState {
+    /// The `lines` oldest history lines were dropped: the anchors move up with the rest, and are
+    /// forgotten when their own line went.
+    pub(crate) fn dropped(&mut self, lines: usize) {
+        self.start = self.start.and_then(|a| a.checked_sub(lines));
+        self.input = self.input.and_then(|a| a.checked_sub(lines));
+    }
+
+    fn forget(&mut self) {
+        self.start = None;
+        self.input = None;
+    }
+
+    /// Puts the history back to `limit` after it was given room, dropping the oldest lines.
+    fn trim(&mut self, term: &mut Term<Listener>) {
+        let over = term.grid().history_size().saturating_sub(self.limit);
+        term.grid_mut().update_history(self.limit);
+        self.dropped(over);
+        self.raised = false;
+    }
 }
 
 /// The rows a resize cleared, kept to put back when the size settles where it was (the shell
@@ -147,11 +174,15 @@ pub fn new_terminal(
     palette: QueryPalette,
 ) -> (SharedTerm, mpsc::Receiver<Event>) {
     let (tx, rx) = mpsc::channel();
+    let limit = config.scrolling_history;
     let term = Term::new(config, &size, Listener(tx));
     let shared = Arc::new(TermShared {
         term: FairMutex::new(term),
         notes: Mutex::new(UiNotes::default()),
-        prompt: Mutex::new(PromptState::default()),
+        prompt: Mutex::new(PromptState {
+            limit,
+            ..Default::default()
+        }),
         window: Mutex::new(WindowSize {
             num_lines: size.rows as u16,
             num_cols: size.cols as u16,
@@ -246,10 +277,13 @@ impl Feeder {
         let mut repaint = false;
         for chunk in bytes.chunks(FEED_CHUNK) {
             let mut term = self.shared.term.lock();
+            let room = self.make_room(&mut term);
             self.parser.advance(&mut *term, chunk);
+            self.count_dropped(&mut term, room);
             if !term.mode().contains(TermMode::ALT_SCREEN) {
-                let mut notes = self.shared.notes.lock();
-                if std::mem::take(&mut notes.clear_history_pending) {
+                let pending = std::mem::take(&mut self.shared.notes.lock().clear_history_pending);
+                if pending {
+                    self.shared.prompt.lock().dropped(term.grid().history_size());
                     term.grid_mut().clear_history();
                 }
             }
@@ -257,6 +291,46 @@ impl Feeder {
             repaint |= self.parser.sync_bytes_count() < chunk.len();
         }
         repaint
+    }
+
+    /// While the shell waits at its prompt, gives the history room for a screen of new lines and
+    /// returns its size before. A full history drops its oldest line for each one scrolled in:
+    /// the prompt would move up without the history growing, and its anchors (`PromptState`)
+    /// would point below it. With room the lines are counted (`count_dropped`), then dropped.
+    fn make_room(&self, term: &mut Term<Listener>) -> Option<usize> {
+        let mut prompt = self.shared.prompt.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN)
+            || !prompt.at_prompt
+            || (prompt.start.is_none() && prompt.input.is_none())
+        {
+            return None;
+        }
+        let room = prompt.limit + term.screen_lines();
+        term.grid_mut().update_history(room);
+        prompt.raised = true;
+        Some(term.grid().history_size())
+    }
+
+    /// After `make_room` (its result is `before`): the history goes back to its limit, the
+    /// anchors moving with its lines.
+    fn count_dropped(&self, term: &mut Term<Listener>, before: Option<usize>) {
+        let mut prompt = self.shared.prompt.lock();
+        if !prompt.raised {
+            return;
+        }
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            // A full-screen program took over: the main screen's history is out of reach until
+            // it leaves, and its lines go uncounted.
+            prompt.forget();
+            return;
+        }
+        let now = term.grid().history_size();
+        // Cleared (CSI 3 J, a reset), out of room (a whole screen scrolled, the prompt too), or
+        // back from a full-screen program: the lines were not all counted.
+        if before.is_none_or(|before| now < before) || now >= prompt.limit + term.screen_lines() {
+            prompt.forget();
+        }
+        prompt.trim(term);
     }
 
     /// Records a prompt mark at the cursor (the parser has just passed it). Inside a
@@ -293,7 +367,10 @@ impl Feeder {
     pub fn flush_sync(&mut self) -> Vec<u8> {
         {
             let mut term = self.shared.term.lock();
+            // The held bytes are parsed now: their lines are counted as in `advance`.
+            let room = self.make_room(&mut term);
             self.parser.stop_sync(&mut *term);
+            self.count_dropped(&mut term, room);
         }
         self.drain_events()
     }
@@ -361,12 +438,15 @@ pub fn scrollback_bytes(shared: &TermShared) -> usize {
     term.grid().history_size() * term.columns() * 24
 }
 
-/// Lowers the number of scrollback lines kept (the oldest go first).
+/// Sets the number of scrollback lines kept, higher or lower (lowering drops the oldest).
 pub fn limit_scrollback(shared: &TermShared, lines: usize, cursor: CursorPref, blink: bool) {
     let mut term = shared.term.lock();
-    if term.grid().history_size() > lines {
-        term.set_options(term_config(lines, cursor, blink));
-    }
+    let mut prompt = shared.prompt.lock();
+    let before = term.grid().history_size();
+    term.set_options(term_config(lines, cursor, blink));
+    prompt.dropped(before.saturating_sub(term.grid().history_size()));
+    prompt.limit = lines;
+    prompt.raised = false;
 }
 
 /// Most rows a prompt may span for the resize to clear it (more means the recorded position is
@@ -390,11 +470,16 @@ pub fn resize(shared: &TermShared, size: GridSize, cell_w: f32, cell_h: f32) -> 
         return false;
     }
     let mut prompt = shared.prompt.lock();
-    let offset = if term.columns() != size.cols {
+    let reflow = term.columns() != size.cols;
+    let offset = if reflow {
         clear_prompt(&mut term, &mut prompt)
     } else {
         None
     };
+    let cursor_at = |term: &Term<Listener>| {
+        term.grid().history_size() + term.grid().cursor.point.line.0.max(0) as usize
+    };
+    let before = cursor_at(&term);
     term.resize(size);
     if let Some(offset) = offset {
         // The cleared rows moved with the reflow: the anchor is `offset` rows above the cursor.
@@ -404,6 +489,10 @@ pub fn resize(shared: &TermShared, size: GridSize, cell_w: f32, cell_h: f32) -> 
             Redraw::LastLine => prompt.input = Some(at),
             _ => prompt.start = Some(at),
         }
+    } else if !reflow && !term.mode().contains(TermMode::ALT_SCREEN) {
+        // Only the height changed: rows went between the screen and the history, the cursor
+        // with its line. Those a full history had no room for were dropped.
+        prompt.dropped(before.saturating_sub(cursor_at(&term)));
     }
     window.num_cols = size.cols as u16;
     window.num_lines = size.rows as u16;
@@ -695,6 +784,90 @@ mod tests {
         resize(&f.shared, size(25), 8.0, 16.0);
         assert_eq!(screen(&f), ["out", "~/project main"]);
         assert_eq!(cursor(&f), (2, 0));
+    }
+
+    /// A terminal of 40×10 keeping 20 history lines, filled with output: from here on every line
+    /// scrolled in drops the oldest.
+    fn full() -> Feeder {
+        let (shared, rx) = new_terminal(term_config(20, CursorPref::Block, false), size(40), (&SCHEMES[0]).into());
+        let mut f = Feeder::new(shared, rx);
+        for i in 0..100 {
+            f.feed(format!("out {i}\r\n").as_bytes());
+        }
+        assert_eq!(f.shared.term.lock().grid().history_size(), 20);
+        f
+    }
+
+    #[test]
+    fn a_full_scrollback_keeps_the_prompt_anchored() {
+        // A two-line prompt drawn on the last row scrolls the screen as it is drawn.
+        let mut f = full();
+        f.feed(b"\x1b]133;A;redraw=1\x07~/project main\r\n> \x1b]133;B\x07ls");
+        assert_eq!(f.shared.term.lock().grid().history_size(), 20, "back to its limit");
+        resize(&f.shared, size(30), 8.0, 16.0);
+        let rows = screen(&f);
+        assert!(!rows.iter().any(|r| r.contains("project") || r.contains('>')), "{rows:?}");
+        assert_eq!(rows.last().map(String::as_str), Some("out 99"));
+        // On the prompt's second row, as zsh expects to move up one.
+        assert_eq!(cursor(&f), (9, 0));
+        // Typed input wrapping on the last row, then a shorter screen: the same.
+        let mut f = full();
+        f.feed(b"\x1b]133;A;redraw=1\x07user@host % \x1b]133;B\x07");
+        f.feed(&[b'x'; 50]);
+        resize(&f.shared, GridSize { cols: 40, rows: 6 }, 8.0, 16.0);
+        resize(&f.shared, GridSize { cols: 30, rows: 6 }, 8.0, 16.0);
+        let rows = screen(&f);
+        assert!(!rows.iter().any(|r| r.contains("user@host") || r.contains('x')), "{rows:?}");
+        assert_eq!(rows.last().map(String::as_str), Some("out 99"));
+        assert_eq!(cursor(&f), (5, 0));
+        // Lines held by a synchronized update that timed out: counted when they are shown.
+        let mut f = full();
+        f.feed(b"\x1b]133;A;redraw=1\x07~/project main\r\n> \x1b]133;B\x07\x1b[?2026h\r\n\r\n");
+        f.flush_sync();
+        resize(&f.shared, size(30), 8.0, 16.0);
+        assert!(!screen(&f).iter().any(|r| r.contains("project")), "{:?}", screen(&f));
+    }
+
+    #[test]
+    fn a_prompt_scrolled_away_is_not_cleared() {
+        // A whole screen of output with the shell still at its prompt (a background job): the
+        // prompt went into the history, and nothing on the screen is taken for it.
+        let mut f = full();
+        f.feed(b"\x1b]133;A;redraw=1\x07user@host % \x1b]133;B\x07");
+        for i in 0..12 {
+            f.feed(format!("\r\njob {i}").as_bytes());
+        }
+        resize(&f.shared, size(30), 8.0, 16.0);
+        let rows = screen(&f);
+        assert_eq!(rows.len(), 10, "{rows:?}");
+        assert_eq!(rows.last().map(String::as_str), Some("job 11"));
+        // A full-screen program started at the prompt (a picker on a key binding): the history
+        // is back at its limit when it leaves, and the prompt is no longer known.
+        let mut f = full();
+        f.feed(b"\x1b]133;A;redraw=1\x07user@host % \x1b]133;B\x07\r\n\r\n\x1b[?1049hpicker");
+        f.feed(b"\x1b[?1049l");
+        assert_eq!(f.shared.term.lock().grid().history_size(), 20);
+        resize(&f.shared, size(30), 8.0, 16.0);
+        assert!(screen(&f).iter().any(|r| r.contains("user@host")));
+        // Clearing the scrollback drops the anchors with the lines.
+        let mut f = full();
+        f.feed(b"\x1b]133;A;redraw=1\x07user@host % \x1b]133;B\x07");
+        crate::widget::clear_scrollback(&f.shared);
+        resize(&f.shared, size(30), 8.0, 16.0);
+        assert!(!screen(&f).iter().any(|r| r.contains("user@host")));
+        assert_eq!(cursor(&f), (9, 0));
+    }
+
+    #[test]
+    fn the_scrollback_limit_goes_both_ways() {
+        let mut f = full();
+        limit_scrollback(&f.shared, 5, CursorPref::Block, false);
+        assert_eq!(f.shared.term.lock().grid().history_size(), 5);
+        limit_scrollback(&f.shared, 50, CursorPref::Block, false);
+        for i in 0..100 {
+            f.feed(format!("more {i}\r\n").as_bytes());
+        }
+        assert_eq!(f.shared.term.lock().grid().history_size(), 50);
     }
 
     #[test]

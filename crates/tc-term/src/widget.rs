@@ -59,6 +59,9 @@ pub struct TermView {
     was_focused: bool,
     /// The context menu is open (it must keep being shown even in mouse-reporting mode).
     menu_open: bool,
+    /// Paste was chosen (`request_paste`): the paste event the next frame brings is a paste,
+    /// not a typed Ctrl+V.
+    paste_requested: bool,
 }
 
 impl TermView {
@@ -76,6 +79,14 @@ impl TermView {
         } else {
             Vec::new()
         }
+    }
+
+    /// Pastes the clipboard into this pane (the context menu's Paste) on every platform: on
+    /// Windows and Linux a paste event without Shift is otherwise a typed Ctrl+V. The text
+    /// comes with the next frame's events.
+    pub fn request_paste(&mut self, ctx: &egui::Context) {
+        self.paste_requested = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
     }
 }
 
@@ -160,16 +171,16 @@ fn resolve_fg(color: Color, flags: Flags, colors: &Colors, scheme: &Scheme) -> C
         Color::Named(n) => palette(if dim { n.to_dim() } else { n } as usize, colors, scheme),
         Color::Indexed(i) => {
             let i = i as usize;
-            let idx = if dim && !flags.contains(Flags::BOLD) {
+            if dim && !flags.contains(Flags::BOLD) {
                 match i {
-                    0..=7 => NamedColor::DimBlack as usize + i,
-                    8..=15 => i - 8,
-                    _ => i,
+                    0..=7 => palette(NamedColor::DimBlack as usize + i, colors, scheme),
+                    8..=15 => palette(i - 8, colors, scheme),
+                    // The 256-colour cube and greys have no dim entries: darkened like `Spec`.
+                    _ => mul(palette(i, colors, scheme), DIM_FACTOR),
                 }
             } else {
-                i
-            };
-            palette(idx, colors, scheme)
+                palette(i, colors, scheme)
+            }
         }
     }
 }
@@ -797,6 +808,9 @@ fn show_inner(
         let modes = KeyModes {
             app_cursor: mode.contains(TermMode::APP_CURSOR),
         };
+        // Taken in the first frame that reads keys after the request, whether the paste came or
+        // not (an empty clipboard sends none): a later Ctrl+V is a key again.
+        let menu_paste = std::mem::take(&mut view.paste_requested);
         let mut typed = Vec::new();
         for event in events {
             match event {
@@ -850,10 +864,8 @@ fn show_inner(
                 // Windows Terminal's habits also work there: Ctrl+C copies while text is
                 // selected, and Ctrl+V pastes.
                 Event::Paste(text) if alive => {
-                    let requested =
-                        PASTE_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed);
                     let shift = ui.input(|i| i.modifiers.shift);
-                    if cfg!(target_os = "macos") || cfg!(windows) || shift || requested {
+                    if cfg!(target_os = "macos") || cfg!(windows) || shift || menu_paste {
                         typed.extend(input::encode_paste(
                             &text,
                             mode.contains(TermMode::BRACKETED_PASTE),
@@ -1471,6 +1483,7 @@ fn show_inner(
     if mouse_mode && !shift_held && !view.menu_open {
         return out;
     }
+    let mut paste = false;
     let menu = response.context_menu(|ui| {
         let term = shared.term.lock();
         let has_sel = term.selection.as_ref().is_some_and(|s| !s.is_empty());
@@ -1488,8 +1501,7 @@ fn show_inner(
             .add_enabled(alive, egui::Button::new(crate::tr("Paste")))
             .clicked()
         {
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            paste = true;
             ui.memory_mut(|m| m.request_focus(id));
             ui.close();
         }
@@ -1504,6 +1516,9 @@ fn show_inner(
         }
     });
     view.menu_open = menu.is_some();
+    if paste {
+        view.request_paste(ui.ctx());
+    }
     out
 }
 
@@ -1511,14 +1526,6 @@ fn on_terminal_layer(ui: &Ui, pos: Pos2) -> bool {
     ui.ctx()
         .layer_id_at(pos)
         .is_none_or(|layer| layer == ui.layer_id())
-}
-
-/// Set by the menu's Paste (Windows and Linux): the next paste event is a paste, not a typed
-/// Ctrl+V.
-static PASTE_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-pub fn request_paste() {
-    PASTE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn select_all(shared: &TermShared) {
@@ -1537,6 +1544,7 @@ pub fn clear_scrollback(shared: &TermShared) {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         shared.notes.lock().clear_history_pending = true;
     } else {
+        shared.prompt.lock().dropped(term.grid().history_size());
         term.grid_mut().clear_history();
     }
     term.selection = None;
@@ -1554,7 +1562,60 @@ pub fn copy_selection(ctx: &egui::Context, shared: &TermShared) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{rows_shown, rows_to_skip};
+    use super::*;
+    use crate::core::{Feeder, new_terminal, term_config};
+    use crate::scheme::SCHEMES;
+
+    #[test]
+    fn dim_darkens_every_indexed_colour() {
+        let (colors, scheme) = (Colors::default(), &SCHEMES[0]);
+        let dim = |i: u8| resolve_fg(Color::Indexed(i), Flags::DIM, &colors, scheme);
+        let plain = |i: u8| resolve_fg(Color::Indexed(i), Flags::empty(), &colors, scheme);
+        assert_eq!(dim(1), palette(NamedColor::DimRed as usize, &colors, scheme));
+        for i in [17, 100, 196, 245] {
+            assert_eq!(dim(i), mul(plain(i), DIM_FACTOR), "colour {i}");
+            assert_ne!(dim(i), plain(i), "colour {i}");
+        }
+    }
+
+    /// The menu's Paste pastes into its pane, bracketed when the program asked, on every
+    /// platform; on Linux a paste event it did not ask for stays a typed Ctrl+V.
+    #[test]
+    fn the_menus_paste_pastes_into_its_pane() {
+        let ctx = egui::Context::default();
+        let (shared, rx) = new_terminal(term_config(100, Default::default(), false), GridSize { cols: 40, rows: 10 }, (&SCHEMES[0]).into());
+        Feeder::new(shared.clone(), rx).feed(b"\x1b[?2004h");
+        let style = TermStyle {
+            font_size: 13.0,
+            cell: vec2(8.0, 16.0),
+            scheme: &SCHEMES[0],
+            real_bold: false,
+            real_italic: false,
+            option_as_meta: false,
+            copy_on_select: false,
+            cursor_blink: false,
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 200.0));
+        let mut view = TermView::new(pane_widget_id(1));
+        let frame = |view: &mut TermView, events: Vec<Event>| {
+            let raw = egui::RawInput { screen_rect: Some(rect), focused: true, events, ..Default::default() };
+            let mut input = Vec::new();
+            let mut out = ctx.run_ui(raw, |ui| input = show(ui, rect, view, &shared, &style, true, true, true).input);
+            out.textures_delta.clear();
+            input
+        };
+        // The pane takes focus, and reads keys from the frame after.
+        frame(&mut view, vec![]);
+        frame(&mut view, vec![]);
+        view.request_paste(&ctx);
+        assert_eq!(frame(&mut view, vec![Event::Paste("a\nb".into())]), b"\x1b[200~a\rb\x1b[201~");
+        let plain = frame(&mut view, vec![Event::Paste("x".into())]);
+        if cfg!(target_os = "linux") {
+            assert_eq!(plain, [0x16]);
+        } else {
+            assert_eq!(plain, b"\x1b[200~x\x1b[201~");
+        }
+    }
 
     /// A screen of `rows` rows with text on the listed ones.
     fn screen(rows: usize, text: &[usize]) -> Vec<bool> {

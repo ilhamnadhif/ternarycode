@@ -188,11 +188,15 @@ fn command_line(program: &str, args: &[String]) -> String {
 }
 
 /// The environment block: `env` over this process's environment. Names are case-insensitive
-/// on Windows, so the first spelling wins; the block is sorted as Windows expects.
+/// on Windows, so each name gets one entry: the caller's over the inherited one, and of two
+/// spellings the caller gives (`PATH` and `Path`) the one that sorts first, every time (not
+/// whichever the map yields first). The block is sorted as Windows expects.
 fn env_block(env: &HashMap<String, String>) -> Vec<u16> {
     let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for (k, v) in env {
+    let mut own: Vec<(&String, &String)> = env.iter().collect();
+    own.sort();
+    for (k, v) in own {
         if seen.insert(k.to_uppercase()) {
             vars.push((k.into(), v.into()));
         }
@@ -788,6 +792,14 @@ mod tests {
         sorted.sort_by_key(|v| v.split('=').next().unwrap_or("").to_uppercase());
         assert_eq!(vars, sorted);
         assert!(block.ends_with(&[0, 0]));
+        // Two spellings from the caller: one entry, the same one whatever the map's order.
+        for _ in 0..20 {
+            let env: HashMap<String, String> =
+                [("Path", "mixed"), ("PATH", "upper")].map(|(k, v)| (k.to_string(), v.to_string())).into();
+            let text = String::from_utf16_lossy(&env_block(&env));
+            let paths: Vec<&str> = text.split('\0').filter(|v| v.to_uppercase().starts_with("PATH=")).collect();
+            assert_eq!(paths, ["PATH=upper"]);
+        }
     }
 
     fn rt() -> tokio::runtime::Runtime {
