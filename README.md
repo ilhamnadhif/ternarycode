@@ -44,8 +44,9 @@ It is one small native binary (no Electron, no webview, no Node.js): the window 
 - **Jump to what needs you.** `⌘J` goes to the most urgent waiting agent and `⇧⌘J` back. The
   status bar names it, the Dock shows a badge, and a notification arrives when the window is in
   the background. Keyboard focus never moves by itself.
-- **The Grid** shows every project live, side by side, each terminal filling its tile. **Active**
-  keeps only the projects where something runs or waits.
+- **The Grid** shows every project live, side by side, each terminal filling its tile: **All
+  Projects** at the top of the sidebar (or `⌘0`) opens it, a project below opens it on its own.
+  **Active** keeps only the projects where something runs or waits.
 - **An editor beside the terminal**, with language servers you already have (rust-analyzer, gopls,
   typescript-language-server, Dart, pyright, clangd…): ⌘-click to a definition, references,
   rename across files, code actions, completion, hover and problems.
@@ -146,7 +147,8 @@ update check is the only network connection TernaryCode makes.
 
 - **A project is a folder.** Its terminals start there, its files and git changes show beside
   them, and the sidebar shows its kind (Rust, Go, TypeScript, React, Flutter, Python…), branch,
-  number of changes and what its agent is doing.
+  number of changes and what its agent is doing. Projects are listed by name, in the sidebar and
+  in the Grid alike.
 - **Tabs and split panes per project**, drag to rearrange, and restored when you open the app
   again. Restored shells start only when you look at them, so a workspace of twenty projects opens
   as fast as one.

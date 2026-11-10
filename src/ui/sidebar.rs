@@ -9,6 +9,7 @@ use crate::actions::Action;
 use crate::app::{App, Dialog};
 use crate::i18n::t;
 use crate::project::COLORS;
+use tc_core::model::View;
 use tc_core::status::Status;
 
 const ROW_H: f32 = 30.0;
@@ -44,9 +45,10 @@ impl App {
         let body = Rect::from_min_max(pos2(full.left(), top.bottom()), full.max);
         // The file tree belongs to the project in the Focus view: the Grid shows every project,
         // and the project list takes the whole sidebar.
-        let files_shown = self.active.is_some() && self.view == tc_core::model::View::Focus;
+        let files_shown = self.active.is_some() && self.view == View::Focus;
         let files_open = !self.settings.files_hidden && files_shown;
-        let content_h = SECTION_H + self.projects.len() as f32 * (PROJECT_H + 2.0) + ROW_H + 8.0;
+        // All Projects, the section title, the projects and the row that adds one.
+        let content_h = ROW_H + 6.0 + SECTION_H + self.projects.len() as f32 * (PROJECT_H + 2.0) + ROW_H + 8.0;
         let files_h = if !files_shown {
             0.0
         } else if files_open {
@@ -99,7 +101,12 @@ impl App {
 
     fn project_list(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
-        let area = ui.max_rect();
+        let mut area = ui.max_rect();
+        if !self.projects.is_empty() {
+            let row = Rect::from_min_size(area.min + vec2(PAD - 2.0, 4.0), vec2(area.width() - 2.0 * (PAD - 2.0), ROW_H));
+            self.all_projects_row(ui, row, &p);
+            area.min.y = row.bottom() + 2.0;
+        }
         let title = Rect::from_min_size(area.min, vec2(area.width(), SECTION_H));
         section_title(ui, title, t("PROJECTS"));
         let add = Rect::from_center_size(pos2(title.right() - PAD - 11.0, title.center().y), vec2(22.0, 22.0));
@@ -115,8 +122,6 @@ impl App {
 
         let rows: Vec<ProjectRow> = self.projects.iter().map(|pr| self.project_row(pr, &p)).collect();
         let list = Rect::from_min_max(pos2(area.left(), title.bottom()), area.max);
-        let pointer = ui.ctx().pointer_interact_pos();
-        let mut row_rects = Vec::with_capacity(rows.len());
         ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(vec2(PAD - 2.0, 0.0))), |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("project-list")
@@ -126,11 +131,10 @@ impl App {
                     for (i, row) in rows.iter().enumerate() {
                         let ProjectRow { id, name, color, kind, status, waiting, asleep, split, branch, place, chip } = row;
                         let (rect, response) =
-                            ui.allocate_exact_size(vec2(ui.available_width(), PROJECT_H), Sense::click_and_drag());
-                        row_rects.push(rect);
+                            ui.allocate_exact_size(vec2(ui.available_width(), PROJECT_H), Sense::click());
                         #[cfg(debug_assertions)]
                         crate::devtest::record(format!("project:{name}"), rect);
-                        let active = self.active == Some(*id);
+                        let active = self.view == View::Focus && self.active == Some(*id);
                         let hovered = response.hovered();
                         let painter = ui.painter_at(rect);
                         let fill = if active {
@@ -257,9 +261,6 @@ impl App {
                         if response.clicked() {
                             self.actions.push(Action::SelectProject(*id));
                         }
-                        if response.drag_started() {
-                            self.sidebar_drag = Some(i);
-                        }
                         let shortcut = kit::keys(&Action::SelectProjectIndex(i)).map(|k| format!("  ({k})")).unwrap_or_default();
                         let mut tip = self
                             .project(*id)
@@ -323,32 +324,61 @@ impl App {
                     }
                 });
         });
+    }
 
-        // Reordering: a line where the dragged project would land.
-        if let Some(from) = self.sidebar_drag {
-            let released = ui.input(|i| i.pointer.any_released());
-            if let Some(pos) = pointer {
-                let to = row_rects
-                    .iter()
-                    .position(|r| pos.y < r.center().y)
-                    .unwrap_or(row_rects.len());
-                let y = row_rects
-                    .get(to)
-                    .map(|r| r.top() - 1.0)
-                    .or_else(|| row_rects.last().map(|r| r.bottom() + 1.0));
-                if let Some(y) = y
-                    && to != from
-                    && to != from + 1
-                {
-                    ui.painter().hline(list.x_range().shrink(PAD), y, Stroke::new(2.0, p.accent));
-                }
-                if released {
-                    self.actions.push(Action::MoveProject { from, to });
-                }
-            }
-            if released {
-                self.sidebar_drag = None;
-            }
+    /// The way to every project at once: selected, the Grid shows them all; a project below opens
+    /// it in Focus. What waits anywhere is counted at the right.
+    fn all_projects_row(&mut self, ui: &mut Ui, rect: Rect, p: &style::Palette) {
+        let response = ui.interact(rect, egui::Id::new("all-projects"), Sense::click());
+        #[cfg(debug_assertions)]
+        crate::devtest::record("all-projects", rect);
+        let on = self.view == View::Grid;
+        let hovered = response.hovered();
+        let painter = ui.painter_at(rect);
+        let fill = if on {
+            p.accent_soft
+        } else if hovered {
+            p.faint_row()
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        painter.rect_filled(rect, CornerRadius::same(style::RADIUS + 2), fill);
+        if on {
+            let bar = Rect::from_min_max(pos2(rect.left() + 1.0, rect.top() + 8.0), pos2(rect.left() + 4.0, rect.bottom() - 8.0));
+            painter.rect_filled(bar, CornerRadius::same(2), p.accent);
+        }
+        let cy = rect.center().y;
+        let (icon_c, text_c) = if on { (p.accent_text, p.text) } else { (p.text_muted, p.text.gamma_multiply(0.9)) };
+        painter.text(pos2(rect.left() + ICON_X, cy), Align2::CENTER_CENTER, icons::SQUARES_FOUR, style::icon_font(16.0), icon_c);
+        // Right: how many wait, in the colour of the most urgent; else, hovered, the shortcut.
+        let mut right = rect.right() - 8.0;
+        let queue = self.attention_queue();
+        if let Some(first) = queue.first() {
+            let c = status::color(first.status, p);
+            let g = painter.layout_no_wrap(queue.len().to_string(), style::medium(style::SMALL - 0.5), p.on_accent);
+            let w = (g.size().x + 9.0).max(17.0);
+            let badge = Rect::from_center_size(pos2(right - w / 2.0, cy), vec2(w, 16.0));
+            painter.rect_filled(badge, CornerRadius::same(8), c);
+            painter.galley(badge.center() - g.size() / 2.0, g, p.on_accent);
+            right -= w + 6.0;
+        } else if hovered && let Some(keys) = kit::keys(&Action::ToggleGrid) {
+            let g = painter.layout_no_wrap(keys.to_string(), egui::FontId::proportional(style::SMALL), p.text_faint);
+            right -= g.size().x;
+            painter.galley(pos2(right, cy - g.size().y / 2.0), g, p.text_faint);
+            right -= 6.0;
+        }
+        let x = rect.left() + TEXT_X;
+        let font = if on { style::semibold(style::BODY) } else { style::medium(style::BODY) };
+        let mut job = egui::text::LayoutJob::simple_singleline(t("All Projects").to_string(), font, text_c);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(10.0));
+        let g = painter.layout_job(job);
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, text_c);
+        let response = response.on_hover_text(kit::tip(t("Grid of All Projects"), Action::ToggleGrid));
+        if hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            self.actions.push(Action::SetView(View::Grid));
         }
     }
 

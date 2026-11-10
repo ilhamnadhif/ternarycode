@@ -191,7 +191,6 @@ pub struct App {
     pub updater: crate::ui::update_ui::Updater,
     pub mem_bytes: (Option<u64>, Option<Instant>),
     pub first_frame: bool,
-    pub sidebar_drag: Option<usize>,
     /// Terminal tab being dragged (index in the active project).
     pub tab_drag: Option<usize>,
     /// Pane being dragged by its header.
@@ -372,7 +371,6 @@ impl App {
             updater: Default::default(),
             mem_bytes: (None, None),
             first_frame: true,
-            sidebar_drag: None,
             tab_drag: None,
             pane_drag: None,
             editor_keyboard: false,
@@ -557,6 +555,13 @@ impl App {
     /// Every way into the Focus view: from the Grid, the panes get their Focus size back (Gate
     /// C) and the Grid's keyboard tile is forgotten. Set `active` first (its panes are sized as
     /// they are drawn).
+    /// Projects are listed by name (sidebar, Grid, ⌘1–⌘9): one order, the same every time,
+    /// whatever was added or renamed last.
+    fn sort_projects(&mut self) {
+        self.projects
+            .sort_by(|a, b| crate::project::name_order(&a.name, &b.name).then_with(|| a.path.cmp(&b.path)));
+    }
+
     fn show_focus(&mut self) {
         if std::mem::replace(&mut self.view, View::Focus) == View::Grid {
             let ctx = self.ctx.clone();
@@ -671,6 +676,8 @@ impl App {
             self.projects.push(project);
             self.refresh_git(id);
         }
+        // Listed by name, however the workspace was saved.
+        self.sort_projects();
         self.active = ws
             .active
             .filter(|a| self.projects.iter().any(|p| p.id == *a))
@@ -1315,6 +1322,7 @@ impl App {
         self.watchers
             .watch(project.id, project.path.clone(), self.app_tx.clone(), ctx.clone());
         self.projects.push(project);
+        self.sort_projects();
         self.refresh_git(id);
         self.active = Some(id);
         self.show_focus();
@@ -1736,6 +1744,7 @@ impl App {
                 {
                     p.name = name.trim().to_string();
                 }
+                self.sort_projects();
                 self.mark_dirty();
             }
             Action::RenamePane(id, title) => {
@@ -1764,14 +1773,6 @@ impl App {
                     p.preset = preset;
                 }
                 self.mark_dirty();
-            }
-            Action::MoveProject { from, to } => {
-                if from < self.projects.len() && to <= self.projects.len() && from != to {
-                    let p = self.projects.remove(from);
-                    let to = if to > from { to - 1 } else { to };
-                    self.projects.insert(to.min(self.projects.len()), p);
-                    self.mark_dirty();
-                }
             }
             Action::RevealProject(id) => {
                 if let Some(p) = self.project(id) {
@@ -2722,7 +2723,6 @@ impl App {
         if !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
             self.tab_drag = None;
             self.pane_drag = None;
-            self.sidebar_drag = None;
         }
         self.draw(ui);
         // The title bar region moves the window, except over the tabs (they can be dragged).

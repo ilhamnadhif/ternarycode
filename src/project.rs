@@ -221,6 +221,45 @@ impl Project {
     }
 }
 
+/// The order projects are listed in (sidebar, Grid, ⌘1–⌘9): by name, as people read names.
+/// Case is ignored and runs of digits compare as numbers (`api2` before `api10`); names equal
+/// that way fall back to their exact text.
+pub fn name_order(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return a.cmp(b),
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let digits = |it: &mut std::iter::Peekable<std::str::Chars>| {
+                    let mut n = String::new();
+                    while let Some(c) = it.next_if(char::is_ascii_digit) {
+                        n.push(c);
+                    }
+                    n
+                };
+                let (m, n) = (digits(&mut x), digits(&mut y));
+                // Leading zeros aside, the longer number is the larger one.
+                let (m, n) = (m.trim_start_matches('0'), n.trim_start_matches('0'));
+                let by_value = m.len().cmp(&n.len()).then_with(|| m.cmp(n));
+                if by_value != Ordering::Equal {
+                    return by_value;
+                }
+            }
+            (Some(c), Some(d)) => {
+                let by_letter = c.to_lowercase().cmp(d.to_lowercase());
+                if by_letter != Ordering::Equal {
+                    return by_letter;
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
+}
+
 pub fn to_saved(l: &Layout) -> SavedLayout {
     match l {
         Layout::Pane(p) => SavedLayout::Pane(*p),
@@ -332,6 +371,16 @@ fn bytes_path(b: &[u8]) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projects_sort_by_name_as_read() {
+        let mut names = ["web", "api10", "Shop-admin", "api2", "shop", "API1", "Ölbaum", "zeta", "app01", "app1"];
+        names.sort_by(|a, b| name_order(a, b));
+        assert_eq!(names, ["API1", "api2", "api10", "app01", "app1", "shop", "Shop-admin", "web", "zeta", "Ölbaum"]);
+        // Only case apart: still one order, every time.
+        assert_eq!(name_order("Api", "api"), "Api".cmp("api"));
+        assert_eq!(name_order("api", "api"), std::cmp::Ordering::Equal);
+    }
 
     #[test]
     fn layouts_round_trip() {

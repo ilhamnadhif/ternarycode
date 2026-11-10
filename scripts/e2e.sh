@@ -47,7 +47,7 @@ printf 'fn main() {\n    println!("v1");\n}\n' > "$P1/src/main.rs"; printf 'note
 
 run smoke 40 "sleep 1200;; action add-project $P1;; sleep 1500;; keys echo hello-tc\\r;; wait-screen hello-tc;; wait-status idle;; expect-project alpha;; hook-latency claude PermissionRequest needs-input;; hook-latency claude Stop idle|done;; quit"
 
-run jump 40 "sleep 1000;; action add-project $P2;; sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude Notification permission_prompt;; sleep 400;; wait-queue 1;; action next-attention;; sleep 400;; expect-project beta;; wait-queue 0;; action back-attention;; sleep 400;; expect-project alpha;; quit"
+run jump 40 "sleep 1000;; action add-project $P2;; sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude Notification permission_prompt;; sleep 400;; wait-queue 1;; action next-attention;; sleep 400;; expect-project beta;; wait-queue 0;; action back-attention;; sleep 400;; expect-project alpha;; action select 1;; sleep 400;; expect-project beta;; quit"
 
 run foreground 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 1000;; focus-pane 0;; sleep 500;; keys sleep 30\\r;; wait-status running;; key ctrl+c;; sleep 500;; wait-status idle;; quit"
 
@@ -136,7 +136,7 @@ LSP=/nonexistent/tc-no-lsp run lsp-missing 40 "sleep 1000;; action add-project $
 # Grid filter (v1.2): "Active" keeps only projects running something or waiting.
 run grid-active 50 "sleep 1000;; action add-project $P1;; sleep 900;; action add-project $P2;; sleep 1200;; keys sleep 30\\r;; wait-status running;; sleep 2500;; action grid;; sleep 800;; expect-shown tile:beta;; expect-shown tile:alpha;; action grid-active;; sleep 600;; expect-shown tile:beta;; expect-hidden tile:alpha;; shot e2e-grid-active;; action grid-all;; sleep 600;; expect-shown tile:alpha;; quit"
 
-run grid 60 "sleep 1000;; action add-project $P1;; sleep 900;; action split-right;; sleep 800;; keys echo alpha-left\\r;; action add-project $P2;; sleep 900;; action split-down;; sleep 800;; action add-project $R;; sleep 1200;; action grid;; sleep 1200;; expect-fill 2;; expect-fill 3;; expect-fill 5;; expect-fill 6;; expect-fill 8;; shot e2e-grid;; action focus;; sleep 1200;; expect-fill 8;; action select 0;; sleep 1200;; expect-fill 2;; expect-fill 3;; wait-screen alpha-left;; quit"
+run grid 60 "sleep 1000;; action add-project $P1;; sleep 900;; action split-right;; sleep 800;; keys echo alpha-left\\r;; action add-project $P2;; sleep 900;; action split-down;; sleep 800;; action add-project $R;; sleep 1200;; action grid;; sleep 1200;; expect-fill 2;; expect-fill 3;; expect-fill 5;; expect-fill 6;; expect-fill 8;; shot e2e-grid;; action focus;; sleep 1200;; expect-fill 8;; action select 0;; sleep 1200;; expect-fill 2;; expect-fill 3;; wait-screen alpha-left;; click all-projects;; sleep 1200;; expect-shown tile:beta;; shot e2e-all-projects;; click project:beta;; sleep 1200;; expect-project beta;; expect-hidden tile:alpha;; shot e2e-focus-beta;; quit"
 
 run editor 60 "sleep 1000;; action add-project $P1;; sleep 1200;; open-file $P1/notes.txt;; sleep 800;; write-file $P1/notes.txt notes v2 by agent\\n;; wait-editor v2 by agent;; open-file $P1/src/main.rs:2;; sleep 800;; click editor-text;; sleep 300;; key cmd+down;; keys // mine\\r;; wait-editor // mine;; write-file $P1/src/main.rs fn main() { agent(); }\\n;; wait-conflict;; expect-not-file $P1/src/main.rs // mine;; action force-save;; sleep 500;; expect-file $P1/src/main.rs // mine;; quit"
 

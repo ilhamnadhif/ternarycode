@@ -45,7 +45,9 @@ sekitar 0,2 detik, CPU 0 % saat diam, dan sepuluh pane terbuka memakai sekitar 7
   kembali. Status bar menyebut namanya, Dock menampilkan badge, dan notifikasi muncul saat jendela
   di latar belakang. Fokus keyboard tidak pernah pindah sendiri.
 - **Grid** menampilkan semua project secara live, berdampingan, dengan terminal yang memenuhi
-  kartunya. **Aktif** hanya menampilkan project yang sedang menjalankan sesuatu atau menunggu.
+  kartunya: **Semua Project** di bagian atas sidebar (atau `⌘0`) membukanya, project di bawahnya
+  membuka project itu sendiri. **Aktif** hanya menampilkan project yang sedang menjalankan sesuatu
+  atau menunggu.
 - **Editor di samping terminal**, dengan language server yang sudah Anda punya (rust-analyzer,
   gopls, typescript-language-server, Dart, pyright, clangd…): ⌘-klik ke definisi, referensi,
   rename lintas file, code action, autocomplete, hover, dan daftar problem.
@@ -148,7 +150,8 @@ satu-satunya koneksi jaringan yang dibuat TernaryCode.
 
 - **Project adalah folder.** Terminalnya mulai di sana, file dan perubahan git-nya tampil di
   sampingnya, dan sidebar menunjukkan jenisnya (Rust, Go, TypeScript, React, Flutter, Python…),
-  branch, jumlah perubahan, dan apa yang sedang dikerjakan agent-nya.
+  branch, jumlah perubahan, dan apa yang sedang dikerjakan agent-nya. Project diurutkan menurut
+  nama, di sidebar maupun di Grid.
 - **Tab dan split pane per project**, bisa diseret untuk diatur ulang, dan dipulihkan saat app
   dibuka lagi. Shell yang dipulihkan baru berjalan saat Anda melihatnya, jadi workspace berisi dua
   puluh project terbuka secepat satu project.

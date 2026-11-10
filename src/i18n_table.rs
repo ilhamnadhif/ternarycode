@@ -24,6 +24,8 @@ const ID: &[(&str, &str)] = &[
     ("Switch Project…", "Pindah Project…"),
     ("Show/Hide Sidebar", "Tampilkan/Sembunyikan Sidebar"),
     ("Focus View", "Tampilan Focus"),
+    ("Focus", "Focus"),
+    ("Grid", "Grid"),
     ("Split Right", "Bagi ke Kanan"),
     ("Split Down", "Bagi ke Bawah"),
     ("Next Pane", "Pane Berikutnya"),

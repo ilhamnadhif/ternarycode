@@ -337,13 +337,6 @@ pub fn icon_button_ex(ui: &mut Ui, icon: &str, tooltip: &str, on: bool, side: f3
     resp
 }
 
-/// One segment of a [`button_group`]: an icon, its tooltip and whether it is "on".
-pub struct Segment<'a> {
-    pub icon: &'a str,
-    pub tooltip: &'a str,
-    pub on: bool,
-}
-
 /// A segmented control of words (`(label, tooltip)`), `on` selected. Returns the option clicked
 /// when it is not the selected one.
 pub fn segmented(ui: &mut Ui, options: &[(&str, &str)], on: usize) -> Option<usize> {
@@ -377,88 +370,6 @@ pub fn segmented(ui: &mut Ui, options: &[(&str, &str)], on: usize) -> Option<usi
             out = Some(i);
         }
     }
-    out
-}
-
-/// A row of icon buttons in one outlined surface, split by hairlines: related toolbar actions
-/// (navigation, folder actions) read as one finished control instead of a row of boxes.
-pub fn button_group(ui: &mut Ui, segments: &[Segment]) -> Vec<Response> {
-    let p = style::pal(ui);
-    let (h, w) = (style::CONTROL_H, 30.0);
-    let total = vec2(w * segments.len() as f32, h);
-    let (rect, base) = ui.allocate_exact_size(total, Sense::hover());
-    let enabled = ui.is_enabled();
-    let radius = CornerRadius::same(RADIUS);
-    ui.painter().rect_filled(rect, radius, p.surface);
-    let mut out = Vec::with_capacity(segments.len());
-    for (i, seg) in segments.iter().enumerate() {
-        let r = Rect::from_min_size(
-            egui::pos2(rect.left() + w * i as f32, rect.top()),
-            vec2(w, h),
-        );
-        let resp = ui
-            .interact(r, base.id.with(("segment", i)), Sense::click())
-            .on_hover_text(seg.tooltip);
-        resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, seg.on, seg.tooltip));
-        let hovered = enabled && resp.hovered();
-        // Only the outer corners are rounded.
-        let corners = CornerRadius {
-            nw: if i == 0 { RADIUS } else { 0 },
-            sw: if i == 0 { RADIUS } else { 0 },
-            ne: if i + 1 == segments.len() { RADIUS } else { 0 },
-            se: if i + 1 == segments.len() { RADIUS } else { 0 },
-        };
-        let painter = ui.painter();
-        if seg.on {
-            painter.rect_filled(r, corners, p.accent_soft);
-        } else if enabled && resp.is_pointer_button_down_on() {
-            painter.rect_filled(r, corners, p.subtle);
-        } else if hovered {
-            painter.rect_filled(r, corners, p.hover);
-        }
-        let color = if seg.on {
-            p.accent_text
-        } else if hovered {
-            p.text
-        } else {
-            p.text_muted
-        };
-        let color = if enabled {
-            color
-        } else {
-            color.gamma_multiply(0.45)
-        };
-        painter.text(
-            r.center(),
-            Align2::CENTER_CENTER,
-            seg.icon,
-            style::icon_font(16.0),
-            color,
-        );
-        if i > 0 {
-            painter.vline(
-                r.left(),
-                r.y_range().shrink(6.0),
-                Stroke::new(1.0, p.border),
-            );
-        }
-        if resp.has_focus() {
-            painter.rect_stroke(
-                r.shrink(1.0),
-                corners,
-                Stroke::new(1.5, p.accent),
-                StrokeKind::Inside,
-            );
-        }
-        out.push(resp);
-    }
-    let hovered = ui.rect_contains_pointer(rect) && enabled;
-    ui.painter().rect_stroke(
-        rect,
-        radius,
-        Stroke::new(1.0, if hovered { p.border_strong } else { p.border }),
-        StrokeKind::Inside,
-    );
     out
 }
 

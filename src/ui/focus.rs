@@ -77,24 +77,13 @@ impl App {
         }
         let view = self.view;
         let (focus_tip, grid_tip) = (kit::tip(t("Focus View"), Action::ToggleGrid), kit::tip(t("Grid of All Projects"), Action::ToggleGrid));
-        let segs = [
-            kit::Segment {
-                icon: icons::TERMINAL_WINDOW,
-                tooltip: &focus_tip,
-                on: view == View::Focus,
-            },
-            kit::Segment {
-                icon: icons::COLUMNS,
-                tooltip: &grid_tip,
-                on: view == View::Grid,
-            },
-        ];
-        // Right to left: the group is added as one widget, so order the segments normally.
-        let r = kit::button_group(ui, &segs);
-        for (i, v) in [View::Focus, View::Grid].into_iter().enumerate() {
-            if r[i].clicked() {
-                self.actions.push(Action::SetView(v));
-            }
+        // Words, not icons: the app's two main views must say what they are. Added as one
+        // widget, so the options go in reading order even in this right-to-left bar.
+        let views = [View::Focus, View::Grid];
+        let options = [(t("Focus"), focus_tip.as_str()), (t("Grid"), grid_tip.as_str())];
+        let on = views.iter().position(|v| *v == view).unwrap_or(0);
+        if let Some(i) = kit::segmented(ui, &options, on) {
+            self.actions.push(Action::SetView(views[i]));
         }
         if view != View::Focus || self.active.is_none() {
             return;

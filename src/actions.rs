@@ -20,7 +20,6 @@ pub enum Action {
     RenamePane(PaneId, String),
     SetProjectColor(ProjectId, u8),
     SetProjectPreset(ProjectId, Option<String>),
-    MoveProject { from: usize, to: usize },
     RevealProject(ProjectId),
     NewTab,
     SelectTab(usize),
