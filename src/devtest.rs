@@ -1,6 +1,6 @@
 //! Debug builds only: a scripted end-to-end test driver.
 //!
-//! `TERNARYCODE_DEV_SCRIPT="sleep 800;; key cmd+d;; keys echo hi\r;; expect-screen hi;; quit"` runs
+//! `TERNARYCODE_DEV_SCRIPT="sleep 800;; key cmd+d;; keys echo hi\r;; wait-screen hi;; quit"` runs
 //! steps one after another. Keyboard and mouse steps inject real `NSEvent`s into the window, so
 //! they travel the same path as user input (menu key equivalents, winit, egui, the widgets).
 //! Results are printed to stderr as `DEVTEST PASS|FAIL …` lines and a final `DEVTEST DONE`.

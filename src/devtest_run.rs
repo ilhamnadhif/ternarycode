@@ -1,10 +1,25 @@
 //! Debug builds: runs `TERNARYCODE_DEV_SCRIPT` steps against the real app (see `devtest.rs` for
 //! input injection). Results go to stderr as `DEVTEST PASS|FAIL …`, then `DEVTEST DONE`.
 //!
-//! Steps (separated by `;;`): `sleep MS`, `key SPEC`, `keys TEXT`, `click NAME`,
-//! `action NAME [ARG]`, `wait-screen TEXT`, `wait-status STATUS`, `wait-queue N`,
-//! `expect-project NAME`, `hook-latency AGENT EVENT STATUS [KIND]`, `focus-pane N`,
-//! `log TEXT`, `quit`.
+//! Steps (separated by `;;`; the ones with an argument format are explained where they run):
+//! - input: `sleep MS`, `key SPEC`, `keys TEXT`, `click NAME`, `mouse down|drag|up NAME[@FX,FY]`,
+//!   `scroll NAME[@FX,FY] DY`, `focus-pane N`, `action NAME [ARG]`, `goto PATH LINE COL`,
+//!   `open-file PATH[:LINE]`, `close-window`, `clear-line`, `free-editor`, `shot NAME`, `quit`;
+//! - files: `write-file PATH TEXT`, `rm-file PATH`, `expect-file PATH TEXT`,
+//!   `expect-not-file PATH TEXT`;
+//! - waits (until true, or fail after a while): `wait-screen TEXT`, `wait-status STATUS`,
+//!   `wait-queue N`, `wait-toast TEXT`, `wait-editor TEXT`, `wait-conflict`, `wait-review KINDS`,
+//!   `wait-snapshot`, `wait-tree|wait-git|wait-open PATH [LETTER]`, `wait-tabs SPEC`,
+//!   `wait-find N`, `wait-caret LINE`, `wait-active NAME`, `wait-diag ERRORS WARNINGS`,
+//!   `wait-completion`, `wait-hover`, `wait-signature`, `wait-rename`, `wait-locations N`,
+//!   `wait-lsp STATE`, `wait-doc FACTS`;
+//! - checks: `expect-project NAME`, `expect-alive N`, `expect-started N`, `expect-fill PANE`,
+//!   `expect-resizes PANE N`, `expect-width NAME MIN MAX`, `expect-rect NAME`,
+//!   `expect-typing PROJECT`, `expect-screen-count TEXT N`, `expect-no-line TEXT`,
+//!   `expect-shown NAME`, `expect-hidden NAME`, `expect-dialog open|closed`;
+//! - timing and logs: `hook-latency AGENT EVENT STATUS [KIND]`, `hook PANE AGENT EVENT [KIND
+//!   [MESSAGE]]`, `echo-latency`, `frames N LABEL`, `resizes LABEL`, `log-mem LABEL`,
+//!   `explorer-reads LABEL`, `dump-pane PANE`, `log-review`, `log TEXT`.
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -212,7 +227,7 @@ impl App {
                 let c = self.active.and_then(|id| self.editors.get(&id)).and_then(|e| e.file()).is_some_and(|f| f.conflict);
                 Some(c).filter(|ok| *ok)
             }
-            // `wait-find 3`: matches of the editor's find bar; `wait-caret 2`: the caret's line.
+            // `wait-active main.rs`: the name of the active editor file.
             "wait-active" => {
                 let f = self.editors.get(&self.active?)?.file()?;
                 Some(f.name() == arg.trim()).filter(|ok| *ok)
@@ -244,6 +259,7 @@ impl App {
                 };
                 Some(state == arg.trim()).filter(|ok| *ok)
             }
+            // `wait-find 3`: matches of the editor's find bar; `wait-caret 2`: the caret's line.
             "wait-find" | "wait-caret" => {
                 let e = self.editors.get(&self.active?)?;
                 let n: usize = arg.trim().parse().ok()?;
@@ -570,8 +586,14 @@ impl App {
             "close-window" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             "echo-latency" => {
                 // Types a marker at the shell prompt and waits until the echo is on screen:
-                // PTY write, shell echo, read, parse, wake-up.
-                let marker = format!("tc{}", Instant::now().elapsed().as_nanos() % 100_000 + 10_000);
+                // PTY write, shell echo, read, parse, wake-up. A new one each time, so one still
+                // on screen from an earlier step does not count (digits only: measure-gate-b.sh
+                // reads `tc\d+`; the count leads, the time has a fixed width, so none is part of
+                // an earlier one).
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                let marker = format!("tc{n}{:06}", now.as_millis() % 1_000_000);
                 if let Some(p) = self.current_pane().and_then(|id| self.panes.get(&id)) {
                     p.write(marker.clone().into_bytes());
                     WAIT.with(|w| {
