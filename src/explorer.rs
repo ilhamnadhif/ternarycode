@@ -89,6 +89,11 @@ impl Explorer {
     pub fn toggle(&mut self, dir: &Path) {
         if !self.expanded.remove(dir) {
             self.expanded.insert(dir.to_path_buf());
+            // The watcher reports nothing under a build or dependency folder: what is kept of
+            // it is read again each time it is opened.
+            if crate::watch::ignored(&self.root, dir) {
+                self.dirs.retain(|p, _| !p.starts_with(dir));
+            }
         }
         self.rows = None;
     }
@@ -246,13 +251,29 @@ impl Explorer {
 /// file or folder may be a path (`src/new.rs`): the folders on the way are made.
 pub fn apply_edit(dir: &Path, kind: &EditKind, name: &str) -> Result<PathBuf, String> {
     use crate::i18n::{t, tf};
-    let bad = name == "." || name == ".." || name.contains('\0') || name.starts_with('/');
-    let nested = name.contains('/');
+    use std::path::Component;
+    // Plain names that stay in `dir`: no `.` or `..`, no root (`/x`) and, on Windows, no drive
+    // or root (`C:\x`, `\x`) and no `:` (that names a stream of another file).
+    let parts: Vec<Component> = Path::new(name).components().collect();
+    let bad = parts.is_empty()
+        || parts.iter().any(|c| !matches!(c, Component::Normal(_)))
+        || name.contains('\0')
+        || (cfg!(windows) && name.contains(':'));
+    let nested = parts.len() > 1;
     if bad || (nested && matches!(kind, EditKind::Rename(_))) {
         return Err(tf("\"{}\" is not a valid name.", &[name]));
     }
     let target = dir.join(name);
-    if target.symlink_metadata().is_ok() {
+    // `a.rs` → `A.rs` on a file system that ignores case finds the file itself: a rename.
+    let same_file = match kind {
+        EditKind::Rename(old) => {
+            old.parent() == Some(dir)
+                && old.file_name().is_some_and(|o| o != name && o.to_string_lossy().to_lowercase() == name.to_lowercase())
+                && std::fs::read_dir(dir).is_ok_and(|mut d| !d.any(|e| e.is_ok_and(|e| e.file_name() == name)))
+        }
+        _ => false,
+    };
+    if target.symlink_metadata().is_ok() && !same_file {
         return Err(tf("{} already exists here.", &[name]));
     }
     let io = |e: std::io::Error| e.to_string();
@@ -377,8 +398,26 @@ mod tests {
         assert_eq!(old, Some(root.join("src/a.rs")));
         assert!(names(ex.rows()).contains(&"  main.rs".to_string()));
         // Bad names, and a rename may not move the file elsewhere.
-        assert!(apply_edit(root, &EditKind::NewFile, "..").is_err());
+        for bad in ["..", ".", "a/../../x", "../x", "/abs", "./x", "a\0b"] {
+            assert!(apply_edit(root, &EditKind::NewFile, bad).is_err(), "{bad}");
+        }
+        #[cfg(windows)]
+        for bad in [r"a\..\..\x", r"C:\x", r"\x", "C:x", "a.rs:s"] {
+            assert!(apply_edit(root, &EditKind::NewFile, bad).is_err(), "{bad}");
+            assert!(apply_edit(root, &EditKind::Rename(renamed.clone()), bad).is_err(), "{bad}");
+        }
+        assert!(!root.parent().unwrap().join("x").exists());
         assert!(apply_edit(root, &EditKind::Rename(renamed.clone()), "x/y.rs").is_err());
+        // Only the case changes: the same file, renamed (also where case is ignored).
+        let src = root.join("src");
+        let upper = apply_edit(&src, &EditKind::Rename(renamed.clone()), "Main.rs").unwrap();
+        let listed: Vec<String> = std::fs::read_dir(&src).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(listed.contains(&"Main.rs".to_string()) && !listed.contains(&"main.rs".to_string()), "{listed:?}");
+        apply_edit(&src, &EditKind::Rename(upper), "main.rs").unwrap();
+        // Another file whose name differs only in case is still a clash where case is ignored.
+        if root.join("SRC").exists() {
+            assert!(apply_edit(&src, &EditKind::Rename(src.join("b.rs")), "MAIN.rs").is_err());
+        }
         // Duplicates get free names.
         assert_eq!(duplicate_name(&root.join("src/main.rs")), root.join("src/main copy.rs"));
         std::fs::write(root.join("src/main copy.rs"), "").unwrap();
@@ -411,6 +450,13 @@ mod tests {
         assert_eq!(names(ex.rows()), ["Docs", "src", "  main.rs", "target", ".env", "A.md", "b.txt"]);
         ex.collapse_all();
         assert_eq!(ex.rows().len(), 6);
+        // The watcher says nothing about build folders: opening one again reads it again.
+        ex.toggle(&root.join("target"));
+        assert!(names(ex.rows()).contains(&"  x".to_string()));
+        std::fs::write(root.join("target/y"), "y").unwrap();
+        ex.toggle(&root.join("target"));
+        ex.toggle(&root.join("target"));
+        assert!(names(ex.rows()).contains(&"  y".to_string()));
     }
 
     #[test]
