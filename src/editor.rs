@@ -310,14 +310,18 @@ pub fn save(file: &mut OpenFile, force: bool) -> Result<(), SaveError> {
     if file.read_only {
         return Err(SaveError::Io(crate::i18n::t("This file is read-only.").into()));
     }
-    if !force && file.path.exists() && mtime(&file.path) != file.mtime {
-        let disk = std::fs::read_to_string(&file.path).unwrap_or_default();
-        if disk != file.saved {
+    // By content, whatever the time stamp says: one that counts in seconds (or less finely)
+    // misses an agent's write made in the same tick as the last load or save.
+    if !force && file.path.exists() {
+        let disk = std::fs::read(&file.path).unwrap_or_default();
+        if !is_saved(file, &disk) {
             file.conflict = true;
             return Err(SaveError::ChangedOnDisk);
         }
     }
-    std::fs::write(&file.path, file.text.as_bytes()).map_err(|e| SaveError::Io(e.to_string()))?;
+    // A CRLF file stays one: lines typed here end with LF in the buffer.
+    let data = if file.crlf { to_crlf(&file.text) } else { std::borrow::Cow::Borrowed(file.text.as_str()) };
+    write_atomic(&file.path, data.as_bytes()).map_err(|e| SaveError::Io(e.to_string()))?;
     file.saved = file.text.clone();
     file.mtime = mtime(&file.path);
     file.conflict = false;
@@ -330,7 +334,10 @@ pub fn save(file: &mut OpenFile, force: bool) -> Result<(), SaveError> {
 /// is marked as in conflict. Returns whether anything changed.
 pub fn on_disk_change(file: &mut OpenFile) -> bool {
     let now = mtime(&file.path);
-    if now == file.mtime {
+    // An editable file is compared by content even when the time stamp is the same (a coarse
+    // one gives an agent's write the stamp of the last load or save).
+    let editable = file.doc.is_none() && !file.truncated && !file.read_only;
+    if now == file.mtime && !editable {
         return false;
     }
     if let Some(doc) = file.doc.as_mut() {
@@ -342,6 +349,7 @@ pub fn on_disk_change(file: &mut OpenFile) -> bool {
     if file.truncated || file.read_only {
         if let Ok(fresh) = load(&file.path) {
             file.lines = fresh.lines;
+            file.crlf = fresh.crlf;
             file.rev += 1;
             file.text = fresh.text;
             file.saved = fresh.saved;
@@ -354,7 +362,7 @@ pub fn on_disk_change(file: &mut OpenFile) -> bool {
     let Ok(disk) = std::fs::read_to_string(&file.path) else {
         return false;
     };
-    if disk == file.saved {
+    if is_saved(file, disk.as_bytes()) {
         file.mtime = now;
         return false;
     }
@@ -364,6 +372,7 @@ pub fn on_disk_change(file: &mut OpenFile) -> bool {
     } else {
         file.lines = count_lines(&disk);
         file.rev += 1;
+        file.crlf = disk.contains("\r\n");
         file.text = disk.clone();
         file.saved = disk;
         file.mtime = now;
@@ -376,6 +385,7 @@ pub fn reload(file: &mut OpenFile) {
     if let Ok(disk) = std::fs::read_to_string(&file.path) {
         file.lines = count_lines(&disk);
         file.rev += 1;
+        file.crlf = disk.contains("\r\n");
         file.text = disk.clone();
         file.saved = disk;
         file.mtime = mtime(&file.path);
@@ -383,6 +393,71 @@ pub fn reload(file: &mut OpenFile) {
     file.conflict = false;
     file.compare = false;
     file.compare_diff = None;
+}
+
+/// Whether `disk` is the text as loaded or last saved (a CRLF file's is written with CR LF on
+/// every line, while lines typed since loading end with LF in `saved`).
+fn is_saved(file: &OpenFile, disk: &[u8]) -> bool {
+    disk == file.saved.as_bytes() || (file.crlf && disk == to_crlf(&file.saved).as_bytes())
+}
+
+/// `text` with every line ending in CR LF (a lone LF gets its CR).
+pub fn to_crlf(text: &str) -> std::borrow::Cow<'_, str> {
+    let b = text.as_bytes();
+    if !(0..b.len()).any(|i| b[i] == b'\n' && (i == 0 || b[i - 1] != b'\r')) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + text.len() / 16);
+    let mut prev = '\0';
+    for c in text.chars() {
+        if c == '\n' && prev != '\r' {
+            out.push('\r');
+        }
+        out.push(c);
+        prev = c;
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Writes `data` to `path` through a temporary file beside it and a rename, so a reader (an
+/// agent, a build) or a crash meets the old text or the new, never half of it. A symbolic link
+/// stays one (the file it points at is written), a file keeps its permissions and a new one
+/// gets the usual ones. Where no file can be made beside it, it is written in place.
+pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let resolved;
+    let path = if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        resolved = std::fs::canonicalize(path)?;
+        resolved.as_path()
+    } else {
+        path
+    };
+    let perms = std::fs::metadata(path).ok().map(|m| m.permissions());
+    // A rename would replace a file nobody may write.
+    if perms.as_ref().is_some_and(|p| p.readonly()) {
+        return Err(std::io::ErrorKind::PermissionDenied.into());
+    }
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".{name}.{}-{n}.tc-tmp", std::process::id()));
+    let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) else {
+        return std::fs::write(path, data);
+    };
+    let result = (|| {
+        f.write_all(data)?;
+        drop(f);
+        #[cfg(unix)]
+        if let Some(p) = perms {
+            std::fs::set_permissions(&tmp, p)?;
+        }
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Lines in `text` (a text without a final newline still has its last line).
@@ -393,7 +468,8 @@ pub fn count_lines(text: &str) -> usize {
 /// The difference between the file on disk and the buffer, for Compare.
 pub fn compare_diff(file: &OpenFile) -> String {
     let disk = std::fs::read_to_string(&file.path).unwrap_or_default();
-    tc_agent::integrate::diff_lines(&disk, &file.text)
+    let text = if file.crlf { to_crlf(&file.text) } else { std::borrow::Cow::Borrowed(file.text.as_str()) };
+    tc_agent::integrate::diff_lines(&disk, &text)
 }
 
 /// Line and column (1-based) of character index `at` in `text`.
@@ -768,6 +844,92 @@ mod tests {
         assert!(save(&mut f, true).is_ok());
         assert!(std::fs::read_to_string(&path).unwrap().ends_with("// mine\n"));
         assert!(!f.conflict && !f.dirty());
+    }
+
+    #[test]
+    fn a_change_in_the_same_tick_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "one\n").unwrap();
+        let mut f = load(&path).ok().unwrap();
+        let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
+        // An agent writes, and the time stamp reads as before (coarse file system clock).
+        std::fs::write(&path, "agent\n").unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+        // The watcher's event: the buffer had no edits, so it follows.
+        assert!(on_disk_change(&mut f));
+        assert_eq!(f.text, "agent\n");
+        // Another write in the same tick, not seen yet, while there are edits: saving refuses.
+        std::fs::write(&path, "agent 2\n").unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+        f.text = "mine\n".into();
+        assert!(matches!(save(&mut f, false), Err(SaveError::ChangedOnDisk)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent 2\n");
+    }
+
+    #[test]
+    fn saving_keeps_permissions_and_links_and_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("run.sh");
+        std::fs::write(&real, "echo 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let link = dir.path().join("link.sh");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            let mut f = load(&link).ok().unwrap();
+            f.text = "echo 2\n".into();
+            assert!(save(&mut f, false).is_ok());
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read_to_string(&real).unwrap(), "echo 2\n");
+            assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o755);
+            // A new file gets what any new file gets here (not private).
+            let plain = dir.path().join("plain");
+            std::fs::write(&plain, "").unwrap();
+            let new = dir.path().join("new.txt");
+            write_atomic(&new, b"x").unwrap();
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&new), mode(&plain));
+            // A file nobody may write is not replaced by the rename.
+            std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o444)).unwrap();
+            assert!(write_atomic(&plain, b"x").is_err());
+            assert_eq!(std::fs::read(&plain).unwrap(), b"");
+        }
+        let mut f = load(&real).ok().unwrap();
+        f.text = "echo 3\n".into();
+        assert!(save(&mut f, false).is_ok());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "echo 3\n");
+        let names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(!names.iter().any(|n| n.ends_with(".tc-tmp")), "{names:?}");
+    }
+
+    #[test]
+    fn crlf_files_stay_crlf() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "a\r\nb\r\n").unwrap();
+        let mut f = load(&path).ok().unwrap();
+        assert!(f.crlf);
+        // A line typed here ends with LF; on disk every line ends with CR LF.
+        f.text.push_str("c\n");
+        assert!(save(&mut f, false).is_ok());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\r\nb\r\nc\r\n");
+        assert!(!f.dirty());
+        // What was written is what was saved: no conflict the next time.
+        f.text.push('d');
+        assert!(save(&mut f, false).is_ok());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\r\nb\r\nc\r\nd");
+        // Converted to LF outside: the buffer follows, and so does its line ending.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "a\nb\n").unwrap();
+        assert!(on_disk_change(&mut f));
+        assert!(!f.crlf);
+        std::fs::write(&path, "x\r\n").unwrap();
+        reload(&mut f);
+        assert!(f.crlf);
+        assert_eq!(to_crlf("a\nb\r\nc"), "a\r\nb\r\nc");
+        assert!(matches!(to_crlf("a\r\n"), std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]
