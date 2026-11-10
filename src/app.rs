@@ -51,16 +51,24 @@ pub enum AppMsg {
     LspPath(std::ffi::OsString),
 }
 
+/// A line of a confirmation's list: a program that would be stopped, or a file whose changes
+/// would be lost.
+pub struct Busy {
+    pub text: String,
+    /// An editor file with changes not saved.
+    pub file: bool,
+}
+
 pub enum Dialog {
     AddProject { path: String, name: String },
-    ConfirmQuit(Vec<String>),
+    ConfirmQuit(Vec<Busy>),
     /// Restarting to install an update would stop these programs.
-    ConfirmUpdate(Vec<String>),
-    ConfirmRemove(ProjectId, Vec<String>),
+    ConfirmUpdate(Vec<Busy>),
+    ConfirmRemove(ProjectId, Vec<Busy>),
     /// Moving a file or folder to the Trash.
     ConfirmTrash(PathBuf),
     /// Closing a tab (index in the active project) would stop these programs.
-    ConfirmCloseTab(Vec<PaneId>, Vec<String>),
+    ConfirmCloseTab(Vec<PaneId>, Vec<Busy>),
     /// ⌘W on a pane where a program runs.
     ConfirmClosePane(PaneId, String),
     Rename(ProjectId, String),
@@ -1572,23 +1580,23 @@ impl App {
     }
 
     /// Editor files with changes not saved ("main.rs · not saved"), of one project or all.
-    fn unsaved_files(&self, project: Option<ProjectId>) -> Vec<String> {
+    fn unsaved_files(&self, project: Option<ProjectId>) -> Vec<Busy> {
         self.editors
             .iter()
             .filter(|(id, _)| project.is_none_or(|p| p == **id))
             .flat_map(|(_, e)| e.files.iter())
             .filter(|f| f.dirty() && !f.read_only)
-            .map(|f| tf("{} · not saved", &[&f.name()]))
+            .map(|f| Busy { text: tf("{} · not saved", &[&f.name()]), file: true })
             .collect()
     }
 
     /// Programs that quitting would stop.
-    fn busy_panes(&self) -> Vec<String> {
+    fn busy_panes(&self) -> Vec<Busy> {
         let mut out = Vec::new();
         for project in &self.projects {
             for id in project.panes() {
                 if let Some(what) = self.panes.get(&id).and_then(Pane::busy_with) {
-                    out.push(format!("{} · {what}", project.name));
+                    out.push(Busy { text: format!("{} · {what}", project.name), file: false });
                 }
             }
         }
@@ -1687,12 +1695,13 @@ impl App {
                 }
             }
             Action::RemoveProject(id) => {
-                let mut busy: Vec<String> = self
+                let mut busy: Vec<Busy> = self
                     .project(id)
                     .map(|p| {
                         p.panes()
                             .iter()
                             .filter_map(|pid| self.panes.get(pid).and_then(Pane::busy_with))
+                            .map(|text| Busy { text, file: false })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -1816,7 +1825,7 @@ impl App {
                 }
             }
             Action::CloseTab(i) => {
-                let busy: Vec<String> = self
+                let busy: Vec<Busy> = self
                     .active_project()
                     .and_then(|p| p.tabs.get(i))
                     .map(|tab| {
@@ -1824,6 +1833,7 @@ impl App {
                             .panes()
                             .iter()
                             .filter_map(|id| self.panes.get(id).and_then(Pane::busy_with))
+                            .map(|text| Busy { text, file: false })
                             .collect()
                     })
                     .unwrap_or_default();

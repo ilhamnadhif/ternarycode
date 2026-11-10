@@ -9,7 +9,7 @@ use eframe::egui::{self, Color32, CornerRadius, Key, Margin, RichText, Stroke, U
 
 use super::{icons, kit, style};
 use crate::actions::Action;
-use crate::app::{App, Dialog};
+use crate::app::{App, Busy, Dialog};
 use crate::i18n::{t, tf};
 
 /// Space between the dialog's edge and its content.
@@ -150,8 +150,8 @@ pub fn footer_with(ui: &mut Ui, hint: Option<&str>, buttons: impl FnOnce(&mut Ui
         });
 }
 
-/// Programs that will be stopped and files not saved (those of `unsaved`), in a quiet box.
-fn busy_list(ui: &mut Ui, items: &[String], unsaved: &[String]) {
+/// Programs that will be stopped and files not saved, in a quiet box.
+fn busy_list(ui: &mut Ui, items: &[Busy]) {
     let p = style::pal(ui);
     egui::Frame::NONE
         .fill(p.canvas)
@@ -162,11 +162,11 @@ fn busy_list(ui: &mut Ui, items: &[String], unsaved: &[String]) {
             ui.set_width(ui.available_width());
             egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
                 for b in items {
-                    let file = unsaved.contains(b);
+                    let file = b.file;
                     ui.horizontal(|ui| {
                         let icon = if file { icons::FILE_TEXT } else { icons::TERMINAL_WINDOW };
                         ui.label(RichText::new(icon).font(style::icon_font(13.0)).color(if file { p.warn } else { p.text_faint }));
-                        ui.label(RichText::new(b).color(p.text));
+                        ui.label(RichText::new(&b.text).color(p.text));
                     });
                 }
             });
@@ -250,9 +250,8 @@ impl App {
                     ) {
                         keep = false;
                     }
-                    let unsaved = self.unsaved_lines();
                     body(ui, |ui| {
-                        busy_list(ui, busy, &unsaved);
+                        busy_list(ui, busy);
                         ui.add_space(4.0);
                         ui.label(
                             RichText::new(t("Closing the window instead keeps them running in the background."))
@@ -280,9 +279,8 @@ impl App {
                     ) {
                         keep = false;
                     }
-                    let unsaved = self.unsaved_lines();
                     body(ui, |ui| {
-                        busy_list(ui, busy, &unsaved);
+                        busy_list(ui, busy);
                         ui.add_space(4.0);
                         ui.label(
                             RichText::new(t("TernaryCode opens again with your projects and tabs; agents that support it can be resumed."))
@@ -310,8 +308,7 @@ impl App {
                     ) {
                         keep = false;
                     }
-                    let unsaved = self.unsaved_lines();
-                    body(ui, |ui| busy_list(ui, busy, &unsaved));
+                    body(ui, |ui| busy_list(ui, busy));
                     let (cancel, ok) = footer(ui, None, t("Remove"), Confirm::Danger, true);
                     if cancel {
                         keep = false;
@@ -375,7 +372,7 @@ impl App {
                     ) {
                         keep = false;
                     }
-                    body(ui, |ui| busy_list(ui, busy, &[]));
+                    body(ui, |ui| busy_list(ui, busy));
                     let (cancel, ok) = footer(ui, None, t("Close Tab"), Confirm::Danger, true);
                     if cancel {
                         keep = false;
@@ -527,17 +524,5 @@ impl App {
         } else {
             self.focus_request = self.current_pane();
         }
-    }
-
-    /// The busy lists' lines for the editors' files with changes not saved (worded as in
-    /// `App::unsaved_files`): a line is a file's by the files' state, not by its wording,
-    /// which a language may put in any order.
-    fn unsaved_lines(&self) -> Vec<String> {
-        self.editors
-            .values()
-            .flat_map(|e| e.files.iter())
-            .filter(|f| f.dirty() && !f.read_only)
-            .map(|f| tf("{} · not saved", &[&f.name()]))
-            .collect()
     }
 }
