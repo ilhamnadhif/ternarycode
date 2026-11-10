@@ -82,8 +82,9 @@ impl LocalPty {
         let options = Options {
             shell: opts.program.clone().map(|(p, a)| Shell::new(p, a)),
             working_directory: Some(opts.cwd.clone()),
-            drain_on_exit: true,
             env,
+            // `drain_on_exit` is for alacritty's event loop, which is not used: the reader drains.
+            ..Options::default()
         };
         let size = WindowSize {
             num_lines: opts.size.rows as u16,
@@ -105,10 +106,6 @@ impl LocalPty {
     /// Process id of the program started on the PTY (the shell).
     pub fn pid(&self) -> u32 {
         self.pid
-    }
-
-    pub fn master_fd(&self) -> RawFd {
-        self.master
     }
 
     fn dup_master(&self) -> io::Result<File> {

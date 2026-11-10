@@ -1,6 +1,6 @@
 //! A streaming scanner for the OSC sequences `vte` 0.15 drops without an event: desktop
-//! notifications (OSC 9, OSC 99, OSC 777 `notify`), shell integration (OSC 133), the working
-//! directory (OSC 7) and TernaryCode's own hook messages (OSC 777 `ternarycode`).
+//! notifications (OSC 9, OSC 99, OSC 777 `notify`), shell integration (OSC 133) and the working
+//! directory (OSC 7).
 //!
 //! It runs over the PTY output before the parser and never changes the bytes. Between escape
 //! sequences it only jumps from ESC to ESC with `memchr`, so plain output costs almost nothing.
@@ -59,9 +59,6 @@ pub enum OscSignal {
     PromptRedraw(Redraw),
     /// The shell's working directory (OSC 7, `file://host/path`).
     Cwd(String),
-    /// A TernaryCode hook message written to the terminal (OSC 777;ternarycode;payload), used
-    /// by panes whose agent runs on another machine.
-    Hook(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,7 +333,6 @@ fn parse(num: u32, text: &str) -> Option<OscSignal> {
                         body: body.to_string(),
                     })
                 }
-                "ternarycode" => Some(OscSignal::Hook(rest.to_string())),
                 _ => None,
             }
         }
@@ -504,15 +500,13 @@ mod tests {
     }
 
     #[test]
-    fn hook_and_cwd() {
+    fn cwd() {
+        // Hook messages reach the app over its socket: OSC 777 `ternarycode` is no signal.
         let input = b"\x1b]777;ternarycode;{\"event\":\"stop\"}\x07\
             \x1b]7;file://mac.local/Users/me/My%20Project\x07";
         assert_eq!(
             scan_split_everywhere(input),
-            vec![
-                OscSignal::Hook("{\"event\":\"stop\"}".into()),
-                OscSignal::Cwd("/Users/me/My Project".into()),
-            ]
+            vec![OscSignal::Cwd("/Users/me/My Project".into())]
         );
         // PowerShell on Windows (System.Uri): file:///C:/…
         let win = scan_all(b"\x1b]7;file:///C:/Users/me/My%20Project\x07");

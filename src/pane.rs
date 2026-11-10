@@ -475,7 +475,7 @@ impl Pane {
                 }
                 false
             }
-            OscSignal::Progress { .. } | OscSignal::Hook(_) | OscSignal::PromptRedraw(_) => false,
+            OscSignal::Progress { .. } | OscSignal::PromptRedraw(_) => false,
         }
     }
 

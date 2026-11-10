@@ -1,9 +1,9 @@
-//! One terminal: an alacritty `Term` shared between the SSH reader task (which feeds it bytes)
-//! and the UI (which draws it and sends input).
+//! One terminal: an alacritty `Term` shared between the PTY reader task (which feeds it the
+//! program's output) and the UI (which draws it and sends input).
 //!
 //! Events raised by the parser are queued through a channel and handled by the reader right
 //! after `advance` (outside the lock): replies such as device attributes, cursor position and
-//! colour queries go straight back to the remote even when the window is not repainting.
+//! colour queries go straight back to the program even when the window is not repainting.
 
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -57,14 +57,11 @@ impl Dimensions for GridSize {
     }
 }
 
-/// State the UI reads that the parser produces (title, bell, OSC 52 copies).
+/// State the UI reads that the parser produces (title, OSC 52 copies).
 #[derive(Default)]
 pub struct UiNotes {
     pub title: Option<String>,
-    pub bell_at: Option<Instant>,
     pub clipboard: Option<String>,
-    /// Set whenever new output arrived; the UI uses it to mark inactive tabs.
-    pub activity: bool,
     /// "Clear Scrollback" was chosen on the alternate screen: clear when it is left.
     pub clear_history_pending: bool,
 }
@@ -147,7 +144,7 @@ pub struct TermShared {
     pub term: FairMutex<Term<Listener>>,
     pub notes: Mutex<UiNotes>,
     pub prompt: Mutex<PromptState>,
-    /// Cell size in pixels and grid size, for CSI 14 t and the SSH window-change request.
+    /// Cell size in pixels and grid size, for CSI 14 t and the PTY's size.
     pub window: Mutex<WindowSize>,
     pub palette: Mutex<QueryPalette>,
     /// The options the terminal has (alacritty does not say), for `clear_keyboard_modes`.
@@ -298,7 +295,7 @@ pub struct Fed {
     pub reply: Vec<u8>,
     /// The screen changed (not everything was held back by a synchronized update).
     pub repaint: bool,
-    /// OSC signals `vte` does not report (notifications, shell integration, hooks).
+    /// OSC signals `vte` does not report (notifications, shell integration, the directory).
     pub signals: Vec<OscSignal>,
     /// The program rang the bell.
     pub bell: bool,
@@ -347,9 +344,6 @@ impl Feeder {
         }
         repaint |= self.advance(&bytes[done..]);
         let signals = found.into_iter().map(|(_, s)| s).collect();
-        if repaint {
-            self.shared.notes.lock().activity = true;
-        }
         let reply = self.drain_events();
         Fed {
             reply,
@@ -506,10 +500,7 @@ impl Feeder {
                 }
                 Event::Title(t) => self.shared.notes.lock().title = Some(t),
                 Event::ResetTitle => self.shared.notes.lock().title = None,
-                Event::Bell => {
-                    self.bell = true;
-                    self.shared.notes.lock().bell_at = Some(Instant::now());
-                }
+                Event::Bell => self.bell = true,
                 Event::ClipboardStore(_, text) => self.shared.notes.lock().clipboard = Some(text),
                 _ => {}
             }
@@ -562,7 +553,7 @@ pub fn limit_scrollback(shared: &TermShared, lines: usize, cursor: CursorPref, b
 const PROMPT_ROWS: usize = 12;
 
 /// Resizes the grid (clamped to the minimum) and records the pixel size. Returns whether the
-/// grid size changed, i.e. the remote must be told. When the width changes while the shell sits
+/// grid size changed, i.e. the PTY must be told. When the width changes while the shell sits
 /// at a prompt it said it redraws (`PromptState`), the prompt is cleared first and the cursor
 /// kept on the same row of it: the shell's redraw after SIGWINCH then lands on empty rows.
 pub fn resize(shared: &TermShared, size: GridSize, cell_w: f32, cell_h: f32) -> bool {

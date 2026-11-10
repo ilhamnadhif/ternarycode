@@ -227,12 +227,6 @@ impl Scheme {
     }
 }
 
-/// Halves the distance to the background: used for SGR 2 (dim / faint).
-pub fn dim(c: Color32, bg: Color32) -> Color32 {
-    let mix = |a: u8, b: u8| ((a as u16 * 2 + b as u16) / 3) as u8;
-    Color32::from_rgb(mix(c.r(), bg.r()), mix(c.g(), bg.g()), mix(c.b(), bg.b()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

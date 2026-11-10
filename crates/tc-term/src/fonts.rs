@@ -451,7 +451,7 @@ pub fn definitions(choice: &FontChoice, load_cjk: bool) -> FontDefinitions {
 
     // UI: Inter, with the icon font right behind it so icons can sit inside ordinary text.
     // The icons live in the Private Use Area, like the Powerline and Nerd Font glyphs that
-    // remote prompts print, so they stay out of the terminal and monospace families above.
+    // shell prompts print, so they stay out of the terminal and monospace families above.
     let font = |bytes: &'static [u8]| Arc::new(FontData::from_static(bytes));
     defs.font_data.insert("Inter".into(), font(INTER));
     defs.font_data

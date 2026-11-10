@@ -33,6 +33,11 @@ Perilaku yang sengaja berbeda dari TernaryShell; jangan ditimpa saat port.
 - `Feeder` menghitung push `CSI > flags u` (`KeyboardPushes`) dan mengosongkan stack setiap 4000
   push: alacritty 0.26 panic pada push ke-4097 (ia mengambil dari `title_stack`, bukan dari stack
   keyboard). Hapus bila versi alacritty yang dipakai sudah memperbaikinya.
+- Dihapus karena tidak dipakai aplikasi; jangan dibawa kembali saat port: `UiNotes::bell_at` dan
+  `UiNotes::activity` (`src/core.rs`), `widget::show_scaled`, `scheme::dim`.
+- `src/widget.rs`: lebar sel teks, geser tebal palsu, dan tebal garis bawah ditulis sebagai apa
+  yang dihitungnya (hasil sama); `let _ = fg;` dihapus. Komentar tentang SSH dan "remote" di
+  `src/core.rs`, `src/widget.rs`, `src/input.rs` dan `src/fonts.rs` kini menyebut PTY dan program.
 
 ## Cara port perbaikan
 

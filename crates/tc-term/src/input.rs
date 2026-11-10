@@ -411,7 +411,7 @@ fn letter(key: Key) -> Option<u8> {
         .map(|i| b'a' + i as u8)
 }
 
-/// Wraps pasted text for the remote: normalizes newlines to CR and adds bracketed-paste markers
+/// Wraps pasted text for the program: normalizes newlines to CR and adds bracketed-paste markers
 /// when the application asked for them. In bracketed mode ESC and ^C are removed (as alacritty
 /// does), so pasted text can neither end bracketed mode early nor interrupt the program.
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {

@@ -1,5 +1,5 @@
 //! The terminal widget: draws an alacritty grid with egui's painter and turns keyboard, mouse,
-//! clipboard and IME events into bytes for the remote.
+//! clipboard and IME events into bytes for the program on the PTY.
 
 use std::time::Duration;
 
@@ -53,7 +53,7 @@ pub struct TermView {
     reported_button: Option<MouseButton>,
     last_report_cell: Option<(usize, usize)>,
     pub grid: Option<GridSize>,
-    /// Cell size in physical pixels last reported to the remote.
+    /// Cell size in physical pixels last reported to the PTY.
     cell_px: Option<(u32, u32)>,
     blink_epoch: f64,
     was_focused: bool,
@@ -65,7 +65,7 @@ pub struct TermView {
 }
 
 impl TermView {
-    /// Records that this pane no longer has focus (its tab was left): the remote program gets
+    /// Records that this pane no longer has focus (its tab was left): the program gets
     /// a focus-out report if it asked for them. Returns the bytes to send.
     pub fn blur(&mut self, shared: &TermShared, alive: bool) -> Vec<u8> {
         self.preedit.clear();
@@ -111,7 +111,7 @@ pub fn pane_widget_id(pane: u64) -> Id {
 
 #[derive(Default)]
 pub struct TermResponse {
-    /// Bytes for the remote (keys, paste, mouse reports, focus events).
+    /// Bytes for the program (keys, paste, mouse reports, focus events).
     pub input: Vec<u8>,
     /// New grid size and pixel size when the pane was resized.
     pub resized: Option<(GridSize, u32, u32)>,
@@ -504,30 +504,11 @@ pub fn fit_scale(rect: Rect, shared: &TermShared, style: &TermStyle) -> (GridSiz
     (size, scale)
 }
 
-/// Draws the terminal at its current grid size (columns × rows), scaled down to fit `rect`. The
-/// grid and the PTY are never resized, so programs on it don't redraw when the view changes
-/// (the Grid, FR-V3). Input works as in `show`.
-pub fn show_scaled(
-    ui: &mut Ui,
-    rect: Rect,
-    view: &mut TermView,
-    shared: &TermShared,
-    style: &TermStyle,
-    input_enabled: bool,
-    alive: bool,
-) -> TermResponse {
-    let (size, scale) = fit_scale(rect, shared, style);
-    let scaled = TermStyle {
-        font_size: style.font_size * scale,
-        cell: style.cell * scale,
-        ..*style
-    };
-    show_inner(ui, rect, view, shared, &scaled, false, input_enabled, alive, Some(size), Crop::default(), true)
-}
-
-/// Like [`show_scaled`], but never below `min_scale`, so the text stays readable. When the grid
-/// does not fit at that size it is cut: the left columns, and the rows around the cursor (the
-/// latest output, or the input line of a full-screen program). The PTY is still not resized.
+/// Draws the terminal at its current grid size (columns × rows), scaled down to fit `rect` but
+/// never below `min_scale`, so the text stays readable. The grid and the PTY are never resized,
+/// so programs on it don't redraw when the view changes (the Grid, FR-V3). When the grid does
+/// not fit at that size it is cut: the left columns, and the rows around the cursor (the latest
+/// output, or the input line of a full-screen program). Input works as in `show`.
 #[allow(clippy::too_many_arguments)]
 pub fn show_readable(
     ui: &mut Ui,
@@ -739,7 +720,7 @@ fn show_inner(
         let row = crop.rows.as_ref().map_or(slot, |rows| rows.get(slot).copied().unwrap_or(slot));
         (col, row.min(size.rows - 1), side)
     };
-    // Pixel sizes go out in physical pixels everywhere (pty request, window-change, CSI 14 t),
+    // Pixel sizes go out in physical pixels everywhere (the PTY's size, CSI 14 t),
     // and are re-sent when only the font changes.
     let cell_px = ((cell.x * ppp).round() as u32, (cell.y * ppp).round() as u32);
     // Also when the terminal was resized elsewhere (the Grid sizes it to its tile).
@@ -764,7 +745,7 @@ fn show_inner(
     // frame's keys were meant for the other widget.
     let had_focus = ui.memory(|m| m.had_focus_last_frame(id));
     if ui.memory(|m| m.has_focus(id)) {
-        // Arrows and Tab belong to the remote program, never to egui's focus navigation (which
+        // Arrows and Tab belong to the program, never to egui's focus navigation (which
         // is decided before the focus filter below applies on the first focused frame).
         ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
     }
@@ -847,7 +828,7 @@ fn show_inner(
                     modifiers,
                 } => {
                     // ⌘ combinations are the app's (macOS). On Windows and Linux Ctrl goes to the
-                    // remote program; the app's own shortcuts were taken out before.
+                    // program; the app's own shortcuts were taken out before.
                     if modifiers.mac_cmd {
                         continue;
                     }
@@ -911,7 +892,7 @@ fn show_inner(
                     typed.extend_from_slice(text.as_bytes());
                 }
                 // On Windows and Linux egui turns Ctrl+C, Ctrl+X and Ctrl+V into these events, but
-                // in a terminal plain Ctrl+C belongs to the remote program: only Ctrl+Shift+C
+                // in a terminal plain Ctrl+C belongs to the program: only Ctrl+Shift+C
                 // and Ctrl+Shift+V (and the menu) copy and paste, as in other terminals there.
                 // Windows Terminal's habits also work there: Ctrl+C copies while text is
                 // selected, and Ctrl+V pastes.
@@ -1337,15 +1318,9 @@ fn show_inner(
 
     let paint_text =
         |row: usize, col: usize, text: &str, st: &RunStyle, width: usize, color: Color32| {
-            let r = cell_rect(col, row, width.max(text.chars().count().min(1)));
+            let r = cell_rect(col, row, width);
             if text.chars().count() == 1
-                && draw_special(
-                    &painter,
-                    text.chars().next().unwrap(),
-                    cell_rect(col, row, width),
-                    color,
-                    ppp,
-                )
+                && draw_special(&painter, text.chars().next().unwrap(), r, color, ppp)
             {
                 return;
             }
@@ -1373,17 +1348,13 @@ fn show_inner(
             let galley = painter.layout_job(job);
             let pos = pos2(r.left(), r.top());
             if st.bold && !style.real_bold {
-                painter.galley(
-                    pos + vec2(0.5 / ppp.max(1.0) * 2.0 * 0.5, 0.0),
-                    galley.clone(),
-                    color,
-                );
+                painter.galley(pos + vec2(0.5 / ppp.max(1.0), 0.0), galley.clone(), color);
             }
             painter.galley(pos, galley, color);
         };
     let decorate = |row: usize, col: usize, width: usize, st: &RunStyle| {
         let r = cell_rect(col, row, width);
-        let thickness = (1.0 / ppp).max(1.0 / ppp * 1.0).max(0.5);
+        let thickness = (1.0 / ppp).max(0.5);
         let ucolor = st.underline_color.unwrap_or(st.fg);
         if st.underline > 0 {
             let y = snap(r.bottom() - thickness * 1.5);
@@ -1492,7 +1463,6 @@ fn show_inner(
                 }
             }
         }
-        let _ = fg;
     }
     drop(term);
     if crop.cut_above {
@@ -1534,7 +1504,7 @@ fn show_inner(
     }
 
     // Context menu.
-    // In mouse-reporting mode the right button belongs to the remote program: Shift+right-click
+    // In mouse-reporting mode the right button belongs to the program: Shift+right-click
     // opens the menu, which then stays open after Shift is released.
     if mouse_mode && !shift_held && !view.menu_open {
         return out;
