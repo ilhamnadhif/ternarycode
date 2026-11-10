@@ -283,27 +283,27 @@ pub fn overlay(
     }
     if lsp_on {
         resp.context_menu(|ui| {
-            let mut item = |ui: &mut Ui, label: &str, keys: &str, cmd: IdeCmd| {
+            let mut item = |ui: &mut Ui, label: &str, cmd: IdeCmd| {
+                let keys = kit::keys(&crate::actions::Action::Ide(cmd.clone())).unwrap_or_default();
                 let b = ui.add(egui::Button::new(label).shortcut_text(keys));
                 if b.clicked() {
                     cmds.push(cmd);
                     ui.close();
                 }
             };
-            let mac = cfg!(target_os = "macos");
-            item(ui, t("Go to Definition"), "F12", IdeCmd::Goto(Goto::Definition));
-            item(ui, t("Go to Type Definition"), "", IdeCmd::Goto(Goto::TypeDefinition));
-            item(ui, t("Go to Implementation"), if mac { "⌘F12" } else { "Ctrl+F12" }, IdeCmd::Goto(Goto::Implementation));
-            item(ui, t("Find References"), "⇧F12", IdeCmd::References);
+            item(ui, t("Go to Definition"), IdeCmd::Goto(Goto::Definition));
+            item(ui, t("Go to Type Definition"), IdeCmd::Goto(Goto::TypeDefinition));
+            item(ui, t("Go to Implementation"), IdeCmd::Goto(Goto::Implementation));
+            item(ui, t("Find References"), IdeCmd::References);
             ui.separator();
-            item(ui, t("Rename Symbol"), "F2", IdeCmd::Rename);
-            item(ui, t("Code Actions…"), if mac { "⌘." } else { "Ctrl+." }, IdeCmd::CodeActions);
-            item(ui, t("Format Document"), if mac { "⇧⌥F" } else { "Shift+Alt+F" }, IdeCmd::Format);
+            item(ui, t("Rename Symbol"), IdeCmd::Rename);
+            item(ui, t("Code Actions…"), IdeCmd::CodeActions);
+            item(ui, t("Format Document"), IdeCmd::Format);
             ui.separator();
-            item(ui, t("Go to Symbol in File…"), if mac { "⌥⌘O" } else { "Ctrl+Alt+O" }, IdeCmd::Symbols);
-            item(ui, t("Problems"), if mac { "⇧⌘M" } else { "Ctrl+Shift+M" }, IdeCmd::Problems);
-            item(ui, t("Back"), "⌃-", IdeCmd::Back);
-            item(ui, t("Forward"), "⌃⇧-", IdeCmd::Forward);
+            item(ui, t("Go to Symbol in File…"), IdeCmd::Symbols);
+            item(ui, t("Problems"), IdeCmd::Problems);
+            item(ui, t("Back"), IdeCmd::Back);
+            item(ui, t("Forward"), IdeCmd::Forward);
         });
     }
     geom

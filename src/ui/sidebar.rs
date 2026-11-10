@@ -178,9 +178,8 @@ impl App {
                             painter.rect_filled(badge, CornerRadius::same(8), c);
                             painter.galley(badge.center() - g.size() / 2.0, g, p.on_accent);
                             right -= w + 6.0;
-                        } else if hovered && i < 9 {
-                            let keys = format!("{}{}", if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+Shift+" }, i + 1);
-                            let g = painter.layout_no_wrap(keys, egui::FontId::proportional(style::SMALL), p.text_faint);
+                        } else if hovered && let Some(keys) = kit::keys(&Action::SelectProjectIndex(i)) {
+                            let g = painter.layout_no_wrap(keys.to_string(), egui::FontId::proportional(style::SMALL), p.text_faint);
                             right -= g.size().x;
                             painter.galley(pos2(right, top_y - g.size().y / 2.0), g, p.text_faint);
                             right -= 6.0;
@@ -261,15 +260,7 @@ impl App {
                         if response.drag_started() {
                             self.sidebar_drag = Some(i);
                         }
-                        let shortcut = if i < 9 {
-                            format!(
-                                "  ({}{})",
-                                if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+Shift+" },
-                                i + 1
-                            )
-                        } else {
-                            String::new()
-                        };
+                        let shortcut = kit::keys(&Action::SelectProjectIndex(i)).map(|k| format!("  ({k})")).unwrap_or_default();
                         let mut tip = self
                             .project(*id)
                             .map(|pr| {

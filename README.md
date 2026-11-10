@@ -215,23 +215,32 @@ diff in the editor.
 
 ## Keyboard shortcuts
 
-On Windows and Linux, `⌘` shortcuts are `Ctrl+Shift+…`, so `Ctrl+C`, `Ctrl+D` and friends still
-reach the terminal. The command palette (`⌘K` / `Ctrl+Shift+K`) lists everything else.
+On Windows and Linux, `⌘` shortcuts are `Ctrl+Shift+…` (`⌥` stays `Alt`), so `Ctrl+C`, `Ctrl+D`
+and friends still reach the terminal. The command palette (`⌘K` / `Ctrl+Shift+K`) lists
+everything, with its shortcut.
 
 | macOS | Windows, Linux | |
 | --- | --- | --- |
-| `⌘J` · `⇧⌘J` | `Ctrl+Shift+J` | next waiting agent · back |
+| `⌘J` · `⇧⌘J` | `Ctrl+Shift+J` · `Ctrl+Alt+J` | next waiting agent · back |
+| `⌥⌘J` | `Ctrl+Shift+Alt+J` | attention list |
 | `⌘K` | `Ctrl+Shift+K` | command palette |
 | `⌘P` | `Ctrl+Shift+P` | switch project |
 | `⇧⌘A` | `Ctrl+Shift+A` | run an agent |
 | `⌘0` | `Ctrl+Shift+0` | Grid of all projects |
 | `⌘T` · `⌘W` | `Ctrl+Shift+T` · `Ctrl+Shift+W` | new tab · close pane |
+| `⇧⌘]` · `⇧⌘[` | `Ctrl+Shift+PageDown` · `Ctrl+Shift+PageUp` | next tab · previous tab |
 | `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | split right · split down |
+| `⌘]` · `⌘[` | `Ctrl+Shift+]` · `Ctrl+Shift+[` | next pane · previous pane |
 | `⌘O` · `⌘E` · `⌘S` | `Ctrl+Shift+O` · `Ctrl+Shift+Y` · `Ctrl+Shift+S` | open file · show editor · save |
 | `⇧⌘R` | `Ctrl+Shift+R` | review changes |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | find in the pane, file or document · in all panes |
-| `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` | sidebar · project 1–9 |
-| `F12` · `⇧F12` · `F2` · `⌘.` | same | definition · references · rename · code actions |
+| `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` · `Ctrl+Shift+1`–`9` | sidebar · project 1–9 |
+| `⌘=` · `⌘-` | `Ctrl+Shift+=` · `Ctrl+Shift+-` · `Ctrl+Shift+Backspace` | bigger · smaller · actual size text |
+| `⌥⌘K` | `Ctrl+Shift+Alt+K` | clear the scrollback |
+| `F12` · `⇧F12` · `F2` · `⌘.` | `F12` · `Shift+F12` · `F2` · `Ctrl+.` | definition · references · rename · code actions |
+
+In the editor, `Ctrl+Shift+-` is Forward (`⌃⇧-` on macOS), as in VS Code; elsewhere it makes the
+text smaller.
 
 ## Privacy
 

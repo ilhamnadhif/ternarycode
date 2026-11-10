@@ -269,6 +269,9 @@ impl App {
         tc_term::set_translator(crate::i18n::t);
         apply_fonts(ctx, &settings);
         ui::style::apply(ctx, settings.theme);
+        // egui's own Ctrl+= / Ctrl+- / Ctrl+0 would zoom the whole window on Windows and Linux,
+        // where those keys belong to the terminal; text size has its own shortcuts.
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -2430,38 +2433,15 @@ impl App {
         if cfg!(target_os = "macos") {
             return;
         }
-        let map = [
-            (Key::J, Action::NextAttention),
-            (Key::K, Action::Palette),
-            (Key::P, Action::SwitchProject),
-            (Key::A, Action::PickPreset),
-            (Key::B, Action::ToggleSidebar),
-            (Key::T, Action::NewTab),
-            (Key::W, Action::ClosePane),
-            (Key::D, Action::SplitRight),
-            (Key::E, Action::SplitDown),
-            (Key::C, Action::Copy),
-            (Key::V, Action::Paste),
-            (Key::N, Action::AddProject),
-            (Key::O, Action::QuickOpen),
-            (Key::Comma, Action::Settings),
-            (Key::Q, Action::Quit),
-            (Key::Num0, Action::ToggleGrid),
-            (Key::S, Action::SaveFile),
-            (Key::F, Action::Find),
-            (Key::G, Action::FindAll),
-            (Key::R, Action::Review),
-            (Key::Y, Action::ToggleEditor),
-        ];
-        for (key, action) in map {
-            if ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(cmd, key))) {
+        // The editor's text keeps Ctrl+Shift+- for its own Forward (as in VS Code on Linux).
+        let forward = self.settings.lsp && self.editor_has_keyboard(ctx);
+        for (mods, key, action) in shortcuts() {
+            if action == Action::FontSmaller && forward {
+                continue;
+            }
+            if ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(mods, key))) {
                 self.actions.push(action);
             }
-        }
-        if ctx.input_mut(|i| {
-            i.consume_shortcut(&KeyboardShortcut::new(Modifiers::CTRL | Modifiers::ALT, Key::J))
-        }) {
-            self.actions.push(Action::BackAttention);
         }
     }
 
@@ -2773,6 +2753,57 @@ impl App {
     }
 }
 
+/// The app's own keys on Windows and Linux: Ctrl+Shift where macOS has ⌘ (⌥ stays Alt), as
+/// `kit::keys` names them. Most specific first: `consume_shortcut` ignores an extra Shift or
+/// Alt, so Ctrl+Shift+J would also take Ctrl+Shift+Alt+J.
+fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
+    use egui::{Key, Modifiers};
+    let cmd = Modifiers::CTRL | Modifiers::SHIFT;
+    let mut keys = vec![
+        (cmd | Modifiers::ALT, Key::J, Action::ToggleAttention),
+        (cmd | Modifiers::ALT, Key::K, Action::ClearScrollback),
+    ];
+    let map = [
+        (Key::J, Action::NextAttention),
+        (Key::K, Action::Palette),
+        (Key::P, Action::SwitchProject),
+        (Key::A, Action::PickPreset),
+        (Key::B, Action::ToggleSidebar),
+        (Key::T, Action::NewTab),
+        (Key::W, Action::ClosePane),
+        (Key::D, Action::SplitRight),
+        (Key::E, Action::SplitDown),
+        (Key::C, Action::Copy),
+        (Key::V, Action::Paste),
+        (Key::N, Action::AddProject),
+        (Key::O, Action::QuickOpen),
+        (Key::Comma, Action::Settings),
+        (Key::Q, Action::Quit),
+        (Key::Num0, Action::ToggleGrid),
+        (Key::S, Action::SaveFile),
+        (Key::F, Action::Find),
+        (Key::G, Action::FindAll),
+        (Key::R, Action::Review),
+        (Key::Y, Action::ToggleEditor),
+        // GNOME Terminal's tab keys, with Shift (Shift+PageUp alone still scrolls).
+        (Key::PageDown, Action::NextTab),
+        (Key::PageUp, Action::PrevTab),
+        // As kitty has them. Shift turns `]` into `}` where the layout has it there; else
+        // the key comes as itself.
+        (Key::CloseBracket, Action::NextPane),
+        (Key::CloseCurlyBracket, Action::NextPane),
+        (Key::OpenBracket, Action::PrevPane),
+        (Key::OpenCurlyBracket, Action::PrevPane),
+        (Key::Equals, Action::FontBigger),
+        (Key::Plus, Action::FontBigger),
+        (Key::Minus, Action::FontSmaller),
+        (Key::Backspace, Action::FontReset),
+    ];
+    keys.extend(map.map(|(key, action)| (cmd, key, action)));
+    keys.push((Modifiers::CTRL | Modifiers::ALT, Key::J, Action::BackAttention));
+    keys
+}
+
 /// Someone may be looking at the window: it has the keyboard and is on screen (not hidden,
 /// minimized or covered). Asked of the window itself, not told by frames drawn: an idle window
 /// draws none, and the logic also runs while it is hidden (FR-L1).
@@ -2863,4 +2894,39 @@ pub fn absolute(arg: &str) -> PathBuf {
         std::env::current_dir().unwrap_or_default().join(p)
     };
     paths::canonical(&p)
+}
+
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn windows_and_linux_keys_are_the_ones_shown() {
+        let keys = shortcuts();
+        for (mods, key, action) in &keys {
+            let mut chord = String::new();
+            for (on, name) in [(mods.ctrl, "Ctrl+"), (mods.shift, "Shift+"), (mods.alt, "Alt+")] {
+                if on {
+                    chord.push_str(name);
+                }
+            }
+            // egui writes a minus as U+2212.
+            chord.push_str(&key.symbol_or_name().replace('\u{2212}', "-"));
+            let (_, label) = ui::kit::key_labels(action).unwrap_or_default();
+            // The first key of an action is the one shown; the rest stand in for it on other
+            // layouts (Shift+`]` reads as `}`, Shift+`=` as `+`).
+            let first = keys.iter().find(|(_, _, a)| a == action).map(|(_, k, _)| k);
+            if first == Some(key) {
+                assert_eq!(label, chord, "{action:?}");
+            }
+        }
+        // No chord is taken by one checked before it (which would match it, extra Alt or
+        // Shift ignored).
+        for (i, (m, k, _)) in keys.iter().enumerate() {
+            for (m2, k2, a2) in &keys[i + 1..] {
+                assert!(k != k2 || !m2.matches_logically(*m), "{a2:?} is taken before it");
+            }
+        }
+    }
 }

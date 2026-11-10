@@ -11,10 +11,6 @@ use crate::actions::Action;
 use crate::app::App;
 use crate::i18n::{t, tf};
 
-pub fn jump_key() -> &'static str {
-    if cfg!(target_os = "macos") { "⌘J" } else { "Ctrl+Shift+J" }
-}
-
 impl App {
     pub fn status_bar(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
@@ -40,7 +36,7 @@ impl App {
                     };
                     let text = format!("{project} · {}: {what}{more}", pane.label());
                     let room = (ui.available_width() * 0.6).max(120.0);
-                    let r = bar_item(ui, Some(status::icon(s)), &text, c, Some(jump_key()), room);
+                    let r = bar_item(ui, Some(status::icon(s)), &text, c, kit::keys(&Action::NextAttention), room);
                     #[cfg(debug_assertions)]
                     crate::devtest::record("attention-summary", r.rect);
                     let tip = format!("{}\n{}", status::described(&pane.tracker), t("Show everything that waits for you"));

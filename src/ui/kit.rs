@@ -12,9 +12,22 @@ use super::style::{self, RADIUS};
 /// The keyboard shortcut of an action, as the menu (macOS) or the shortcut table (elsewhere)
 /// has it. One table, so tooltips and hints never disagree with what the keys do.
 pub fn keys(action: &crate::actions::Action) -> Option<&'static str> {
+    let (mac, other) = key_labels(action)?;
+    Some(if cfg!(target_os = "macos") { mac } else { other }).filter(|k| !k.is_empty())
+}
+
+/// An action's shortcut on macOS and on Windows and Linux ("" where it has none there). The
+/// macOS menu takes its key equivalents from here (`menu.rs`); `App::handle_shortcuts` binds
+/// the others, and a test checks they agree.
+pub fn key_labels(action: &crate::actions::Action) -> Option<(&'static str, &'static str)> {
     use crate::actions::Action as A;
-    let mac = cfg!(target_os = "macos");
-    let (m, other) = match action {
+    use crate::lsp::{Goto, IdeCmd};
+    const MAC_DIGITS: [&str; 9] = ["⌘1", "⌘2", "⌘3", "⌘4", "⌘5", "⌘6", "⌘7", "⌘8", "⌘9"];
+    const DIGITS: [&str; 9] = [
+        "Ctrl+Shift+1", "Ctrl+Shift+2", "Ctrl+Shift+3", "Ctrl+Shift+4", "Ctrl+Shift+5",
+        "Ctrl+Shift+6", "Ctrl+Shift+7", "Ctrl+Shift+8", "Ctrl+Shift+9",
+    ];
+    Some(match action {
         A::ToggleSidebar => ("⌘B", "Ctrl+Shift+B"),
         A::ToggleEditor => ("⌘E", "Ctrl+Shift+Y"),
         A::QuickOpen => ("⌘O", "Ctrl+Shift+O"),
@@ -26,12 +39,46 @@ pub fn keys(action: &crate::actions::Action) -> Option<&'static str> {
         A::ClosePane => ("⌘W", "Ctrl+Shift+W"),
         A::Review => ("⇧⌘R", "Ctrl+Shift+R"),
         A::Palette => ("⌘K", "Ctrl+Shift+K"),
+        A::SwitchProject => ("⌘P", "Ctrl+Shift+P"),
         A::NextAttention => ("⌘J", "Ctrl+Shift+J"),
+        A::BackAttention => ("⇧⌘J", "Ctrl+Alt+J"),
+        A::ToggleAttention => ("⌥⌘J", "Ctrl+Shift+Alt+J"),
         A::ToggleGrid => ("⌘0", "Ctrl+Shift+0"),
         A::SaveFile => ("⌘S", "Ctrl+Shift+S"),
+        A::Find => ("⌘F", "Ctrl+Shift+F"),
+        A::FindAll => ("⇧⌘F", "Ctrl+Shift+G"),
+        A::Settings => ("⌘,", "Ctrl+Shift+,"),
+        A::Quit => ("⌘Q", "Ctrl+Shift+Q"),
+        A::Copy => ("⌘C", "Ctrl+Shift+C"),
+        A::Paste => ("⌘V", "Ctrl+Shift+V"),
+        A::SelectAll => ("⌘A", ""),
+        A::ClearScrollback => ("⌥⌘K", "Ctrl+Shift+Alt+K"),
+        A::NextTab => ("⇧⌘]", "Ctrl+Shift+PageDown"),
+        A::PrevTab => ("⇧⌘[", "Ctrl+Shift+PageUp"),
+        A::NextPane => ("⌘]", "Ctrl+Shift+]"),
+        A::PrevPane => ("⌘[", "Ctrl+Shift+["),
+        A::FontBigger => ("⌘=", "Ctrl+Shift+="),
+        A::FontSmaller => ("⌘-", "Ctrl+Shift+-"),
+        // ⌘0 is the Grid.
+        A::FontReset => ("", "Ctrl+Shift+Backspace"),
+        A::SelectProjectIndex(i) if *i < 9 => (MAC_DIGITS[*i], DIGITS[*i]),
+        // The editor's own, while its text has the keyboard (`App::ide_keys`).
+        A::Ide(cmd) => match cmd {
+            IdeCmd::Goto(Goto::Definition) => ("F12", "F12"),
+            IdeCmd::Goto(Goto::Implementation) => ("⌘F12", "Ctrl+F12"),
+            IdeCmd::References => ("⇧F12", "Shift+F12"),
+            IdeCmd::Rename => ("F2", "F2"),
+            IdeCmd::CodeActions => ("⌘.", "Ctrl+."),
+            IdeCmd::Format => ("⇧⌥F", "Shift+Alt+F"),
+            IdeCmd::Symbols => ("⌥⌘O", "Ctrl+Alt+O"),
+            IdeCmd::WorkspaceSymbols => ("⌥⌘T", "Ctrl+Alt+T"),
+            IdeCmd::Problems => ("⇧⌘M", "Ctrl+Shift+M"),
+            IdeCmd::Back => ("⌃-", "Ctrl+-"),
+            IdeCmd::Forward => ("⌃⇧-", "Ctrl+Shift+-"),
+            _ => return None,
+        },
         _ => return None,
-    };
-    Some(if mac { m } else { other })
+    })
 }
 
 /// A tooltip followed by the action's shortcut.

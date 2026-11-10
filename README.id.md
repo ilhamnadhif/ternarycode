@@ -217,23 +217,32 @@ diff di editor.
 
 ## Shortcut keyboard
 
-Di Windows dan Linux, shortcut `⌘` menjadi `Ctrl+Shift+…`, jadi `Ctrl+C`, `Ctrl+D`, dan
-sejenisnya tetap sampai ke terminal. Command palette (`⌘K` / `Ctrl+Shift+K`) memuat semua sisanya.
+Di Windows dan Linux, shortcut `⌘` menjadi `Ctrl+Shift+…` (`⌥` tetap `Alt`), jadi `Ctrl+C`,
+`Ctrl+D`, dan sejenisnya tetap sampai ke terminal. Command palette (`⌘K` / `Ctrl+Shift+K`) memuat
+semuanya, lengkap dengan shortcut-nya.
 
 | macOS | Windows, Linux | |
 | --- | --- | --- |
-| `⌘J` · `⇧⌘J` | `Ctrl+Shift+J` | agent berikutnya yang menunggu · kembali |
+| `⌘J` · `⇧⌘J` | `Ctrl+Shift+J` · `Ctrl+Alt+J` | agent berikutnya yang menunggu · kembali |
+| `⌥⌘J` | `Ctrl+Shift+Alt+J` | daftar yang menunggu |
 | `⌘K` | `Ctrl+Shift+K` | command palette |
 | `⌘P` | `Ctrl+Shift+P` | pindah project |
 | `⇧⌘A` | `Ctrl+Shift+A` | jalankan agent |
 | `⌘0` | `Ctrl+Shift+0` | Grid semua project |
 | `⌘T` · `⌘W` | `Ctrl+Shift+T` · `Ctrl+Shift+W` | tab baru · tutup pane |
+| `⇧⌘]` · `⇧⌘[` | `Ctrl+Shift+PageDown` · `Ctrl+Shift+PageUp` | tab berikutnya · tab sebelumnya |
 | `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | split kanan · split bawah |
+| `⌘]` · `⌘[` | `Ctrl+Shift+]` · `Ctrl+Shift+[` | pane berikutnya · pane sebelumnya |
 | `⌘O` · `⌘E` · `⌘S` | `Ctrl+Shift+O` · `Ctrl+Shift+Y` · `Ctrl+Shift+S` | buka file · tampilkan editor · simpan |
 | `⇧⌘R` | `Ctrl+Shift+R` | review perubahan |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | cari di pane, file, atau dokumen · di semua pane |
-| `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` | sidebar · project 1–9 |
-| `F12` · `⇧F12` · `F2` · `⌘.` | sama | definisi · referensi · rename · code action |
+| `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` · `Ctrl+Shift+1`–`9` | sidebar · project 1–9 |
+| `⌘=` · `⌘-` | `Ctrl+Shift+=` · `Ctrl+Shift+-` · `Ctrl+Shift+Backspace` | perbesar · perkecil · ukuran asli teks |
+| `⌥⌘K` | `Ctrl+Shift+Alt+K` | bersihkan scrollback |
+| `F12` · `⇧F12` · `F2` · `⌘.` | `F12` · `Shift+F12` · `F2` · `Ctrl+.` | definisi · referensi · rename · code action |
+
+Di editor, `Ctrl+Shift+-` adalah Maju (`⌃⇧-` di macOS), seperti di VS Code; di tempat lain
+shortcut itu memperkecil teks.
 
 ## Privasi
 

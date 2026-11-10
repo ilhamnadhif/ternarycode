@@ -88,10 +88,9 @@ impl App {
                 items.push(Item {
                     icon: icons::FOLDER,
                     label: p.name.clone(),
-                    detail: if i < 9 {
-                        format!("{}  {}", crate::paths::contract_tilde(&p.path), if cfg!(target_os = "macos") { format!("⌘{}", i + 1) } else { format!("Ctrl+Shift+{}", i + 1) })
-                    } else {
-                        crate::paths::contract_tilde(&p.path)
+                    detail: match kit::keys(&Action::SelectProjectIndex(i)) {
+                        Some(k) => format!("{}  {k}", crate::paths::contract_tilde(&p.path)),
+                        None => crate::paths::contract_tilde(&p.path),
                     },
                     action: Action::SelectProject(p.id),
                 });
@@ -115,52 +114,60 @@ impl App {
             // The editor's language commands, with a file open in it.
             let code = self.settings.lsp && self.active.and_then(|id| self.editors.get(&id)).and_then(|e| e.file()).is_some();
             let undo = self.lsp.ide.undo.is_some();
-            let mut add = |icon, label: &str, detail: &str, action| {
+            // Each with its shortcut, from the one table.
+            let mut add = |icon, label: &str, action| {
                 items.push(Item {
                     icon,
                     label: label.to_string(),
-                    detail: detail.to_string(),
+                    detail: kit::keys(&action).unwrap_or_default().to_string(),
                     action,
                 })
             };
-            let mac = cfg!(target_os = "macos");
-            add(icons::BELL, t("Go to Next Waiting Agent"), super::statusbar::jump_key(), Action::NextAttention);
-            add(icons::ARROW_LEFT, t("Back to Where I Was"), if mac { "⇧⌘J" } else { "Ctrl+Alt+J" }, Action::BackAttention);
-            add(icons::LIST, t("Show Attention List"), "", Action::ToggleAttention);
-            add(icons::SQUARE_SPLIT_HORIZONTAL, t("Grid of All Projects"), if mac { "⌘0" } else { "Ctrl+Shift+0" }, Action::ToggleGrid);
-            add(icons::TERMINAL_WINDOW, t("Focus View"), "", Action::SetView(tc_core::model::View::Focus));
-            add(icons::FOLDER_PLUS, t("Add Project…"), if mac { "⇧⌘O" } else { "Ctrl+Shift+N" }, Action::AddProject);
-            add(icons::MAGNIFYING_GLASS, t("Find in Pane…"), if mac { "⌘F" } else { "Ctrl+Shift+F" }, Action::Find);
-            add(icons::MAGNIFYING_GLASS, t("Find in All Panes…"), if mac { "⇧⌘F" } else { "Ctrl+Shift+G" }, Action::FindAll);
-            add(icons::CHECK_CIRCLE, t("Review Changes…"), if mac { "⇧⌘R" } else { "Ctrl+Shift+R" }, Action::Review);
-            add(icons::FILE, t("Open File…"), if mac { "⌘O" } else { "Ctrl+Shift+O" }, Action::QuickOpen);
-            add(icons::CODE, t("Show/Hide Editor"), if mac { "⌘E" } else { "Ctrl+Shift+Y" }, Action::ToggleEditor);
-            add(icons::PLUS, t("New Tab"), if mac { "⌘T" } else { "Ctrl+Shift+T" }, Action::NewTab);
-            add(icons::SQUARE_SPLIT_HORIZONTAL, t("Split Right"), if mac { "⌘D" } else { "Ctrl+Shift+D" }, Action::SplitRight);
-            add(icons::SQUARE_SPLIT_VERTICAL, t("Split Down"), if mac { "⇧⌘D" } else { "Ctrl+Shift+E" }, Action::SplitDown);
-            add(icons::X, t("Close Pane"), if mac { "⌘W" } else { "Ctrl+Shift+W" }, Action::ClosePane);
-            add(icons::SIDEBAR_SIMPLE, t("Show/Hide Sidebar"), if mac { "⌘B" } else { "Ctrl+Shift+B" }, Action::ToggleSidebar);
-            add(icons::PLUG, t("Agent Integrations…"), "", Action::Integrations);
-            add(icons::GEAR, t("Settings…"), if mac { "⌘," } else { "Ctrl+Shift+," }, Action::Settings);
-            add(icons::ARROW_CIRCLE_UP, t("Check for Updates…"), "", Action::CheckForUpdates);
+            add(icons::BELL, t("Go to Next Waiting Agent"), Action::NextAttention);
+            add(icons::ARROW_LEFT, t("Back to Where I Was"), Action::BackAttention);
+            add(icons::LIST, t("Show Attention List"), Action::ToggleAttention);
+            add(icons::SQUARE_SPLIT_HORIZONTAL, t("Grid of All Projects"), Action::ToggleGrid);
+            add(icons::TERMINAL_WINDOW, t("Focus View"), Action::SetView(tc_core::model::View::Focus));
+            add(icons::FOLDER_PLUS, t("Add Project…"), Action::AddProject);
+            add(icons::MAGNIFYING_GLASS, t("Find in Pane…"), Action::Find);
+            add(icons::MAGNIFYING_GLASS, t("Find in All Panes…"), Action::FindAll);
+            add(icons::CHECK_CIRCLE, t("Review Changes…"), Action::Review);
+            add(icons::FILE, t("Open File…"), Action::QuickOpen);
+            add(icons::CODE, t("Show/Hide Editor"), Action::ToggleEditor);
+            add(icons::PLUS, t("New Tab"), Action::NewTab);
+            add(icons::SQUARE_SPLIT_HORIZONTAL, t("Split Right"), Action::SplitRight);
+            add(icons::SQUARE_SPLIT_VERTICAL, t("Split Down"), Action::SplitDown);
+            add(icons::X, t("Close Pane"), Action::ClosePane);
+            add(icons::ARROW_RIGHT, t("Show Next Tab"), Action::NextTab);
+            add(icons::ARROW_LEFT, t("Show Previous Tab"), Action::PrevTab);
+            add(icons::ARROW_RIGHT, t("Next Pane"), Action::NextPane);
+            add(icons::ARROW_LEFT, t("Previous Pane"), Action::PrevPane);
+            add(icons::TEXT_AA, t("Bigger Text"), Action::FontBigger);
+            add(icons::TEXT_AA, t("Smaller Text"), Action::FontSmaller);
+            add(icons::TEXT_AA, t("Actual Size"), Action::FontReset);
+            add(icons::TERMINAL, t("Clear Scrollback"), Action::ClearScrollback);
+            add(icons::SIDEBAR_SIMPLE, t("Show/Hide Sidebar"), Action::ToggleSidebar);
+            add(icons::PLUG, t("Agent Integrations…"), Action::Integrations);
+            add(icons::GEAR, t("Settings…"), Action::Settings);
+            add(icons::ARROW_CIRCLE_UP, t("Check for Updates…"), Action::CheckForUpdates);
             if code {
                 use crate::lsp::{Goto, IdeCmd};
-                add(icons::ARROW_SQUARE_OUT, t("Go to Definition"), "F12", Action::Ide(IdeCmd::Goto(Goto::Definition)));
-                add(icons::ARROW_SQUARE_OUT, t("Go to Type Definition"), "", Action::Ide(IdeCmd::Goto(Goto::TypeDefinition)));
-                add(icons::ARROW_SQUARE_OUT, t("Go to Implementation"), if mac { "⌘F12" } else { "Ctrl+F12" }, Action::Ide(IdeCmd::Goto(Goto::Implementation)));
-                add(icons::LIST, t("Find References"), "⇧F12", Action::Ide(IdeCmd::References));
-                add(icons::PENCIL_SIMPLE, t("Rename Symbol"), "F2", Action::Ide(IdeCmd::Rename));
-                add(icons::LIGHTNING, t("Code Actions…"), if mac { "⌘." } else { "Ctrl+." }, Action::Ide(IdeCmd::CodeActions));
-                add(icons::TEXT_AA, t("Format Document"), if mac { "⇧⌥F" } else { "Shift+Alt+F" }, Action::Ide(IdeCmd::Format));
-                add(icons::LIST, t("Go to Symbol in File…"), if mac { "⌥⌘O" } else { "Ctrl+Alt+O" }, Action::Ide(IdeCmd::Symbols));
-                add(icons::MAGNIFYING_GLASS, t("Go to Symbol in Project…"), if mac { "⌥⌘T" } else { "Ctrl+Alt+T" }, Action::Ide(IdeCmd::WorkspaceSymbols));
-                add(icons::WARNING, t("Problems"), if mac { "⇧⌘M" } else { "Ctrl+Shift+M" }, Action::Ide(IdeCmd::Problems));
-                add(icons::ARROW_LEFT, t("Back"), "⌃-", Action::Ide(IdeCmd::Back));
-                add(icons::ARROW_RIGHT, t("Forward"), "⌃⇧-", Action::Ide(IdeCmd::Forward));
-                add(icons::ARROWS_CLOCKWISE, t("Restart Language Server"), "", Action::Ide(IdeCmd::RestartServer));
+                add(icons::ARROW_SQUARE_OUT, t("Go to Definition"), Action::Ide(IdeCmd::Goto(Goto::Definition)));
+                add(icons::ARROW_SQUARE_OUT, t("Go to Type Definition"), Action::Ide(IdeCmd::Goto(Goto::TypeDefinition)));
+                add(icons::ARROW_SQUARE_OUT, t("Go to Implementation"), Action::Ide(IdeCmd::Goto(Goto::Implementation)));
+                add(icons::LIST, t("Find References"), Action::Ide(IdeCmd::References));
+                add(icons::PENCIL_SIMPLE, t("Rename Symbol"), Action::Ide(IdeCmd::Rename));
+                add(icons::LIGHTNING, t("Code Actions…"), Action::Ide(IdeCmd::CodeActions));
+                add(icons::TEXT_AA, t("Format Document"), Action::Ide(IdeCmd::Format));
+                add(icons::LIST, t("Go to Symbol in File…"), Action::Ide(IdeCmd::Symbols));
+                add(icons::MAGNIFYING_GLASS, t("Go to Symbol in Project…"), Action::Ide(IdeCmd::WorkspaceSymbols));
+                add(icons::WARNING, t("Problems"), Action::Ide(IdeCmd::Problems));
+                add(icons::ARROW_LEFT, t("Back"), Action::Ide(IdeCmd::Back));
+                add(icons::ARROW_RIGHT, t("Forward"), Action::Ide(IdeCmd::Forward));
+                add(icons::ARROWS_CLOCKWISE, t("Restart Language Server"), Action::Ide(IdeCmd::RestartServer));
             }
             if undo {
-                add(icons::CLOCK_COUNTER_CLOCKWISE, t("Undo Refactor"), "", Action::Ide(crate::lsp::IdeCmd::UndoRefactor));
+                add(icons::CLOCK_COUNTER_CLOCKWISE, t("Undo Refactor"), Action::Ide(crate::lsp::IdeCmd::UndoRefactor));
             }
         }
         items

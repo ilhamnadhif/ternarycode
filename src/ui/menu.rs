@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 
 use eframe::egui;
-use muda::accelerator::{Accelerator, Code, Modifiers};
+use muda::accelerator::Accelerator;
 use muda::{AboutMetadata, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::actions::Action;
@@ -17,23 +17,34 @@ pub struct AppMenu {
     actions: HashMap<MenuId, Action>,
 }
 
-fn acc(mods: Modifiers, code: Code) -> Option<Accelerator> {
-    Some(Accelerator::new(mods, code))
+/// The menu's key equivalent for an action: its label in `kit::keys` read back (`⇧⌘D` is
+/// Shift+Cmd+D), so the menu does what every hint says.
+fn acc(action: &Action) -> Option<Accelerator> {
+    let label = super::kit::keys(action)?;
+    let mut spec = String::new();
+    for c in label.chars() {
+        match c {
+            '⌃' => spec.push_str("Ctrl+"),
+            '⌥' => spec.push_str("Alt+"),
+            '⇧' => spec.push_str("Shift+"),
+            '⌘' => spec.push_str("Cmd+"),
+            c => spec.push(c),
+        }
+    }
+    let parsed = spec.parse().ok();
+    debug_assert!(parsed.is_some(), "no key equivalent for {label}");
+    parsed
 }
-
-const CMD: Modifiers = Modifiers::META;
 
 impl AppMenu {
     /// Builds and installs the main menu. Call on the main thread once the app has launched.
     pub fn install() -> Self {
         let mut actions = HashMap::new();
-        let mut item = |text: &str, accel: Option<Accelerator>, action: Action| -> MenuItem {
-            let it = MenuItem::new(text, true, accel);
+        let mut item = |text: &str, action: Action| -> MenuItem {
+            let it = MenuItem::new(text, true, acc(&action));
             actions.insert(it.id().clone(), action);
             it
         };
-        let shift_cmd = CMD | Modifiers::SHIFT;
-        let alt_cmd = CMD | Modifiers::ALT;
 
         let about = PredefinedMenuItem::about(
             Some(t("About TernaryCode")),
@@ -44,10 +55,10 @@ impl AppMenu {
                 ..Default::default()
             }),
         );
-        let settings = item(t("Settings…"), acc(CMD, Code::Comma), Action::Settings);
-        let updates = item(t("Check for Updates…"), None, Action::CheckForUpdates);
-        let integrations = item(t("Agent Integrations…"), None, Action::Integrations);
-        let quit = item(t("Quit TernaryCode"), acc(CMD, Code::KeyQ), Action::Quit);
+        let settings = item(t("Settings…"), Action::Settings);
+        let updates = item(t("Check for Updates…"), Action::CheckForUpdates);
+        let integrations = item(t("Agent Integrations…"), Action::Integrations);
+        let quit = item(t("Quit TernaryCode"), Action::Quit);
         let app_menu = Submenu::with_items(
             "TernaryCode",
             true,
@@ -69,15 +80,11 @@ impl AppMenu {
         )
         .expect("app menu");
 
-        let add_project = item(
-            t("Add Project…"),
-            acc(shift_cmd, Code::KeyO),
-            Action::AddProject,
-        );
-        let open_file = item(t("Open File…"), acc(CMD, Code::KeyO), Action::QuickOpen);
-        let save = item(t("Save"), acc(CMD, Code::KeyS), Action::SaveFile);
-        let new_tab = item(t("New Tab"), acc(CMD, Code::KeyT), Action::NewTab);
-        let close = item(t("Close Pane"), acc(CMD, Code::KeyW), Action::ClosePane);
+        let add_project = item(t("Add Project…"), Action::AddProject);
+        let open_file = item(t("Open File…"), Action::QuickOpen);
+        let save = item(t("Save"), Action::SaveFile);
+        let new_tab = item(t("New Tab"), Action::NewTab);
+        let close = item(t("Close Pane"), Action::ClosePane);
         let file_menu = Submenu::with_items(
             t("File"),
             true,
@@ -92,16 +99,12 @@ impl AppMenu {
         )
         .expect("file menu");
 
-        let copy = item(t("Copy"), acc(CMD, Code::KeyC), Action::Copy);
-        let paste = item(t("Paste"), acc(CMD, Code::KeyV), Action::Paste);
-        let select_all = item(t("Select All"), acc(CMD, Code::KeyA), Action::SelectAll);
-        let find = item(t("Find in Pane…"), acc(CMD, Code::KeyF), Action::Find);
-        let find_all = item(t("Find in All Panes…"), acc(shift_cmd, Code::KeyF), Action::FindAll);
-        let clear = item(
-            t("Clear Scrollback"),
-            acc(alt_cmd, Code::KeyK),
-            Action::ClearScrollback,
-        );
+        let copy = item(t("Copy"), Action::Copy);
+        let paste = item(t("Paste"), Action::Paste);
+        let select_all = item(t("Select All"), Action::SelectAll);
+        let find = item(t("Find in Pane…"), Action::Find);
+        let find_all = item(t("Find in All Panes…"), Action::FindAll);
+        let clear = item(t("Clear Scrollback"), Action::ClearScrollback);
         let edit_menu = Submenu::with_items(
             t("Edit"),
             true,
@@ -118,43 +121,19 @@ impl AppMenu {
         )
         .expect("edit menu");
 
-        let palette = item(t("Command Palette…"), acc(CMD, Code::KeyK), Action::Palette);
-        let switch = item(
-            t("Switch Project…"),
-            acc(CMD, Code::KeyP),
-            Action::SwitchProject,
-        );
-        let editor = item(t("Show/Hide Editor"), acc(CMD, Code::KeyE), Action::ToggleEditor);
-        let sidebar = item(
-            t("Show/Hide Sidebar"),
-            acc(CMD, Code::KeyB),
-            Action::ToggleSidebar,
-        );
-        let focus = item(t("Focus View"), None, Action::SetView(View::Focus));
-        let grid = item(t("Grid of All Projects"), acc(CMD, Code::Digit0), Action::ToggleGrid);
-        let split_right = item(t("Split Right"), acc(CMD, Code::KeyD), Action::SplitRight);
-        let split_down = item(
-            t("Split Down"),
-            acc(shift_cmd, Code::KeyD),
-            Action::SplitDown,
-        );
-        let next_pane = item(
-            t("Next Pane"),
-            acc(CMD, Code::BracketRight),
-            Action::NextPane,
-        );
-        let prev_pane = item(
-            t("Previous Pane"),
-            acc(CMD, Code::BracketLeft),
-            Action::PrevPane,
-        );
-        let bigger = item(t("Bigger Text"), acc(CMD, Code::Equal), Action::FontBigger);
-        let smaller = item(
-            t("Smaller Text"),
-            acc(CMD, Code::Minus),
-            Action::FontSmaller,
-        );
-        let reset = item(t("Actual Size"), None, Action::FontReset);
+        let palette = item(t("Command Palette…"), Action::Palette);
+        let switch = item(t("Switch Project…"), Action::SwitchProject);
+        let editor = item(t("Show/Hide Editor"), Action::ToggleEditor);
+        let sidebar = item(t("Show/Hide Sidebar"), Action::ToggleSidebar);
+        let focus = item(t("Focus View"), Action::SetView(View::Focus));
+        let grid = item(t("Grid of All Projects"), Action::ToggleGrid);
+        let split_right = item(t("Split Right"), Action::SplitRight);
+        let split_down = item(t("Split Down"), Action::SplitDown);
+        let next_pane = item(t("Next Pane"), Action::NextPane);
+        let prev_pane = item(t("Previous Pane"), Action::PrevPane);
+        let bigger = item(t("Bigger Text"), Action::FontBigger);
+        let smaller = item(t("Smaller Text"), Action::FontSmaller);
+        let reset = item(t("Actual Size"), Action::FontReset);
         let view_menu = Submenu::with_items(
             t("View"),
             true,
@@ -181,27 +160,11 @@ impl AppMenu {
         )
         .expect("view menu");
 
-        let run_agent = item(
-            t("Run Agent…"),
-            acc(shift_cmd, Code::KeyA),
-            Action::PickPreset,
-        );
-        let next_attention = item(
-            t("Go to Next Waiting Agent"),
-            acc(CMD, Code::KeyJ),
-            Action::NextAttention,
-        );
-        let back = item(
-            t("Back to Where I Was"),
-            acc(shift_cmd, Code::KeyJ),
-            Action::BackAttention,
-        );
-        let review = item(t("Review Changes…"), acc(shift_cmd, Code::KeyR), Action::Review);
-        let attention = item(
-            t("Show Attention List"),
-            acc(alt_cmd, Code::KeyJ),
-            Action::ToggleAttention,
-        );
+        let run_agent = item(t("Run Agent…"), Action::PickPreset);
+        let next_attention = item(t("Go to Next Waiting Agent"), Action::NextAttention);
+        let back = item(t("Back to Where I Was"), Action::BackAttention);
+        let review = item(t("Review Changes…"), Action::Review);
+        let attention = item(t("Show Attention List"), Action::ToggleAttention);
         let agent_menu = Submenu::with_items(
             t("Agent"),
             true,
@@ -216,16 +179,8 @@ impl AppMenu {
         )
         .expect("agent menu");
 
-        let next_tab = item(
-            t("Show Next Tab"),
-            acc(shift_cmd, Code::BracketRight),
-            Action::NextTab,
-        );
-        let prev_tab = item(
-            t("Show Previous Tab"),
-            acc(shift_cmd, Code::BracketLeft),
-            Action::PrevTab,
-        );
+        let next_tab = item(t("Show Next Tab"), Action::NextTab);
+        let prev_tab = item(t("Show Previous Tab"), Action::PrevTab);
         let window_menu = Submenu::with_items(
             t("Window"),
             true,
@@ -272,4 +227,29 @@ pub fn event_channel(ctx: &egui::Context) -> mpsc::Receiver<MenuEvent> {
         ctx.request_repaint();
     }));
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use muda::accelerator::{Code, Modifiers};
+
+    #[test]
+    fn shortcut_labels_read_back_as_the_menus_keys() {
+        let cmd = Modifiers::META;
+        for (action, mods, code) in [
+            (Action::SplitDown, cmd | Modifiers::SHIFT, Code::KeyD),
+            (Action::ClearScrollback, cmd | Modifiers::ALT, Code::KeyK),
+            (Action::Settings, cmd, Code::Comma),
+            (Action::ToggleGrid, cmd, Code::Digit0),
+            (Action::NextTab, cmd | Modifiers::SHIFT, Code::BracketRight),
+            (Action::PrevPane, cmd, Code::BracketLeft),
+            (Action::FontBigger, cmd, Code::Equal),
+            (Action::FontSmaller, cmd, Code::Minus),
+        ] {
+            assert_eq!(acc(&action), Some(Accelerator::new(mods, code)), "{action:?}");
+        }
+        assert_eq!(acc(&Action::FontReset), None);
+        assert_eq!(acc(&Action::CheckForUpdates), None);
+    }
 }
