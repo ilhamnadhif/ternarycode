@@ -109,8 +109,10 @@ pub(crate) fn file_diff(
         sections.into_iter().filter(paired).collect()
     } else if sections.iter().any(is_path) {
         sections.into_iter().filter(is_path).collect()
-    } else if sections.len() == 1 {
+    } else if sections.len() == 1 && sections[0].new.is_none() {
         // Header paths that could not be read; the pathspec still limited the diff to `path`.
+        // A path that was read and is another file's (below a directory named `path`) is not
+        // this one's diff.
         sections.truncate(1);
         sections
     } else {
@@ -439,6 +441,19 @@ mod tests {
                 (LineKind::Added, None, Some(3), "three"),
             ]
         );
+    }
+
+    #[test]
+    fn only_this_files_section_is_kept() {
+        let section = |header: &str| format!("diff --git {header}\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n");
+        // The pathspec `dir` also matched `dir/inner`: not the diff of `dir`.
+        let other = section("a/dir/inner b/dir/inner");
+        assert!(file_diff(other.as_bytes(), "dir", None).unwrap().hunks.is_empty());
+        // Paths that could not be read: the one section is the file's.
+        let unread = section("a/one name b/other name");
+        assert_eq!(file_diff(unread.as_bytes(), "one name", None).unwrap().hunks.len(), 1);
+        let own = section("a/f b/f");
+        assert_eq!(file_diff(own.as_bytes(), "f", None).unwrap().hunks.len(), 1);
     }
 
     #[test]
