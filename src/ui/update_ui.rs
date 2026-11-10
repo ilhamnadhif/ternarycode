@@ -365,6 +365,10 @@ impl Updater {
         } else {
             440.0
         };
+        // Enter answers only the dialog asked for (up to date). The others can open by
+        // themselves (found at launch, downloaded, failed) while the user types into a
+        // terminal, and an Enter meant for it must not install or restart: they take a click
+        // (Esc still closes them).
         let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
         let modal = egui::Modal::new(Id::new("update-dialog"))
             .frame(dialogs::frame(ctx))
@@ -406,7 +410,7 @@ impl Updater {
                             ui.add(egui::Label::new(RichText::new(e.as_str()).color(p.text)).wrap());
                         });
                         dialogs::footer_with(ui, None, |ui| {
-                            if kit::button_ex(ui, kit::Kind::Primary, None, t("OK"), false).clicked() || enter {
+                            if kit::button_ex(ui, kit::Kind::Primary, None, t("OK"), false).clicked() {
                                 close = true;
                             }
                             if kit::secondary(ui, Some(icons::ARROW_SQUARE_OUT), t("Open Releases Page")).clicked() {
@@ -441,10 +445,10 @@ impl Updater {
                                 let install = kit::button_ex(ui, kit::Kind::Primary, None, t("Install Update"), false);
                                 #[cfg(debug_assertions)]
                                 crate::devtest::record("update-install", install.rect);
-                                if install.clicked() || enter {
+                                if install.clicked() {
                                     install_release = Some(release.clone());
                                 }
-                            } else if kit::button_ex(ui, kit::Kind::Primary, None, t("Download…"), false).clicked() || enter {
+                            } else if kit::button_ex(ui, kit::Kind::Primary, None, t("Download…"), false).clicked() {
                                 update::open_page(&release.page);
                                 close = true;
                             }
@@ -496,7 +500,7 @@ impl Updater {
                             let restart = kit::button_ex(ui, kit::Kind::Primary, None, t("Restart Now"), false);
                             #[cfg(debug_assertions)]
                             crate::devtest::record("update-restart", restart.rect);
-                            if restart.clicked() || enter {
+                            if restart.clicked() {
                                 event = UpdateEvent::Restart;
                                 close = true;
                             }

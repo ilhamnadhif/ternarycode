@@ -304,7 +304,13 @@ impl App {
             let installable = true;
             let per_launch = matches!(agent, AgentKind::Claude | AgentKind::Codex);
             let installed = self.installed(agent);
-            let mut mode = self.settings.integration(agent);
+            // Per launch is the default (and what Uninstall leaves), but an agent without it
+            // gets no hooks then: that is Off. Nothing is saved unless a choice is made.
+            let shown = match self.settings.integration(agent) {
+                Integration::PerLaunch if !per_launch => Integration::Off,
+                m => m,
+            };
+            let mut mode = shown;
             kit::card(ui).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -346,7 +352,7 @@ impl App {
                 };
                 ui.label(RichText::new(note).size(style::SMALL).color(p.text_muted));
             });
-            if mode != self.settings.integration(agent) {
+            if mode != shown {
                 self.settings.integrations.insert(agent.slug().into(), mode);
             }
             ui.add_space(6.0);

@@ -152,8 +152,8 @@ pub fn footer_with(ui: &mut Ui, hint: Option<&str>, buttons: impl FnOnce(&mut Ui
         });
 }
 
-/// Programs that will be stopped, in a quiet box.
-fn busy_list(ui: &mut Ui, items: &[String]) {
+/// Programs that will be stopped and files not saved (those of `unsaved`), in a quiet box.
+fn busy_list(ui: &mut Ui, items: &[String], unsaved: &[String]) {
     let p = style::pal(ui);
     egui::Frame::NONE
         .fill(p.canvas)
@@ -163,9 +163,8 @@ fn busy_list(ui: &mut Ui, items: &[String]) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                let unsaved = tf("{} · not saved", &[""]);
                 for b in items {
-                    let file = b.ends_with(unsaved.as_str());
+                    let file = unsaved.contains(b);
                     ui.horizontal(|ui| {
                         let icon = if file { icons::FILE_TEXT } else { icons::TERMINAL_WINDOW };
                         ui.label(RichText::new(icon).font(style::icon_font(13.0)).color(if file { p.warn } else { p.text_faint }));
@@ -253,8 +252,9 @@ impl App {
                     ) {
                         keep = false;
                     }
+                    let unsaved = self.unsaved_lines();
                     body(ui, |ui| {
-                        busy_list(ui, busy);
+                        busy_list(ui, busy, &unsaved);
                         ui.add_space(4.0);
                         ui.label(
                             RichText::new(t("Closing the window instead keeps them running in the background."))
@@ -282,8 +282,9 @@ impl App {
                     ) {
                         keep = false;
                     }
+                    let unsaved = self.unsaved_lines();
                     body(ui, |ui| {
-                        busy_list(ui, busy);
+                        busy_list(ui, busy, &unsaved);
                         ui.add_space(4.0);
                         ui.label(
                             RichText::new(t("TernaryCode opens again with your projects and tabs; agents that support it can be resumed."))
@@ -311,7 +312,8 @@ impl App {
                     ) {
                         keep = false;
                     }
-                    body(ui, |ui| busy_list(ui, busy));
+                    let unsaved = self.unsaved_lines();
+                    body(ui, |ui| busy_list(ui, busy, &unsaved));
                     let (cancel, ok) = footer(ui, None, t("Remove"), Confirm::Danger, true);
                     if cancel {
                         keep = false;
@@ -375,7 +377,7 @@ impl App {
                     ) {
                         keep = false;
                     }
-                    body(ui, |ui| busy_list(ui, busy));
+                    body(ui, |ui| busy_list(ui, busy, &[]));
                     let (cancel, ok) = footer(ui, None, t("Close Tab"), Confirm::Danger, true);
                     if cancel {
                         keep = false;
@@ -513,8 +515,12 @@ impl App {
                     }
                 }
             });
-        if modal.should_close() && !matches!(dialog, Dialog::Install(..)) {
+        if modal.should_close() {
             keep = false;
+            // As its Cancel: back to the integrations it was asked from.
+            if matches!(dialog, Dialog::Install(..)) {
+                self.actions.push(Action::Integrations);
+            }
         }
         // `ConfirmInstall` takes the dialog itself.
         let install_confirmed = self.actions.contains(&Action::ConfirmInstall);
@@ -523,6 +529,18 @@ impl App {
         } else {
             self.focus_request = self.current_pane();
         }
+    }
+
+    /// The busy lists' lines for the editors' files with changes not saved (worded as in
+    /// `App::unsaved_files`): a line is a file's by the files' state, not by its wording,
+    /// which a language may put in any order.
+    fn unsaved_lines(&self) -> Vec<String> {
+        self.editors
+            .values()
+            .flat_map(|e| e.files.iter())
+            .filter(|f| f.dirty() && !f.read_only)
+            .map(|f| tf("{} · not saved", &[&f.name()]))
+            .collect()
     }
 }
 

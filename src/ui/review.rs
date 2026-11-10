@@ -35,7 +35,10 @@ pub struct Review {
     pub files: Vec<FileChange>,
     pub selected: usize,
     pub diff: Option<FileDiff>,
+    /// Why the changes could not be listed.
     pub error: Option<String>,
+    /// Why the selected file's diff could not be made (the list stays).
+    pub diff_error: Option<String>,
     /// Which load and which diff the answers must belong to (an older, slower one is dropped).
     load: u64,
     diff_load: u64,
@@ -89,6 +92,7 @@ impl App {
             selected: 0,
             diff: None,
             error: None,
+            diff_error: None,
         });
         let tx = self.app_tx.clone();
         let run_tree = run.map(|(_, _, tree)| tree);
@@ -151,7 +155,7 @@ impl App {
                 if r.selected == i && r.diff_load == load {
                     match d {
                         Ok(d) => r.diff = Some(d),
-                        Err(e) => r.error = Some(e),
+                        Err(e) => r.diff_error = Some(e),
                     }
                 }
             }
@@ -165,6 +169,7 @@ impl App {
         };
         r.selected = i;
         r.diff = None;
+        r.diff_error = None;
         let load = next_work();
         r.diff_load = load;
         let root = r.root.clone();
@@ -278,14 +283,17 @@ impl App {
                             open_file = Some(r.root.join(&f.path));
                         }
                     });
-                    match &r.diff {
-                        None => {
+                    match (&r.diff, &r.diff_error) {
+                        (_, Some(e)) => {
+                            ui.label(RichText::new(e).color(p.err));
+                        }
+                        (None, None) => {
                             ui.label(RichText::new(t("Loading the diff…")).color(p.text_muted));
                         }
-                        Some(d) if d.binary => {
+                        (Some(d), None) if d.binary => {
                             ui.label(RichText::new(t("Binary file: no text diff.")).color(p.text_muted));
                         }
-                        Some(d) => {
+                        (Some(d), None) => {
                             egui::ScrollArea::both().id_salt(("review-diff", r.selected)).auto_shrink([false, false]).show(ui, |ui| {
                                 let mono = egui::FontId::monospace(12.0);
                                 for h in &d.hunks {
@@ -301,9 +309,11 @@ impl App {
                                             l.old_no.map(|n| n.to_string()).unwrap_or_default(),
                                             l.new_no.map(|n| n.to_string()).unwrap_or_default()
                                         );
+                                        // The tint goes under the text: its place is taken before the text.
+                                        let tint = (bg != egui::Color32::TRANSPARENT).then(|| ui.painter().add(egui::Shape::Noop));
                                         let resp = ui.add(egui::Label::new(RichText::new(format!("{nums}{}", l.text)).font(mono.clone()).color(fg)).extend());
-                                        if bg != egui::Color32::TRANSPARENT {
-                                            ui.painter().rect_filled(resp.rect.expand2(vec2(4.0, 0.0)), egui::CornerRadius::ZERO, bg);
+                                        if let Some(tint) = tint {
+                                            ui.painter().set(tint, egui::Shape::rect_filled(resp.rect.expand2(vec2(4.0, 0.0)), egui::CornerRadius::ZERO, bg));
                                         }
                                     }
                                     ui.add_space(6.0);

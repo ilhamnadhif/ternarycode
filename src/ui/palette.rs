@@ -1,6 +1,6 @@
 //! The command palette (⌘K), the project switcher (⌘P) and the agent picker (⌘⇧A).
 
-use eframe::egui::{self, Align2, Key, RichText, Sense, vec2};
+use eframe::egui::{self, Align2, Key, RichText, Sense, pos2, vec2};
 
 use super::{icons, kit, style};
 use crate::actions::Action;
@@ -20,7 +20,8 @@ fn score(query: &str, text: &str) -> Option<i32> {
         return Some(0);
     }
     let text = text.to_lowercase();
-    let mut chars = text.char_indices();
+    // Char positions, not byte offsets: letters after an "é" are still next to each other.
+    let mut chars = text.chars().enumerate();
     let mut score = 0;
     let mut last = None;
     for q in query.to_lowercase().chars().filter(|c| !c.is_whitespace()) {
@@ -34,7 +35,7 @@ fn score(query: &str, text: &str) -> Option<i32> {
         }
         last = Some(i);
     }
-    Some(score * 100 - text.len() as i32)
+    Some(score * 100 - text.chars().count() as i32)
 }
 
 impl App {
@@ -282,8 +283,17 @@ impl App {
                         ui.painter().rect_filled(rect, egui::CornerRadius::same(6), if selected { p.accent_soft } else { p.faint_row() });
                     }
                     ui.painter().text(rect.left_center() + vec2(14.0, 0.0), Align2::CENTER_CENTER, item.icon, style::icon_font(15.0), p.text_muted);
-                    ui.painter().text(rect.left_center() + vec2(32.0, 0.0), Align2::LEFT_CENTER, &item.label, style::medium(13.5), p.text);
-                    ui.painter().text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, &item.detail, egui::FontId::proportional(style::SMALL), p.text_faint);
+                    // The detail at the right (at most 45% of the row), the label cut short before it.
+                    let mut job = egui::text::LayoutJob::simple_singleline(item.detail.clone(), egui::FontId::proportional(style::SMALL), p.text_faint);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() * 0.45);
+                    let detail = ui.painter().layout_job(job);
+                    let detail_x = rect.right() - 10.0 - detail.size().x;
+                    ui.painter().galley(pos2(detail_x, rect.center().y - detail.size().y / 2.0), detail, p.text_faint);
+                    let label_x = rect.left() + 32.0;
+                    let mut job = egui::text::LayoutJob::simple_singleline(item.label.clone(), style::medium(13.5), p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((detail_x - 12.0 - label_x).max(10.0));
+                    let label = ui.painter().layout_job(job);
+                    ui.painter().galley(pos2(label_x, rect.center().y - label.size().y / 2.0), label, p.text);
                     if resp.clicked() || (enter && selected) {
                         chosen = Some(item.action.clone());
                     }
@@ -322,5 +332,11 @@ mod tests {
         assert!(score("xyz", "Claude").is_none());
         assert_eq!(score("", "anything"), Some(0));
         assert!(score("cc", "Claude Code").is_some());
+    }
+
+    #[test]
+    fn letters_beyond_ascii_count_once() {
+        // "é" is two bytes: the "f" after it is still the next letter, and the text two long.
+        assert_eq!(score("éf", "éf"), score("ab", "ab"));
     }
 }
