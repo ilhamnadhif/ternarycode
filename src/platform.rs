@@ -96,8 +96,6 @@ pub fn notify(title: &str, subtitle: &str, body: &str) {
     });
 }
 
-/// Turns off macOS's automatic window tabbing (it would add "Show Tab Bar" and "Show All Tabs"
-/// to the View menu; TernaryCode has its own tabs). Call before the window opens.
 /// Gives memory the allocator keeps after frees back to the system (after letting a large
 /// cache go): macOS keeps freed pages for reuse, so the process would not look any smaller.
 #[cfg(target_os = "macos")]
@@ -125,6 +123,8 @@ pub fn return_free_memory() {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn return_free_memory() {}
 
+/// Turns off macOS's automatic window tabbing (it would add "Show Tab Bar" and "Show All Tabs"
+/// to the View menu; TernaryCode has its own tabs). Call before the window opens.
 #[cfg(target_os = "macos")]
 pub fn disable_window_tabbing() {
     use objc2::MainThreadMarker;

@@ -297,8 +297,6 @@ pub struct Segment<'a> {
     pub on: bool,
 }
 
-/// A row of icon buttons in one outlined surface, split by hairlines: related toolbar actions
-/// (navigation, folder actions) read as one finished control instead of a row of boxes.
 /// A segmented control of words (`(label, tooltip)`), `on` selected. Returns the option clicked
 /// when it is not the selected one.
 pub fn segmented(ui: &mut Ui, options: &[(&str, &str)], on: usize) -> Option<usize> {
@@ -335,6 +333,8 @@ pub fn segmented(ui: &mut Ui, options: &[(&str, &str)], on: usize) -> Option<usi
     out
 }
 
+/// A row of icon buttons in one outlined surface, split by hairlines: related toolbar actions
+/// (navigation, folder actions) read as one finished control instead of a row of boxes.
 pub fn button_group(ui: &mut Ui, segments: &[Segment]) -> Vec<Response> {
     let p = style::pal(ui);
     let (h, w) = (style::CONTROL_H, 30.0);

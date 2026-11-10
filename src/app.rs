@@ -44,7 +44,6 @@ pub enum AppMsg {
     Review(crate::ui::review::ReviewMsg),
     /// The working tree at the start of an agent run.
     Snapshot(PaneId, AgentKind, Result<tc_git::Snapshot, String>),
-    /// A language server sent something.
     /// A message of a language server, and which start of it sent it (a restarted server's
     /// old process still reports its exit).
     Lsp(crate::lsp::ServerKey, u64, tc_lsp::client::Incoming),
@@ -1572,7 +1571,6 @@ impl App {
         self.toast = Some((text, Instant::now()));
     }
 
-    /// Programs that quitting would stop.
     /// Editor files with changes not saved ("main.rs · not saved"), of one project or all.
     fn unsaved_files(&self, project: Option<ProjectId>) -> Vec<String> {
         self.editors
@@ -1584,6 +1582,7 @@ impl App {
             .collect()
     }
 
+    /// Programs that quitting would stop.
     fn busy_panes(&self) -> Vec<String> {
         let mut out = Vec::new();
         for project in &self.projects {

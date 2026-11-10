@@ -1634,17 +1634,14 @@ fn word_at(editors: &HashMap<u64, crate::editor::Editor>, path: &Path, at: usize
 
 /// The char range of the identifier around `at` (none outside one).
 pub fn word_range(text: &str, at: usize) -> Option<(usize, usize)> {
-    // Only the line around `at` is looked at.
-    let chars: Vec<char> = text.chars().collect();
-    let at = at.min(chars.len());
-    let mut a = at;
-    while a > 0 && is_ident(chars[a - 1]) && chars[a - 1] != '\n' {
-        a -= 1;
-    }
-    let mut b = at;
-    while b < chars.len() && is_ident(chars[b]) {
-        b += 1;
-    }
+    // Only the line around `at` is looked at (a line break ends an identifier), and the text
+    // is not copied.
+    let (at, byte) = match text.char_indices().nth(at) {
+        Some((byte, _)) => (at, byte),
+        None => (text.chars().count(), text.len()),
+    };
+    let a = at - text[..byte].chars().rev().take_while(|c| is_ident(*c)).count();
+    let b = at + text[byte..].chars().take_while(|c| is_ident(*c)).count();
     (a < b).then_some((a, b))
 }
 
@@ -1718,6 +1715,10 @@ mod tests {
         assert_eq!(word_range(text, 11), Some((4, 11)));
         assert_eq!(word_range(text, 12), None);
         assert_eq!(word_range(text, 22), Some((22, 26)));
+        assert_eq!(word_range(text, 99), Some((22, 26)));
+        assert_eq!(word_range("ab\ncd", 2), Some((0, 2)));
+        assert_eq!(word_range("ab\ncd", 3), Some((3, 5)));
+        assert_eq!(word_range("é = ñandú", 6), Some((4, 9)));
     }
 
     #[test]

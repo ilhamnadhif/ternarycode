@@ -588,7 +588,6 @@ pub fn layout(text: &str, syntax: &str, dark: bool, font: FontId, plain: Color32
     job
 }
 
-/// The highlighted layout of `text`, recomputed only when the text, theme or size changed.
 /// Syntax colours of a file kept per line: an edit colours again only from the line it
 /// changed until the parser is back in the state it had there (usually a line or two later),
 /// not the whole file (a 20 KB Markdown file took about 170 ms on every key).
