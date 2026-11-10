@@ -137,6 +137,8 @@ impl App {
         let mut outcome = None;
         let edit_id = egui::Id::new(("tree-edit", pid));
         ui.scope_builder(egui::UiBuilder::new().max_rect(tree.shrink2(vec2(4.0, 0.0))), |ui| {
+            // Where the rows end on screen (the blank below them has the folder's menu).
+            let mut rows_end = None;
             if count == 0 {
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new(t("This folder is empty.")).size(style::SMALL).color(p.text_faint));
@@ -145,8 +147,10 @@ impl App {
                 if let Some(y) = scroll_to {
                     area = area.vertical_scroll_offset(y);
                 }
-                area.show_rows(ui, ROW_H, count, |ui, range| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
+                // The area fills the tree, so the blank is inside it: below the last row, once
+                // that is in view.
+                rows_end = kit::show_rows(area, ui, ROW_H, count, |ui, range| {
+                    let last = range.end == count;
                     let rows: Vec<Row> = self
                         .explorers
                         .get_mut(&pid)
@@ -275,10 +279,13 @@ impl App {
                             }
                         }
                     }
-                });
+                    last.then(|| ui.min_rect().bottom())
+                })
+                .inner;
             }
             // The empty space below the rows: a menu for the project folder itself.
-            let rest = Rect::from_min_max(pos2(tree.left(), ui.min_rect().bottom().min(tree.bottom())), tree.max);
+            let top = rows_end.unwrap_or(ui.min_rect().bottom());
+            let rest = Rect::from_min_max(pos2(tree.left(), top.min(tree.bottom())), tree.max);
             if rest.height() > 4.0 {
                 let r = ui.interact(rest, egui::Id::new(("tree-blank", pid)), Sense::click());
                 r.context_menu(|ui| {
