@@ -229,6 +229,9 @@ pub struct App {
     pub editor_seen_at: Instant,
     /// That memory was let go since the editor was last on screen (once per time away).
     editor_released: bool,
+    /// Whether winit was last told that Option is Alt (macOS; see `sync_option_as_alt`).
+    #[cfg(target_os = "macos")]
+    option_as_alt: Option<bool>,
     /// The scheme whose colours the terminals answer OSC 4/10/11 queries with.
     term_scheme: &'static str,
     /// The scrollback setting the panes were last given.
@@ -390,6 +393,8 @@ impl App {
             lsp_repaint_after: None,
             editor_seen_at: Instant::now(),
             editor_released: false,
+            #[cfg(target_os = "macos")]
+            option_as_alt: None,
             term_scheme: "",
             editors: HashMap::new(),
             explorers: HashMap::new(),
@@ -2804,6 +2809,27 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
     keys
 }
 
+impl App {
+    /// On macOS, Option composes characters (Option+B types "∫") unless winit is told it is
+    /// Alt; the terminal's Option-as-Meta needs the key itself (ESC b, not ESC ∫). So it is Alt
+    /// while a terminal has the keyboard and the setting is on; text fields and the editor keep
+    /// Option's characters (such as @ on a German keyboard).
+    #[cfg(target_os = "macos")]
+    fn sync_option_as_alt(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let terminal = ctx
+            .memory(|m| m.focused())
+            .is_some_and(|id| self.panes.keys().any(|p| tc_term::widget::pane_widget_id(*p) == id));
+        let want = self.settings.option_as_meta && terminal;
+        if self.option_as_alt != Some(want)
+            && let Some(w) = frame.winit_window()
+        {
+            use winit::platform::macos::{OptionAsAlt, WindowExtMacOS};
+            w.set_option_as_alt(if want { OptionAsAlt::Both } else { OptionAsAlt::None });
+            self.option_as_alt = Some(want);
+        }
+    }
+}
+
 /// Someone may be looking at the window: it has the keyboard and is on screen (not hidden,
 /// minimized or covered). Asked of the window itself, not told by frames drawn: an idle window
 /// draws none, and the logic also runs while it is hidden (FR-L1).
@@ -2846,7 +2872,7 @@ impl eframe::App for App {
         raw_input.events.extend(crate::devtest::take_injected());
     }
 
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         // A bug while drawing must not take every pane down: the panic hook wrote a report; the
         // frame is skipped and the app carries on.
         let result =
@@ -2861,6 +2887,10 @@ impl eframe::App for App {
         } else {
             self.ui_panics = 0;
         }
+        #[cfg(target_os = "macos")]
+        self.sync_option_as_alt(ui.ctx(), frame);
+        #[cfg(not(target_os = "macos"))]
+        let _ = frame;
         self.first_frame = false;
     }
 
