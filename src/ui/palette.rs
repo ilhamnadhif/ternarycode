@@ -7,6 +7,10 @@ use crate::actions::Action;
 use crate::app::{App, PaletteMode};
 use crate::i18n::t;
 
+/// Results kept for the list (the rest by typing more).
+const MAX_ROWS: usize = 200;
+const ROW_H: f32 = 32.0;
+
 struct Item {
     icon: &'static str,
     label: String,
@@ -210,7 +214,7 @@ impl App {
         if !pal.query.is_empty() {
             items.sort_by_key(|x| std::cmp::Reverse(x.0));
         }
-        items.truncate(if matches!(pal.mode, PaletteMode::Search | PaletteMode::Locations) { 40 } else { 12 });
+        items.truncate(MAX_ROWS);
         pal.selected = pal.selected.min(items.len().saturating_sub(1));
         let mut chosen: Option<Action> = None;
         let mut close = false;
@@ -251,6 +255,8 @@ impl App {
                     r.request_focus();
                     pal.opened = false;
                 }
+                // The selection is kept in view when the keyboard moves it (the wheel scrolls freely).
+                let mut moved = r.changed();
                 if r.changed() {
                     pal.selected = 0;
                 }
@@ -278,33 +284,46 @@ impl App {
                 if up {
                     pal.selected = pal.selected.saturating_sub(1);
                 }
+                moved |= down || up;
                 ui.add_space(6.0);
                 if items.is_empty() {
                     let text = if pal.loading { t("Listing the project's files…") } else { t("Nothing matches.") };
                     ui.label(RichText::new(text).color(p.text_muted));
                 }
-                for (i, (_, item)) in items.iter().enumerate() {
-                    let selected = i == pal.selected;
-                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
-                    if selected || resp.hovered() {
-                        ui.painter().rect_filled(rect, egui::CornerRadius::same(6), if selected { p.accent_soft } else { p.faint_row() });
+                // A dozen rows show at a time (fewer in a low window), the rest scroll; only the
+                // rows in view are laid out.
+                let step = ROW_H + ui.spacing().item_spacing.y;
+                let max_h = (ctx.content_rect().height() - 220.0).clamp(3.0 * step, 12.0 * step);
+                egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                    for (i, (_, item)) in items.iter().enumerate() {
+                        let selected = i == pal.selected;
+                        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+                        if selected && moved {
+                            ui.scroll_to_rect(rect, None);
+                        }
+                        if resp.clicked() || (enter && selected) {
+                            chosen = Some(item.action.clone());
+                        }
+                        if !ui.is_rect_visible(rect) {
+                            continue;
+                        }
+                        if selected || resp.hovered() {
+                            ui.painter().rect_filled(rect, egui::CornerRadius::same(6), if selected { p.accent_soft } else { p.faint_row() });
+                        }
+                        ui.painter().text(rect.left_center() + vec2(14.0, 0.0), Align2::CENTER_CENTER, item.icon, style::icon_font(15.0), p.text_muted);
+                        // The detail at the right (at most 45% of the row), the label cut short before it.
+                        let mut job = egui::text::LayoutJob::simple_singleline(item.detail.clone(), egui::FontId::proportional(style::SMALL), p.text_faint);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() * 0.45);
+                        let detail = ui.painter().layout_job(job);
+                        let detail_x = rect.right() - 10.0 - detail.size().x;
+                        ui.painter().galley(pos2(detail_x, rect.center().y - detail.size().y / 2.0), detail, p.text_faint);
+                        let label_x = rect.left() + 32.0;
+                        let mut job = egui::text::LayoutJob::simple_singleline(item.label.clone(), style::medium(13.5), p.text);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width((detail_x - 12.0 - label_x).max(10.0));
+                        let label = ui.painter().layout_job(job);
+                        ui.painter().galley(pos2(label_x, rect.center().y - label.size().y / 2.0), label, p.text);
                     }
-                    ui.painter().text(rect.left_center() + vec2(14.0, 0.0), Align2::CENTER_CENTER, item.icon, style::icon_font(15.0), p.text_muted);
-                    // The detail at the right (at most 45% of the row), the label cut short before it.
-                    let mut job = egui::text::LayoutJob::simple_singleline(item.detail.clone(), egui::FontId::proportional(style::SMALL), p.text_faint);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() * 0.45);
-                    let detail = ui.painter().layout_job(job);
-                    let detail_x = rect.right() - 10.0 - detail.size().x;
-                    ui.painter().galley(pos2(detail_x, rect.center().y - detail.size().y / 2.0), detail, p.text_faint);
-                    let label_x = rect.left() + 32.0;
-                    let mut job = egui::text::LayoutJob::simple_singleline(item.label.clone(), style::medium(13.5), p.text);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((detail_x - 12.0 - label_x).max(10.0));
-                    let label = ui.painter().layout_job(job);
-                    ui.painter().galley(pos2(label_x, rect.center().y - label.size().y / 2.0), label, p.text);
-                    if resp.clicked() || (enter && selected) {
-                        chosen = Some(item.action.clone());
-                    }
-                }
+                });
             });
         if modal.should_close() {
             close = true;
