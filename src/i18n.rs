@@ -1,8 +1,8 @@
 //! English / Indonesian UI strings.
 //!
 //! UI code writes English through `t("…")`; in Indonesian the string is looked up in `ID` and
-//! falls back to English when missing. A unit test checks that every literal passed to `t(` or
-//! `tf(` in the source has a translation.
+//! falls back to English when missing. Unit tests check that every literal passed to `t(` or
+//! `tf(` in the source has a translation, and that every translation is still used.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -85,12 +85,12 @@ pub fn count(n: usize, one: &str, many: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_ui_string_is_translated() {
-        let mut missing = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
-        let mut stack = vec![std::path::PathBuf::from(root)];
+    use std::path::{Path, PathBuf};
+
+    /// The Rust files under `dir` and their text, the table and this file left out.
+    fn sources(dir: &Path) -> Vec<(PathBuf, String)> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
                 let path = entry.unwrap().path();
@@ -106,15 +106,48 @@ mod tests {
                     continue;
                 }
                 let text = std::fs::read_to_string(&path).unwrap();
-                for lit in extract_literals(&text) {
-                    if seen.insert(lit.clone()) && !table().contains_key(lit.as_str()) {
-                        missing.push(format!("{}: {lit:?}", path.display()));
-                    }
+                out.push((path, text));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_ui_string_is_translated() {
+        let mut missing = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (path, text) in sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
+            for lit in extract_literals(&text) {
+                if seen.insert(lit.clone()) && !table().contains_key(lit.as_str()) {
+                    missing.push(format!("{}: {lit:?}", path.display()));
                 }
             }
         }
         missing.sort();
         assert!(missing.is_empty(), "untranslated strings:\n{}", missing.join("\n"));
+    }
+
+    #[test]
+    fn every_translation_is_used() {
+        // Most strings reach `t` as the literal of the call, but some through a variable or
+        // from a crate (tc-doc's kind labels, tc-term's context menu by `set_translator`): an
+        // entry is used while its English is still a string literal somewhere in the sources.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut texts: Vec<String> =
+            sources(&root.join("src")).into_iter().map(|(_, text)| text).collect();
+        for krate in std::fs::read_dir(root.join("crates")).unwrap() {
+            let src = krate.unwrap().path().join("src");
+            if src.is_dir() {
+                texts.extend(sources(&src).into_iter().map(|(_, text)| text));
+            }
+        }
+        // As the literal is written (`\"` for a quote).
+        let unused: Vec<&str> = ID
+            .iter()
+            .map(|(en, _)| *en)
+            .filter(|en| !texts.iter().any(|text| text.contains(&format!("{en:?}"))))
+            .collect();
+        assert!(unused.is_empty(), "translations nothing uses:\n{}", unused.join("\n"));
     }
 
     #[test]
