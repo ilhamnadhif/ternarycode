@@ -207,7 +207,7 @@ impl App {
         ];
         // Encoding and line ends only when there is room besides the language server's status.
         if rect.width() > 640.0 {
-            parts.push("UTF-8".to_string());
+            parts.push(if file.lossy { t("Not UTF-8").to_string() } else { "UTF-8".to_string() });
             parts.push(if file.crlf { "CRLF".into() } else { "LF".into() });
         }
         let text = parts.join("   ·   ");

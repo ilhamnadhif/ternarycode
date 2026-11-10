@@ -39,8 +39,8 @@ sekitar 0,2 detik, CPU 0 % saat diam, dan sepuluh pane terbuka memakai sekitar 7
 
 - **Status agent yang bisa dipercaya.** Setiap pane tahu apakah agent-nya sedang bekerja, menunggu
   Anda, selesai, atau gagal, dari hook agent itu sendiri, notifikasi terminal, dan shell. Setiap
-  status menyebut sumbernya; tanpa sinyal yang bisa dipercaya, statusnya *Tidak diketahui*, bukan
-  tebakan.
+  status menyebut sumbernya; tanpa sinyal yang bisa dipercaya, ia hanya menyebut agent-nya
+  *Aktif*, bukan menebak.
 - **Lompat ke yang butuh Anda.** `⌘J` membuka agent paling mendesak yang menunggu, `⇧⌘J`
   kembali. Status bar menyebut namanya, Dock menampilkan badge, dan notifikasi muncul saat jendela
   di latar belakang. Fokus keyboard tidak pernah pindah sendiri.

@@ -39,7 +39,8 @@ It is one small native binary (no Electron, no webview, no Node.js): the window 
 
 - **Agent status you can trust.** Every pane knows whether its agent is working, waiting for you,
   done or failed, from the agent's own hooks, the terminal's notifications and the shell. Each
-  status says where it came from; without a reliable signal it says *Unknown* instead of guessing.
+  status says where it came from; without a reliable signal it says only that the agent is
+  *Active* instead of guessing.
 - **Jump to what needs you.** `⌘J` goes to the most urgent waiting agent and `⇧⌘J` back. The
   status bar names it, the Dock shows a badge, and a notification arrives when the window is in
   the background. Keyboard focus never moves by itself.

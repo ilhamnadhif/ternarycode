@@ -320,7 +320,7 @@ pub fn installable(release: &Release) -> bool {
 pub fn manual_reason() -> &'static str {
     if cfg!(target_os = "macos") {
         t(
-            "Automatic installation needs TernaryCode in a folder on this Mac's own disk, not opened from a disk image, another drive or a fresh download macOS runs from a read-only copy. Download the new version from GitHub instead.",
+            "Automatic installation needs TernaryCode moved to a folder on this Mac (Applications, say), not run from a disk image, another drive or where it was downloaded. Download the new version from GitHub instead.",
         )
     } else if cfg!(windows) {
         t(

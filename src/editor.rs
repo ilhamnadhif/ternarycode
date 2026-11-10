@@ -41,6 +41,8 @@ pub struct OpenFile {
     pub lines: usize,
     /// Lines end with CR LF.
     pub crlf: bool,
+    /// Not UTF-8: shown with replacement marks (and so read-only).
+    pub lossy: bool,
     /// Bumped whenever `text` changes (search results follow it).
     pub rev: u64,
     pub goto_line: Option<usize>,
@@ -260,6 +262,7 @@ pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
         caret_index: None,
         lines,
         crlf,
+        lossy,
         rev: 0,
         goto_line: None,
         select: None,
@@ -288,6 +291,7 @@ impl OpenFile {
             caret_index: None,
             lines: 0,
             crlf: false,
+            lossy: false,
             rev: 0,
             goto_line: None,
             select: None,
@@ -350,6 +354,7 @@ pub fn on_disk_change(file: &mut OpenFile) -> bool {
         if let Ok(fresh) = load(&file.path) {
             file.lines = fresh.lines;
             file.crlf = fresh.crlf;
+            file.lossy = fresh.lossy;
             file.rev += 1;
             file.text = fresh.text;
             file.saved = fresh.saved;

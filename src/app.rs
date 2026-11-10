@@ -2056,7 +2056,12 @@ impl App {
                                 ),
                             });
                         }
-                        Err(e) => self.toast(e),
+                        Err(e) => {
+                            // The hooks may still be in the file: the agent stays as installed
+                            // (per-launch flags on top would report every event twice).
+                            self.toast(e);
+                            return;
+                        }
                     }
                 }
                 self.settings
@@ -2273,7 +2278,12 @@ impl App {
                 }
             }
             Action::Paste => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                // A terminal pastes the clipboard as text (on Windows and Linux a paste event
+                // without Shift would reach it as a typed Ctrl+V); a text field gets egui's own.
+                match self.target_pane().filter(|_| !self.text_field_focused(ctx)) {
+                    Some(id) if let Some(p) = self.panes.get_mut(&id) => p.view.request_paste(ctx),
+                    _ => ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste),
+                }
             }
             Action::SelectAll => {
                 if self.text_field_focused(ctx) {
@@ -2762,7 +2772,8 @@ impl App {
 /// minimized or covered). Asked of the window itself, not told by frames drawn: an idle window
 /// draws none, and the logic also runs while it is hidden (FR-L1).
 fn window_looked_at(ctx: &egui::Context) -> bool {
-    ctx.input(|i| i.raw.focused && i.viewport().visible() != Some(false))
+    // The viewport's own facts first: while hidden, the rest of the input is the last frame's.
+    ctx.input(|i| i.raw.focused && i.viewport().focused != Some(false) && i.viewport().visible() != Some(false))
 }
 
 /// How long the next try waits after `n` frames in a row panicked: none for a one-off, then
