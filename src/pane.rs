@@ -51,6 +51,8 @@ const ENTER_WATCH: Duration = Duration::from_secs(2);
 const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 /// The most a program may put on the clipboard at once (OSC 52), in bytes.
 const MAX_COPY: usize = 4 * 1024 * 1024;
+/// A program's title is cut to this many chars.
+const MAX_TITLE: usize = 100;
 /// How a pane was on screen in the last frame, which sets how soon its new output is drawn:
 /// what is typed into shows at once, other panes share frames, panes out of view only have
 /// their messages taken in now and then.
@@ -118,6 +120,11 @@ pub struct Pane {
     pub tracker: Tracker,
     /// Set by the user (rename).
     pub title: Option<String>,
+    /// What the program in the foreground says it is doing (its OSC 0/2 title, cleaned up),
+    /// shown under the label, never as it. Gone once the shell is back at its prompt.
+    pub program_title: Option<String>,
+    /// The terminal's title as last read, to notice a new one.
+    seen_title: Option<String>,
     /// Last known working directory of the shell.
     pub cwd: PathBuf,
     /// The preset that started the agent in this pane (for resume and restore).
@@ -188,6 +195,8 @@ impl Pane {
             view: TermView::new(widget::pane_widget_id(id)),
             tracker: Tracker::new(Instant::now()),
             title: None,
+            program_title: None,
+            seen_title: None,
             cwd,
             preset: None,
             pending_command: None,
@@ -274,6 +283,7 @@ impl Pane {
         self.last_pgid = None;
         self.tracker = Tracker::new(Instant::now());
         self.tracker.long_command = spawn.long_command;
+        self.program_title = None;
         match LocalPty::spawn(&opts) {
             Ok(pty) => {
                 let tx = spawn.tx.clone();
@@ -387,9 +397,15 @@ impl Pane {
                         self.schedule_fg_check(now + Duration::from_millis(500));
                     }
                 }
+                // The shell's own titles come with its command mark (`preexec`), in the same read.
+                let command_started = fed
+                    .signals
+                    .iter()
+                    .any(|s| matches!(s, OscSignal::Prompt(PromptMark::CommandExecuted)));
                 for signal in fed.signals {
                     changed |= self.on_signal(signal, now);
                 }
+                self.read_title(command_started);
                 if fed.bell {
                     changed |= self.tracker.apply(Event::Bell, now);
                 }
@@ -403,6 +419,7 @@ impl Pane {
             SessionEvent::Exited(info) => {
                 self.exit = Some(info);
                 self.session = None;
+                self.program_title = None;
                 let code = match info {
                     _ if self.closing => Some(0),
                     ExitInfo::Code(c) => Some(c),
@@ -440,6 +457,10 @@ impl Pane {
                 self.tracker.apply(Event::Notify { message }, now)
             }
             OscSignal::Prompt(mark) => {
+                // Back at the prompt: what the program said it was doing is over.
+                if matches!(mark, PromptMark::PromptStart | PromptMark::CommandFinished(_)) {
+                    self.program_title = None;
+                }
                 let mark = match mark {
                     PromptMark::CommandExecuted => ShellMark::CommandStart,
                     PromptMark::CommandFinished(code) => ShellMark::CommandFinished(code),
@@ -456,6 +477,25 @@ impl Pane {
             }
             OscSignal::Progress { .. } | OscSignal::Hook(_) | OscSignal::PromptRedraw(_) => false,
         }
+    }
+
+    /// Takes in a title the terminal was given since the last look. Only a program's counts:
+    /// shell themes title every prompt (`user@host: ~/dir`), which says nothing of a task.
+    /// With shell integration the prompt marks tell (parsed in order with the title); without,
+    /// the foreground process does.
+    fn read_title(&mut self, command_started: bool) {
+        let notes = self.shared.notes.lock();
+        if notes.title == self.seen_title {
+            return;
+        }
+        self.seen_title = notes.title.clone();
+        drop(notes);
+        let program = if self.tracker.shell_marks {
+            !command_started && !self.shared.prompt.lock().at_prompt
+        } else {
+            matches!(self.tracker.fg, Foreground::Program { .. })
+        };
+        self.program_title = self.seen_title.as_deref().filter(|_| program).and_then(clean_title);
     }
 
     /// Looks at the PTY's foreground process group when a check is due.
@@ -538,6 +578,9 @@ impl Pane {
         {
             self.last_agent = Some(*a);
             self.resume = None;
+        }
+        if fg == Foreground::Shell {
+            self.program_title = None;
         }
         if fg == Foreground::Shell && self.tracker.agent.is_some() {
             // The agent was quit: nothing to resume later.
@@ -674,6 +717,37 @@ pub fn shell_name() -> &'static str {
     })
 }
 
+/// A program's title as shown: control characters out, white space one space, at most
+/// `MAX_TITLE` chars. None when nothing is left, or for a remote shell's prompt title (over
+/// SSH the program is `ssh`): `user@host: ~/dir`, `[user@host dir]$`.
+fn clean_title(raw: &str) -> Option<String> {
+    // Bidi controls would turn the rest of the line around.
+    let bidi = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    let mut text = String::new();
+    for c in raw.chars() {
+        if c.is_whitespace() {
+            if !text.is_empty() && !text.ends_with(' ') {
+                text.push(' ');
+            }
+        } else if !c.is_control() && !bidi(c) {
+            text.push(c);
+        }
+    }
+    let text = text.trim_end();
+    let first = text.trim_start_matches('[').split([':', ' ', ']']).next().unwrap_or("");
+    let login = first.split_once('@').is_some_and(|(user, host)| {
+        let name = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || "._-".contains(c));
+        name(user) && name(host)
+    });
+    if text.is_empty() || login {
+        return None;
+    }
+    Some(match text.char_indices().nth(MAX_TITLE) {
+        Some((cut, _)) => format!("{}…", text[..cut].trim_end()),
+        None => text.to_string(),
+    })
+}
+
 fn place(cwd: &Path, root: &Path) -> Option<String> {
     if cwd == root {
         return None;
@@ -725,5 +799,21 @@ mod place_tests {
         assert_eq!(place(Path::new("/w/app/src/ui"), root).as_deref(), Some("./src/ui"));
         assert_eq!(place(Path::new("/tmp"), root).as_deref(), Some("/tmp"));
         assert!(!shell_name().is_empty());
+    }
+
+    #[test]
+    fn program_titles_are_cleaned_and_prompt_titles_dropped() {
+        assert_eq!(clean_title("  Fix the\tlogin\n bug \x07").as_deref(), Some("Fix the login bug"));
+        assert_eq!(clean_title("a\u{202e}b").as_deref(), Some("ab"));
+        assert_eq!(clean_title(" \x1b "), None);
+        let long = clean_title(&"é".repeat(150)).unwrap();
+        assert_eq!(long.chars().count(), MAX_TITLE + 1);
+        assert!(long.ends_with('…'));
+        for prompt in ["ilham@mac: ~/dev", "root@db-1:/var/log", "[me@host src]$", "me@host"] {
+            assert_eq!(clean_title(prompt), None, "{prompt}");
+        }
+        assert_eq!(clean_title("✳ Review the PR").as_deref(), Some("✳ Review the PR"));
+        assert_eq!(clean_title("vim notes.md").as_deref(), Some("vim notes.md"));
+        assert_eq!(clean_title("Mail to bob@example.com").as_deref(), Some("Mail to bob@example.com"));
     }
 }

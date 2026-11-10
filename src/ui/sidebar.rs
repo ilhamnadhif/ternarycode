@@ -280,11 +280,21 @@ impl App {
                                 if !pr.kind.label().is_empty() {
                                     s = format!("{s}\n{}", pr.kind.label());
                                 }
-                                // What the chip shows, and where its status came from.
+                                // What the chip shows, and where its status came from; what the
+                                // program there says it is doing.
+                                let pane = self.project_pane(pr.id).and_then(|x| self.panes.get(&x));
                                 if chip.is_some()
-                                    && let Some(pane) = self.project_pane(pr.id).and_then(|x| self.panes.get(&x))
+                                    && let Some(pane) = pane
                                 {
                                     s = format!("{s}\n{} · {}", pane.label(), status::described(&pane.tracker));
+                                }
+                                if let Some(pane) = pane
+                                    && let Some(doing) = &pane.program_title
+                                {
+                                    s = match chip {
+                                        Some(_) => format!("{s}\n{doing}"),
+                                        None => format!("{s}\n{} · {doing}", pane.label()),
+                                    };
                                 }
                                 s
                             })

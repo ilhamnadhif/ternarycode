@@ -127,7 +127,13 @@ impl App {
                                     ui.spacing_mut().item_spacing.x = 8.0;
                                     kit::icon(ui, status::icon(e.status), 15.0, c);
                                     ui.vertical(|ui| {
-                                        ui.label(RichText::new(format!("{project} · {}", pane.label())).font(style::medium(12.5)));
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(format!("{project} · {}", pane.label())).font(style::medium(12.5)));
+                                            // What the program says it is doing, quieter.
+                                            if let Some(doing) = &pane.program_title {
+                                                ui.add(egui::Label::new(RichText::new(doing).size(style::SMALL).color(p.text_faint)).truncate());
+                                            }
+                                        });
                                         let detail = pane
                                             .tracker
                                             .message

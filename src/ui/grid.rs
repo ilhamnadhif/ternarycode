@@ -266,6 +266,7 @@ impl App {
                 x.tracker.message.clone(),
                 x.label(),
                 status::described(&x.tracker),
+                x.program_title.clone(),
             )
         });
         let elsewhere = self.waiting_elsewhere(project_id);
@@ -384,7 +385,7 @@ impl App {
         let gw = g.size().x;
         left.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
         x += gw + 10.0;
-        if let Some((s, attention, message, label, said)) = &pane_status {
+        if let Some((s, attention, message, label, said, doing)) = &pane_status {
             // What runs there, and its status when it says something (not idle). Quiet, the
             // terminal icon, as on a pane's header in Focus.
             let quiet = matches!(s, Status::Idle | Status::Unknown);
@@ -396,16 +397,20 @@ impl App {
             let status_left = x;
             left.text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, icon, style::icon_font(12.5), c);
             x += 17.0;
-            let text = match (s, message) {
-                (Status::NeedsInput, Some(m)) => format!("{label} · {m}"),
-                _ if quiet => label.clone(),
-                _ => format!("{label} · {}", status::text(*s)),
+            let (text, asks) = match (s, message) {
+                (Status::NeedsInput, Some(m)) => (format!("{label} · {m}"), true),
+                _ if quiet => (label.clone(), false),
+                _ => (format!("{label} · {}", status::text(*s)), false),
             };
             let mut job = egui::text::LayoutJob::simple_singleline(
                 text,
                 small.clone(),
                 if *attention || !quiet { c } else { p.text_muted },
             );
+            // Then, quieter, what the program says it is doing (a question it asks says more).
+            if let Some(doing) = doing.as_ref().filter(|_| !asks) {
+                job.append(&format!(" · {doing}"), 0.0, egui::TextFormat::simple(small.clone(), p.text_faint));
+            }
             job.wrap = egui::text::TextWrapping::truncate_at_width((left_limit - x).max(0.0));
             let sg = left.layout_job(job);
             let status_right = (x + sg.size().x).min(left_limit);
@@ -413,8 +418,12 @@ impl App {
             // Where the status came from, on hover (the header's double click still opens).
             let status_rect = Rect::from_min_max(pos2(status_left, header.top()), pos2(status_right, header.bottom()));
             if status_rect.width() > 0.0 {
+                let tip = match doing {
+                    Some(doing) => format!("{doing}\n{said}"),
+                    None => said.clone(),
+                };
                 ui.interact(status_rect, egui::Id::new(("tile-status", project_id)), Sense::hover())
-                    .on_hover_text(said.as_str());
+                    .on_hover_text(tip);
             }
             if *attention {
                 painter.rect_filled(

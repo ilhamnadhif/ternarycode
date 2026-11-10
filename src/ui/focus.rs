@@ -135,7 +135,8 @@ impl App {
         let color = project.color32();
         let git = project.git.clone();
         let active_tab = project.active_tab;
-        // Each tab with the status its icon shows and, for its tooltip, where that came from.
+        // Each tab with the status its icon shows and, for its tooltip, where that came from and
+        // what the program in its pane says it is doing.
         let tabs: Vec<_> = project
             .tabs
             .iter()
@@ -157,7 +158,8 @@ impl App {
                             .filter(|pane| !matches!(pane.tracker.status, Status::Idle | Status::Unknown))
                     })
                     .map(|pane| (pane.tracker.status, status::described(&pane.tracker)));
-                (i, label, waiting, tab.focused)
+                let doing = self.panes.get(&tab.focused).and_then(|pane| pane.program_title.clone());
+                (i, label, waiting, doing, tab.focused)
             })
             .collect();
         let mut tab_rects: Vec<Rect> = Vec::with_capacity(tabs.len());
@@ -199,7 +201,7 @@ impl App {
                         .scroll_source(egui::scroll_area::ScrollSource::MOUSE_WHEEL)
                         .show(ui, |ui| {
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                for (i, label, waiting, focused) in &tabs {
+                                for (i, label, waiting, doing, focused) in &tabs {
                                     let dragging = app.tab_drag == Some(*i);
                                     let on = *i == active_tab;
                                     let (r, close) =
@@ -228,10 +230,13 @@ impl App {
                                         app.tab_drag = Some(*i);
                                     }
                                     let hint = t("Drag to reorder, or onto a pane to split it");
-                                    let tip = match waiting {
+                                    let mut tip = match waiting {
                                         Some((_, said)) => format!("{said}\n{hint}"),
                                         None => hint.to_string(),
                                     };
+                                    if let Some(doing) = doing {
+                                        tip = format!("{doing}\n{tip}");
+                                    }
                                     let r = r.on_hover_text(tip);
                                     if r.double_clicked() {
                                         let current = app.panes.get(focused).and_then(|p| p.title.clone()).unwrap_or_default();
@@ -646,6 +651,7 @@ impl App {
         let label = pane.label();
         let place = pane.place(&root);
         let message = pane.tracker.message.clone().filter(|_| s == Status::NeedsInput);
+        let doing = pane.program_title.clone();
         let tip = status::described(&pane.tracker);
         let hovered = ui.rect_contains_pointer(rect);
 
@@ -716,9 +722,20 @@ impl App {
             painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
             x += w + 10.0;
         }
+        let pill = (!quiet).then(|| painter.layout_no_wrap(status::text(s), style::medium(style::SMALL), c));
+        // What the program says it is doing, quiet, cut short before the status (a question
+        // the pane asks says more).
+        let room = clip.right() - x - pill.as_ref().map_or(0.0, |g| g.size().x + 22.0);
+        if let Some(doing) = doing.as_ref().filter(|_| message.is_none() && room > 40.0) {
+            let mut job = egui::text::LayoutJob::simple_singleline(doing.clone(), egui::FontId::proportional(style::SMALL), p.text_faint);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            let g = painter.layout_job(job);
+            let w = g.size().x;
+            painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+            x += w + 10.0;
+        }
         // The status as a pill, unless the pane is just sitting at its prompt.
-        if !quiet {
-            let g = painter.layout_no_wrap(status::text(s), style::medium(style::SMALL), c);
+        if let Some(g) = pill {
             let pill = Rect::from_min_size(pos2(x, cy - 9.0), vec2(g.size().x + 14.0, 18.0));
             painter.rect_filled(pill, CornerRadius::same(9), style::soft(c, if ui.visuals().dark_mode { 0.18 } else { 0.12 }));
             painter.galley(pill.center() - g.size() / 2.0, g, c);
@@ -733,6 +750,10 @@ impl App {
         }
         // The whole header (left of its buttons) can be dragged to move the pane.
         let grab = Rect::from_min_max(rect.min, pos2(clip.right(), rect.max.y));
+        let tip = match &doing {
+            Some(doing) => format!("{doing}\n{tip}"),
+            None => tip,
+        };
         let label_resp = ui
             .interact(grab, egui::Id::new(("pane-status", pane_id)), Sense::click_and_drag())
             .on_hover_text(format!("{tip}\n{}", t("Double-click to rename · drag to move")));
