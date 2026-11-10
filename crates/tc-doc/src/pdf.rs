@@ -227,9 +227,17 @@ impl Renderer {
             notify();
             ok
         };
-        let _ = std::thread::Builder::new()
-            .name("ternarycode-pdf".into())
-            .spawn(move || work(path, requests, send));
+        let fail = send.clone();
+        let spawned = std::thread::Builder::new().name("ternarycode-pdf".into()).spawn(move || {
+            // Whatever panics in the worker, the UI must not wait for pages forever.
+            let send = &send;
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(path, requests, send))).is_err() {
+                send(Event::Failed("the PDF could not be shown".into()));
+            }
+        });
+        if let Err(e) = spawned {
+            fail(Event::Failed(format!("the PDF could not be opened: {e}")));
+        }
         Self { tx, events }
     }
 
@@ -252,17 +260,22 @@ fn error_text(e: LoadPdfError) -> String {
 }
 
 fn work(path: PathBuf, requests: mpsc::Receiver<Request>, send: impl Fn(Event) -> bool) {
-    let bytes = match std::fs::read(&path) {
+    // The size first: a huge file is not read into memory only to be refused.
+    let bytes = match std::fs::metadata(&path) {
+        Ok(m) if m.len() > crate::MAX_BYTES => {
+            send(Event::Failed(format!("the file is too big to show ({} MB)", m.len() / 1024 / 1024)));
+            return;
+        }
+        Ok(_) => std::fs::read(&path),
+        Err(e) => Err(e),
+    };
+    let bytes = match bytes {
         Ok(b) => b,
         Err(e) => {
             send(Event::Failed(e.to_string()));
             return;
         }
     };
-    if bytes.len() as u64 > crate::MAX_BYTES {
-        send(Event::Failed("the file is too big to show".into()));
-        return;
-    }
     // A broken file can make the parser panic: report it instead of losing the thread quietly.
     let pdf = match std::panic::catch_unwind(move || Pdf::new(bytes)) {
         Ok(Ok(pdf)) => pdf,
@@ -327,7 +340,9 @@ fn work(path: PathBuf, requests: mpsc::Receiver<Request>, send: impl Fn(Event) -
         };
         let Some(page) = pdf.pages().get(index) else { continue };
         let (w, h) = pages[index];
-        let scale = asked.clamp(0.05, MAX_SIDE / w.max(h).max(1.0));
+        // Not `clamp`: a page over 81,920 pt makes the upper bound smaller than the lower one
+        // (a panic); the size limit wins.
+        let scale = asked.max(0.05).min(MAX_SIDE / w.max(h).max(1.0));
         let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             hayro::render(
                 page,
@@ -363,11 +378,16 @@ mod tests {
 
     /// A one-page PDF (US Letter) with a black square.
     fn tiny_pdf() -> Vec<u8> {
+        square_pdf(612, 792)
+    }
+
+    /// A one-page PDF of `w` × `h` points with a black square.
+    fn square_pdf(w: u32, h: u32) -> Vec<u8> {
         let content = b"0 0 0 rg 100 100 200 200 re f";
         let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".to_string(),
+            format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] /Contents 4 0 R >>"),
             format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), String::from_utf8_lossy(content)),
         ];
         let mut out = b"%PDF-1.4\n".to_vec();
@@ -404,6 +424,33 @@ mod tests {
         let px = |x: u32, y: u32| image.pixels[((y * image.width + x) * 4) as usize];
         assert_eq!(px(5, 5), 255);
         assert_eq!(px(100, 396 - 100), 0);
+    }
+
+    #[test]
+    fn a_huge_page_is_drawn_within_the_size_limit() {
+        // 4096 px over 90,000 pt is less than the smallest scale asked for.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wide.pdf");
+        std::fs::write(&path, square_pdf(90_000, 900)).unwrap();
+        let r = Renderer::open(path, Arc::new(|| {}));
+        assert!(matches!(r.events.recv_timeout(Duration::from_secs(10)).unwrap(), Event::Opened { .. }));
+        r.request(0, 1.0);
+        let Event::Page { index, image, .. } = r.events.recv_timeout(Duration::from_secs(20)).unwrap() else {
+            panic!("no page")
+        };
+        assert_eq!(index, 0);
+        assert!(image.width <= MAX_SIDE as u32 && image.height <= MAX_SIDE as u32, "{}x{}", image.width, image.height);
+    }
+
+    #[test]
+    fn a_file_too_big_is_refused_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.pdf");
+        // Sparse: nothing is written, and nothing should be read.
+        std::fs::File::create(&path).unwrap().set_len(crate::MAX_BYTES + 1).unwrap();
+        let r = Renderer::open(path, Arc::new(|| {}));
+        let e = r.events.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(matches!(&e, Event::Failed(m) if m.contains("too big")), "{e:?}");
     }
 
     /// A one-page PDF with two lines of Helvetica text.

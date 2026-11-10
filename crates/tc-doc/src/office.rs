@@ -118,13 +118,19 @@ pub struct Slide {
     pub blocks: Vec<Block>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Slides {
     pub slides: Vec<Slide>,
     pub images: Vec<Picture>,
     pub images_skipped: usize,
     /// Width over height of the slides (16:9 when the file does not say).
     pub aspect: f32,
+}
+
+impl Default for Slides {
+    fn default() -> Self {
+        Self { slides: Vec::new(), images: Vec::new(), images_skipped: 0, aspect: 16.0 / 9.0 }
+    }
 }
 
 // ----- zip and XML helpers -------------------------------------------------------------------
@@ -253,6 +259,35 @@ impl Images {
     }
 }
 
+/// `mc:AlternateContent` holds the same content more than once (a Word text box as DrawingML
+/// in `mc:Choice` and again as VML in `mc:Fallback`): only the first branch is read.
+#[derive(Default)]
+struct Alternates {
+    /// Per open `mc:AlternateContent`: whether one of its branches was read.
+    read: Vec<bool>,
+}
+
+impl Alternates {
+    /// At a start tag (not `<x/>`): whether the element is a branch after the one read, to skip.
+    fn skip(&mut self, e: &BytesStart) -> bool {
+        match local(e.name().as_ref()) {
+            b"AlternateContent" => self.read.push(false),
+            b"Choice" | b"Fallback" => {
+                if let Some(read) = self.read.last_mut() {
+                    return std::mem::replace(read, true);
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// At the end of an `mc:AlternateContent`.
+    fn end(&mut self) {
+        self.read.pop();
+    }
+}
+
 /// EMUs (English Metric Units) to points.
 fn emu_pt(v: &str) -> Option<f32> {
     v.parse::<f64>().ok().map(|e| (e / 12700.0) as f32)
@@ -336,9 +371,17 @@ fn style_of_name(name: &str) -> Option<ParaStyle> {
     None
 }
 
+/// A Word style as read: its name, the style it is based on, its outline level.
+#[derive(Default)]
+struct WordStyle {
+    name: String,
+    based: Option<String>,
+    outline: Option<u8>,
+}
+
 /// styles.xml: style id → what it means (following `basedOn`).
 fn word_styles(xml: &[u8]) -> HashMap<String, ParaStyle> {
-    let mut names: HashMap<String, (String, Option<String>)> = HashMap::new();
+    let mut names: HashMap<String, WordStyle> = HashMap::new();
     let mut r = Reader::from_reader(xml);
     let mut buf = Vec::new();
     let mut current: Option<String> = None;
@@ -348,32 +391,31 @@ fn word_styles(xml: &[u8]) -> HashMap<String, ParaStyle> {
                 b"style" => {
                     current = attr(&e, b"styleId");
                     if let Some(id) = &current {
-                        names.insert(id.clone(), (String::new(), None));
+                        names.insert(id.clone(), WordStyle::default());
                     }
                 }
                 b"name" => {
                     if let (Some(id), Some(v)) = (&current, attr(&e, b"val"))
                         && let Some(entry) = names.get_mut(id)
                     {
-                        entry.0 = v;
+                        entry.name = v;
                     }
                 }
                 b"basedOn" => {
                     if let (Some(id), Some(v)) = (&current, attr(&e, b"val"))
                         && let Some(entry) = names.get_mut(id)
                     {
-                        entry.1 = Some(v);
+                        entry.based = Some(v);
                     }
                 }
                 b"outlineLvl" => {
-                    // A paragraph style with an outline level is a heading, whatever its name.
+                    // Kept apart from the name: `w:name` usually comes first.
                     if let (Some(id), Some(v)) = (&current, attr(&e, b"val"))
                         && let Ok(l) = v.parse::<u8>()
                         && l < 9
                         && let Some(entry) = names.get_mut(id)
-                        && entry.0.is_empty()
                     {
-                        entry.0 = format!("heading {}", l + 1);
+                        entry.outline = Some(l);
                     }
                 }
                 _ => {}
@@ -388,12 +430,14 @@ fn word_styles(xml: &[u8]) -> HashMap<String, ParaStyle> {
     for id in names.keys() {
         let mut at = id.clone();
         for _ in 0..8 {
-            let Some((name, based)) = names.get(&at) else { break };
-            if let Some(s) = style_of_name(name).or_else(|| style_of_name(&at)) {
+            let Some(style) = names.get(&at) else { break };
+            // A paragraph style with an outline level is a heading, whatever its name.
+            let heading = style.outline.map(|l| ParaStyle::Heading((l + 1).min(6)));
+            if let Some(s) = heading.or_else(|| style_of_name(&style.name)).or_else(|| style_of_name(&at)) {
                 out.insert(id.clone(), s);
                 break;
             }
-            match based {
+            match &style.based {
                 Some(b) => at = b.clone(),
                 None => break,
             }
@@ -402,14 +446,32 @@ fn word_styles(xml: &[u8]) -> HashMap<String, ParaStyle> {
     out
 }
 
-/// numbering.xml: (numId, level) → number format ("bullet", "decimal", "lowerLetter", …) and
-/// the text with `%1` placeholders.
-fn word_numbering(xml: &[u8]) -> HashMap<(String, u8), (String, String)> {
-    let mut abstracts: HashMap<String, HashMap<u8, (String, String)>> = HashMap::new();
+/// A level of a Word list: its number format ("bullet", "decimal", "lowerLetter", …), the text
+/// with `%1` placeholders and the number it starts at.
+#[derive(Clone, Debug, PartialEq)]
+struct Level {
+    fmt: String,
+    text: String,
+    start: usize,
+}
+
+impl Default for Level {
+    fn default() -> Self {
+        // Word writes `w:start` for numbered levels; without one, count from 1.
+        Self { fmt: String::new(), text: String::new(), start: 1 }
+    }
+}
+
+/// numbering.xml: (numId, level) → the level, started where the list says (`w:startOverride`).
+fn word_numbering(xml: &[u8]) -> HashMap<(String, u8), Level> {
+    let mut abstracts: HashMap<String, HashMap<u8, Level>> = HashMap::new();
     let mut nums: HashMap<String, String> = HashMap::new();
+    let mut starts: HashMap<(String, u8), usize> = HashMap::new();
     let mut r = Reader::from_reader(xml);
     let mut buf = Vec::new();
     let (mut abs, mut lvl, mut num): (Option<String>, Option<u8>, Option<String>) = (None, None, None);
+    // Inside a `w:num`: the level its `w:lvlOverride` is about.
+    let mut over: Option<u8> = None;
     loop {
         match r.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match local(e.name().as_ref()) {
@@ -417,12 +479,17 @@ fn word_numbering(xml: &[u8]) -> HashMap<(String, u8), (String, String)> {
                 b"lvl" => lvl = attr(&e, b"ilvl").and_then(|v| v.parse().ok()),
                 b"numFmt" => {
                     if let (Some(a), Some(l), Some(v)) = (&abs, lvl, attr(&e, b"val")) {
-                        abstracts.entry(a.clone()).or_default().entry(l).or_default().0 = v;
+                        abstracts.entry(a.clone()).or_default().entry(l).or_default().fmt = v;
                     }
                 }
                 b"lvlText" => {
                     if let (Some(a), Some(l), Some(v)) = (&abs, lvl, attr(&e, b"val")) {
-                        abstracts.entry(a.clone()).or_default().entry(l).or_default().1 = v;
+                        abstracts.entry(a.clone()).or_default().entry(l).or_default().text = v;
+                    }
+                }
+                b"start" if abs.is_some() => {
+                    if let (Some(a), Some(l), Some(v)) = (&abs, lvl, attr(&e, b"val").and_then(|v| v.parse().ok())) {
+                        abstracts.entry(a.clone()).or_default().entry(l).or_default().start = v;
                     }
                 }
                 b"num" => num = attr(&e, b"numId"),
@@ -431,12 +498,21 @@ fn word_numbering(xml: &[u8]) -> HashMap<(String, u8), (String, String)> {
                         nums.insert(n.clone(), v);
                     }
                 }
+                b"lvlOverride" => over = attr(&e, b"ilvl").and_then(|v| v.parse().ok()),
+                // A restarted list ("Restart at 1", "Set numbering value") is a new `w:num`
+                // with its own start; a `w:start` in an overriding `w:lvl` says the same.
+                b"startOverride" | b"start" => {
+                    if let (Some(n), Some(l), Some(v)) = (&num, over, attr(&e, b"val").and_then(|v| v.parse().ok())) {
+                        starts.entry((n.clone(), l)).or_insert(v);
+                    }
+                }
                 _ => {}
             },
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
                 b"abstractNum" => abs = None,
                 b"lvl" => lvl = None,
                 b"num" => num = None,
+                b"lvlOverride" => over = None,
                 _ => {}
             },
             Ok(Event::Eof) | Err(_) => break,
@@ -448,7 +524,11 @@ fn word_numbering(xml: &[u8]) -> HashMap<(String, u8), (String, String)> {
     for (n, a) in nums {
         if let Some(levels) = abstracts.get(&a) {
             for (l, f) in levels {
-                out.insert((n.clone(), *l), f.clone());
+                let mut f = f.clone();
+                if let Some(start) = starts.get(&(n.clone(), *l)) {
+                    f.start = *start;
+                }
+                out.insert((n.clone(), *l), f);
             }
         }
     }
@@ -493,11 +573,12 @@ struct Counters {
 }
 
 impl Counters {
-    fn mark(&mut self, numbering: &HashMap<(String, u8), (String, String)>, num: &str, level: u8) -> Option<String> {
+    fn mark(&mut self, numbering: &HashMap<(String, u8), Level>, num: &str, level: u8) -> Option<String> {
         if num == "0" {
             return None;
         }
-        let (fmt, text) = numbering.get(&(num.to_string(), level)).cloned().unwrap_or_else(|| ("bullet".into(), String::new()));
+        let Level { fmt, text, start } =
+            numbering.get(&(num.to_string(), level)).cloned().unwrap_or_else(|| Level { fmt: "bullet".into(), ..Default::default() });
         if fmt == "bullet" || fmt == "none" {
             return Some(match level % 3 {
                 0 => "•",
@@ -506,17 +587,15 @@ impl Counters {
             }
             .to_string());
         }
-        let n = {
-            let c = self.counts.entry((num.to_string(), level)).or_insert(0);
-            *c += 1;
-            *c
-        };
+        // Each list and level counts on from its start.
+        let n = *self.counts.entry((num.to_string(), level)).and_modify(|c| *c += 1).or_insert(start);
         // Deeper levels start again under a new item.
         self.counts.retain(|(k, l), _| k != num || *l <= level);
         let mut out = if text.is_empty() { format!("%{}.", level + 1) } else { text };
         for l in 0..=level {
-            let v = if l == level { n } else { self.counts.get(&(num.to_string(), l)).copied().unwrap_or(1) };
-            let f = numbering.get(&(num.to_string(), l)).map_or("decimal", |f| f.0.as_str());
+            let f = numbering.get(&(num.to_string(), l));
+            let v = if l == level { n } else { self.counts.get(&(num.to_string(), l)).copied().unwrap_or(f.map_or(1, |f| f.start)) };
+            let f = f.map_or("decimal", |f| f.fmt.as_str());
             out = out.replace(&format!("%{}", l + 1), &number_text(v, f));
         }
         Some(out)
@@ -529,6 +608,10 @@ struct WordPara {
     para: Para,
     num: Option<(String, u8)>,
     explicit_style: bool,
+    /// Tables open when the paragraph started (one opened since is in its text box).
+    tables: usize,
+    /// What its text boxes hold, shown after it.
+    boxes: Vec<Block>,
 }
 
 /// Where table content is being collected.
@@ -557,17 +640,27 @@ pub fn read_docx(path: &Path) -> Result<RichDoc, String> {
     let mut text_mode: Option<&'static str> = None; // inside w:t / w:instrText (ignored)
     let mut deleted = 0usize;
     let mut drawing_size: Option<(f32, f32)> = None;
+    let mut alternates = Alternates::default();
 
     let mut r = Reader::from_reader(xml.as_slice());
     let mut buf = Vec::new();
+    let mut skipped = Vec::new();
     while let Ok(ev) = r.read_event_into(&mut buf) {
+        if let Event::Start(e) = &ev
+            && alternates.skip(e)
+        {
+            let _ = r.read_to_end_into(e.name(), &mut skipped);
+            skipped.clear();
+            buf.clear();
+            continue;
+        }
         // `<x/>` has no end event: state that an end would undo is only set by a start.
         let is_empty = matches!(ev, Event::Empty(_));
         match ev {
             Event::Start(e) | Event::Empty(e) => {
                 let name = local(e.name().as_ref()).to_vec();
                 match name.as_slice() {
-                    b"p" => paras.push(WordPara::default()),
+                    b"p" => paras.push(WordPara { tables: tables.len(), ..Default::default() }),
                     b"pPr" if !is_empty => in_ppr = true,
                     b"rPr" if !is_empty => {
                         in_rpr = true;
@@ -690,21 +783,18 @@ pub fn read_docx(path: &Path) -> Result<RichDoc, String> {
                 b"del" => deleted = deleted.saturating_sub(1),
                 b"t" | b"instrText" | b"delText" => text_mode = None,
                 b"drawing" | b"pict" => drawing_size = None,
+                b"AlternateContent" => alternates.end(),
                 b"tbl" => {
                     if let Some(t) = tables.pop() {
                         let block = Block::Table(t.rows);
-                        // A table inside a table cell: its text goes into that cell.
-                        match tables.last_mut().and_then(|t| t.rows.last_mut()).and_then(|r| r.last_mut()) {
-                            Some(cell) => {
-                                if let Block::Table(rows) = block {
-                                    for row in rows {
-                                        for c in row {
-                                            cell.extend(c);
-                                        }
-                                    }
-                                }
-                            }
-                            None => blocks.push(block),
+                        match paras.last_mut() {
+                            // A table in a text box: shown after the paragraph holding it.
+                            Some(holder) if tables.len() <= holder.tables => holder.boxes.push(block),
+                            // A table inside a table cell: its text goes into that cell.
+                            _ => match tables.last_mut().and_then(|t| t.rows.last_mut()).and_then(|r| r.last_mut()) {
+                                Some(cell) => into_cell(cell, block),
+                                None => blocks.push(block),
+                            },
                         }
                     }
                 }
@@ -742,14 +832,25 @@ fn resolve_entity(name: &str) -> String {
 /// A page break: what came before it is a paragraph of its own.
 fn flush_para_break(paras: &mut [WordPara], blocks: &mut Vec<Block>, tables: &mut [WordTable]) {
     if tables.is_empty() && paras.len() == 1 {
-        if let Some(p) = paras.last_mut()
-            && !p.para.is_empty()
-        {
-            let next = Para { style: p.para.style, align: p.para.align, ..Default::default() };
-            let done = std::mem::replace(&mut p.para, next);
-            blocks.push(Block::Para(done));
+        if let Some(p) = paras.last_mut() {
+            if !p.para.is_empty() {
+                let next = Para { style: p.para.style, align: p.para.align, ..Default::default() };
+                let done = std::mem::replace(&mut p.para, next);
+                blocks.push(Block::Para(done));
+            }
+            // Its text boxes so far stay with it, before the break.
+            blocks.append(&mut p.boxes);
         }
         blocks.push(Block::PageBreak);
+    }
+}
+
+/// A block as paragraphs of a table cell (a table in it is flattened into it).
+fn into_cell(cell: &mut Vec<Para>, block: Block) {
+    match block {
+        Block::Para(p) => cell.push(p),
+        Block::Table(rows) => cell.extend(rows.into_iter().flatten().flatten()),
+        Block::PageBreak => {}
     }
 }
 
@@ -757,7 +858,7 @@ fn finish_para(
     paras: &mut Vec<WordPara>,
     blocks: &mut Vec<Block>,
     tables: &mut [WordTable],
-    numbering: &HashMap<(String, u8), (String, String)>,
+    numbering: &HashMap<(String, u8), Level>,
     counters: &mut Counters,
 ) {
     let Some(mut wp) = paras.pop() else { return };
@@ -767,26 +868,30 @@ fn finish_para(
     {
         wp.para.list = Some(ListMark { level: *level, mark });
     }
-    let para = wp.para;
-    // Inside a table cell, or a text box in another paragraph: it belongs there.
-    let in_cell = paras.len() <= tables.len();
-    if in_cell && let Some(cell) = tables.last_mut().and_then(|t| t.rows.last_mut()).and_then(|r| r.last_mut()) {
+    let (para, boxes) = (wp.para, wp.boxes);
+    // A text box in another paragraph (not in a table of its own): shown after the one holding
+    // it, with what its own text boxes hold.
+    if let Some(holder) = paras.last_mut()
+        && tables.len() <= holder.tables
+    {
+        holder.boxes.push(Block::Para(para));
+        holder.boxes.extend(boxes);
+        return;
+    }
+    // Inside a table cell: it belongs there.
+    if let Some(cell) = tables.last_mut().and_then(|t| t.rows.last_mut()).and_then(|r| r.last_mut()) {
         cell.push(para);
+        for b in boxes {
+            into_cell(cell, b);
+        }
         return;
     }
-    if paras.last().is_some() {
-        // A text box: show its paragraphs after the one holding it.
+    // Several empty paragraphs in a row are spacing: keep one (and none at the start).
+    let spacing = para.is_empty() && (blocks.is_empty() || matches!(blocks.last(), Some(Block::Para(p)) if p.is_empty()));
+    if !spacing {
         blocks.push(Block::Para(para));
-        return;
     }
-    if blocks.is_empty() && para.is_empty() {
-        return;
-    }
-    // Several empty paragraphs in a row are spacing: keep one.
-    if para.is_empty() && matches!(blocks.last(), Some(Block::Para(p)) if p.is_empty()) {
-        return;
-    }
-    blocks.push(Block::Para(para));
+    blocks.extend(boxes);
 }
 
 /// The main part a package's root relationships point at (the usual name otherwise).
@@ -832,13 +937,34 @@ fn read_slide(pkg: &mut Package, part: &str, images: &mut Images) -> Slide {
     let mut para: Option<Para> = None;
     let mut props = RunProps::default();
     let mut in_rpr = false;
+    // Elements open inside the run properties, each whether it is an `a:solidFill`: the run's
+    // colour is the fill right under them, not a highlight's or an outline's.
+    let mut rpr_open: Vec<bool> = Vec::new();
     let mut in_t = false;
     let mut in_xfrm = false;
     let mut table: Option<Vec<Vec<Vec<Para>>>> = None;
     let mut r = Reader::from_reader(xml.as_slice());
     let mut buf = Vec::new();
+    let mut skipped = Vec::new();
     while let Ok(ev) = r.read_event_into(&mut buf) {
+        // The slide's background picture is no content.
+        if let Event::Start(e) = &ev
+            && local(e.name().as_ref()) == b"bg"
+        {
+            let _ = r.read_to_end_into(e.name(), &mut skipped);
+            skipped.clear();
+            buf.clear();
+            continue;
+        }
         let is_empty = matches!(ev, Event::Empty(_));
+        let opened = match &ev {
+            Event::Start(e) if in_rpr => Some(local(e.name().as_ref()) == b"solidFill"),
+            Event::End(_) if in_rpr => {
+                rpr_open.pop();
+                None
+            }
+            _ => None,
+        };
         match ev {
             Event::Start(e) | Event::Empty(e) => match local(e.name().as_ref()) {
                 b"sp" | b"pic" | b"graphicFrame" | b"cxnSp" => shape = Some(Shape::default()),
@@ -908,13 +1034,14 @@ fn read_slide(pkg: &mut Package, part: &str, images: &mut Images) -> Slide {
                 b"r" | b"fld" => props = RunProps::default(),
                 b"rPr" | b"defRPr" => {
                     in_rpr = !is_empty;
+                    rpr_open.clear();
                     props.bold = attr(&e, b"b").is_some_and(|v| v == "1" || v == "true");
                     props.italic = attr(&e, b"i").is_some_and(|v| v == "1" || v == "true");
                     props.underline = attr(&e, b"u").is_some_and(|v| v != "none");
                     props.strike = attr(&e, b"strike").is_some_and(|v| v != "noStrike");
                     props.size = attr(&e, b"sz").and_then(|v| v.parse::<f32>().ok()).map(|s| s / 100.0);
                 }
-                b"srgbClr" if in_rpr => props.color = attr(&e, b"val").and_then(|v| hex_color(&v)),
+                b"srgbClr" if in_rpr && rpr_open == [true] => props.color = attr(&e, b"val").and_then(|v| hex_color(&v)),
                 b"latin" if in_rpr => props.code = attr(&e, b"typeface").is_some_and(|f| monospace_font(&f)),
                 b"t" => in_t = !is_empty,
                 b"br" => {
@@ -971,6 +1098,9 @@ fn read_slide(pkg: &mut Package, part: &str, images: &mut Images) -> Slide {
             },
             Event::Eof => break,
             _ => {}
+        }
+        if let Some(fill) = opened {
+            rpr_open.push(fill);
         }
         buf.clear();
     }
@@ -1055,12 +1185,17 @@ pub(crate) mod tests {
     use std::io::Write;
 
     pub(crate) fn write_zip(path: &Path, files: &[(&str, &str)]) {
+        let files: Vec<(&str, &[u8])> = files.iter().map(|(name, body)| (*name, body.as_bytes())).collect();
+        write_zip_bytes(path, &files);
+    }
+
+    fn write_zip_bytes(path: &Path, files: &[(&str, &[u8])]) {
         let f = std::fs::File::create(path).unwrap();
         let mut z = zip::ZipWriter::new(f);
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for (name, body) in files {
             z.start_file(*name, opts).unwrap();
-            z.write_all(body.as_bytes()).unwrap();
+            z.write_all(body).unwrap();
         }
         z.finish().unwrap();
     }
@@ -1148,6 +1283,114 @@ pub(crate) mod tests {
         assert_eq!(body.text(), "b");
         assert_eq!(body.list.as_ref().unwrap().level, 1);
         assert!((s.aspect - 4.0 / 3.0).abs() < 0.01);
+    }
+
+    /// The paragraphs' texts and tables of a document, in order.
+    fn outline(d: &RichDoc) -> Vec<String> {
+        d.blocks
+            .iter()
+            .map(|b| match b {
+                Block::Para(p) => p.text(),
+                Block::Table(rows) => format!("[{}]", rows.iter().flatten().flatten().map(Para::text).collect::<Vec<_>>().join("|")),
+                Block::PageBreak => "---".into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_text_box_is_read_once_after_its_paragraph() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("box.docx");
+        let boxed = r#"<w:txbxContent><w:p><w:r><w:t>In the box</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>boxed cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:txbxContent>"#;
+        let doc = format!(
+            r#"<w:document {W} xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:v="urn:schemas-microsoft-com:vml"><w:body>
+<w:p><w:r><w:t>Before</w:t></w:r></w:p>
+<w:p><w:r><w:t xml:space="preserve">Holder </w:t></w:r><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wps:wsp><wps:txbx>{boxed}</wps:txbx></wps:wsp></w:drawing></mc:Choice><mc:Fallback><w:pict><v:rect><v:textbox>{boxed}</v:textbox></v:rect></w:pict></mc:Fallback></mc:AlternateContent></w:r><w:r><w:t>text</w:t></w:r></w:p>
+<w:p><w:r><mc:AlternateContent><mc:Fallback><w:t>Only a fallback</w:t></mc:Fallback></mc:AlternateContent></w:r></w:p>
+<w:tbl><w:tr><w:tc><w:p><w:r><w:t xml:space="preserve">Cell </w:t></w:r><w:r><w:pict><v:textbox><w:txbxContent><w:p><w:r><w:t>cell box</w:t></w:r></w:p></w:txbxContent></v:textbox></w:pict></w:r><w:r><w:t>holder</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+<w:p><w:r><w:t>After</w:t></w:r></w:p>
+</w:body></w:document>"#
+        );
+        write_zip(&p, &[("word/document.xml", &doc)]);
+        let d = read_docx(&p).unwrap();
+        assert_eq!(
+            outline(&d),
+            ["Before", "Holder text", "In the box", "[boxed cell]", "Only a fallback", "[Cell holder|cell box]", "After"]
+        );
+    }
+
+    #[test]
+    fn word_lists_start_where_they_say_and_outline_levels_make_headings() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("list.docx");
+        let item = |num: u8, level: u8, text: &str| {
+            format!(r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="{level}"/><w:numId w:val="{num}"/></w:numPr></w:pPr><w:r><w:t>{text}</w:t></w:r></w:p>"#)
+        };
+        let doc = format!(
+            r#"<w:document {W}><w:body><w:p><w:pPr><w:pStyle w:val="Bagian"/></w:pPr><w:r><w:t>Part</w:t></w:r></w:p>{}{}{}{}{}</w:body></w:document>"#,
+            item(1, 0, "a"),
+            item(1, 1, "b"),
+            item(1, 0, "c"),
+            item(2, 0, "d"),
+            item(2, 0, "e"),
+        );
+        let numbering = format!(
+            r#"<w:numbering {W}><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="3"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl><w:lvl w:ilvl="1"><w:start w:val="2"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%1.%2)"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="7"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="7"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="10"/></w:lvlOverride></w:num></w:numbering>"#
+        );
+        // The name first, as Word writes it, then the outline level.
+        let styles = format!(
+            r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="Bagian"><w:name w:val="Judul Bagian"/><w:pPr><w:outlineLvl w:val="1"/></w:pPr></w:style></w:styles>"#
+        );
+        write_zip(&p, &[("word/document.xml", &doc), ("word/numbering.xml", &numbering), ("word/styles.xml", &styles)]);
+        let d = read_docx(&p).unwrap();
+        let paras: Vec<&Para> = d.blocks.iter().filter_map(|b| if let Block::Para(p) = b { Some(p) } else { None }).collect();
+        assert_eq!(paras[0].style, ParaStyle::Heading(2));
+        let marks: Vec<&str> = paras[1..].iter().map(|p| p.list.as_ref().unwrap().mark.as_str()).collect();
+        assert_eq!(marks, ["3.", "3.b)", "4.", "10.", "11."]);
+    }
+
+    #[test]
+    fn slide_backgrounds_and_highlights_are_not_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bg.pptx");
+        let ns = r#"xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships""#;
+        let slide = format!(
+            r#"<p:sld {ns}><p:cSld><p:bg><p:bgPr><a:blipFill><a:blip r:embed="rId9"/></a:blipFill></p:bgPr></p:bg><p:spTree>
+<p:sp><p:txBody><a:p><a:r><a:rPr><a:ln><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:ln><a:solidFill><a:srgbClr val="00FF00"><a:lumMod val="75000"/></a:srgbClr></a:solidFill><a:highlight><a:srgbClr val="FFFF00"/></a:highlight></a:rPr><a:t>green</a:t></a:r><a:r><a:rPr><a:highlight><a:srgbClr val="FFFF00"/></a:highlight></a:rPr><a:t> plain</a:t></a:r></a:p></p:txBody></p:sp>
+<p:pic><p:blipFill><a:blip r:embed="rId9"/></p:blipFill><p:spPr><a:xfrm><a:off x="0" y="9000000"/></a:xfrm></p:spPr></p:pic>
+</p:spTree></p:cSld></p:sld>"#
+        );
+        let png = crate::img::tests::tiny_png();
+        write_zip_bytes(
+            &p,
+            &[
+                (
+                    "ppt/presentation.xml",
+                    format!(r#"<p:presentation {ns}><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>"#).as_bytes(),
+                ),
+                (
+                    "ppt/_rels/presentation.xml.rels",
+                    br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId2" Target="slides/slide1.xml"/></Relationships>"#,
+                ),
+                ("ppt/slides/slide1.xml", slide.as_bytes()),
+                (
+                    "ppt/slides/_rels/slide1.xml.rels",
+                    br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Target="../media/bg.png"/></Relationships>"#,
+                ),
+                ("ppt/media/bg.png", &png),
+            ],
+        );
+        let s = read_pptx(&p).unwrap();
+        // No slide size: 16:9, as when nothing is read.
+        assert!((s.aspect - 16.0 / 9.0).abs() < 0.01);
+        assert!((Slides::default().aspect - 16.0 / 9.0).abs() < 0.01);
+        let blocks = &s.slides[0].blocks;
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        let Block::Para(text) = &blocks[0] else { panic!() };
+        assert!(matches!(&text.spans[0], Span::Text { text, color: Some([0, 255, 0]), .. } if text == "green"), "{:?}", text.spans);
+        assert!(matches!(&text.spans[1], Span::Text { text, color: None, .. } if text == " plain"), "{:?}", text.spans);
+        let Block::Para(pic) = &blocks[1] else { panic!() };
+        assert!(matches!(pic.spans[..], [Span::Image(0, _)]));
     }
 
     #[test]

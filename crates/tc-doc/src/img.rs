@@ -34,7 +34,7 @@ pub fn decode(bytes: &[u8], max_side: u32) -> Result<Rgba, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A 2×1 PNG: one red, one transparent pixel.

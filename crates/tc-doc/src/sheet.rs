@@ -167,7 +167,8 @@ fn cell_of(d: &Data) -> Cell {
             }
         }
         Data::DateTimeIso(s) | Data::DurationIso(s) => Cell::Number(s.as_str().into()),
-        Data::Error(e) => Cell::Error(format!("#{e:?}").to_uppercase().into()),
+        // As Excel shows them ("#DIV/0!", "#N/A").
+        Data::Error(e) => Cell::Error(e.to_string().into()),
     }
 }
 
@@ -198,9 +199,11 @@ fn sniff_delimiter(head: &[u8], tsv: bool) -> u8 {
     }
     let text = String::from_utf8_lossy(head);
     let lines: Vec<&str> = text.lines().take(5).collect();
+    // `max_by_key` takes the last of equals: reversed, a tie goes to `,`, then `;`, tab, `|`.
     b",;\t|"
         .iter()
         .copied()
+        .rev()
         .max_by_key(|d| lines.iter().map(|l| l.matches(*d as char).count()).min().unwrap_or(0) * 4 + lines.first().map_or(0, |l| l.matches(*d as char).count()))
         .unwrap_or(b',')
 }
@@ -229,12 +232,16 @@ pub fn read_csv(path: &Path) -> Result<Workbook, String> {
         .flexible(true)
         .delimiter(delimiter)
         .from_reader(bytes);
+    // A record that cannot be read ends the sheet there, marked as cut (not shortened silently).
+    let mut broken = false;
     let rows = reader
         .byte_records()
-        .map_while(Result::ok)
+        .map_while(|r| r.inspect_err(|_| broken = true).ok())
         .map(|r| r.iter().map(csv_cell).collect::<Vec<_>>());
     let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    Ok(Workbook { sheets: vec![Sheet::from_rows(name, (0, 0), rows)] })
+    let mut sheet = Sheet::from_rows(name, (0, 0), rows);
+    sheet.truncated |= broken;
+    Ok(Workbook { sheets: vec![sheet] })
 }
 
 #[cfg(test)]
@@ -275,6 +282,29 @@ mod tests {
         assert_eq!(s.cell(2, 2), &Cell::Empty);
         assert_eq!(s.cell(99, 99), &Cell::Empty);
         assert_eq!(s.widths[0], 8);
+    }
+
+    #[test]
+    fn the_delimiter_is_the_one_used_and_a_comma_on_ties() {
+        assert_eq!(sniff_delimiter(b"one column\nno separator\n", false), b',');
+        assert_eq!(sniff_delimiter(b"a;b|c\nd;e|f\n", false), b';');
+        assert_eq!(sniff_delimiter(b"a|b|c\nd|e|f\n", false), b'|');
+        assert_eq!(sniff_delimiter(b"a\tb\nc\td\n", false), b'\t');
+        assert_eq!(sniff_delimiter(b"a,b\n", true), b'\t');
+    }
+
+    #[test]
+    fn cell_errors_read_as_in_excel() {
+        use calamine::CellErrorType as E;
+        let text = |e| cell_of(&Data::Error(e)).text().to_string();
+        assert_eq!(text(E::Div0), "#DIV/0!");
+        assert_eq!(text(E::NA), "#N/A");
+        assert_eq!(text(E::Name), "#NAME?");
+        assert_eq!(text(E::Null), "#NULL!");
+        assert_eq!(text(E::Num), "#NUM!");
+        assert_eq!(text(E::Ref), "#REF!");
+        assert_eq!(text(E::Value), "#VALUE!");
+        assert_eq!(text(E::GettingData), "#DATA!");
     }
 
     #[test]
