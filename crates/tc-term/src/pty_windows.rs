@@ -854,12 +854,18 @@ mod tests {
     #[test]
     fn input_reaches_the_program_and_resize_is_seen() {
         let rt = rt();
+        // `mode con` before and after the resize (the terminal itself keeps its size, tall
+        // enough for both reports).
         let run = run(
             &rt,
-            "set /p line=& mode con & echo got:!line!",
-            // Tall enough for all of `mode con`'s lines (the terminal itself is not resized).
-            GridSize { cols: 40, rows: 24 },
+            "mode con & set /p line=& mode con & echo got:!line!",
+            GridSize { cols: 40, rows: 40 },
         );
+        let started = std::time::Instant::now();
+        while !screen(&run.feeder).contains("Code page") {
+            assert!(started.elapsed() < Duration::from_secs(10), "{}", screen(&run.feeder));
+            std::thread::sleep(Duration::from_millis(50));
+        }
         run.session
             .pty
             .resize(GridSize { cols: 100, rows: 30 }, 8, 16);
@@ -868,10 +874,24 @@ mod tests {
         assert!(wait_exit(&run).success());
         let text = screen(&run.feeder);
         assert!(text.contains("got:ping"), "{text}");
-        assert!(
-            text.lines().any(|l| l.contains("Columns") && l.contains("100")),
-            "{text}"
-        );
+        let columns: Vec<&str> = text.lines().filter(|l| l.contains("Columns")).collect();
+        assert_eq!(columns.len(), 2, "{text}");
+        assert!(columns[0].contains("40") && columns[1].contains("100"), "{text}");
+    }
+
+    /// A resize right after the start, before the program has drawn anything, is not lost.
+    #[test]
+    fn an_early_resize_is_kept() {
+        let rt = rt();
+        let run = run(&rt, "set /p line=& mode con", GridSize { cols: 40, rows: 24 });
+        run.session
+            .pty
+            .resize(GridSize { cols: 100, rows: 30 }, 8, 16);
+        std::thread::sleep(Duration::from_millis(300));
+        run.session.write(b"x\r".to_vec());
+        assert!(wait_exit(&run).success());
+        let text = screen(&run.feeder);
+        assert!(text.lines().any(|l| l.contains("Columns") && l.contains("100")), "{text}");
     }
 
     #[test]
