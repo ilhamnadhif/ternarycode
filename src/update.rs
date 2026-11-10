@@ -240,7 +240,14 @@ pub enum Install {
 }
 
 impl Install {
+    /// Worked out once: where the app runs from does not change while it runs, and the update
+    /// dialog asks on every frame (on Linux the check writes a file).
     pub fn current() -> Self {
+        static CURRENT: std::sync::OnceLock<Install> = std::sync::OnceLock::new();
+        CURRENT.get_or_init(Self::find).clone()
+    }
+
+    fn find() -> Self {
         let Some(exe) = std::env::current_exe()
             .ok()
             .and_then(|e| e.canonicalize().ok())
@@ -313,7 +320,7 @@ pub fn installable(release: &Release) -> bool {
 pub fn manual_reason() -> &'static str {
     if cfg!(target_os = "macos") {
         t(
-            "Automatic installation needs TernaryCode in the Applications folder. Download the new version from GitHub instead.",
+            "Automatic installation needs TernaryCode in a folder on this Mac's own disk, not opened from a disk image, another drive or a fresh download macOS runs from a read-only copy. Download the new version from GitHub instead.",
         )
     } else if cfg!(windows) {
         t(
@@ -745,7 +752,7 @@ pub fn launch_installer(prepared: &Prepared) -> Result<(), String> {
 #[cfg(windows)]
 fn launch_windows_setup(prepared: &Prepared, all_users: bool) -> Result<(), String> {
     record_pending(&prepared.version)?;
-    command(&prepared.file)
+    let started = command(&prepared.file)
         .args([
             "/SILENT",
             "/SUPPRESSMSGBOXES",
@@ -759,8 +766,12 @@ fn launch_windows_setup(prepared: &Prepared, all_users: bool) -> Result<(), Stri
             "/CURRENTUSER"
         })
         .stdin(Stdio::null())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .spawn();
+    // Not started: nothing is pending, the next launch must not report an unfinished install.
+    if let Err(e) = started {
+        let _ = std::fs::remove_file(outcome_file());
+        return Err(e.to_string());
+    }
     Ok(())
 }
 

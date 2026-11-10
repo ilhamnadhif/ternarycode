@@ -504,7 +504,7 @@ const ID: &[(&str, &str)] = &[
     ("Version {} is the latest version.", "Versi {} adalah versi terbaru."),
     ("Version {} · you have {}", "Versi {} · Anda memakai {}"),
     ("View on GitHub", "Lihat di GitHub"),
-    ("Automatic installation needs TernaryCode in the Applications folder. Download the new version from GitHub instead.", "Pemasangan otomatis butuh TernaryCode di folder Applications. Unduh versi baru dari GitHub saja."),
+    ("Automatic installation needs TernaryCode in a folder on this Mac's own disk, not opened from a disk image, another drive or a fresh download macOS runs from a read-only copy. Download the new version from GitHub instead.", "Pemasangan otomatis butuh TernaryCode di sebuah folder pada disk Mac ini sendiri, bukan dibuka dari disk image, drive lain, atau unduhan baru yang dijalankan macOS dari salinan hanya-baca. Unduh versi baru dari GitHub saja."),
     ("TernaryCode wants to install an update.", "TernaryCode ingin memasang pembaruan."),
     ("TernaryCode was installed from a package (or where you can't change it). Download the new version from GitHub and install it the same way.", "TernaryCode dipasang dari paket (atau di tempat yang tidak bisa Anda ubah). Unduh versi baru dari GitHub dan pasang dengan cara yang sama."),
     ("This copy of TernaryCode was not installed with its setup. Download the new version from GitHub instead.", "Salinan TernaryCode ini tidak dipasang dengan setup-nya. Unduh versi baru dari GitHub saja."),
