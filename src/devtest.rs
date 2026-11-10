@@ -71,13 +71,6 @@ impl Script {
         Some(step)
     }
 
-    /// Runs `steps` next, before the rest of the script.
-    pub fn push_front(&mut self, steps: Vec<String>) {
-        for step in steps.into_iter().rev() {
-            self.steps.push_front(step);
-        }
-    }
-
     pub fn check(&mut self, ok: bool, what: &str) {
         if ok {
             self.passed += 1;

@@ -496,7 +496,7 @@ impl App {
             } else {
                 &mut file.text
             };
-            let mut output = egui::TextEdit::multiline(buffer)
+            let output = egui::TextEdit::multiline(buffer)
                 .id(egui::Id::new(("editor-text", path.clone())))
                 .code_editor()
                 .font(font.clone())
@@ -596,7 +596,6 @@ impl App {
             ui.painter().vline(sep_x, clip.y_range(), Stroke::new(1.0, style::soft(p.border, 0.6)));
             // Diagnostics, ⌘-click, hover and what typing asks of the language server.
             geom = Some(super::ide_ui::overlay(ui, &output, file, diags, ide, &p, features, &triggers, &mut ide_cmds));
-            let _ = &mut output;
         });
         if editor_seen {
             self.editor_seen = true;

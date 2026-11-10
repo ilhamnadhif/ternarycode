@@ -343,7 +343,7 @@ impl App {
             crate::devtest::record(format!("pane:{pane_id}"), term_rect);
             self.pane_rects.insert(pane_id, term_rect);
             if !single {
-                self.pane_header(ui, pane_id, header, is_focused, single);
+                self.pane_header(ui, pane_id, header, is_focused);
             }
             let request = self.focus_request == Some(pane_id);
             let Some(pane) = self.panes.get_mut(&pane_id) else {
@@ -627,7 +627,7 @@ impl App {
         }
     }
 
-    fn pane_header(&mut self, ui: &mut Ui, pane_id: u64, rect: Rect, focused: bool, single: bool) {
+    fn pane_header(&mut self, ui: &mut Ui, pane_id: u64, rect: Rect, focused: bool) {
         let p = style::pal(ui);
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("pane-header:{pane_id}"), rect);
@@ -636,8 +636,7 @@ impl App {
         };
         let root = self.project(pane.project).map(|x| x.path.clone()).unwrap_or_default();
         let painter = ui.painter_at(rect);
-        let lit = focused && !single;
-        painter.rect_filled(rect, CornerRadius::ZERO, if lit { p.surface } else { p.chrome });
+        painter.rect_filled(rect, CornerRadius::ZERO, if focused { p.surface } else { p.chrome });
         painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
         let s = pane.tracker.status;
         let attention = pane.tracker.wants_attention();
@@ -732,11 +731,10 @@ impl App {
             let mg = painter.layout_job(job);
             painter.galley(pos2(x, cy - mg.size().y / 2.0), mg, p.text_muted);
         }
-        let status_rect = Rect::from_min_max(rect.min, pos2(x.min(clip.right()), rect.max.y));
         // The whole header (left of its buttons) can be dragged to move the pane.
         let grab = Rect::from_min_max(rect.min, pos2(clip.right(), rect.max.y));
         let label_resp = ui
-            .interact(grab.union(status_rect), egui::Id::new(("pane-status", pane_id)), Sense::click_and_drag())
+            .interact(grab, egui::Id::new(("pane-status", pane_id)), Sense::click_and_drag())
             .on_hover_text(format!("{tip}\n{}", t("Double-click to rename · drag to move")));
         if label_resp.drag_started() {
             self.pane_drag = Some(pane_id);

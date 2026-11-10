@@ -11,7 +11,7 @@ use eframe::egui;
 use parking_lot::Mutex;
 use tc_agent::protocol::HookMsg;
 use tc_core::agent::{AgentKind, recognize};
-use tc_core::status::{Event, Foreground, ShellMark, Status, Tracker};
+use tc_core::status::{Event, Foreground, ShellMark, Tracker};
 use tc_core::{PaneId, ProjectId};
 use tc_term::core::{self as tcore, Feeder, GridSize, QueryPalette, SharedTerm};
 use tc_term::osc::{OscSignal, PromptMark};
@@ -592,10 +592,6 @@ impl Pane {
             Foreground::Program { name, .. } => Some(name.clone()),
             _ => None,
         }
-    }
-
-    pub fn status(&self) -> Status {
-        self.tracker.status
     }
 
     /// Ends the shell (closing the pane or quitting).

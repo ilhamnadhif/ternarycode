@@ -301,7 +301,6 @@ impl App {
         );
         ui.add_space(10.0);
         for agent in [AgentKind::Claude, AgentKind::Codex, AgentKind::Gemini, AgentKind::OpenCode] {
-            let installable = true;
             let per_launch = matches!(agent, AgentKind::Claude | AgentKind::Codex);
             let installed = self.installed(agent);
             // Per launch is the default (and what Uninstall leaves), but an agent without it
@@ -325,7 +324,7 @@ impl App {
                                     .size(style::SMALL)
                                     .color(p.text_faint),
                             );
-                        } else if installable {
+                        } else {
                             let r = kit::secondary(ui, None, t("Install…"));
                             #[cfg(debug_assertions)]
                             crate::devtest::record(format!("install:{}", agent.slug()), r.rect);

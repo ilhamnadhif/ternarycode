@@ -658,7 +658,7 @@ impl App {
         let tip = match &server.state {
             S::Missing => format!("{}\n{}", t("Install it from a terminal (click to copy):"), server.spec.install),
             S::Failed(why) => format!("{why}\n{}", t("Click to restart it.")),
-            _ => format!("{}\n{}", server.spec.name, key_root(server)),
+            _ => format!("{}\n{}", server.spec.name, pid_text(server)),
         };
         let r = r.on_hover_text(tip);
         if r.clicked() {
@@ -674,7 +674,8 @@ impl App {
     }
 }
 
-fn key_root(s: &crate::lsp::Server) -> String {
+/// "pid 4242" once the server runs (empty before).
+fn pid_text(s: &crate::lsp::Server) -> String {
     s.pid.map(|p| format!("pid {p}")).unwrap_or_default()
 }
 

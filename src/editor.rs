@@ -8,7 +8,6 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use eframe::egui::{self, Color32, FontId, text::LayoutJob};
-use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
@@ -477,21 +476,6 @@ pub fn compare_diff(file: &OpenFile) -> String {
     tc_agent::integrate::diff_lines(&disk, &text)
 }
 
-/// Line and column (1-based) of character index `at` in `text`.
-pub fn line_col(text: &str, at: usize) -> (usize, usize) {
-    let mut line = 1;
-    let mut col = 1;
-    for c in text.chars().take(at) {
-        if c == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
-}
-
 /// A readable name for the language of a file (shown in the editor's status line).
 pub fn language_name(syntax: &str) -> String {
     let h = highlighting();
@@ -568,7 +552,9 @@ fn theme(h: &Highlighting, dark: bool) -> &Theme {
         .expect("syntect ships themes")
 }
 
-/// The layout of `text` with syntax colours (plain above `HIGHLIGHT_AT_MOST`).
+/// The layout of `text` with syntax colours (plain above `HIGHLIGHT_AT_MOST`), coloured whole:
+/// what [`cached_layout`] must give (the tests compare the two).
+#[cfg(test)]
 pub fn layout(text: &str, syntax: &str, dark: bool, font: FontId, plain: Color32) -> LayoutJob {
     let mut job = LayoutJob::default();
     let h = highlighting();
@@ -583,7 +569,7 @@ pub fn layout(text: &str, syntax: &str, dark: bool, font: FontId, plain: Color32
         job.append(text, 0.0, egui::TextFormat::simple(font, plain));
         return job;
     };
-    let mut hl = HighlightLines::new(syntax_ref, theme(&h, dark));
+    let mut hl = syntect::easy::HighlightLines::new(syntax_ref, theme(&h, dark));
     for line in syntect::util::LinesWithEndings::from(text) {
         match hl.highlight_line(line, &h.syntaxes) {
             Ok(ranges) => {
@@ -976,8 +962,6 @@ mod tests {
         e.close(1);
         assert_eq!(e.active, 0);
         assert_eq!(e.recent, [dir.path().join("c"), dir.path().join("a")]);
-        assert_eq!(line_col("ab\ncd", 4), (2, 2));
-        assert_eq!(line_col("", 0), (1, 1));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Shared components drawn with the design tokens of `style.rs`: buttons, icon buttons, button
-//! groups, tab strips, pills, keyboard hints, empty states, cards and search fields. Screens use
-//! these instead of styling egui widgets one by one, so every view looks and behaves the same.
+//! groups, tab strips, keyboard hints, empty states and cards. Screens use these instead of
+//! styling egui widgets one by one, so every view looks and behaves the same.
 
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Rect, Response, RichText, Sense, Stroke,
@@ -50,11 +50,6 @@ pub fn select_text(ctx: &egui::Context, id: egui::Id, from: usize, to: usize) {
         .cursor
         .set_char_range(Some(CCursorRange::two(CCursor::new(from), CCursor::new(to))));
     state.store(ctx, id);
-}
-
-/// Icon followed by a label, for menus and ordinary buttons.
-pub fn with_icon(icon: &str, text: &str) -> String {
-    format!("{icon}  {text}")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -236,10 +231,6 @@ pub fn secondary(ui: &mut Ui, icon: Option<&str>, text: &str) -> Response {
 
 pub fn ghost(ui: &mut Ui, icon: Option<&str>, text: &str) -> Response {
     button_ex(ui, Kind::Ghost, icon, text, true)
-}
-
-pub fn danger(ui: &mut Ui, text: &str) -> Response {
-    button_ex(ui, Kind::Danger, None, text, false)
 }
 
 /// A square, frameless icon button with a tooltip (also its accessible name).
@@ -517,24 +508,6 @@ pub fn fade(painter: &egui::Painter, rect: Rect, color: Color32, to_right: bool)
 // Small pieces
 // ---------------------------------------------------------------------------------------------
 
-/// A rounded label on a soft fill of `color` (states, counts).
-pub fn pill(ui: &mut Ui, text: &str, color: Color32) -> Response {
-    let dark = ui.visuals().dark_mode;
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.to_string(), style::medium(style::SMALL), color);
-    let size = galley.size() + vec2(14.0, 6.0);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
-    if ui.is_rect_visible(rect) {
-        let fill = style::soft(color, if dark { 0.18 } else { 0.11 });
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same((size.y / 2.0) as u8), fill);
-        ui.painter()
-            .galley(rect.center() - galley.size() / 2.0, galley, color);
-    }
-    resp
-}
-
 /// A keyboard shortcut hint (`⌘K`) drawn as a key cap.
 pub fn kbd(ui: &mut Ui, keys: &str) -> Response {
     let p = style::pal(ui);
@@ -571,32 +544,12 @@ pub fn dot(ui: &mut Ui, color: Color32, radius: f32) -> Response {
     resp
 }
 
-/// The chevron of a drop-down, for `ComboBox::icon` (egui's default is a filled triangle that
-/// doesn't match the line icons).
-pub fn combo_caret(ui: &Ui, rect: Rect, visuals: &egui::style::WidgetVisuals, open: bool) {
-    let c = rect.center();
-    let (w, h) = (3.5, if open { -1.8 } else { 1.8 });
-    let color = visuals.fg_stroke.color.gamma_multiply(0.75);
-    let points = vec![
-        egui::pos2(c.x - w, c.y - h),
-        egui::pos2(c.x, c.y + h),
-        egui::pos2(c.x + w, c.y - h),
-    ];
-    ui.painter()
-        .add(egui::Shape::line(points, Stroke::new(1.4, color)));
-}
-
 /// A thin vertical divider between toolbar groups.
 pub fn vdivider(ui: &mut Ui, height: f32) {
     let p = style::pal(ui);
     let (rect, _) = ui.allocate_exact_size(vec2(9.0, height), Sense::hover());
     ui.painter()
         .vline(rect.center().x, rect.y_range(), Stroke::new(1.0, p.border));
-}
-
-/// A section title in semibold, slightly smaller than body.
-pub fn section_title(text: &str) -> RichText {
-    RichText::new(text).font(style::semibold(13.0))
 }
 
 /// An icon on its own, as a label.
@@ -674,80 +627,6 @@ pub fn empty_state(
     });
 }
 
-/// A single-line search field with a magnifier inside and a clear button.
-pub fn search_field(
-    ui: &mut Ui,
-    id: egui::Id,
-    text: &mut String,
-    hint_text: &str,
-    width: f32,
-) -> Response {
-    field_with_icon(
-        ui,
-        id,
-        text,
-        hint_text,
-        width,
-        super::icons::MAGNIFYING_GLASS,
-        true,
-    )
-}
-
-/// A single-line field with `icon` inside on the left (and, with `clear`, a button that
-/// empties it on the right).
-pub fn field_with_icon(
-    ui: &mut Ui,
-    id: egui::Id,
-    text: &mut String,
-    hint_text: &str,
-    width: f32,
-    icon: &str,
-    clear: bool,
-) -> Response {
-    let p = style::pal(ui);
-    let edit = egui::TextEdit::singleline(text)
-        .id(id)
-        .hint_text(RichText::new(hint_text).color(p.text_faint))
-        .desired_width(width)
-        .margin(egui::Margin {
-            left: 28,
-            right: if clear { 24 } else { 8 },
-            top: 6,
-            bottom: 6,
-        });
-    let resp = ui.add(edit);
-    let r = resp.rect;
-    if resp.has_focus() {
-        style::focus_halo(ui, r, RADIUS);
-    }
-    ui.painter().text(
-        egui::pos2(r.left() + 14.0, r.center().y),
-        Align2::CENTER_CENTER,
-        icon,
-        style::icon_font(14.0),
-        p.text_faint,
-    );
-    if clear && !text.is_empty() {
-        let x_rect = Rect::from_center_size(
-            egui::pos2(r.right() - 13.0, r.center().y),
-            Vec2::splat(16.0),
-        );
-        let x = ui.interact(x_rect, resp.id.with("clear"), Sense::click());
-        let color = if x.hovered() { p.text } else { p.text_faint };
-        ui.painter().text(
-            x_rect.center(),
-            Align2::CENTER_CENTER,
-            super::icons::X_CIRCLE,
-            style::icon_font(14.0),
-            color,
-        );
-        if x.clicked() {
-            text.clear();
-        }
-    }
-    resp
-}
-
 /// `ScrollArea::show_rows` for rows of exactly `row_h` laid out edge to edge. egui places the
 /// rows `row_h + item_spacing.y` apart, so the spacing is zeroed around the area too:
 /// otherwise the rows slip by that much each time one scrolls out of view and the bottom of
@@ -764,14 +643,4 @@ pub fn show_rows<R>(
         area.show_rows(ui, row_h, total, add)
     })
     .inner
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn labels_with_icons() {
-        assert_eq!(with_icon("+", "New"), "+  New");
-    }
 }

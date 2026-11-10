@@ -59,8 +59,6 @@ pub enum Action {
     PrevPane,
     /// Starts a preset in a new pane of the active project.
     RunPreset(String),
-    /// Starts the project's default preset (or asks which one).
-    RunAgent,
     Resume(PaneId),
     RestartShell(PaneId),
     /// Start the shell of a pane restored asleep.
@@ -125,7 +123,6 @@ pub enum Action {
     FontReset,
     Quit,
     QuitNow,
-    About,
     /// "Check for Updates…": looks now and shows the update dialog.
     CheckForUpdates,
     /// The status bar's update item: shows the update dialog.

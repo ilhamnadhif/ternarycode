@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use eframe::egui::{self, Align2, RichText, Sense, vec2};
-use tc_core::{PaneId, ProjectId};
 use tc_git::{ChangeKind, FileChange, FileDiff, LineKind};
 
 use super::{icons, kit, style};
@@ -23,9 +22,7 @@ pub enum Base {
 }
 
 pub struct Review {
-    pub project: ProjectId,
     pub root: PathBuf,
-    pub pane: Option<PaneId>,
     pub base: Base,
     /// Agent label and when its run started (for `Base::Run`).
     pub run: Option<(String, Instant, String)>,
@@ -68,7 +65,7 @@ impl App {
     /// changes since the last commit.
     pub fn open_review(&mut self, base: Option<Base>) {
         let Some(project) = self.active_project() else { return };
-        let (project_id, folder, name) = (project.id, project.path.clone(), project.name.clone());
+        let (folder, name) = (project.path.clone(), project.name.clone());
         let pane = self.current_pane();
         let run = pane.and_then(|id| self.panes.get(&id)).and_then(|p| {
             p.run_snapshot
@@ -80,9 +77,7 @@ impl App {
         self.review = Some(Review {
             load,
             diff_load: 0,
-            project: project_id,
             root: folder.clone(),
-            pane,
             base,
             run: run.clone(),
             loading: true,

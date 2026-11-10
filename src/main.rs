@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::egui;
+use ternarycode::instance::Instance;
 
 /// Metal (through wgpu) on macOS; OpenGL elsewhere, which opens a window faster.
 #[cfg(target_os = "macos")]
@@ -35,8 +36,8 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let (lock, inbox) = match ternarycode::instance::acquire(&targets) {
-        ternaryshell_like::Instance::Forwarded => return Ok(()),
-        ternaryshell_like::Instance::Primary { lock, inbox } => (lock, inbox),
+        Instance::Forwarded => return Ok(()),
+        Instance::Primary { lock, inbox } => (lock, inbox),
     };
     let open: Vec<std::path::PathBuf> = targets.into_iter().map(Into::into).collect();
     ternarycode::platform::disable_window_tabbing();
@@ -79,10 +80,6 @@ fn report_start_failure(error: &eframe::Error) {
             .set_description(format!("TernaryCode could not open its window:\n\n{error}"))
             .show();
     }
-}
-
-mod ternaryshell_like {
-    pub use ternarycode::instance::Instance;
 }
 
 fn native_options(saved: Option<[f32; 4]>, renderer: eframe::Renderer) -> eframe::NativeOptions {

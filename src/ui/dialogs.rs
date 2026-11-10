@@ -5,8 +5,6 @@
 //! saying what happens, a close button), the body with its fields, and a footer with a hint at
 //! the left and the buttons at the right (Esc and a click outside cancel, Enter confirms).
 
-use std::path::PathBuf;
-
 use eframe::egui::{self, Color32, CornerRadius, Key, Margin, RichText, Stroke, Ui};
 
 use super::{icons, kit, style};
@@ -543,6 +541,3 @@ impl App {
             .collect()
     }
 }
-
-/// A name given in the Add Project dialog, applied once the project exists.
-pub type PendingRename = Option<(PathBuf, String)>;

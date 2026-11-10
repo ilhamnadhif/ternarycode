@@ -81,10 +81,6 @@ impl Explorer {
         }
     }
 
-    pub fn is_open(&self, dir: &Path) -> bool {
-        self.expanded.contains(dir)
-    }
-
     /// Opens a closed folder, closes an open one.
     pub fn toggle(&mut self, dir: &Path) {
         if !self.expanded.remove(dir) {
@@ -509,6 +505,6 @@ mod tests {
         ex.reveal(&root.join("a/b/deep.rs"));
         assert_eq!(names(ex.rows()), ["a", "  b", "    deep.rs", "many"]);
         assert_eq!(ex.selected.as_deref(), Some(root.join("a/b/deep.rs").as_path()));
-        assert!(ex.is_open(&root.join("a")) && ex.is_open(&root.join("a/b")));
+        assert!(ex.expanded.contains(&root.join("a")) && ex.expanded.contains(&root.join("a/b")));
     }
 }

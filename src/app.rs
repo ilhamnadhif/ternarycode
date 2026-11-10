@@ -184,8 +184,6 @@ pub struct App {
     pub updater: crate::ui::update_ui::Updater,
     pub mem_bytes: (Option<u64>, Option<Instant>),
     pub first_frame: bool,
-    /// Divider being dragged (tab index path) in the focus view.
-    pub dragging_divider: Option<Vec<bool>>,
     pub sidebar_drag: Option<usize>,
     /// Terminal tab being dragged (index in the active project).
     pub tab_drag: Option<usize>,
@@ -361,7 +359,6 @@ impl App {
             updater: Default::default(),
             mem_bytes: (None, None),
             first_frame: true,
-            dragging_divider: None,
             sidebar_drag: None,
             tab_drag: None,
             pane_drag: None,
@@ -965,7 +962,7 @@ impl App {
                     self.lsp_files_changed(&paths);
                     self.on_files_changed(id, paths, now)
                 }
-                AppMsg::Lsp(key, generation, msg) => self.lsp_message(ctx, key, generation, msg),
+                AppMsg::Lsp(key, generation, msg) => self.lsp_message(key, generation, msg),
                 AppMsg::LspPath(path) => self.lsp_path_found(ctx, path),
                 AppMsg::Review(msg) => self.on_review_msg(msg),
                 AppMsg::Snapshot(pane, agent, result) => {
@@ -1182,7 +1179,7 @@ impl App {
     }
 
     /// Who is looked at, notifications for what needs the user, the Dock badge.
-    fn update_attention(&mut self, ctx: &egui::Context) {
+    fn update_attention(&mut self) {
         let now = Instant::now();
         let looking = self.looking_at();
         for pane in self.panes.values_mut() {
@@ -1249,7 +1246,6 @@ impl App {
             self.badge = badge;
             platform::set_badge(badge);
         }
-        let _ = ctx;
     }
 
     // ----- actions ----------------------------------------------------------------------------
@@ -1931,13 +1927,6 @@ impl App {
                 }
             }
             Action::RunPreset(id) => self.run_preset(ctx, &id),
-            Action::RunAgent => {
-                let default = self.command_project().and_then(|id| self.project(id)).and_then(|p| p.preset.clone());
-                match default {
-                    Some(id) => self.run_preset(ctx, &id),
-                    None => self.open_palette(PaletteMode::Presets),
-                }
-            }
             Action::Resume(id) => self.resume(ctx, id),
             Action::WakePane(id) => self.wake(ctx, id),
             Action::GridActiveOnly(only) => {
@@ -2325,7 +2314,6 @@ impl App {
                 }
             }
             Action::QuitNow => self.quit_now(ctx),
-            Action::About => {}
             Action::CheckForUpdates => self.updater.check_now(ctx),
             Action::ShowUpdate => self.updater.open_dialog(),
             Action::RestartToUpdate => {
@@ -2543,7 +2531,7 @@ impl App {
         for action in std::mem::take(&mut self.actions) {
             self.dispatch(ctx, action);
         }
-        self.update_attention(ctx);
+        self.update_attention();
         self.take_run_snapshots();
         self.lsp_tick(ctx);
         if let Some(d) = self.lsp_repaint_after.take() {
@@ -2689,9 +2677,8 @@ impl App {
         }
     }
 
-    fn frame_ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+    fn frame_ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
-        let _ = frame;
         #[cfg(debug_assertions)]
         crate::devtest::begin_frame();
         static DEBUG_FRAMES: std::sync::LazyLock<bool> =
@@ -2763,7 +2750,7 @@ impl App {
         }
         // Focus changes made while drawing count at once (no notification for a pane just
         // looked at).
-        self.update_attention(&ctx);
+        self.update_attention();
         self.schedule_wakeups(&ctx);
     }
 }
@@ -2810,11 +2797,11 @@ impl eframe::App for App {
         raw_input.events.extend(crate::devtest::take_injected());
     }
 
-    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         // A bug while drawing must not take every pane down: the panic hook wrote a report; the
         // frame is skipped and the app carries on.
         let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame_ui(ui, frame)));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame_ui(ui)));
         if result.is_err() {
             self.toast(tf(
                 "Something went wrong and TernaryCode recovered. A report was saved in {}.",
@@ -2859,6 +2846,3 @@ pub fn absolute(arg: &str) -> PathBuf {
     };
     paths::canonical(&p)
 }
-
-#[allow(dead_code)]
-fn _assert_path(_: &Path) {}

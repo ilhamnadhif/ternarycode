@@ -676,7 +676,7 @@ impl App {
 
     // ----- messages --------------------------------------------------------------------------
 
-    pub fn lsp_message(&mut self, ctx: &egui::Context, key: ServerKey, generation: u64, msg: Incoming) {
+    pub fn lsp_message(&mut self, key: ServerKey, generation: u64, msg: Incoming) {
         if self.lsp.servers.get(&key).is_none_or(|s| s.generation != generation) {
             return;
         }
@@ -687,11 +687,9 @@ impl App {
                     self.lsp_initialized(&key, result);
                 } else if let Some(p) = self.lsp.pending.remove(&(key.clone(), id)) {
                     match result {
-                        Ok(v) => self.lsp_answer(ctx, &key, p, v),
+                        Ok(v) => self.lsp_answer(&key, p, v),
                         // Cancelled or not supported: nothing to show for typing help.
-                        Err(e) if matches!(p, Pending::Hover { .. } | Pending::Completion { .. } | Pending::Signature { .. }) => {
-                            let _ = e;
-                        }
+                        Err(_) if matches!(p, Pending::Hover { .. } | Pending::Completion { .. } | Pending::Signature { .. }) => {}
                         Err(e) => {
                             self.toast(tf("{}: {}", &[key.name, &e.message]));
                             // Format on save that failed still saves (unformatted).
@@ -1047,7 +1045,7 @@ impl App {
 
     // ----- answers ---------------------------------------------------------------------------
 
-    fn lsp_answer(&mut self, ctx: &egui::Context, key: &ServerKey, pending: Pending, v: Value) {
+    fn lsp_answer(&mut self, key: &ServerKey, pending: Pending, v: Value) {
         let enc = self.lsp.servers.get(key).map_or(Encoding::Utf16, |s| s.enc);
         match pending {
             Pending::Goto(kind) => {
@@ -1210,7 +1208,6 @@ impl App {
                     Some((Err(crate::editor::SaveError::Io(e)), _)) => self.toast(e),
                     None => {}
                 }
-                let _ = ctx;
             }
             Pending::Symbols { path } => {
                 let mut items = Vec::new();
@@ -1377,13 +1374,8 @@ impl App {
     }
 
     fn ide_history(&mut self, back: bool) {
-        let (from, to) = if back {
-            (&mut self.lsp.ide.back, &mut self.lsp.ide.forward)
-        } else {
-            (&mut self.lsp.ide.forward, &mut self.lsp.ide.back)
-        };
+        let from = if back { &mut self.lsp.ide.back } else { &mut self.lsp.ide.forward };
         let Some((path, at)) = from.pop() else { return };
-        let _ = to;
         if let Some(here) = self.ide_target() {
             if back {
                 self.lsp.ide.forward.push(here);
