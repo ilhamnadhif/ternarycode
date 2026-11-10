@@ -18,6 +18,9 @@ pub fn encode(msg: &Value) -> Vec<u8> {
 #[derive(Default)]
 pub struct Framer {
     buf: Vec<u8>,
+    /// Bytes of a refused message still to come: dropped as they arrive, so the next header is
+    /// found where it starts.
+    skip: usize,
 }
 
 impl Framer {
@@ -28,7 +31,9 @@ impl Framer {
     /// Adds `bytes`; returns the messages now complete (a broken one as an error, after which
     /// the stream continues with the next header).
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Result<Value, String>> {
-        self.buf.extend_from_slice(bytes);
+        let skipped = self.skip.min(bytes.len());
+        self.skip -= skipped;
+        self.buf.extend_from_slice(&bytes[skipped..]);
         let mut out = Vec::new();
         loop {
             let Some(end) = find(&self.buf, b"\r\n\r\n") else {
@@ -49,12 +54,15 @@ impl Framer {
                 out.push(Err(format!("no Content-Length in {header:?}")));
                 continue;
             };
-            if len > MAX_MESSAGE {
-                self.buf.clear();
-                out.push(Err(format!("message of {len} bytes")));
-                break;
-            }
             let start = end + 4;
+            if len > MAX_MESSAGE {
+                // Drop exactly its body (what has come of it now, the rest as it comes).
+                let have = (self.buf.len() - start).min(len);
+                self.buf.drain(..start + have);
+                self.skip = len - have;
+                out.push(Err(format!("message of {len} bytes")));
+                continue;
+            }
             if self.buf.len() < start + len {
                 break;
             }
@@ -95,6 +103,42 @@ mod tests {
         let got = f.push(&[extra, b].concat());
         assert_eq!(got.len(), 2);
         assert!(got.iter().all(Result::is_ok));
+    }
+
+    #[test]
+    fn a_message_too_big_is_skipped_to_the_next() {
+        let len = MAX_MESSAGE + 100;
+        let mut f = Framer::new();
+        // Its body looks like messages: none of them may come out.
+        let fake = encode(&json!({"id": 666}));
+        let mut first = format!("Content-Length: {len}\r\n\r\n").into_bytes();
+        first.extend_from_slice(&fake);
+        let got = f.push(&first);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].is_err());
+        let mut left = len - fake.len();
+        let chunk: Vec<u8> = fake.iter().copied().cycle().take(1 << 20).collect();
+        while left > 10 {
+            let n = chunk.len().min(left - 10);
+            assert!(f.push(&chunk[..n]).is_empty());
+            left -= n;
+        }
+        // The body's end and the next message's start come in one read, its end in another.
+        let next = encode(&json!({"id": 2}));
+        let mut tail = chunk[..left].to_vec();
+        tail.extend_from_slice(&next[..5]);
+        assert!(f.push(&tail).is_empty());
+        let got = f.push(&next[5..]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].as_ref().unwrap()["id"], 2);
+        // A body already in the buffer whole is dropped at once.
+        let mut f = Framer::new();
+        let mut bytes = format!("Content-Length: {}\r\n\r\n", MAX_MESSAGE + 1).into_bytes();
+        bytes.resize(bytes.len() + MAX_MESSAGE + 1, b'x');
+        bytes.extend_from_slice(&next);
+        let got = f.push(&bytes);
+        assert!(got[0].is_err());
+        assert_eq!(got[1].as_ref().unwrap()["id"], 2);
     }
 
     #[test]

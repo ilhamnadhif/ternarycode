@@ -43,11 +43,17 @@ pub struct Client {
     next_id: AtomicI64,
     pid: Option<u32>,
     kill: Mutex<Option<oneshot::Sender<()>>>,
+    shutting: Arc<Mutex<Option<Shutting>>>,
     rt: Handle,
 }
 
+/// The id of the `shutdown` request sent, and who waits for its answer (to send `exit` then).
+type Shutting = (i64, oneshot::Sender<()>);
+
 /// The last bytes of the server's stderr kept, for the error shown when it dies.
 const STDERR_KEPT: usize = 4096;
+/// How long a server has to answer `shutdown` before it gets `exit` anyway.
+const SHUTDOWN_ANSWER: Duration = Duration::from_secs(2);
 
 impl Client {
     /// Starts `program args` in `cwd` with `path` as its `PATH`. Messages from it go to
@@ -93,6 +99,8 @@ impl Client {
         });
         // Reader: frames → messages.
         let reader_cb = on_message.clone();
+        let shutting = Arc::new(Mutex::new(None::<Shutting>));
+        let answered = shutting.clone();
         rt.spawn(async move {
             let mut framer = Framer::new();
             let mut buf = vec![0u8; 64 * 1024];
@@ -102,12 +110,22 @@ impl Client {
                     Ok(n) => {
                         for msg in framer.push(&buf[..n]).into_iter().flatten() {
                             if let Some(m) = classify(msg) {
+                                if let Incoming::Response { id, .. } = &m {
+                                    let mut s = answered.lock();
+                                    if s.as_ref().is_some_and(|(sid, _)| sid == id)
+                                        && let Some((_, tx)) = s.take()
+                                    {
+                                        let _ = tx.send(());
+                                    }
+                                }
                                 reader_cb(m);
                             }
                         }
                     }
                 }
             }
+            // No answer will come now: whoever waits for one stops waiting.
+            answered.lock().take();
         });
         // Stderr: the last bytes, for the exit message.
         let err_tail = tail.clone();
@@ -146,6 +164,7 @@ impl Client {
             next_id: AtomicI64::new(1),
             pid,
             kill: Mutex::new(Some(kill_tx)),
+            shutting,
             rt: rt.clone(),
         })
     }
@@ -174,17 +193,28 @@ impl Client {
         let _ = self.out.send(encode(&msg));
     }
 
-    /// Asks the server to stop (`shutdown`, then `exit`) and kills it if it is still there a
-    /// little later.
+    /// Asks the server to stop (`shutdown`, then `exit` once it answered, as the protocol
+    /// wants) and kills it if it is still there a little later. Returns at once: the waiting is
+    /// done on the runtime. Only the first call (or none after `kill`) does anything.
     pub fn shutdown(&self) {
-        self.request("shutdown", Value::Null);
-        self.notify("exit", Value::Null);
-        if let Some(kill) = self.kill.lock().take() {
-            self.rt.spawn(async move {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                let _ = kill.send(());
-            });
+        let Some(kill) = self.kill.lock().take() else { return };
+        let (answered, answer) = oneshot::channel();
+        {
+            // Held while sending, so that a quick answer finds who waits for it.
+            let mut shutting = self.shutting.lock();
+            let id = self.request("shutdown", Value::Null);
+            *shutting = Some((id, answered));
         }
+        let out = self.out.clone();
+        self.rt.spawn(async move {
+            // A server that does not answer (or is gone) gets `exit` anyway.
+            let _ = tokio::time::timeout(SHUTDOWN_ANSWER, answer).await;
+            let _ = out.send(encode(&json!({"jsonrpc": "2.0", "method": "exit", "params": null})));
+            // Not kept: the server's stdin closes as soon as the client is dropped.
+            drop(out);
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let _ = kill.send(());
+        });
     }
 
     /// Ends the process now.
@@ -272,5 +302,36 @@ mod tests {
             _ => None,
         });
         assert!(exited.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_waits_for_the_answer_to_shutdown() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let client = Client::spawn(rt.handle(), Path::new("/bin/cat"), &[], Path::new("/"), None, move |m| {
+            let _ = tx.send(m);
+        })
+        .unwrap();
+        let start = std::time::Instant::now();
+        client.shutdown();
+        assert!(start.elapsed() < Duration::from_millis(500), "shutdown must not block");
+        let id = match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Incoming::Request { id, method, .. } if method == "shutdown" => id,
+            other => panic!("{other:?}"),
+        };
+        // No `exit` before the answer, and one right after it (`cat` echoes our answer back:
+        // it reads as the server's).
+        assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
+        client.respond(id, Ok(Value::Null));
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Incoming::Response { .. }));
+        match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Incoming::Notification { method, .. } => assert_eq!(method, "exit"),
+            other => panic!("{other:?}"),
+        }
+        assert!(start.elapsed() < SHUTDOWN_ANSWER, "exit came only after the wait ran out");
+        // Once is enough (the app calls it, then drops the client).
+        client.shutdown();
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
     }
 }

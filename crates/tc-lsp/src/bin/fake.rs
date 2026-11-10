@@ -191,13 +191,13 @@ fn publish(uri: &str, text: &str) {
     send(&json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"uri": uri, "diagnostics": diags}}));
 }
 
+// As the client writes and reads them, so that a file's URI is the same both ways.
 fn file_path(uri: &str) -> Option<PathBuf> {
-    let rest = uri.strip_prefix("file://")?;
-    Some(PathBuf::from(rest.replace("%20", " ")))
+    tc_lsp::pos::path(&uri.parse().ok()?)
 }
 
 fn file_uri(p: &Path) -> String {
-    format!("file://{}", p.to_string_lossy().replace(' ', "%20"))
+    tc_lsp::pos::uri(p).as_str().to_string()
 }
 
 fn line_at(docs: &BTreeMap<String, String>, p: &Value) -> Option<String> {

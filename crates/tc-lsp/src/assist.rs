@@ -95,12 +95,15 @@ impl Snippet<'_> {
         while let Some(c) = self.peek() {
             self.at += 1;
             match c {
-                '\\' => {
-                    if let Some(n) = self.peek() {
+                // Only `$`, `}` and `\` are escaped in text; another backslash is text itself
+                // (`printf("\n")`).
+                '\\' => match self.peek() {
+                    Some(n @ ('$' | '}' | '\\')) => {
                         self.at += 1;
                         self.emit(n);
                     }
-                }
+                    _ => self.emit('\\'),
+                },
                 '}' if inside => return,
                 '$' => self.dollar(),
                 _ => self.emit(c),
@@ -158,14 +161,17 @@ impl Snippet<'_> {
         while let Some(c) = self.peek() {
             self.at += 1;
             match c {
-                '\\' => {
-                    if let Some(n) = self.peek() {
+                // In an option, `,` and `|` are escaped too.
+                '\\' => match self.peek() {
+                    Some(n @ ('$' | '}' | '\\' | ',' | '|')) => {
                         self.at += 1;
                         if first {
                             self.emit(n);
                         }
                     }
-                }
+                    _ if first => self.emit('\\'),
+                    _ => {}
+                },
                 ',' => first = false,
                 '|' => {
                     if self.peek() == Some('}') {
@@ -243,43 +249,156 @@ fn flush(prose: &mut String, out: &mut Vec<Block>) {
     prose.clear();
 }
 
-/// Bold, italic, inline code and links as their text; heading marks dropped.
+/// Bold, italic, inline code and links as their text; heading marks dropped. Only markup is
+/// taken out: `a * b`, `array[i]`, `snake_case`, `#include` and `C:\dir` stay as written.
 fn simplify(line: &str) -> String {
-    let line = line.trim_start_matches('#').trim_start();
+    let line = line.trim_start();
+    // `# Title` to `###### Title`: a mark only with a space after it.
+    let hashes = line.len() - line.trim_start_matches('#').len();
+    let line = match line[hashes..].strip_prefix([' ', '\t']) {
+        Some(rest) if (1..=6).contains(&hashes) => rest.trim_start(),
+        _ => line,
+    };
+    let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '*' | '`' => {}
-            '_' if chars.peek() == Some(&'_') => {
-                chars.next();
+    inline(&chars, &mut out);
+    out
+}
+
+/// Appends `s` without its inline markup.
+fn inline(s: &[char], out: &mut String) {
+    let mut i = 0;
+    while i < s.len() {
+        match s[i] {
+            // Markdown escapes punctuation only.
+            '\\' if s.get(i + 1).is_some_and(char::is_ascii_punctuation) => {
+                out.push(s[i + 1]);
+                i += 2;
             }
-            '[' => {
-                let mut label = String::new();
-                for c in chars.by_ref() {
-                    if c == ']' {
-                        break;
+            '`' => {
+                let n = run(s, i);
+                match code_end(s, i + n, n) {
+                    Some(end) => {
+                        let code: String = s[i + n..end].iter().collect();
+                        // One space each side lets code start or end with a backtick.
+                        let padded = code.starts_with(' ') && code.ends_with(' ') && !code.trim().is_empty();
+                        out.push_str(if padded { &code[1..code.len() - 1] } else { &code });
+                        i = end + n;
                     }
-                    label.push(c);
-                }
-                if chars.peek() == Some(&'(') {
-                    for c in chars.by_ref() {
-                        if c == ')' {
-                            break;
-                        }
+                    None => {
+                        out.extend(&s[i..i + n]);
+                        i += n;
                     }
                 }
-                out.push_str(&label);
             }
-            '\\' => {
-                if let Some(n) = chars.next() {
-                    out.push(n);
+            '*' | '_' => {
+                let n = run(s, i);
+                match emphasis_end(s, i, n) {
+                    Some(end) => {
+                        inline(&s[i + n..end], out);
+                        i = end + n;
+                    }
+                    None => {
+                        out.extend(&s[i..i + n]);
+                        i += n;
+                    }
                 }
             }
-            _ => out.push(c),
+            '[' => match link_end(s, i) {
+                Some((text_end, end)) => {
+                    inline(&s[i + 1..text_end], out);
+                    i = end + 1;
+                }
+                None => {
+                    out.push('[');
+                    i += 1;
+                }
+            },
+            c => {
+                out.push(c);
+                i += 1;
+            }
         }
     }
-    out
+}
+
+/// How many times `s[i]` repeats from `i`.
+fn run(s: &[char], i: usize) -> usize {
+    s[i..].iter().take_while(|c| **c == s[i]).count()
+}
+
+/// Where inline code opened by `n` backticks closes (searching from `from`): the next run of
+/// exactly `n` backticks.
+fn code_end(s: &[char], from: usize, n: usize) -> Option<usize> {
+    let mut j = from;
+    while j < s.len() {
+        if s[j] == '`' {
+            let m = run(s, j);
+            if m == n {
+                return Some(j);
+            }
+            j += m;
+        } else {
+            j += 1;
+        }
+    }
+    None
+}
+
+/// Where the emphasis opened by `n` marks at `i` closes: as many of the same marks, after a
+/// non-space (inline code and escapes in between are skipped). Opened before a non-space;
+/// `_` only at the edges of a word (`snake_case_name` has none).
+fn emphasis_end(s: &[char], i: usize, n: usize) -> Option<usize> {
+    let mark = s[i];
+    let word = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric());
+    let opens = s.get(i + n).is_some_and(|c| !c.is_whitespace()) && !(mark == '_' && word(i.checked_sub(1).and_then(|p| s.get(p))));
+    if !opens {
+        return None;
+    }
+    let mut j = i + n;
+    while j < s.len() {
+        match s[j] {
+            '\\' if s.get(j + 1).is_some_and(char::is_ascii_punctuation) => j += 2,
+            '`' => {
+                let m = run(s, j);
+                j = code_end(s, j + m, m).map_or(j + m, |e| e + m);
+            }
+            c if c == mark => {
+                let m = run(s, j);
+                let closes = !s[j - 1].is_whitespace() && !(mark == '_' && word(s.get(j + m)));
+                if m == n && closes {
+                    return Some(j);
+                }
+                j += m;
+            }
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// A link `[text](url)` at `i`: where its text ends (the `]`) and where it ends (the `)`).
+fn link_end(s: &[char], i: usize) -> Option<(usize, usize)> {
+    let close = |open: char, shut: char, from: usize| {
+        let mut depth = 0usize;
+        let mut j = from;
+        while j < s.len() {
+            match s[j] {
+                '\\' => j += 1,
+                c if c == open => depth += 1,
+                c if c == shut && depth == 0 => return Some(j),
+                c if c == shut => depth -= 1,
+                _ => {}
+            }
+            j += 1;
+        }
+        None
+    };
+    let text_end = close('[', ']', i + 1)?;
+    if s.get(text_end + 1) != Some(&'(') {
+        return None;
+    }
+    Some((text_end, close('(', ')', text_end + 2)?))
 }
 
 /// A hover's contents as blocks.
@@ -332,6 +451,28 @@ mod tests {
         assert_eq!(snippet_text("${1:foo(${2:bar})}"), ("foo(bar)".into(), Some(0)));
         assert_eq!(snippet_text("// $TM_FILENAME ${TM_SELECTED_TEXT:x}$0"), ("//  x".into(), Some(5)));
         assert_eq!(snippet_text("a\\}b${1}"), ("a}b".into(), Some(3)));
+    }
+
+    #[test]
+    fn only_snippet_syntax_is_escaped() {
+        assert_eq!(snippet_text(r#"printf("\n")$0"#), (r#"printf("\n")"#.into(), Some(12)));
+        assert_eq!(snippet_text(r"a\\b \$x \}"), (r"a\b $x }".into(), None));
+        assert_eq!(snippet_text(r"${1:C:\dir}"), (r"C:\dir".into(), Some(0)));
+        assert_eq!(snippet_text(r"trailing\"), (r"trailing\".into(), None));
+        // In a choice, `,` and `|` too.
+        assert_eq!(snippet_text(r"${1|a\,b\|c\n,d|}"), (r"a,b|c\n".into(), Some(0)));
+    }
+
+    #[test]
+    fn only_markdown_syntax_is_taken_out() {
+        let text = |md: &str| markdown(md).into_iter().map(|b| b.text).collect::<Vec<_>>().join("\n");
+        assert_eq!(text("Use `array[i]` or array[i] and a * b * c"), "Use array[i] or array[i] and a * b * c");
+        assert_eq!(text("**bold**, *it*, __strong__, _em_ and snake_case_name"), "bold, it, strong, em and snake_case_name");
+        assert_eq!(text("a `` x`y `` b, ``unclosed and *one"), "a x`y b, ``unclosed and *one");
+        assert_eq!(text("[**Vec**](https://doc.rust-lang.org/(x)) and [`T`](u)"), "Vec and T");
+        assert_eq!(text("# Title\n## Sub\n#include <x>\n#[derive(Debug)]"), "Title\nSub\n#include <x>\n#[derive(Debug)]");
+        assert_eq!(text(r"C:\dir\file and \*not em\*"), r"C:\dir\file and *not em*");
+        assert_eq!(text("char *p, *q;"), "char *p, *q;");
     }
 
     #[test]
