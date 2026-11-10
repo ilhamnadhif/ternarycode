@@ -164,18 +164,38 @@ impl Hooks {
     }
 }
 
+/// Whether `s` starts with the bare TOML key `key` (not `key_x`), followed by one of `next`.
+fn toml_key(s: &str, key: &str, next: &[char]) -> bool {
+    s.trim_start()
+        .strip_prefix(key)
+        .is_some_and(|rest| rest.trim_start().starts_with(next))
+}
+
+/// `hooks = …`, `hooks.Stop = …`, `[hooks]`, `[hooks.Stop]` or `[[hooks.Stop]]`.
+fn defines_hooks(line: &str) -> bool {
+    toml_key(line, "hooks", &['=', '.'])
+        || line.trim_start().strip_prefix('[').is_some_and(|h| {
+            toml_key(h.strip_prefix('[').unwrap_or(h), "hooks", &[']', '.'])
+        })
+}
+
 /// Whether the user's Codex configuration has hooks of its own: a `-c hooks=…` override would
-/// hide them for that run, so then only `notify` is added.
+/// hide them for that run, so then only `notify` is added. The hooks in TernaryCode's own block
+/// are not the user's.
 pub fn codex_has_own_hooks(config_toml: &str) -> bool {
+    let mut ours = false;
     config_toml.lines().any(|l| {
-        let l = l.trim_start();
-        (l.starts_with("[hooks") || l.starts_with("[[hooks") || l.starts_with("hooks"))
-            && !l.contains(MARK_BEGIN)
-    }) && !config_toml.contains(MARK_BEGIN)
+        match l {
+            MARK_BEGIN => ours = true,
+            MARK_END => ours = false,
+            _ => {}
+        }
+        !ours && defines_hooks(l)
+    })
 }
 
 /// The command a preset types for this launch: the user's command with the hook flags added
-/// after the program name (or at the end when the command starts differently).
+/// right after the program (or at the end when the command starts differently).
 pub fn launch_command(
     command: &str,
     agent: Option<AgentKind>,
@@ -197,12 +217,17 @@ pub fn launch_command(
     };
     let program = agent.map(AgentKind::slug).unwrap_or_default();
     let trimmed = command.trim();
-    match trimmed.split_once(char::is_whitespace) {
-        Some((first, rest)) if first.rsplit('/').next() == Some(program) => {
-            format!("{first} {flags} {}", rest.trim_start())
-        }
-        None if trimmed.rsplit('/').next() == Some(program) => format!("{trimmed} {flags}"),
-        _ => format!("{trimmed} {flags}"),
+    // The first word ends at a space or a shell operator (`claude; …`, `claude&&…`); its file
+    // name may follow a Windows path (`C:\…\claude.exe`).
+    let end = trimmed
+        .find(|c: char| c.is_whitespace() || ";|&<>()".contains(c))
+        .unwrap_or(trimmed.len());
+    let (first, rest) = trimmed.split_at(end);
+    let name = first.rsplit(['/', '\\']).next().unwrap_or(first);
+    if name.eq_ignore_ascii_case(program) || name.eq_ignore_ascii_case(&format!("{program}.exe")) {
+        format!("{first} {flags}{rest}")
+    } else {
+        format!("{trimmed} {flags}")
     }
 }
 
@@ -329,7 +354,7 @@ pub fn plan_codex(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
     let has_notify = text
         .lines()
         .take_while(|l| !l.trim_start().starts_with('['))
-        .any(|l| l.trim_start().starts_with("notify"));
+        .any(|l| toml_key(l, "notify", &['=']));
     let mut head = String::new();
     if !has_notify {
         head = format!(
@@ -567,16 +592,29 @@ pub fn apply(plan: &InstallPlan, backup_dir: &Path) -> io::Result<InstallRecord>
 pub enum Uninstalled {
     /// The file is exactly what it was before installing (or gone again, if there was none).
     Restored,
-    /// The file changed since; only TernaryCode's hooks were taken out.
+    /// The file changed since (or had TernaryCode's hooks before installing already: installed
+    /// again after the record was lost); only TernaryCode's hooks were taken out.
     Removed,
 }
 
 pub fn uninstall(record: &InstallRecord, hooks: &Hooks) -> Result<Uninstalled, String> {
-    let current = std::fs::read(&record.path).ok();
+    let current = match std::fs::read(&record.path) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        // Not readable is not gone: the hooks may still be in it.
+        Err(e) => return Err(format!("{} cannot be read: {e}", record.path.display())),
+    };
     if current.as_deref().map(fnv) == Some(record.written_hash) {
         match &record.backup {
             Some(b) => {
                 let original = std::fs::read(b).map_err(|e| e.to_string())?;
+                let text = String::from_utf8_lossy(&original);
+                // Installed again after the record was lost, the backup has our hooks too:
+                // written back as it is, it would bring them back.
+                if has_ours(record.agent, &text, hooks) {
+                    remove_ours(record, &text, hooks)?;
+                    return Ok(Uninstalled::Removed);
+                }
                 tc_core::persist::write_private(&record.path, &original)
                     .map_err(|e| e.to_string())?;
             }
@@ -587,27 +625,42 @@ pub fn uninstall(record: &InstallRecord, hooks: &Hooks) -> Result<Uninstalled, S
     let Some(current) = current else {
         return Ok(Uninstalled::Removed);
     };
-    let text = String::from_utf8_lossy(&current).into_owned();
+    remove_ours(record, &String::from_utf8_lossy(&current), hooks)?;
+    Ok(Uninstalled::Removed)
+}
+
+/// Whether `text` (a file at `agent`'s path) has hooks TernaryCode installed.
+fn has_ours(agent: AgentKind, text: &str, hooks: &Hooks) -> bool {
+    match agent {
+        AgentKind::Codex => text.lines().any(|l| l == MARK_BEGIN),
+        _ => is_ours(text, hooks),
+    }
+}
+
+/// Writes `text` without TernaryCode's hooks to the record's file.
+fn remove_ours(record: &InstallRecord, text: &str, hooks: &Hooks) -> Result<(), String> {
     let cleaned = match record.agent {
         AgentKind::OpenCode => {
             // The plugin file is TernaryCode's own; changed or not, it goes.
-            std::fs::remove_file(&record.path).map_err(|e| e.to_string())?;
-            return Ok(Uninstalled::Removed);
+            return std::fs::remove_file(&record.path).map_err(|e| e.to_string());
         }
         AgentKind::Claude | AgentKind::Gemini => {
-            let mut root: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            let mut root: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
             if !root.is_object() {
                 return Err(format!("{} is not a JSON object; nothing was changed", record.path.display()));
             }
             if let Some(hooks_obj) = root.get_mut("hooks").and_then(Value::as_object_mut) {
                 for groups in hooks_obj.values_mut() {
                     if let Some(list) = groups.as_array_mut() {
-                        list.retain(|g| {
-                            !g["hooks"].as_array().is_some_and(|hs| {
-                                hs.iter().any(|h| {
-                                    h["command"].as_str().is_some_and(|c| is_ours(c, hooks))
-                                })
-                            })
+                        // Our hooks go, the user's stay, even in a group with ours; a group
+                        // left empty by that goes too.
+                        list.retain_mut(|g| {
+                            let Some(hs) = g.get_mut("hooks").and_then(Value::as_array_mut) else {
+                                return true;
+                            };
+                            let before = hs.len();
+                            hs.retain(|h| !h["command"].as_str().is_some_and(|c| is_ours(c, hooks)));
+                            hs.len() == before || !hs.is_empty()
                         });
                     }
                 }
@@ -642,8 +695,7 @@ pub fn uninstall(record: &InstallRecord, hooks: &Hooks) -> Result<Uninstalled, S
             out.trim_end_matches('\n').to_string() + "\n"
         }
     };
-    tc_core::persist::write_private(&record.path, cleaned.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(Uninstalled::Removed)
+    tc_core::persist::write_private(&record.path, cleaned.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -716,6 +768,37 @@ mod tests {
             "claude"
         );
         assert_eq!(launch_command("opencode", Some(AgentKind::OpenCode), pl, true), "opencode");
+        // The flags follow the program, whatever its path, and come before what the line runs
+        // after it.
+        assert_eq!(
+            launch_command(r"C:\Users\Me\.local\bin\claude.exe --continue", Some(AgentKind::Claude), pl, true),
+            format!(r"C:\Users\Me\.local\bin\claude.exe --settings {settings} --continue")
+        );
+        assert_eq!(
+            launch_command("/opt/bin/CLAUDE.EXE", Some(AgentKind::Claude), pl, true),
+            format!("/opt/bin/CLAUDE.EXE --settings {settings}")
+        );
+        assert_eq!(
+            launch_command("claude; echo done", Some(AgentKind::Claude), pl, true),
+            format!("claude --settings {settings}; echo done")
+        );
+        assert_eq!(
+            launch_command("codex&&say done", Some(AgentKind::Codex), pl, false),
+            format!("codex -c {notify}&&say done")
+        );
+        assert_eq!(
+            launch_command("codex --full-auto | tee log", Some(AgentKind::Codex), pl, false),
+            format!("codex -c {notify} --full-auto | tee log")
+        );
+        // Not the program first: at the end, as before.
+        assert_eq!(
+            launch_command("npx claude", Some(AgentKind::Claude), pl, true),
+            format!("npx claude --settings {settings}")
+        );
+        assert_eq!(
+            launch_command("claudette", Some(AgentKind::Claude), pl, true),
+            format!("claudette --settings {settings}")
+        );
     }
 
     #[test]
@@ -841,6 +924,34 @@ mod tests {
     }
 
     #[test]
+    fn codex_keys_are_matched_exactly() {
+        for own in [
+            "hooks = {}",
+            "  hooks= {}",
+            "hooks.Stop = []",
+            "[hooks]",
+            "[ hooks ]",
+            "[hooks.Stop]",
+            "[[hooks.Stop]]",
+        ] {
+            assert!(codex_has_own_hooks(own), "{own}");
+        }
+        for other in ["hooks_dir = \"x\"", "[hooks_extra]", "[[hooksy.Stop]]", "# hooks = {}", "[tui]\nnotifications = true"] {
+            assert!(!codex_has_own_hooks(other), "{other}");
+        }
+        // TernaryCode's own block is not the user's hooks; the user's next to it are.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "model = \"gpt-5\"\n").unwrap();
+        let installed = plan_codex(&hooks(), &path).unwrap().after;
+        assert!(!codex_has_own_hooks(&installed));
+        assert!(codex_has_own_hooks(&format!("{installed}[[hooks.Stop]]\nhooks = []\n")));
+        // `notify_…` is not `notify`: TernaryCode's notify is still added.
+        std::fs::write(&path, "notify_sound = true\n").unwrap();
+        assert!(plan_codex(&hooks(), &path).unwrap().after.starts_with(MARK_BEGIN));
+    }
+
+    #[test]
     fn files_that_cannot_be_read_or_changed_meanwhile_are_left_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -888,5 +999,73 @@ mod tests {
         std::fs::write(&path, "{\"model\": \"opus\", \"theme\": \"dark\"}\n").unwrap();
         assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Removed));
         assert!(!std::fs::read_to_string(&path).unwrap().contains("null"));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_not_taken_for_a_removed_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let record = apply(&plan_claude(&hooks(), &path).unwrap(), &dir.path().join("b")).unwrap();
+        // A folder where the file was: reading it fails, on every system and even as root.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(uninstall(&record, &hooks()).unwrap_err().contains("cannot be read"));
+        // Gone for real: nothing left to remove.
+        std::fs::remove_dir(&path).unwrap();
+        assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Removed));
+    }
+
+    #[test]
+    fn uninstall_keeps_the_users_hooks_in_a_group_with_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{}\n").unwrap();
+        let record = apply(&plan_claude(&hooks(), &path).unwrap(), &dir.path().join("b")).unwrap();
+        // The user added a hook of their own to the group with ours, and an empty group.
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["hooks"]["Stop"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "command", "command": "say done"}));
+        v["hooks"]["Stop"].as_array_mut().unwrap().push(json!({"matcher": "x", "hooks": []}));
+        std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Removed));
+        let left: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            left,
+            json!({"hooks": {"Stop": [
+                {"hooks": [{"type": "command", "command": "say done"}]},
+                {"matcher": "x", "hooks": []}
+            ]}})
+        );
+    }
+
+    #[test]
+    fn installing_again_after_the_record_was_lost_uninstalls_without_our_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let backups = dir.path().join("b");
+        // Claude Code: the second backup has our hooks.
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"model\": \"opus\"}\n").unwrap();
+        apply(&plan_claude(&hooks(), &path).unwrap(), &backups).unwrap();
+        let record = apply(&plan_claude(&hooks(), &path).unwrap(), &backups).unwrap();
+        assert!(std::fs::read_to_string(record.backup.as_ref().unwrap()).unwrap().contains("ternarycode-hook"));
+        assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Removed));
+        let left: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(left, json!({"model": "opus"}));
+        // Codex: the managed block is taken out of the backup.
+        let path = dir.path().join("config.toml");
+        let original = "model = \"gpt-5\"\n";
+        std::fs::write(&path, original).unwrap();
+        apply(&plan_codex(&hooks(), &path).unwrap(), &backups).unwrap();
+        let record = apply(&plan_codex(&hooks(), &path).unwrap(), &backups).unwrap();
+        assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Removed));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        // OpenCode: the plugin was ours already, so it goes.
+        let path = dir.path().join("plugins/ternarycode.js");
+        apply(&plan_opencode(&hooks(), &path).unwrap(), &backups).unwrap();
+        let record = apply(&plan_opencode(&hooks(), &path).unwrap(), &backups).unwrap();
+        assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Removed));
+        assert!(!path.exists());
     }
 }
