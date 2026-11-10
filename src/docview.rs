@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 
 use eframe::egui;
@@ -24,10 +25,14 @@ pub enum State {
     Failed(String),
 }
 
+/// What a reading thread sends, with the load it belongs to (`DocView::generation`).
 enum Msg {
-    Loaded(Result<Doc, String>),
-    Picture(usize, Result<Rgba, String>),
+    Loaded(u64, Result<Doc, String>),
+    Picture(u64, usize, Result<Rgba, String>),
 }
+
+/// A picture to decode: its load, index and bytes.
+type PicJob = (u64, usize, Arc<Vec<u8>>);
 
 /// A picture of the document as the view has it.
 pub enum Pic {
@@ -123,6 +128,11 @@ pub struct DocView {
     pub find: Option<DocFind>,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
+    /// Bumped by each load: what an earlier one sends (a reload overtook it) is dropped.
+    generation: Arc<AtomicU64>,
+    /// The thread decoding pictures one after another (started with the first one asked for;
+    /// it ends with the view).
+    pictures_tx: Option<mpsc::Sender<PicJob>>,
 }
 
 impl DocView {
@@ -148,12 +158,15 @@ impl DocView {
             find: None,
             tx,
             rx,
+            generation: Arc::new(AtomicU64::new(0)),
+            pictures_tx: None,
         };
         view.start(ctx);
         view
     }
 
     fn start(&mut self, ctx: &egui::Context) {
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.layout = None;
         self.pictures.clear();
         self.image = None;
@@ -184,7 +197,7 @@ impl DocView {
                 let _ = std::thread::Builder::new().name("ternarycode-doc".into()).spawn(move || {
                     let doc = std::panic::catch_unwind(|| tc_doc::load(&path))
                         .unwrap_or_else(|_| Err(crate::i18n::t("The file could not be read.").to_string()));
-                    let _ = tx.send(Msg::Loaded(doc));
+                    let _ = tx.send(Msg::Loaded(generation, doc));
                     c.request_repaint();
                 });
             }
@@ -197,9 +210,11 @@ impl DocView {
             self.reload = false;
             self.start(ctx);
         }
+        let generation = self.generation.load(Ordering::Relaxed);
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Msg::Loaded(Ok(doc)) => {
+                Msg::Loaded(g, _) | Msg::Picture(g, ..) if g != generation => {}
+                Msg::Loaded(_, Ok(doc)) => {
                     self.state = State::Ready(match doc {
                         Doc::Text(d) => Content::Text(d),
                         Doc::Slides(s) => Content::Slides(s),
@@ -214,12 +229,12 @@ impl DocView {
                         }
                     });
                 }
-                Msg::Loaded(Err(e)) => self.state = State::Failed(e),
-                Msg::Picture(ix, Ok(img)) => {
+                Msg::Loaded(_, Err(e)) => self.state = State::Failed(e),
+                Msg::Picture(_, ix, Ok(img)) => {
                     let tex = texture(ctx, &format!("doc-pic-{ix}"), &img);
                     self.pictures.insert(ix, Pic::Ready(tex));
                 }
-                Msg::Picture(ix, Err(_)) => {
+                Msg::Picture(_, ix, Err(_)) => {
                     self.pictures.insert(ix, Pic::Failed);
                 }
             }
@@ -302,11 +317,28 @@ impl DocView {
         };
         let Some(bytes) = bytes else { return };
         self.pictures.insert(ix, Pic::Pending);
-        let (tx, c) = (self.tx.clone(), ctx.clone());
-        let _ = std::thread::Builder::new().name("ternarycode-picture".into()).spawn(move || {
-            let _ = tx.send(Msg::Picture(ix, tc_doc::img::decode(&bytes, 2048)));
-            c.request_repaint();
-        });
+        // One thread per document, not per picture: a long file scrolled through asks for many.
+        if self.pictures_tx.is_none() {
+            let (jobs_tx, jobs) = mpsc::channel::<PicJob>();
+            let (tx, c, current) = (self.tx.clone(), ctx.clone(), self.generation.clone());
+            let started = std::thread::Builder::new().name("ternarycode-picture".into()).spawn(move || {
+                while let Ok((generation, ix, bytes)) = jobs.recv() {
+                    // Asked for before the file was read again: not wanted any more.
+                    if generation != current.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    if tx.send(Msg::Picture(generation, ix, tc_doc::img::decode(&bytes, 2048))).is_err() {
+                        return;
+                    }
+                    c.request_repaint();
+                }
+            });
+            self.pictures_tx = started.is_ok().then_some(jobs_tx);
+        }
+        let generation = self.generation.load(Ordering::Relaxed);
+        if self.pictures_tx.as_ref().is_none_or(|t| t.send((generation, ix, bytes)).is_err()) {
+            self.pictures.insert(ix, Pic::Failed);
+        }
     }
 
     /// Lets go of pictures not on screen.
@@ -395,4 +427,38 @@ impl DocView {
 fn texture(ctx: &egui::Context, name: &str, img: &Rgba) -> egui::TextureHandle {
     let image = egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.pixels);
     ctx.load_texture(name, image, egui::TextureOptions::LINEAR)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_an_earlier_load_sends_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.csv");
+        std::fs::write(&path, "a,b\n1,2\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut view = DocView::open(path, &ctx);
+        let wait = |view: &mut DocView| {
+            let t = std::time::Instant::now();
+            while matches!(view.state, State::Loading) && t.elapsed() < std::time::Duration::from_secs(10) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                view.poll(&ctx);
+            }
+        };
+        wait(&mut view);
+        assert!(matches!(view.state, State::Ready(Content::Sheet(_))));
+        // The file is read again; what the first load still sends arrives after that.
+        let old = view.generation.load(Ordering::Relaxed);
+        view.reload = true;
+        view.poll(&ctx);
+        let img = Rgba { width: 1, height: 1, pixels: vec![0; 4] };
+        view.tx.send(Msg::Picture(old, 3, Ok(img))).unwrap();
+        view.tx.send(Msg::Loaded(old, Err("old".into()))).unwrap();
+        wait(&mut view);
+        view.poll(&ctx);
+        assert!(!view.pictures.contains_key(&3));
+        assert!(matches!(view.state, State::Ready(Content::Sheet(_))));
+    }
 }
