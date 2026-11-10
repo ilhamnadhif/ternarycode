@@ -200,6 +200,11 @@ const ID: &[(&str, &str)] = &[
     ("Blinking cursor", "Kursor berkedip"),
     ("Option key as Meta", "Tombol Option sebagai Meta"),
     ("Copy on select", "Salin saat dipilih"),
+    ("Programs may copy to the clipboard", "Program boleh menyalin ke clipboard"),
+    (
+        "vim, tmux and agents copy through the terminal (OSC 52). They can never read the clipboard.",
+        "vim, tmux, dan agent menyalin lewat terminal (OSC 52). Mereka tidak pernah bisa membaca clipboard.",
+    ),
     ("Scrollback changes apply to new panes.", "Perubahan scrollback berlaku untuk pane baru."),
     ("An agent needs input", "Agent butuh input"),
     ("A process failed", "Proses gagal"),

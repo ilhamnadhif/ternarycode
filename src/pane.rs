@@ -49,6 +49,8 @@ pub struct SpawnCtx<'a> {
 const ENTER_WATCH: Duration = Duration::from_secs(2);
 /// How long a pane's size must stay the same before the PTY is resized.
 const RESIZE_SETTLE: Duration = Duration::from_millis(120);
+/// The most a program may put on the clipboard at once (OSC 52), in bytes.
+const MAX_COPY: usize = 4 * 1024 * 1024;
 /// How a pane was on screen in the last frame, which sets how soon its new output is drawn:
 /// what is typed into shows at once, other panes share frames, panes out of view only have
 /// their messages taken in now and then.
@@ -362,6 +364,14 @@ impl Pane {
 
     pub fn schedule_fg_check(&mut self, at: Instant) {
         self.fg_due = Some(self.fg_due.map_or(at, |d| d.min(at)));
+    }
+
+    /// Text a program put on the clipboard through the terminal (OSC 52) since the last look.
+    /// Nothing empty, nor more than any copy needs: a runaway program could hand over
+    /// gigabytes.
+    pub fn take_copy(&self) -> Option<String> {
+        let text = self.shared.notes.lock().clipboard.take()?;
+        (!text.is_empty() && text.len() <= MAX_COPY).then_some(text)
     }
 
     /// Handles one event from the PTY. Returns whether the status changed.

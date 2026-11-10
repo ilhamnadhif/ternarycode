@@ -922,7 +922,16 @@ impl App {
                     if let Some(pane) = self.panes.get_mut(&id).filter(|p| p.generation == generation) {
                         let was_program = !matches!(pane.tracker.fg, tc_core::status::Foreground::Shell);
                         let exited = matches!(event, tc_term::pty::SessionEvent::Exited(_));
+                        let output = matches!(event, tc_term::pty::SessionEvent::Output(_));
                         pane.on_session_event(event, now);
+                        // A program copied through the terminal (vim, tmux, an agent over SSH):
+                        // onto the clipboard, unless that was turned off (then dropped).
+                        if output
+                            && let Some(text) = pane.take_copy()
+                            && self.settings.program_copy
+                        {
+                            ctx.copy_text(text);
+                        }
                         if was_program && pane.exit.is_some() {
                             git_refresh.push(pane.project);
                         }

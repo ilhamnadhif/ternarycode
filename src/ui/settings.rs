@@ -137,6 +137,10 @@ impl App {
                 row(ui, t("Copy on select"), |ui| {
                     ui.checkbox(&mut self.settings.copy_on_select, "");
                 });
+                row(ui, t("Programs may copy to the clipboard"), |ui| {
+                    ui.checkbox(&mut self.settings.program_copy, "")
+                        .on_hover_text(t("vim, tmux and agents copy through the terminal (OSC 52). They can never read the clipboard."));
+                });
                 ui.label(
                     RichText::new(t("Scrollback changes apply to new panes."))
                         .size(style::SMALL)

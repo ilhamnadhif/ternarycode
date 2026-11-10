@@ -182,6 +182,10 @@ pub struct Settings {
     pub cursor_blink: bool,
     pub option_as_meta: bool,
     pub copy_on_select: bool,
+    /// Programs in the panes may put text on the clipboard (OSC 52). Reading it is never
+    /// allowed: any program could take what was copied elsewhere.
+    #[serde(default = "yes")]
+    pub program_copy: bool,
     /// Commands shorter than this never trigger "command finished".
     pub long_command_secs: u64,
     pub notifications: Notifications,
@@ -237,6 +241,7 @@ impl Default for Settings {
             cursor_blink: true,
             option_as_meta: true,
             copy_on_select: false,
+            program_copy: true,
             long_command_secs: 10,
             notifications: Notifications::default(),
             presets: Vec::new(),
@@ -331,6 +336,7 @@ mod tests {
         assert_eq!(s.font_size, 15.0);
         assert_eq!(s.scrollback, 10_000);
         assert!(s.notifications.needs_input);
+        assert!(s.program_copy, "programs may copy unless turned off");
     }
 
     #[test]
