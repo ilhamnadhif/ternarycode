@@ -921,7 +921,16 @@ impl App {
             IdeCmd::Back => return self.ide_history(true),
             IdeCmd::Forward => return self.ide_history(false),
             IdeCmd::UndoRefactor => return self.undo_refactor(),
-            IdeCmd::Problems => return self.show_problems(),
+            IdeCmd::Problems => {
+                // The panel at the bottom of the editor, shown or hidden.
+                self.problems_open = !self.problems_open;
+                if self.problems_open
+                    && let Some(e) = self.active.and_then(|id| self.editors.get_mut(&id))
+                {
+                    e.visible = true;
+                }
+                return;
+            }
             IdeCmd::RunAction(n) => return self.run_code_action(n),
             IdeCmd::RestartServer => {
                 if let Some((path, _)) = self.ide_target()
@@ -1218,8 +1227,12 @@ impl App {
                     return;
                 };
                 match self.apply_workspace_edit(&edit, enc, Some(&revs)) {
-                    Ok(n) => self.toast(tf("Renamed in {} files. Undo: ⌘K → Undo Refactor.", &[&n.to_string()])),
-                    Err(e) => self.toast(e),
+                    Ok(n) => self.toast_with(
+                        crate::app::ToastKind::Ok,
+                        tf("Renamed in {} files.", &[&n.to_string()]),
+                        Some((t("Undo").to_string(), crate::actions::Action::Ide(IdeCmd::UndoRefactor))),
+                    ),
+                    Err(e) => self.toast_err(e),
                 }
             }
             Pending::CodeActions { path, revs } => {
@@ -1376,32 +1389,6 @@ impl App {
         }
     }
 
-    fn show_problems(&mut self) {
-        let mut items = Vec::new();
-        let root = self.active_project().map(|p| p.path.clone()).unwrap_or_default();
-        let mut paths: Vec<&PathBuf> = self.lsp.diagnostics.keys().filter(|p| p.starts_with(&root)).collect();
-        paths.sort();
-        for path in paths {
-            let (enc, diags) = &self.lsp.diagnostics[path];
-            let locs: Vec<(PathBuf, lt::Range)> = diags.iter().map(|d| (path.clone(), d.range)).collect();
-            for (mut item, d) in self.loc_items(&locs, *enc).into_iter().zip(diags) {
-                item.error = d.severity == Some(lt::DiagnosticSeverity::ERROR);
-                item.label = d.message.lines().next().unwrap_or("").to_string();
-                let sev = match d.severity {
-                    Some(lt::DiagnosticSeverity::ERROR) => t("Error"),
-                    Some(lt::DiagnosticSeverity::WARNING) => t("Warning"),
-                    _ => t("Info"),
-                };
-                item.detail = format!("{sev} · {}", item.detail);
-                items.push(item);
-            }
-        }
-        if items.is_empty() {
-            self.toast(t("No problems found.").into());
-        } else {
-            self.show_locations(t("Problems"), items);
-        }
-    }
 
     // ----- moving around ---------------------------------------------------------------------
 

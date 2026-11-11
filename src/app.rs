@@ -60,7 +60,16 @@ pub struct Busy {
 }
 
 pub enum Dialog {
-    AddProject { path: String, name: String },
+    /// The folder typed, a name, the preset to run once it is added (0 = none), and what was
+    /// found at the folder (the path checked, and a line about it).
+    AddProject { path: String, name: String, then: usize, found: Option<(String, Option<String>)> },
+    /// The agent picker: the preset chosen, whether to continue its last session, and where
+    /// it runs (0 new tab, 1 split right, 2 split down).
+    RunAgent { selected: usize, resume: bool, place: usize },
+    /// Closing a file with unsaved edits: its index in the editor, its name.
+    ConfirmCloseFile(usize, String),
+    /// Taking an agent's installed hooks out of its settings.
+    ConfirmUninstall(AgentKind),
     ConfirmQuit(Vec<Busy>),
     /// Restarting to install an update would stop these programs.
     ConfirmUpdate(Vec<Busy>),
@@ -107,6 +116,23 @@ fn hook_program() -> Hooks {
 /// Set when the language changes (the native menu bar is then built again).
 static MENU_STALE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// What a toast says and how: its kind's icon, its text, maybe one action.
+#[derive(Clone)]
+pub struct Toast {
+    pub text: String,
+    pub kind: ToastKind,
+    pub action: Option<(String, Action)>,
+    pub at: Instant,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Info,
+    Ok,
+    Warn,
+    Err,
+}
+
 pub struct Palette {
     /// Files of the active project (quick open).
     pub files: Vec<PathBuf>,
@@ -134,6 +160,8 @@ pub enum PaletteMode {
     Files,
     Search,
     Locations,
+    /// Only the commands.
+    Commands,
 }
 
 /// The find bar of one pane (⌘F).
@@ -187,7 +215,20 @@ pub struct App {
     menu: Option<(ui::menu::AppMenu, Receiver<muda::MenuEvent>)>,
     instance_rx: Option<Receiver<Vec<String>>>,
     pub allow_close: bool,
-    pub toast: Option<(String, Instant)>,
+    pub toast: Option<Toast>,
+    /// The row of the attention list the keyboard is on.
+    pub attention_sel: usize,
+    /// The first row the expanded inbox shows (it scrolls to keep the keyboard's row in view),
+    /// and where it was drawn this frame (a click outside it closes it).
+    pub inbox_scroll: usize,
+    pub inbox_rect: Option<egui::Rect>,
+    /// What the Settings search holds.
+    pub settings_search: String,
+    /// The Problems panel under the editor, and whether it lists the whole project's.
+    pub problems_open: bool,
+    pub problems_project: bool,
+    /// Where the Run Agent dialog last put an agent (0 new tab, 1 split right, 2 split down).
+    pub last_agent_place: usize,
     pub updater: crate::ui::update_ui::Updater,
     pub mem_bytes: (Option<u64>, Option<Instant>),
     pub first_frame: bool,
@@ -218,8 +259,8 @@ pub struct App {
     pub grid_focus: Option<PaneId>,
     /// Columns of the Grid (0 = automatic).
     pub grid_columns: u32,
-    /// The Grid shows only projects where something runs or waits.
-    pub grid_active_only: bool,
+    /// Which projects the Grid shows.
+    pub grid_filter: tc_core::model::GridFilter,
     /// Language servers for the editor (IDE features).
     pub lsp: crate::lsp::Lsp,
     /// A buffer change waits to go to its server: look again then.
@@ -238,8 +279,19 @@ pub struct App {
     pub editors: HashMap<ProjectId, crate::editor::Editor>,
     /// The file tree of each project shown so far.
     pub explorers: HashMap<ProjectId, crate::explorer::Explorer>,
+    /// Every file of a project (`git ls-files`, else a walk), for the Files filter; listed off
+    /// the UI thread, again when older than a minute.
+    pub project_files: HashMap<ProjectId, Vec<PathBuf>>,
+    project_files_at: HashMap<ProjectId, Instant>,
     pub pane_search: Option<PaneSearch>,
     pub review: Option<crate::ui::review::Review>,
+    /// The Review's choices and requests between its parts (top bar, list, diff).
+    pub review_split: bool,
+    pub review_filter: String,
+    pub review_hunk: usize,
+    pub review_scroll: bool,
+    pub review_close: bool,
+    pub review_switch: Option<crate::ui::review::Base>,
     /// Where each pane was drawn last frame (for overlays).
     pub pane_rects: HashMap<PaneId, egui::Rect>,
     /// How each pane is drawn this frame (see [`crate::pane::Shown`]).
@@ -368,6 +420,13 @@ impl App {
             instance_rx: inbox.map(|i| i.attach(ctx)),
             allow_close: false,
             toast: None,
+            attention_sel: 0,
+            inbox_scroll: 0,
+            inbox_rect: None,
+            settings_search: String::new(),
+            problems_open: false,
+            problems_project: false,
+            last_agent_place: 0,
             updater: Default::default(),
             mem_bytes: (None, None),
             first_frame: true,
@@ -386,7 +445,7 @@ impl App {
             ui_panics: 0,
             grid_focus: None,
             grid_columns: 0,
-            grid_active_only: false,
+            grid_filter: tc_core::model::GridFilter::All,
             lsp: crate::lsp::Lsp::default(),
             lsp_repaint_after: None,
             editor_seen_at: Instant::now(),
@@ -395,9 +454,17 @@ impl App {
             option_as_alt: None,
             term_scheme: "",
             editors: HashMap::new(),
+            project_files: HashMap::new(),
+            project_files_at: HashMap::new(),
             explorers: HashMap::new(),
             pane_search: None,
             review: None,
+            review_split: false,
+            review_filter: String::new(),
+            review_hunk: 0,
+            review_scroll: false,
+            review_close: false,
+            review_switch: None,
             pane_rects: HashMap::new(),
             shown_now: HashMap::new(),
             watchers: crate::watch::Watchers::default(),
@@ -447,7 +514,7 @@ impl App {
             }),
             scrollback: self.settings.scrollback,
             palette: scheme.into(),
-            cursor: tc_term::prefs::CursorStyle::Block,
+            cursor: cursor_style(self.settings.cursor_shape),
             blink: self.settings.cursor_blink,
             long_command: Duration::from_secs(self.settings.long_command_secs.max(1)),
         }
@@ -490,7 +557,7 @@ impl App {
     /// Where the editor panel starts in the Focus view's `body`, when the project shows it.
     pub fn editor_split(&self, project: ProjectId, body: egui::Rect) -> Option<f32> {
         let e = self.editors.get(&project).filter(|e| e.visible)?;
-        let ratio = if e.width > 0.0 { e.width } else { 0.45 }.clamp(0.2, 0.8);
+        let ratio = if e.width > 0.0 { e.width } else { 0.54 }.clamp(0.2, 0.8);
         Some((body.right() - body.width() * ratio).round())
     }
 
@@ -591,7 +658,7 @@ impl App {
         self.next_id = ws.next_id.max(1);
         self.view = ws.view;
         self.grid_columns = ws.grid_columns;
-        self.grid_active_only = ws.grid_active_only;
+        self.grid_filter = ws.filter();
         for p in &ws.projects {
             self.next_id = self.next_id.max(p.id + 1);
             for pane in &p.panes {
@@ -712,7 +779,8 @@ impl App {
             active: self.active,
             view: self.view,
             grid_columns: self.grid_columns,
-            grid_active_only: self.grid_active_only,
+            grid_active_only: self.grid_filter == tc_core::model::GridFilter::Active,
+            grid_filter: Some(self.grid_filter),
             next_id: self.next_id,
         }
     }
@@ -746,7 +814,7 @@ impl App {
                 self.scrollback_applied = lines;
                 for p in self.panes.values_mut() {
                     p.scrollback_limit = lines;
-                    tc_term::core::limit_scrollback(&p.shared, lines, tc_term::prefs::CursorStyle::Block, blink);
+                    tc_term::core::limit_scrollback(&p.shared, lines, cursor_style(self.settings.cursor_shape), blink);
                 }
             }
             if let Ok(data) = serde_json::to_vec_pretty(&self.settings) {
@@ -972,6 +1040,7 @@ impl App {
         while let Ok(msg) = self.app_rx.try_recv() {
             match msg {
                 AppMsg::ProjectFiles(id, files) => {
+                    self.project_files.insert(id, files.clone());
                     if self.active == Some(id)
                         && let Some(pal) = self.palette.as_mut().filter(|p| p.mode == PaletteMode::Files && p.loading)
                     {
@@ -1051,10 +1120,23 @@ impl App {
         if let Some(explorer) = self.explorers.get_mut(&project) {
             explorer.invalidate(&paths);
         }
+        // The agent at work in the project, if one: the editor says it changed the file.
+        let agent = self
+            .project(project)
+            .map(|p| p.panes())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|id| self.panes.get(id))
+            .filter(|p| p.tracker.agent.is_some() && matches!(p.tracker.status, Status::Running | Status::Unknown | Status::NeedsInput))
+            .map(|p| p.label())
+            .next();
         if let Some(editor) = self.editors.get_mut(&project) {
             for f in editor.files.iter_mut() {
                 if paths.contains(&f.path) {
-                    crate::editor::on_disk_change(f);
+                    let rev = f.rev;
+                    if crate::editor::on_disk_change(f) && (f.rev != rev || f.conflict) {
+                        f.changed_by = agent.clone().map(|a| (a, now));
+                    }
                 }
             }
         }
@@ -1076,17 +1158,21 @@ impl App {
         {
             self.conflict_warned.insert(project, now);
             let name = self.project(project).map(|p| p.name.clone()).unwrap_or_default();
-            self.toast(tf(
-                "{} agents are changing files in {} at the same time ({}). They may overwrite each other's work.",
-                &[&working.len().to_string(), &name, &working.join(", ")],
-            ));
+            self.toast_with(
+                ToastKind::Warn,
+                tf(
+                    "{} agents are changing files in {} at the same time ({}). They may overwrite each other's work.",
+                    &[&working.len().to_string(), &name, &working.join(", ")],
+                ),
+                Some((t("Show").to_string(), Action::SelectProject(project))),
+            );
         }
     }
 
     fn editor_mut(&mut self) -> Option<&mut crate::editor::Editor> {
         let id = self.active?;
         Some(self.editors.entry(id).or_insert_with(|| crate::editor::Editor {
-            width: 0.45,
+            width: 0.54,
             ..Default::default()
         }))
     }
@@ -1248,20 +1334,22 @@ impl App {
         for id in posts {
             let Some(pane) = self.panes.get(&id) else { continue };
             let project = self.project(pane.project).map(|p| p.name.clone()).unwrap_or_default();
-            let body = pane
-                .tracker
-                .message
-                .clone()
-                .unwrap_or_else(|| ui::status::text(pane.tracker.status));
-            let subtitle = format!("{project} · {}", pane.label());
+            // The title says which project and what happened; the body who and what it says.
+            let title = match pane.tracker.status {
+                Status::NeedsInput => tf("{} needs you", &[&project]),
+                Status::Failed(_) => tf("{}: a process failed", &[&project]),
+                Status::Done => tf("{}: the agent finished", &[&project]),
+                _ => tf("{}: a command finished", &[&project]),
+            };
+            let body = format!("{} · {}", pane.label(), ui::sidebar::attention_what(pane));
             // Scripted UI checks log notifications instead of showing them.
             if cfg!(debug_assertions) && std::env::var_os("TERNARYCODE_DEV_SCRIPT").is_some() {
-                eprintln!("DEVTEST LOG: notify {subtitle}: {body}");
+                eprintln!("DEVTEST LOG: notify {title}: {body}");
             } else if self.clicked_rx.is_some() {
                 #[cfg(target_os = "macos")]
-                crate::notify_native::post("TernaryCode", &subtitle, &body, id);
+                crate::notify_native::post(&title, "", &body, id);
             } else {
-                platform::notify("TernaryCode", &subtitle, &body);
+                platform::notify(&title, "", &body);
             }
         }
         self.notified.retain(|id, _| self.panes.contains_key(id));
@@ -1502,7 +1590,10 @@ impl App {
 
     /// Starts a preset in a new pane of the active project: beside the current pane while the
     /// tab is not crowded, otherwise in a new tab.
-    fn run_preset(&mut self, ctx: &egui::Context, preset_id: &str) {
+    /// Starts a preset in a new pane: in a new tab, or split right or down (`place` 0, 1, 2;
+    /// none: beside the pane in view, or a new tab when its tab is crowded). `resume` runs its
+    /// command that continues the last session.
+    fn run_preset(&mut self, ctx: &egui::Context, preset_id: &str, resume: bool, place: Option<usize>) {
         let Some(preset) = self.presets().into_iter().find(|p| p.id == preset_id) else {
             return;
         };
@@ -1515,13 +1606,22 @@ impl App {
             .and_then(|id| self.project(id))
             .and_then(Project::tab)
             .is_some_and(|tab| tab.layout.panes().len() >= 3);
-        let pane = if crowded {
-            self.new_tab(ctx)
-        } else {
-            self.split(ctx, SplitDir::Horizontal)
+        let pane = match place {
+            Some(0) => self.new_tab(ctx),
+            Some(2) => self.split(ctx, SplitDir::Vertical),
+            Some(_) => self.split(ctx, SplitDir::Horizontal),
+            None if crowded => self.new_tab(ctx),
+            None => self.split(ctx, SplitDir::Horizontal),
         };
         let Some(pane) = pane else { return };
-        let command = self.launch_command(&preset, &preset.command);
+        let base = match (&preset.resume, resume) {
+            (Some(r), true) if !r.trim().is_empty() => r.clone(),
+            _ => preset.command.clone(),
+        };
+        if place.is_some() {
+            self.last_agent_place = place.unwrap_or(0);
+        }
+        let command = self.launch_command(&preset, &base);
         let mut project = None;
         if let Some(p) = self.panes.get_mut(&pane) {
             p.preset = Some(preset.id.clone());
@@ -1591,7 +1691,7 @@ impl App {
             hook: spawn_hook,
             scrollback: self.settings.scrollback,
             palette,
-            cursor: tc_term::prefs::CursorStyle::Block,
+            cursor: cursor_style(self.settings.cursor_shape),
             blink: self.settings.cursor_blink,
             long_command: Duration::from_secs(self.settings.long_command_secs.max(1)),
         };
@@ -1600,8 +1700,38 @@ impl App {
         }
     }
 
+    /// Takes panes out of the attention queue as if looked at (a finished turn reads as idle
+    /// after), without going to them.
+    fn mark_seen(&mut self, panes: &[PaneId]) {
+        let now = Instant::now();
+        let current = self.current_pane().filter(|_| self.view == View::Focus);
+        for id in panes {
+            if let Some(p) = self.panes.get_mut(id) {
+                let focused = Some(*id) == current;
+                p.tracker.set_focused(true, now);
+                p.tracker.set_focused(focused, now);
+                self.notified.insert(*id, p.tracker.ask);
+            }
+        }
+    }
+
     pub fn toast(&mut self, text: String) {
-        self.toast = Some((text, Instant::now()));
+        self.toast_with(ToastKind::Info, text, None);
+    }
+
+    /// Something worked ("Saved app.rs.").
+    pub fn toast_ok(&mut self, text: String) {
+        self.toast_with(ToastKind::Ok, text, None);
+    }
+
+    /// Something failed.
+    pub fn toast_err(&mut self, text: String) {
+        self.toast_with(ToastKind::Err, text, None);
+    }
+
+    /// A message with an icon of its kind and, maybe, one action (Undo, Show…).
+    pub fn toast_with(&mut self, kind: ToastKind, text: String, action: Option<(String, Action)>) {
+        self.toast = Some(Toast { text, kind, action, at: Instant::now() });
     }
 
     /// Editor files with changes not saved ("main.rs · not saved"), of one project or all.
@@ -1693,6 +1823,8 @@ impl App {
                 self.dialog = Some(Dialog::AddProject {
                     path: String::new(),
                     name: String::new(),
+                    then: 0,
+                    found: None,
                 })
             }
             Action::AddProjectPath(path) => {
@@ -1943,6 +2075,13 @@ impl App {
             }
             Action::ClosePaneId(id) => self.close_pane(ctx, id),
             Action::FocusPane(id) => self.focus_pane(id),
+            Action::OpenGridTile => {
+                if self.view == View::Grid
+                    && let Some(pane) = self.grid_focus
+                {
+                    self.focus_pane(pane);
+                }
+            }
             Action::NextPane | Action::PrevPane => {
                 if let Some(p) = self.active.and_then(|id| self.project_mut(id))
                     && let Some(tab) = p.tab_mut()
@@ -1953,11 +2092,22 @@ impl App {
                     self.mark_dirty();
                 }
             }
-            Action::RunPreset(id) => self.run_preset(ctx, &id),
+            Action::RunPreset(id) => self.run_preset(ctx, &id, false, None),
+            Action::RunAgent(id, resume, place) => self.run_preset(ctx, &id, resume, Some(place)),
             Action::Resume(id) => self.resume(ctx, id),
+            Action::DismissResume(id) => {
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.resume = None;
+                }
+                self.mark_dirty();
+            }
             Action::WakePane(id) => self.wake(ctx, id),
-            Action::GridActiveOnly(only) => {
-                self.grid_active_only = only;
+            Action::GridFilter(f) => {
+                self.grid_filter = f;
+                self.mark_dirty();
+            }
+            Action::GridColumns(n) => {
+                self.grid_columns = n.min(4);
                 self.mark_dirty();
             }
             Action::RestartShell(id) => self.restart_shell(ctx, id),
@@ -1973,14 +2123,31 @@ impl App {
                     self.focus_pane(pane);
                 }
             }
-            Action::ToggleAttention => self.attention_open = !self.attention_open,
+            Action::ToggleAttention => {
+                self.attention_open = !self.attention_open;
+                self.attention_sel = 0;
+                self.inbox_scroll = 0;
+            }
+            Action::MarkSeen(id) => self.mark_seen(&[id]),
+            Action::MarkAllSeen => {
+                let all: Vec<PaneId> = self.attention_queue().iter().map(|e| e.pane).collect();
+                self.mark_seen(&all);
+            }
             Action::ToggleSidebar => {
                 self.settings.sidebar_hidden = !self.settings.sidebar_hidden;
                 self.settings_changed();
             }
             Action::Palette => self.open_palette(PaletteMode::All),
             Action::SwitchProject => self.open_palette(PaletteMode::Projects),
-            Action::PickPreset => self.open_palette(PaletteMode::Presets),
+            Action::PickPreset => {
+                if self.active.is_none() {
+                    self.toast(t("Add a project first.").into());
+                } else {
+                    let preferred = self.active_project().and_then(|p| p.preset.clone());
+                    let selected = preferred.and_then(|id| self.presets().iter().position(|p| p.id == id)).unwrap_or(0);
+                    self.dialog = Some(Dialog::RunAgent { selected, resume: false, place: self.last_agent_place });
+                }
+            }
             Action::SetView(v) => {
                 if v == View::Focus {
                     self.show_focus();
@@ -2034,7 +2201,7 @@ impl App {
                                 .integrations
                                 .insert(plan.agent.slug().into(), Integration::Installed);
                             self.settings_changed();
-                            self.toast(match saved {
+                            self.toast_ok(match saved {
                                 Ok(()) => tf("Hooks installed for {}.", &[plan.agent.label()]),
                                 // Without the record, Uninstall cannot put the file back.
                                 Err(e) => tf(
@@ -2057,6 +2224,11 @@ impl App {
                 }
             }
             Action::Uninstall(agent) => {
+                if self.installed(agent).is_some() {
+                    self.dialog = Some(Dialog::ConfirmUninstall(agent));
+                }
+            }
+            Action::UninstallNow(agent) => {
                 if let Some(record) = self.installed(agent) {
                     match integrate::uninstall(&record, &self.hook_bin) {
                         Ok(how) => {
@@ -2103,13 +2275,17 @@ impl App {
                     if e.files[i].dirty() {
                         e.active = i;
                         let name = e.files[i].name();
-                        self.toast(tf(
-                            "{} has unsaved changes. Save them ({}) or reload the file first.",
-                            &[&name, ui::kit::keys(&Action::SaveFile).unwrap_or("⌘S")],
-                        ));
+                        self.dialog = Some(Dialog::ConfirmCloseFile(i, name));
                     } else {
                         e.close(i);
                     }
+                }
+            }
+            Action::DiscardAndCloseFile(i) => {
+                if let Some(e) = self.editor_mut()
+                    && i < e.files.len()
+                {
+                    e.close(i);
                 }
             }
             Action::SaveFile | Action::ForceSave => {
@@ -2127,11 +2303,11 @@ impl App {
                     self.lsp_saved(path);
                 }
                 match result.map(|(r, n, _)| (r, n)) {
-                    Some((Ok(()), name)) => self.toast(tf("Saved {}.", &[&name])),
+                    Some((Ok(()), name)) => self.toast_ok(tf("Saved {}.", &[&name])),
                     Some((Err(crate::editor::SaveError::ChangedOnDisk), _)) => {
-                        self.toast(t("Not saved: the file changed on disk. Choose what to keep in the editor.").into())
+                        self.toast_err(t("Not saved: the file changed on disk. Choose what to keep in the editor.").into())
                     }
-                    Some((Err(crate::editor::SaveError::Io(e)), _)) => self.toast(e),
+                    Some((Err(crate::editor::SaveError::Io(e)), _)) => self.toast_err(e),
                     None => {}
                 }
             }
@@ -2150,13 +2326,26 @@ impl App {
                 }
             }
             Action::ToggleFiles => {
-                // With the sidebar hidden, this shows it with the files open.
-                if self.settings.sidebar_hidden {
-                    self.settings.sidebar_hidden = false;
+                // The Files column of the Code drawer: shown with the drawer when it was closed,
+                // else shown or hidden. A drawer too narrow for it is widened.
+                let drawer_shown = self.editors.get(&self.active.unwrap_or_default()).is_some_and(|e| e.visible);
+                let full = self.last_full_body.map(|r| r.width()).unwrap_or(1000.0);
+                if !drawer_shown {
+                    if let Some(e) = self.editor_mut() {
+                        e.visible = true;
+                    }
                     self.settings.files_hidden = false;
+                } else if self.settings.files_hidden {
+                    self.settings.files_hidden = false;
+                } else if let Some(e) = self.editor_mut().filter(|e| {
+                    let ratio = if e.width > 0.0 { e.width } else { 0.54 };
+                    full * ratio < crate::ui::editor_ui::FILES_MIN_DRAWER
+                }) {
+                    e.width = ((crate::ui::editor_ui::FILES_MIN_DRAWER + 40.0) / full).clamp(0.2, 0.8);
                 } else {
-                    self.settings.files_hidden = !self.settings.files_hidden;
+                    self.settings.files_hidden = true;
                 }
+                self.show_focus();
                 self.settings_changed();
             }
             Action::InsertPath(path) => {
@@ -2241,9 +2430,9 @@ impl App {
                             e.close(i);
                         }
                     }
-                    self.toast(tf("{} moved to the Trash.", &[&paths::contract_tilde(&path)]));
+                    self.toast_ok(tf("{} moved to the Trash.", &[&paths::contract_tilde(&path)]));
                 }
-                Err(e) => self.toast(e),
+                Err(e) => self.toast_err(e),
             },
             Action::NewTabAt(dir) => {
                 self.show_focus();
@@ -2278,6 +2467,12 @@ impl App {
             }
             Action::FindAll => self.open_palette(PaletteMode::Search),
             Action::Review => self.open_review(None),
+            Action::ReviewFile(path) => {
+                self.open_review(Some(crate::ui::review::Base::Head));
+                if let Some(r) = self.review.as_mut() {
+                    r.want = Some(path);
+                }
+            }
             Action::RevealMatch(pane, m) => {
                 self.focus_pane(pane);
                 if let Some(p) = self.panes.get(&pane) {
@@ -2286,8 +2481,9 @@ impl App {
             }
             Action::Copy => {
                 // The menu takes ⌘C before any widget: a text field (the editor, a dialog, the
-                // palette) gets it as egui's own copy; else the terminal copies its selection.
-                if self.text_field_focused(ctx) {
+                // palette) or text selected in a document gets it as egui's own copy; else the
+                // terminal copies its selection.
+                if self.text_field_focused(ctx) || ui::docview_ui::has_doc_selection(ctx) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy);
                 } else if let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id)) {
                     tc_term::widget::copy_selection(ctx, &p.shared);
@@ -2354,6 +2550,22 @@ impl App {
             }
             Action::RestartToUpdateNow => self.install_update(ctx),
         }
+    }
+
+    /// Lists the project's files for the Files filter, unless a list less than a minute old is
+    /// at hand.
+    pub fn want_project_files(&mut self, id: ProjectId) {
+        let fresh = self.project_files_at.get(&id).is_some_and(|t| t.elapsed() < Duration::from_secs(60));
+        if fresh {
+            return;
+        }
+        self.project_files_at.insert(id, Instant::now());
+        let Some(root) = self.project(id).map(|p| p.path.clone()) else { return };
+        let (tx, ctx) = (self.app_tx.clone(), self.ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let _ = tx.send(AppMsg::ProjectFiles(id, crate::editor::project_files(&root, 20_000)));
+            ctx.request_repaint();
+        });
     }
 
     pub fn open_palette(&mut self, mode: PaletteMode) {
@@ -2437,12 +2649,23 @@ impl App {
             self.actions.push(Action::SelectProjectIndex(0));
         }
         if cfg!(target_os = "macos") {
+            // Not in the menu: a terminal in Focus keeps ⌘↵ for itself.
+            if self.view == View::Grid
+                && self.grid_focus.is_some()
+                && ctx.input_mut(|inp| inp.consume_shortcut(&KeyboardShortcut::new(cmd, Key::Enter)))
+            {
+                self.actions.push(Action::OpenGridTile);
+            }
             return;
         }
         // The editor's text keeps Ctrl+Shift+- for its own Forward (as in VS Code on Linux).
         let forward = self.settings.lsp && self.editor_has_keyboard(ctx);
         for (mods, key, action) in shortcuts() {
             if action == Action::FontSmaller && forward {
+                continue;
+            }
+            // Elsewhere Ctrl+Shift+Enter stays the terminal's.
+            if action == Action::OpenGridTile && (self.view != View::Grid || self.grid_focus.is_none()) {
                 continue;
             }
             if ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(mods, key))) {
@@ -2607,7 +2830,7 @@ impl App {
         let shown = |p: &Pane| p.shown.load(std::sync::atomic::Ordering::Relaxed) != crate::pane::Shown::Hidden as u8;
         for pane in self.panes.values_mut().filter(|p| shown(p) && p.scrollback_limit < configured) {
             pane.scrollback_limit = configured;
-            tc_term::core::limit_scrollback(&pane.shared, configured, tc_term::prefs::CursorStyle::Block, blink);
+            tc_term::core::limit_scrollback(&pane.shared, configured, cursor_style(self.settings.cursor_shape), blink);
         }
         let budget = self.settings.scrollback_budget_mb.max(16) * 1024 * 1024;
         let mut total: usize = self
@@ -2636,7 +2859,7 @@ impl App {
                 continue;
             }
             pane.scrollback_limit = lines;
-            tc_term::core::limit_scrollback(&pane.shared, lines, tc_term::prefs::CursorStyle::Block, blink);
+            tc_term::core::limit_scrollback(&pane.shared, lines, cursor_style(self.settings.cursor_shape), blink);
             total = total + tc_term::core::scrollback_bytes(&pane.shared) - before;
         }
     }
@@ -2711,6 +2934,7 @@ impl App {
         for action in std::mem::take(&mut self.actions) {
             self.dispatch(&ctx, action);
         }
+        ui::docview_ui::end_doc_selection_frame(&ctx);
 
         #[cfg(debug_assertions)]
         let drawing = Instant::now();
@@ -2785,6 +3009,7 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
         (Key::Comma, Action::Settings),
         (Key::Q, Action::Quit),
         (Key::Num0, Action::ToggleGrid),
+        (Key::Enter, Action::OpenGridTile),
         (Key::S, Action::SaveFile),
         (Key::F, Action::Find),
         (Key::G, Action::FindAll),
@@ -2927,6 +3152,17 @@ pub fn absolute(arg: &str) -> PathBuf {
 }
 
 
+/// The terminal's cursor for the setting.
+fn cursor_style(shape: tc_core::model::CursorShape) -> tc_term::prefs::CursorStyle {
+    use tc_core::model::CursorShape as S;
+    use tc_term::prefs::CursorStyle as C;
+    match shape {
+        S::Block => C::Block,
+        S::Beam => C::Beam,
+        S::Underline => C::Underline,
+    }
+}
+
 #[cfg(test)]
 mod shortcut_tests {
     use super::*;
@@ -2960,3 +3196,4 @@ mod shortcut_tests {
         }
     }
 }
+

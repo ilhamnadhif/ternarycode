@@ -137,6 +137,14 @@ pub fn extract(
             }
         }
         (AgentKind::Codex, "notify") => text(&payload["last-assistant-message"]),
+        // A finished turn: the agent's last words, when the payload has them (a notification
+        // that it is idle says nothing worth showing).
+        (AgentKind::Claude, "Stop" | "StopFailure") => text(&payload["last_assistant_message"]),
+        (AgentKind::Claude, "Notification")
+            if matches!(text(&payload["notification_type"]).as_deref(), Some("idle_prompt" | "agent_completed")) =>
+        {
+            None
+        }
         (AgentKind::OpenCode, _) => text(&payload["title"]).or_else(|| text(&payload["message"])),
         _ => text(&payload["message"]),
     }

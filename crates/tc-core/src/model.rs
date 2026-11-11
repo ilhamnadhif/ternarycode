@@ -33,9 +33,42 @@ pub struct Workspace {
     pub view: View,
     /// Columns of the Grid view (0 = automatic).
     pub grid_columns: u32,
-    /// The Grid shows only projects where something runs or waits.
+    /// The Grid shows only projects where something runs or waits (written for older
+    /// versions; `grid_filter` says it now).
     pub grid_active_only: bool,
+    /// Which projects the Grid shows. Files written before it existed have only
+    /// `grid_active_only`.
+    pub grid_filter: Option<GridFilter>,
     pub next_id: u64,
+}
+
+/// Which projects the Grid shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GridFilter {
+    #[default]
+    All,
+    /// Where something runs or waits.
+    Active,
+    /// Only what waits for the user (the attention queue).
+    Waiting,
+}
+
+impl Workspace {
+    /// The Grid's filter, from the field older versions wrote when it is missing.
+    pub fn filter(&self) -> GridFilter {
+        self.grid_filter.unwrap_or(if self.grid_active_only { GridFilter::Active } else { GridFilter::All })
+    }
+}
+
+/// The shape of the terminal cursor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Beam,
+    Underline,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -119,7 +152,7 @@ pub enum ThemeMode {
 }
 
 /// The revision of the UI defaults a settings file was written with (see [`Settings::migrate`]).
-pub const UI_REV: u32 = 2;
+pub const UI_REV: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -224,6 +257,9 @@ pub struct Settings {
     /// Format a file with its language server when saving it.
     #[serde(default)]
     pub format_on_save: bool,
+    /// The shape of the terminal cursor.
+    #[serde(default)]
+    pub cursor_shape: CursorShape,
 }
 
 fn yes() -> bool {
@@ -255,7 +291,7 @@ impl Default for Settings {
             skipped_version: None,
             last_update_check: None,
             window: None,
-            sidebar_width: 240.0,
+            sidebar_width: 248.0,
             sidebar_hidden: false,
             files_height: 0.0,
             files_hidden: false,
@@ -264,6 +300,7 @@ impl Default for Settings {
             lsp_on_demand: true,
             auto_complete: true,
             format_on_save: false,
+            cursor_shape: CursorShape::Block,
         }
     }
 }
@@ -299,6 +336,14 @@ impl Settings {
         // Revision 2: update checks exist (the setting was saved off before they did).
         if self.ui_rev < 2 {
             self.check_updates = true;
+        }
+        // Revision 3: the sidebar is 248 wide by default, and the Files section became the
+        // Files column of the Code drawer (shown by default).
+        if self.ui_rev < 3 {
+            if self.sidebar_width == 240.0 {
+                self.sidebar_width = 248.0;
+            }
+            self.files_hidden = false;
         }
         self.ui_rev = UI_REV;
         true
@@ -373,7 +418,17 @@ mod tests {
         let mut before: Settings = serde_json::from_str(r#"{"check_updates": false, "ui_rev": 1}"#).unwrap();
         assert!(before.migrate() && before.check_updates);
         let mut after: Settings = serde_json::from_str(r#"{"check_updates": false, "ui_rev": 2}"#).unwrap();
-        assert!(!after.migrate() && !after.check_updates);
+        assert!(after.migrate() && !after.check_updates);
+        // Revision 3: the old default sidebar width becomes the new one; a width chosen stays.
+        let mut narrow: Settings = serde_json::from_str(r#"{"sidebar_width": 240, "files_hidden": true, "ui_rev": 2}"#).unwrap();
+        assert!(narrow.migrate());
+        assert_eq!(narrow.sidebar_width, 248.0);
+        assert!(!narrow.files_hidden, "the Files column shows in the drawer");
+        let mut wide: Settings = serde_json::from_str(r#"{"sidebar_width": 300, "ui_rev": 2}"#).unwrap();
+        assert!(wide.migrate());
+        assert_eq!(wide.sidebar_width, 300.0);
+        let mut now: Settings = serde_json::from_str(r#"{"check_updates": false, "ui_rev": 3}"#).unwrap();
+        assert!(!now.migrate() && !now.check_updates);
         // A light theme chosen before is kept.
         let mut light: Settings = serde_json::from_str(r#"{"theme": "light"}"#).unwrap();
         assert!(light.migrate());

@@ -17,8 +17,13 @@ use crate::i18n::{t, tf};
 
 pub const HEADER_H: f32 = super::sidebar::TOP_H;
 const PANE_HEADER_H: f32 = 28.0;
-/// Space between a pane's edge and its text.
-const TERM_PAD: f32 = 6.0;
+/// Space between a pane's edge and where the terminal's own padding starts (12 px to the text
+/// at the sides, as the design has it).
+const TERM_PAD: f32 = 2.0;
+/// The banner over a restored pane whose agent can be resumed, and the bar under one whose
+/// shell ended.
+const BANNER_H: f32 = 40.0;
+const FOOT_H: f32 = 38.0;
 
 /// What draws a part of the top bar in the rect it is given.
 pub type BarPart<'a> = dyn FnMut(&mut App, &mut Ui, Rect) + 'a;
@@ -41,7 +46,7 @@ impl App {
         super::view::window_drag_area(ui, header, "content-top");
 
         // Toolbar, from the right.
-        let inner = header.shrink2(vec2(10.0, 0.0));
+        let inner = Rect::from_min_max(pos2(header.left() + 12.0, header.top()), pos2(header.right() - 8.0, header.bottom()));
         let used = ui
             .scope_builder(
                 egui::UiBuilder::new()
@@ -100,7 +105,7 @@ impl App {
     fn view_switch_compact(&mut self, ui: &mut Ui) {
         let focus_tip = kit::tip(t("Focus View"), Action::ToggleGrid);
         let grid_tip = kit::tip(t("Grid of All Projects"), Action::ToggleGrid);
-        let options = [(t("Focus"), focus_tip.as_str()), (t("Grid"), grid_tip.as_str())];
+        let options = [kit::Seg::new(t("Focus"), &focus_tip), kit::Seg::new(t("Grid"), &grid_tip)];
         if let Some(i) = kit::segmented(ui, &options, (self.view == View::Grid) as usize) {
             self.actions.push(Action::SetView(if i == 1 { View::Grid } else { View::Focus }));
         }
@@ -108,27 +113,36 @@ impl App {
 
     /// Right side of the top bar (added right to left): what acts on the active project.
     fn toolbar(&mut self, ui: &mut Ui) {
+        if self.review.is_some() {
+            self.review_toolbar(ui);
+            return;
+        }
+        if self.view == View::Grid && !self.projects.is_empty() {
+            self.grid_toolbar(ui);
+            return;
+        }
         if self.view != View::Focus || self.active.is_none() {
             return;
         }
         let editor_on = self.active.and_then(|id| self.editors.get(&id)).is_some_and(|e| e.visible);
-        let e = kit::icon_toggle(ui, icons::CODE, &kit::tip(t("Show/Hide Editor"), Action::ToggleEditor), editor_on);
+        let e = kit::icon_button_ex(ui, icons::CODE, &kit::tip(t("Code"), Action::ToggleEditor), editor_on, 26.0);
         #[cfg(debug_assertions)]
         crate::devtest::record("toggle-editor", e.rect);
         if e.clicked() {
             self.actions.push(Action::ToggleEditor);
         }
-        if kit::icon_button(ui, icons::SQUARE_SPLIT_VERTICAL, &kit::tip(t("Split Down"), Action::SplitDown)).clicked() {
+        kit::vdivider(ui, 18.0);
+        if kit::icon_button_ex(ui, icons::SQUARE_SPLIT_VERTICAL, &kit::tip(t("Split Down"), Action::SplitDown), false, 26.0).clicked() {
             self.actions.push(Action::SplitDown);
         }
-        if kit::icon_button(ui, icons::SQUARE_SPLIT_HORIZONTAL, &kit::tip(t("Split Right"), Action::SplitRight)).clicked() {
+        if kit::icon_button_ex(ui, icons::SQUARE_SPLIT_HORIZONTAL, &kit::tip(t("Split Right"), Action::SplitRight), false, 26.0).clicked() {
             self.actions.push(Action::SplitRight);
         }
         ui.add_space(4.0);
-        let run = kit::button_ex(ui, kit::Kind::Primary, Some(icons::PLAY), t("Agent"), true);
+        let run = kit::button_keys(ui, kit::Kind::Primary, Some(icons::PLAY), t("Run Agent"), kit::keys(&Action::PickPreset), true);
         #[cfg(debug_assertions)]
         crate::devtest::record("run-agent", run.rect);
-        if run.on_hover_text(kit::tip(t("Start an agent in a new pane"), Action::PickPreset)).clicked() {
+        if run.on_hover_text(t("Start an agent in a new pane")).clicked() {
             self.actions.push(Action::PickPreset);
         }
     }
@@ -170,18 +184,22 @@ impl App {
                     })
                     .map(|pane| (pane.tracker.status, status::described(&pane.tracker)));
                 let doing = self.panes.get(&tab.focused).and_then(|pane| pane.program_title.clone());
-                (i, label, waiting, doing, tab.focused)
+                let progress = tab.layout.panes().iter().filter_map(|id| self.panes.get(id)).find_map(|pane| pane.progress);
+                (i, label, waiting, doing, tab.focused, progress)
             })
             .collect();
         let mut tab_rects: Vec<Rect> = Vec::with_capacity(tabs.len());
         // The part of the strip in view (tabs scrolled out of it are no place to drop on).
         let mut strip_shown: Option<Rect> = None;
         let body = self.top_bar(ui, full, |app, ui| {
-            kit::dot(ui, color, 4.5);
+            let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+            ui.painter().circle_filled(r.center(), 4.0, color);
+            ui.add_space(2.0);
             ui.label(RichText::new(&name).font(style::semibold(14.0)).color(p.text));
             if let Some(g) = &git {
-                let text = super::sidebar::branch_text(g);
-                let r = kit::button_ex(ui, kit::Kind::Ghost, None, &text, true);
+                let r = branch_chip(ui, &g.branch, g.changed);
+                #[cfg(debug_assertions)]
+                crate::devtest::record("branch-chip", r.rect);
                 if r.on_hover_text(kit::tip(t("Review Changes…"), Action::Review)).clicked() {
                     app.actions.push(Action::Review);
                 }
@@ -212,11 +230,12 @@ impl App {
                         .scroll_source(egui::scroll_area::ScrollSource::MOUSE_WHEEL)
                         .show(ui, |ui| {
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                for (i, label, waiting, doing, focused) in &tabs {
+                                ui.spacing_mut().item_spacing.x = 2.0;
+                                for (i, label, waiting, doing, focused, progress) in &tabs {
                                     let dragging = app.tab_drag == Some(*i);
                                     let on = *i == active_tab;
                                     let (r, close) =
-                                        terminal_tab(ui, label, waiting.as_ref().map(|w| w.0), on, dragging, tabs.len() > 1);
+                                        terminal_tab(ui, label, waiting.as_ref().map(|w| w.0), on, dragging, tabs.len() > 1, *progress);
                                     if close {
                                         app.actions.push(Action::CloseTab(*i));
                                     }
@@ -298,7 +317,7 @@ impl App {
             let root = self.project(pid).map(|x| x.path.clone()).unwrap_or_default();
             ui.scope_builder(egui::UiBuilder::new().max_rect(editor_rect), |ui| {
                 ui.set_clip_rect(editor_rect);
-                self.editor_panel(ui, pid, root);
+                self.code_drawer(ui, pid, root);
             });
             Rect::from_min_max(body.min, pos2(split_x, body.bottom()))
         } else {
@@ -354,13 +373,25 @@ impl App {
             let pane_body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
             // The terminal's own background around its text.
             ui.painter().rect_filled(pane_body, CornerRadius::ZERO, scheme.background);
-            let term_rect = term_rect(rect, single);
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("pane:{pane_id}"), term_rect);
-            self.pane_rects.insert(pane_id, term_rect);
+            let mut term_rect = term_rect(rect, single);
             if !single {
                 self.pane_header(ui, pane_id, header, is_focused);
             }
+            // A restored agent that can be resumed: a banner at the top; a shell that ended: a
+            // bar at the bottom. The terminal takes what is left.
+            if self.panes.get(&pane_id).is_some_and(|x| x.resume.is_some()) {
+                let banner = Rect::from_min_size(pane_body.min, vec2(pane_body.width(), BANNER_H));
+                self.resume_banner(ui, pane_id, banner);
+                term_rect.min.y += BANNER_H;
+            }
+            if self.panes.get(&pane_id).is_some_and(|x| x.exit.is_some() && !x.alive()) {
+                let foot = Rect::from_min_max(pos2(pane_body.left(), pane_body.bottom() - FOOT_H), pane_body.max);
+                self.exit_bar(ui, pane_id, foot);
+                term_rect.max.y = foot.top() - 2.0;
+            }
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("pane:{pane_id}"), term_rect);
+            self.pane_rects.insert(pane_id, term_rect);
             let request = self.focus_request == Some(pane_id);
             let Some(pane) = self.panes.get_mut(&pane_id) else {
                 continue;
@@ -408,9 +439,6 @@ impl App {
             }
             if request && resp.focused {
                 self.focus_request = None;
-            }
-            if single {
-                self.resume_button(ui, pane_id, term_rect);
             }
             // The pane that takes the keyboard (several panes): an accent line on its header.
             if is_focused && !single && window_focused {
@@ -663,10 +691,12 @@ impl App {
         let doing = pane.program_title.clone();
         let tip = status::described(&pane.tracker);
         let hovered = ui.rect_contains_pointer(rect);
+        let hooks = pane.tracker.hooks_active;
+        let hooks_label = pane.tracker.agent.map(|a| a.label().to_string()).unwrap_or_default();
 
         // Buttons first, from the right (split and close only while hovered); the text on the
         // left is clipped before them.
-        let mut right = rect.right() - 4.0;
+        let mut right = rect.right() - 6.0;
         let button = |ui: &mut Ui, icon: &str, tip: &str, right: &mut f32| {
             let r = Rect::from_center_size(pos2(*right - 11.0, cy), vec2(22.0, 22.0));
             *right -= 24.0;
@@ -688,53 +718,48 @@ impl App {
                 }
             }
         }
-        if let Some((agent, _)) = resume {
-            let long = tf("Resume {}", &[agent.label()]);
-            let text = if rect.width() > 420.0 { long } else { t("Resume").to_string() };
-            let w = style::text_width(ui, &text) + 34.0;
-            let r = Rect::from_min_size(pos2(right - w, rect.top() + 2.0), vec2(w, rect.height() - 4.0));
-            right -= w + 4.0;
-            let resp = ui
-                .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
-                    kit::button_ex(ui, kit::Kind::Secondary, Some(icons::PLAY), &text, true)
-                })
-                .inner;
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("resume:{pane_id}"), resp.rect);
-            if resp
-                .on_hover_text(tf("Continue {}'s last session here", &[agent.label()]))
-                .clicked()
-            {
-                self.actions.push(Action::Resume(pane_id));
-            }
+        let _ = resume;
+        // Where the status comes from, when it is the agent's own hooks.
+        if hooks {
+            let painter = ui.painter();
+            let g = painter.layout_no_wrap(t("hooks").to_string(), egui::FontId::proportional(11.0), p.text_faint);
+            let gw = g.size().x;
+            let x = right - 4.0 - gw;
+            painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+            painter.text(pos2(x - 3.0, cy), Align2::RIGHT_CENTER, icons::PLUGS_CONNECTED, style::icon_font(11.0), p.text_faint);
+            let r = Rect::from_min_max(pos2(x - 16.0, rect.top()), pos2(right, rect.bottom()));
+            ui.interact(r, egui::Id::new(("hooks", pane_id)), Sense::hover())
+                .on_hover_text(crate::i18n::tf("Status from {} hooks", &[&hooks_label]));
+            right = x - 16.0 - 6.0;
         }
 
         let clip = Rect::from_min_max(rect.min, pos2((right - 4.0).max(rect.left()), rect.max.y));
         let painter = painter.with_clip_rect(clip);
-        let mut x = rect.left() + 10.0;
+        let mut x = rect.left() + 12.0;
         let quiet = matches!(s, Status::Idle | Status::Unknown);
         painter.text(
-            pos2(x + 6.0, cy),
+            pos2(x + 6.5, cy),
             Align2::CENTER_CENTER,
             if quiet { icons::TERMINAL } else { status::icon(s) },
             style::icon_font(13.0),
             if quiet { p.text_faint } else { c },
         );
-        x += 18.0;
-        let g = painter.layout_no_wrap(label, style::medium(12.5), if focused { p.text } else { p.text_muted });
+        x += 13.0 + 7.0;
+        let label_c = if focused { p.text } else { p.text_muted };
+        let g = painter.layout_no_wrap(label, style::medium(12.5), label_c);
         let lw = g.size().x;
-        painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
-        x += lw + 8.0;
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, label_c);
+        x += lw + 7.0;
         if let Some(place) = place {
             let g = painter.layout_no_wrap(place, egui::FontId::proportional(style::SMALL), p.text_faint);
             let w = g.size().x;
             painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
-            x += w + 10.0;
+            x += w + 7.0;
         }
-        let pill = (!quiet).then(|| painter.layout_no_wrap(status::text(s), style::medium(style::SMALL), c));
+        let pill = (!quiet).then(|| painter.layout_no_wrap(status::text(s), style::medium(11.0), c));
         // What the program says it is doing, quiet, cut short before the status (a question
         // the pane asks says more).
-        let room = clip.right() - x - pill.as_ref().map_or(0.0, |g| g.size().x + 22.0);
+        let room = clip.right() - x - pill.as_ref().map_or(0.0, |g| g.size().x + 14.0 + 16.0 + 7.0);
         if let Some(doing) = doing.as_ref().filter(|_| message.is_none() && room > 40.0) {
             let mut job = egui::text::LayoutJob::simple_singleline(doing.clone(), egui::FontId::proportional(style::SMALL), p.text_faint);
             job.wrap = egui::text::TextWrapping::truncate_at_width(room);
@@ -744,11 +769,9 @@ impl App {
             x += w + 10.0;
         }
         // The status as a pill, unless the pane is just sitting at its prompt.
-        if let Some(g) = pill {
-            let pill = Rect::from_min_size(pos2(x, cy - 9.0), vec2(g.size().x + 14.0, 18.0));
-            painter.rect_filled(pill, CornerRadius::same(9), style::soft(c, if ui.visuals().dark_mode { 0.18 } else { 0.12 }));
-            painter.galley(pill.center() - g.size() / 2.0, g, c);
-            x = pill.right() + 8.0;
+        if pill.is_some() {
+            let r = kit::paint_pill(&painter, pos2(x, cy), Some(status::icon(s)), &status::text(s), c, style::tint(c, ui.visuals().dark_mode));
+            x = r.right() + 7.0;
         }
         if let Some(msg) = message {
             let max = (clip.right() - x).max(0.0);
@@ -776,22 +799,7 @@ impl App {
         if label_resp.clicked() && !focused {
             self.actions.push(Action::FocusPane(pane_id));
         }
-        label_resp.context_menu(|ui| {
-            if ui.button(t("Move to New Tab")).clicked() {
-                self.actions.push(Action::PaneToTab(pane_id));
-                ui.close();
-            }
-            if ui.button(t("Rename…")).clicked() {
-                let current = self.panes.get(&pane_id).and_then(|p| p.title.clone()).unwrap_or_default();
-                self.dialog = Some(crate::app::Dialog::RenamePane(pane_id, current));
-                ui.close();
-            }
-            ui.separator();
-            if ui.button(t("Close Pane")).clicked() {
-                self.actions.push(Action::ClosePaneId(pane_id));
-                ui.close();
-            }
-        });
+        label_resp.context_menu(|ui| self.pane_menu(ui, pane_id));
         if attention {
             painter.rect_filled(
                 Rect::from_min_size(rect.left_top(), vec2(3.0, rect.height())),
@@ -801,48 +809,156 @@ impl App {
         }
     }
 
-    /// "Resume Claude Code" over the top right of a pane without a header.
-    fn resume_button(&mut self, ui: &mut Ui, pane_id: PaneId, term: Rect) {
-        let Some((agent, _)) = self.panes.get(&pane_id).and_then(|p| p.resume.clone()) else { return };
-        let text = tf("Resume {}", &[agent.label()]);
-        let w = style::text_width(ui, &text) + 34.0;
-        let r = Rect::from_min_size(pos2(term.right() - w - 12.0, term.top() + 6.0), vec2(w, 26.0));
-        let resp = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
-                kit::button_ex(ui, kit::Kind::Primary, Some(icons::PLAY), &text, true)
+    /// The banner over a restored pane whose agent can continue its last session.
+    fn resume_banner(&mut self, ui: &mut Ui, pane_id: PaneId, rect: Rect) {
+        let p = style::pal(ui);
+        let Some((agent, _)) = self.panes.get(&pane_id).and_then(|x| x.resume.clone()) else { return };
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, CornerRadius::ZERO, p.surface);
+        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
+        let cy = rect.center().y;
+        painter.text(pos2(rect.left() + 12.0 + 7.5, cy), Align2::CENTER_CENTER, icons::CLOCK_COUNTER_CLOCKWISE, style::icon_font(15.0), p.accent_text);
+        // Buttons from the right.
+        let inner = Rect::from_min_max(pos2(rect.left() + 12.0, rect.top()), pos2(rect.right() - 12.0, rect.bottom()));
+        let (resume, dismiss, left) = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let d = kit::button_ex(ui, kit::Kind::Ghost, None, t("Dismiss"), true);
+                let r = kit::button_ex(ui, kit::Kind::Primary, Some(icons::PLAY), t("Resume Session"), true);
+                (r, d, ui.min_rect().left())
             })
             .inner;
         #[cfg(debug_assertions)]
-        crate::devtest::record(format!("resume:{pane_id}"), resp.rect);
-        if resp
-            .on_hover_text(tf("Continue {}'s last session here", &[agent.label()]))
-            .clicked()
-        {
+        crate::devtest::record(format!("resume:{pane_id}"), resume.rect);
+        let text_x = rect.left() + 12.0 + 15.0 + 10.0;
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            crate::i18n::tf("{} ran here before the restart.", &[agent.label()]),
+            egui::FontId::proportional(12.5),
+            p.text,
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width((left - 10.0 - text_x).max(10.0));
+        let g = painter.layout_job(job);
+        painter.galley(pos2(text_x, cy - g.size().y / 2.0), g, p.text);
+        if resume.on_hover_text(tf("Continue {}'s last session here", &[agent.label()])).clicked() {
             self.actions.push(Action::Resume(pane_id));
+        }
+        if dismiss.clicked() {
+            self.actions.push(Action::DismissResume(pane_id));
         }
     }
 
-    /// The top bar of the Grid.
+    /// The bar under a pane whose shell ended (or could not start): what happened, and a new
+    /// shell (Enter) or closing the pane.
+    fn exit_bar(&mut self, ui: &mut Ui, pane_id: PaneId, rect: Rect) {
+        let p = style::pal(ui);
+        let Some(pane) = self.panes.get(&pane_id) else { return };
+        let failed = pane.start_error.clone();
+        let (icon, color, text) = match (&failed, pane.exit) {
+            (Some(why), _) => (icons::X_CIRCLE, p.err, tf("The shell could not start: {}", &[why])),
+            (None, Some(tc_term::pty::ExitInfo::Code(c))) => (icons::STOP, p.text_faint, tf("Exited with code {}", &[&c.to_string()])),
+            (None, Some(tc_term::pty::ExitInfo::Signal(s))) => (icons::STOP, p.text_faint, tf("Ended by signal {}", &[&s.to_string()])),
+            _ => (icons::STOP, p.text_faint, t("Shell ended").to_string()),
+        };
+        let painter = ui.painter_at(rect);
+        let fill = if failed.is_some() { style::over(p.chrome, p.err, 0.10) } else { p.chrome };
+        painter.rect_filled(rect, CornerRadius::ZERO, fill);
+        painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
+        let cy = rect.center().y;
+        painter.text(pos2(rect.left() + 12.0 + 7.5, cy), Align2::CENTER_CENTER, icon, style::icon_font(15.0), color);
+        let inner = Rect::from_min_max(pos2(rect.left() + 12.0, rect.top()), pos2(rect.right() - 12.0, rect.bottom()));
+        let (restart, close, left) = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                if failed.is_some() {
+                    let r = kit::button_ex(ui, kit::Kind::Secondary, None, t("Try Again"), true);
+                    (r, None, ui.min_rect().left())
+                } else {
+                    let c = kit::button_keys(ui, kit::Kind::Ghost, None, t("Close Pane"), kit::keys(&Action::ClosePane), true);
+                    let r = kit::button_keys(ui, kit::Kind::Secondary, None, t("New Shell"), Some("↵"), true);
+                    (r, Some(c), ui.min_rect().left())
+                }
+            })
+            .inner;
+        let text_x = rect.left() + 12.0 + 15.0 + 10.0;
+        let text_c = if failed.is_some() { p.text } else { p.text_muted };
+        let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(12.5), text_c);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((left - 10.0 - text_x).max(10.0));
+        let g = painter.layout_job(job);
+        painter.galley(pos2(text_x, cy - g.size().y / 2.0), g, text_c);
+        if restart.clicked() {
+            self.actions.push(Action::RestartShell(pane_id));
+        }
+        if close.is_some_and(|c| c.clicked()) {
+            self.actions.push(Action::ClosePaneId(pane_id));
+        }
+    }
+
+    /// A pane header's right-click menu.
+    fn pane_menu(&mut self, ui: &mut Ui, pane_id: PaneId) {
+        kit::menu_body(ui);
+        if kit::menu_item(ui, Some(icons::PENCIL_SIMPLE), t("Rename…"), Some(t("double-click")), false).clicked() {
+            let current = self.panes.get(&pane_id).and_then(|p| p.title.clone()).unwrap_or_default();
+            self.dialog = Some(crate::app::Dialog::RenamePane(pane_id, current));
+            ui.close();
+        }
+        if kit::menu_item(ui, Some(icons::SQUARE_SPLIT_HORIZONTAL), t("Split Right"), kit::keys(&Action::SplitRight), false).clicked() {
+            self.actions.push(Action::FocusPane(pane_id));
+            self.actions.push(Action::SplitRight);
+            ui.close();
+        }
+        if kit::menu_item(ui, Some(icons::ARROWS_OUT_SIMPLE), t("Move to New Tab"), None, false).clicked() {
+            self.actions.push(Action::PaneToTab(pane_id));
+            ui.close();
+        }
+        kit::menu_sep(ui);
+        if let Some((agent, _)) = self.panes.get(&pane_id).and_then(|x| x.resume.clone())
+            && kit::menu_item(ui, Some(icons::CLOCK_COUNTER_CLOCKWISE), &tf("Resume {}", &[agent.label()]), None, false).clicked()
+        {
+            self.actions.push(Action::Resume(pane_id));
+            ui.close();
+        }
+        if kit::menu_item(ui, Some(icons::BROOM), t("Clear Scrollback"), kit::keys(&Action::ClearScrollback), false).clicked() {
+            self.actions.push(Action::FocusPane(pane_id));
+            self.actions.push(Action::ClearScrollback);
+            ui.close();
+        }
+        kit::menu_sep(ui);
+        if kit::menu_item(ui, Some(icons::X), t("Close Pane"), kit::keys(&Action::ClosePane), true).clicked() {
+            self.actions.push(Action::ClosePaneId(pane_id));
+            ui.close();
+        }
+    }
+
+    /// The top bar of the Grid: its title and counts, the filter in the middle, how many tiles
+    /// fit a screen at the right.
     pub fn overview_bar(&mut self, ui: &mut Ui) -> Rect {
+        use tc_core::model::GridFilter;
         let p = style::pal(ui);
         let full = ui.max_rect();
         let n = self.projects.len();
         let waiting = self.attention_queue().len();
+        let waiting_projects = self.waiting_projects().len();
         let active = self.active_projects();
         // The filter, in the middle where it is easy to find.
         let options = [
-            (t("All"), t("Every project's terminal, two columns; scroll for more")),
-            (t("Active"), t("Only projects where something runs or waits")),
+            kit::Seg::new(t("All"), t("Every project's terminal; scroll for more")).count(n, p.text_faint),
+            kit::Seg::new(t("Active"), t("Only projects where something runs or waits")).count(active, p.text_faint),
+            kit::Seg::new(t("Waiting"), t("Only projects with something waiting for you")).count(waiting_projects, if waiting_projects > 0 { p.warn } else { p.text_faint }),
         ];
         let width = kit::segmented_width(ui, &options);
+        let on = match self.grid_filter {
+            GridFilter::All => 0,
+            GridFilter::Active => 1,
+            GridFilter::Waiting => 2,
+        };
         let mut filter = |app: &mut Self, ui: &mut Ui, rect: Rect| {
             #[cfg(debug_assertions)]
-            for (r, name) in kit::segment_rects(rect, 2).into_iter().zip(["grid:all", "grid:active"]) {
+            for (r, name) in kit::segment_rects(rect, 3).into_iter().zip(["grid:all", "grid:active", "grid:waiting"]) {
                 crate::devtest::record(name, r);
             }
             let id = egui::Id::new("grid-filter");
-            if let Some(i) = kit::segmented_in(ui, rect, id, &options, app.grid_active_only as usize) {
-                app.actions.push(Action::GridActiveOnly(i == 1));
+            if let Some(i) = kit::segmented_in(ui, rect, id, &options, on) {
+                app.actions.push(Action::GridFilter([GridFilter::All, GridFilter::Active, GridFilter::Waiting][i]));
             }
         };
         let body = self.top_bar(
@@ -850,6 +966,7 @@ impl App {
             full,
             |_, ui| {
                 ui.label(RichText::new(t("All Projects")).font(style::semibold(14.0)).color(p.text));
+                ui.add_space(-2.0);
                 ui.label(
                     RichText::new(format!(
                         "{} · {} · {}",
@@ -868,6 +985,35 @@ impl App {
         self.last_full_body = Some(body);
         body
     }
+
+    /// The Grid's toolbar: how many tiles a screen holds.
+    fn grid_toolbar(&mut self, ui: &mut Ui) {
+        let label = match self.grid_columns {
+            0 => t("Auto").to_string(),
+            n => format!("{n} × {n}"),
+        };
+        let p = style::pal(ui);
+        let text = format!("{}  {label}", icons::SQUARES_FOUR);
+        let r = kit::button_ex(ui, kit::Kind::Ghost, None, &format!("{text}  {}", icons::CARET_DOWN), true);
+        #[cfg(debug_assertions)]
+        crate::devtest::record("grid-layout", r.rect);
+        let r = r.on_hover_text(t("Tiles in view"));
+        let current = self.grid_columns;
+        egui::Popup::menu(&r).align(egui::RectAlign::BOTTOM_END).show(|ui| {
+            kit::menu_body(ui);
+            ui.set_min_width(170.0);
+            kit::menu_header(ui, t("Tiles in view"));
+            for (n, l) in [(0, t("Automatic").to_string()), (1, "1 × 1".into()), (2, "2 × 2".into()), (3, "3 × 3".into()), (4, "4 × 4".into())] {
+                if kit::menu_item(ui, (current == n).then_some(icons::CHECK), &l, None, false).clicked() {
+                    self.actions.push(Action::GridColumns(n));
+                    ui.close();
+                }
+            }
+            kit::menu_sep(ui);
+            ui.add_enabled_ui(false, |ui| kit::menu_item(ui, Some(icons::INFO), t("Ordered by project name"), None, false));
+        });
+        let _ = p;
+    }
 }
 
 /// ⌘-click (Ctrl-click elsewhere) on a word of a terminal: a web address opens in the browser
@@ -881,9 +1027,32 @@ pub(super) fn term_link(word: &str, cwd: &std::path::Path) -> Option<Action> {
     crate::editor::parse_location(word, cwd).map(|(path, line)| Action::OpenFile(path, line))
 }
 
-/// A terminal tab in the project header: its status icon (when something runs or waits), its
-/// label and, when hovered or active and there are several tabs, a close button. Returns the
-/// tab's response and whether the close button was clicked.
+/// The branch in the project header, as a quiet button that opens the Review: its icon, its
+/// name, and how many files changed.
+fn branch_chip(ui: &mut Ui, branch: &str, changed: usize) -> egui::Response {
+    let p = style::pal(ui);
+    let font = style::medium(12.0);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(branch, 0.0, egui::TextFormat::simple(font.clone(), p.text_muted));
+    if changed > 0 {
+        job.append("·", 5.0, egui::TextFormat::simple(font.clone(), p.text_faint));
+        job.append(&tf("{} changed", &[&changed.to_string()]), 5.0, egui::TextFormat::simple(font, p.warn));
+    }
+    let g = ui.painter().layout_job(job);
+    let w = 8.0 + 13.0 + 5.0 + g.size().x + 8.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(style::RADIUS), p.hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().text(pos2(rect.left() + 8.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icons::GIT_BRANCH, style::icon_font(13.0), p.text_faint);
+    ui.painter().galley(pos2(rect.left() + 8.0 + 13.0 + 5.0, rect.center().y - g.size().y / 2.0), g, p.text_muted);
+    resp
+}
+
+/// A terminal tab in the project header: its status icon (the terminal's when nothing runs or
+/// waits), its label, a close button when there are several tabs, and a thin progress line
+/// when a program in it reports one. Returns the tab's response and whether close was clicked.
 fn terminal_tab(
     ui: &mut Ui,
     label: &str,
@@ -891,16 +1060,17 @@ fn terminal_tab(
     on: bool,
     dragging: bool,
     closable: bool,
+    progress: Option<(u8, Option<u8>)>,
 ) -> (egui::Response, bool) {
     let p = style::pal(ui);
     let font = style::medium(12.5);
     let mut job = egui::text::LayoutJob::simple_singleline(label.to_string(), font, egui::Color32::PLACEHOLDER);
     job.wrap = egui::text::TextWrapping::truncate_at_width(160.0);
     let galley = ui.painter().layout_job(job);
-    let close_w = if closable { 20.0 } else { 0.0 };
-    let w = galley.size().x + 12.0 + 18.0 + 10.0 + close_w;
+    let close_w = if closable { 7.0 + 16.0 } else { 0.0 };
+    let w = 9.0 + 13.0 + 7.0 + galley.size().x + close_w + 8.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click_and_drag());
-    let close_rect = Rect::from_center_size(pos2(rect.right() - 14.0, rect.center().y), vec2(18.0, 18.0));
+    let close_rect = Rect::from_center_size(pos2(rect.right() - 8.0 - 8.0, rect.center().y), vec2(16.0, 16.0));
     let close_resp = closable.then(|| ui.interact(close_rect, resp.id.with("close"), Sense::click()));
     let painter = ui.painter_at(rect);
     if dragging {
@@ -925,24 +1095,30 @@ fn terminal_tab(
         Some(s) => (status::icon(s), status::color(s, &p)),
         None => (icons::TERMINAL, if on { p.accent_text } else { p.text_faint }),
     };
-    painter.text(pos2(rect.left() + 18.0, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), color);
+    painter.text(pos2(rect.left() + 9.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), color);
     let text_color = if on { p.text } else { p.text_muted };
-    painter.galley(pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0), galley, text_color);
+    painter.galley(pos2(rect.left() + 9.0 + 13.0 + 7.0, rect.center().y - galley.size().y / 2.0), galley, text_color);
+    // What a program in the tab reports of its progress.
+    if let Some((state, value)) = progress {
+        let track = Rect::from_min_max(pos2(rect.left() + 8.0, rect.bottom() - 4.0), pos2(rect.right() - 8.0, rect.bottom() - 2.0));
+        painter.rect_filled(track, CornerRadius::same(1), p.subtle);
+        let c = if state == 2 { p.err } else if state == 4 { p.warn } else { p.info };
+        let f = value.map_or(0.3, |v| v.min(100) as f32 / 100.0);
+        painter.rect_filled(Rect::from_min_size(track.min, vec2(track.width() * f, 2.0)), CornerRadius::same(1), c);
+    }
     let mut closed = false;
     if let Some(c) = close_resp {
         let hot = c.hovered();
         if hot {
             painter.rect_filled(close_rect, CornerRadius::same(4), p.subtle);
         }
-        if hot || resp.hovered() || on {
-            painter.text(
-                close_rect.center(),
-                Align2::CENTER_CENTER,
-                icons::X,
-                style::icon_font(11.0),
-                if hot { p.text } else { p.text_faint },
-            );
-        }
+        painter.text(
+            close_rect.center(),
+            Align2::CENTER_CENTER,
+            icons::X,
+            style::icon_font(11.0),
+            if hot { p.text } else { p.text_faint },
+        );
         closed = c.on_hover_text(t("Close Tab")).clicked();
     }
     (resp, closed)
@@ -953,7 +1129,7 @@ fn terminal_tab(
 pub fn term_rect(pane: Rect, single: bool) -> Rect {
     let top = pane.top() + if single { 0.0 } else { PANE_HEADER_H };
     Rect::from_min_max(
-        pos2(pane.left() + TERM_PAD, top + 4.0),
-        pos2(pane.right() - TERM_PAD + 2.0, pane.bottom() - 2.0),
+        pos2(pane.left() + TERM_PAD, top),
+        pos2(pane.right() - TERM_PAD, pane.bottom() - 2.0),
     )
 }

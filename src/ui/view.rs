@@ -83,7 +83,6 @@ impl App {
         self.palette_ui(&ctx);
         self.dialogs(&ctx);
         self.updates(&ctx);
-        self.review_ui(&ctx);
         self.toast_ui(&ctx);
     }
 
@@ -112,6 +111,11 @@ impl App {
             ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| self.welcome(ui));
             return;
         }
+        // Review takes the place of the panes (the sidebar stays).
+        if self.review.is_some() {
+            self.review_view(ui);
+            return;
+        }
         match self.view {
             tc_core::model::View::Focus => self.focus_view(ui),
             tc_core::model::View::Grid => {
@@ -121,53 +125,87 @@ impl App {
         }
     }
 
+    /// No projects yet: what TernaryCode is, the three ways to add a project, and the shortcuts
+    /// worth learning first.
     fn welcome(&mut self, ui: &mut Ui) {
-        use crate::i18n::t;
         use super::{icons, kit};
+        use crate::i18n::{t, tf};
         let p = style::pal(ui);
-        ui.add_space((ui.available_height() * 0.2).min(160.0));
-        ui.vertical_centered(|ui| {
-            kit::icon(ui, icons::TERMINAL_WINDOW, 40.0, p.accent_text);
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new(t("No projects yet")).font(style::semibold(20.0)).color(p.text));
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(t("Add a project folder to open a terminal in it and start agents."))
-                    .color(p.text_muted),
-            );
-            ui.add_space(16.0);
-            if kit::primary_icon(ui, icons::FOLDER_PLUS, t("Add Project…")).clicked() {
+        let area = ui.max_rect();
+        let col = egui::Rect::from_min_size(egui::pos2(area.center().x - 310.0, area.top() + (area.height() * 0.11).clamp(24.0, 96.0)), egui::vec2(620.0, area.height()));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(col).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let (r, _) = ui.allocate_exact_size(egui::vec2(56.0, 56.0), egui::Sense::hover());
+            super::settings::paint_logo(ui.painter(), r, &p);
+            ui.add_space(18.0);
+            ui.label(egui::RichText::new(t("Every project and its agents, in one window")).font(style::semibold(22.0)).color(p.text));
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(t("Add a project folder to open a terminal in it and start agents.")).size(style::BODY).color(p.text_muted));
+            ui.add_space(20.0);
+            if kit::button_keys(ui, kit::Kind::Primary, Some(icons::FOLDER_PLUS), t("Add Project…"), kit::keys(&crate::actions::Action::AddProject), false).clicked() {
                 self.actions.push(crate::actions::Action::AddProject);
             }
-            ui.add_space(28.0);
+            ui.add_space(30.0);
+            // Three ways in.
+            let (row, _) = ui.allocate_exact_size(egui::vec2(620.0, 138.0), egui::Sense::hover());
+            let w = (620.0 - 24.0) / 3.0;
+            let ways = [
+                (icons::FOLDER_PLUS, t("Choose a folder"), t("Its terminals start there; files and git changes show beside them.").to_string()),
+                (icons::ARROW_LINE_DOWN, t("Drop a folder here"), t("Anywhere on this window. A file adds the folder it is in.").to_string()),
+                (icons::TERMINAL, t("From any terminal"), tf("{} opens the current folder here.", &["ternarycode ."])),
+            ];
+            for (i, (icon, title, body)) in ways.iter().enumerate() {
+                let r = egui::Rect::from_min_size(row.min + egui::vec2(i as f32 * (w + 12.0), 0.0), egui::vec2(w, row.height()));
+                let painter = ui.painter();
+                painter.rect(r, egui::CornerRadius::same(9), p.surface, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+                painter.text(r.min + egui::vec2(14.0, 14.0), egui::Align2::LEFT_TOP, *icon, style::icon_font(20.0), p.accent_text);
+                painter.text(r.min + egui::vec2(14.0, 14.0 + 20.0 + 10.0), egui::Align2::LEFT_TOP, *title, style::medium(13.5), p.text);
+                // The command in the third, in monospace.
+                let mut job = egui::text::LayoutJob::default();
+                let small = egui::FontId::proportional(style::SMALL);
+                match (i, body.split_once("ternarycode .")) {
+                    (2, Some((before, after))) => {
+                        job.append(before, 0.0, egui::text::TextFormat::simple(small.clone(), p.text_muted));
+                        job.append("ternarycode .", 0.0, egui::text::TextFormat::simple(egui::FontId::monospace(11.5), p.text));
+                        job.append(after, 0.0, egui::text::TextFormat::simple(small, p.text_muted));
+                    }
+                    _ => job.append(body, 0.0, egui::text::TextFormat::simple(small, p.text_muted)),
+                }
+                job.wrap.max_width = w - 28.0;
+                let g = painter.layout_job(job);
+                painter.galley(r.min + egui::vec2(14.0, 14.0 + 20.0 + 10.0 + 20.0), g, p.text_muted);
+            }
+            ui.add_space(22.0);
             shortcuts_card(ui);
         });
     }
 }
 
-/// The shortcuts worth learning first.
+/// The shortcuts worth learning first, in the order of the work: what waits, then agents, the
+/// Grid, everything else, the code, the review.
 pub fn shortcuts_card(ui: &mut Ui) {
     use super::kit;
+    use crate::actions::Action;
     use crate::i18n::t;
     let p = style::pal(ui);
-    use crate::actions::Action;
     let rows = [
         (Action::NextAttention, t("Jump to the agent that waits for you")),
+        (Action::PickPreset, t("Run an agent")),
+        (Action::ToggleGrid, t("See every project at once")),
         (Action::Palette, t("Command palette")),
-        (Action::PickPreset, t("Start an agent")),
-        (Action::QuickOpen, t("Open a file of the project")),
-        (Action::ToggleEditor, t("Show or hide the editor")),
-        (Action::SplitRight, t("Split the pane")),
+        (Action::ToggleEditor, t("Show code beside the terminal")),
         (Action::Review, t("Review what the agent changed")),
     ];
-    kit::card(ui).show(ui, |ui| {
-        ui.set_width(340.0);
-        egui::Grid::new("shortcuts").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-            for (action, what) in rows {
-                kit::kbd(ui, kit::keys(&action).unwrap_or_default());
-                ui.label(egui::RichText::new(what).color(p.text_muted));
-                ui.end_row();
-            }
-        });
-    });
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(620.0, 12.0 + rows.len() as f32 * 34.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect(rect, egui::CornerRadius::same(9), p.surface, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    for (i, (action, what)) in rows.iter().enumerate() {
+        let y = rect.top() + 6.0 + i as f32 * 34.0;
+        if i > 0 {
+            painter.hline((rect.left() + 16.0)..=(rect.right() - 16.0), y + 0.5, egui::Stroke::new(1.0, p.border));
+        }
+        let cy = y + 17.0;
+        kit::paint_kbd_text(painter, egui::pos2(rect.left() + 16.0, cy), kit::keys(action).unwrap_or_default(), &p);
+        painter.text(egui::pos2(rect.left() + 16.0 + 52.0 + 14.0, cy), egui::Align2::LEFT_CENTER, *what, egui::FontId::proportional(13.0), p.text_muted);
+    }
 }

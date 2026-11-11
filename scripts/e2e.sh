@@ -107,7 +107,7 @@ run docs 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOC
 run doc-find 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOCS/report.pdf;; wait-doc kind=pdf state=ready pages=2;; click doc-body;; sleep 200;; action find;; sleep 300;; keys quarterly;; wait-doc matches=2 current=1;; key enter;; wait-doc current=2;; shot e2e-doc-find-pdf;; key esc;; open-file $DOCS/data.csv;; wait-doc kind=csv state=ready;; click doc-body;; action find;; sleep 300;; keys beta;; wait-doc matches=1 cell=2,0;; key esc;; open-file $DOCS/notes.docx;; wait-doc kind=word state=ready;; click doc-body;; action find;; sleep 300;; keys docs;; wait-doc matches=1 current=1;; shot e2e-doc-find-word;; quit"
 
 # The sidebar keeps the width it is dragged to (it used to shrink back to its narrowest).
-run sidebar-resize 40 "sleep 1000;; action add-project $P1;; sleep 1200;; expect-width sidebar 230 250;; mouse down sidebar@1.0,0.5;; sleep 100;; mouse drag sidebar@1.4,0.5;; sleep 150;; mouse up sidebar@1.0,0.5;; sleep 1500;; expect-width sidebar 320 345;; sleep 1500;; expect-width sidebar 320 345;; quit"
+run sidebar-resize 40 "sleep 1000;; action add-project $P1;; sleep 1200;; expect-width sidebar 240 256;; mouse down sidebar@1.0,0.5;; sleep 100;; mouse drag sidebar@1.4,0.5;; sleep 150;; mouse up sidebar@1.0,0.5;; sleep 1500;; expect-width sidebar 335 360;; sleep 1500;; expect-width sidebar 335 360;; quit"
 run grid-fit 50 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 1500;; wait-tabs 0:2,3;; action grid;; sleep 1000;; expect-fill 2;; expect-fill 3;; mouse down tile:alpha@0.75,0.5;; mouse up tile:alpha@0.75,0.5;; sleep 300;; key ctrl+d;; wait-tabs 0:2;; sleep 800;; expect-fill 2;; shot e2e-grid-fit;; action focus;; sleep 1000;; expect-fill 2;; quit"
 
 # A zsh prompt survives resizes whole (v1.2): split, close the split, open and close the editor;
@@ -142,12 +142,12 @@ run grid 60 "sleep 1000;; action add-project $P1;; sleep 900;; action split-righ
 
 run editor 60 "sleep 1000;; action add-project $P1;; sleep 1200;; open-file $P1/notes.txt;; sleep 800;; write-file $P1/notes.txt notes v2 by agent\\n;; wait-editor v2 by agent;; open-file $P1/src/main.rs:2;; sleep 800;; click editor-text;; sleep 300;; key cmd+down;; keys // mine\\r;; wait-editor // mine;; write-file $P1/src/main.rs fn main() { agent(); }\\n;; wait-conflict;; expect-not-file $P1/src/main.rs // mine;; action force-save;; sleep 500;; expect-file $P1/src/main.rs // mine;; quit"
 
-# The sidebar's file tree (v1.1): click a file → the editor shows it; files an agent adds or
+# The Code drawer's Files column (v1.1, in the drawer since v0.2 of the design): click a file → the editor shows it; files an agent adds or
 # changes appear (and get their git letter) without a refresh; nothing is read per frame.
 T="$WORK/tree"; mkdir -p "$T/src"
 (cd "$T" && git init -q -b main && printf 'line 1\n' > edit.txt && printf 'fn main() {}\n' > src/main.rs \
     && git add -A && git -c user.name=t -c user.email=t@t commit -qm init)
-run explorer 60 "sleep 1000;; action add-project $T;; sleep 1500;; wait-tree edit.txt;; click tree:edit.txt;; wait-open edit.txt;; expect-rect editor-text;; write-file $T/edit.txt line 1 changed by agent\\n;; wait-git edit.txt M;; write-file $T/added.txt new\\n;; wait-tree added.txt;; wait-git added.txt U;; click editor-close;; sleep 400;; click toggle-editor;; wait-open edit.txt;; shot e2e-explorer;; quit"
+run explorer 60 "sleep 1000;; action add-project $T;; sleep 1500;; action files;; sleep 800;; wait-tree edit.txt;; click tree:edit.txt;; wait-open edit.txt;; expect-rect editor-text;; write-file $T/edit.txt line 1 changed by agent\\n;; wait-git edit.txt M;; write-file $T/added.txt new\\n;; wait-tree added.txt;; wait-git added.txt U;; click editor-close;; sleep 400;; click toggle-editor;; wait-open edit.txt;; shot e2e-explorer;; quit"
 
 
 # Terminal tabs (v1.1): drag a tab along the strip to reorder; drop it on a pane's right half to
@@ -164,7 +164,7 @@ run pane-drag 50 "sleep 1000;; action add-project $P2;; sleep 1200;; action spli
 # The file tree's own actions: a new file (named in place, then opened), renamed in place (the
 # open file follows), and a nested folder.
 F="$WORK/files"; mkdir -p "$F"; printf 'x\n' > "$F/a.txt"
-run files-actions 50 "sleep 1000;; action add-project $F;; sleep 1500;; wait-tree a.txt;; sleep 300;; click files-button:4;; sleep 400;; keys hello.txt\\r;; wait-open hello.txt;; wait-tree hello.txt;; action rename hello.txt;; sleep 400;; keys renamed\\r;; wait-tree renamed.txt;; wait-open renamed.txt;; click files-button:3;; sleep 400;; keys docs/api\\r;; wait-tree docs;; shot e2e-files;; quit"
+run files-actions 50 "sleep 1000;; action add-project $F;; sleep 1500;; action files;; sleep 800;; wait-tree a.txt;; sleep 300;; click files-button:0;; sleep 400;; keys hello.txt\\r;; wait-open hello.txt;; wait-tree hello.txt;; action rename hello.txt;; sleep 400;; keys renamed\\r;; wait-tree renamed.txt;; wait-open renamed.txt;; click files-button:1;; sleep 400;; keys docs/api\\r;; wait-tree docs;; shot e2e-files;; quit"
 run ctrl-d 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 2600;; wait-tabs 0:2,3;; key ctrl+d;; wait-tabs 0:2;; sleep 300;; key ctrl+d;; wait-tabs 0:4;; sleep 600;; key ctrl+d;; wait-tabs 0:5;; quit"
 run review 60 "sleep 1000;; action add-project $R;; sleep 1200;; hook 2 claude SessionStart;; sleep 300;; wait-snapshot;; write-file $R/edit.txt line 1\\nline 2 changed\\nline 3\\n;; write-file $R/new.txt brand new\\n;; rm-file $R/gone.txt;; sleep 300;; action review;; sleep 1500;; wait-review Added:new.txt,Deleted:gone.txt,Modified:edit.txt;; quit"
 # An agent that finished while another project was open: Review in the list of what waits, and

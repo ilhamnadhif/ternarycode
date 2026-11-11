@@ -435,6 +435,56 @@ fn cell_at(pos: Pos2, origin: Pos2, cell: Vec2, size: GridSize) -> (usize, usize
     (col, row, side)
 }
 
+/// The run of non-blank cells around a viewport cell: its first and end columns and its text.
+fn word_at<T>(term: &term::Term<T>, offset: usize, col: usize, row: usize) -> Option<(usize, usize, String)> {
+    let point = grid_point(offset, col, row);
+    let cols = term.columns();
+    if cols == 0 || col >= cols {
+        return None;
+    }
+    let line = &term.grid()[point.line];
+    let chars: Vec<char> = (0..cols).map(|c| line[Column(c)].c).collect();
+    let word = |c: char| !c.is_whitespace() && c != '\0';
+    if !word(chars[col]) {
+        return None;
+    }
+    let (mut s, mut e) = (col, col);
+    while s > 0 && word(chars[s - 1]) {
+        s -= 1;
+    }
+    while e < cols && word(chars[e]) {
+        e += 1;
+    }
+    Some((s, e, chars[s..e].iter().collect()))
+}
+
+/// Whether a word reads as something ⌘-click opens: a web address, or a path or file name
+/// (`src/app.rs:120`, `./run.sh`, `Cargo.toml`). The app decides what it really is.
+pub fn looks_like_link(word: &str) -> bool {
+    let w = word.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';'));
+    if w.starts_with("http://") || w.starts_with("https://") {
+        return w.len() > "https://".len();
+    }
+    let path = w.split(':').next().unwrap_or("");
+    if path.is_empty() || path.chars().all(|c| c == '.' || c == '/') {
+        return false;
+    }
+    if path.contains('/') {
+        return true;
+    }
+    // A file name: letters before a dot and an extension after it (not a number like 1.5).
+    match path.rsplit_once('.') {
+        Some((stem, ext)) => {
+            !stem.is_empty()
+                && !ext.is_empty()
+                && ext.len() <= 8
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                && ext.chars().any(|c| c.is_ascii_alphabetic())
+        }
+        None => false,
+    }
+}
+
 fn grid_point(offset: usize, col: usize, row: usize) -> Point {
     term::viewport_to_point(offset, Point::new(row, Column(col)))
 }
@@ -951,6 +1001,8 @@ fn show_inner(
     let mouse_mode = mode.intersects(TermMode::MOUSE_MODE) && alive;
     let shift_held = ui.input(|i| i.modifiers.shift);
     let sgr = mode.contains(TermMode::SGR_MOUSE);
+    // The link under the pointer while ⌘ is held: its row and columns.
+    let mut link_hover: Option<(usize, usize, usize)> = None;
     if mouse_mode && !shift_held && input_enabled {
         let events = ui.input(|i| i.events.clone());
         for event in events {
@@ -1053,25 +1105,19 @@ fn show_inner(
         {
             ui.ctx().copy_text(text);
         }
-        if response.clicked_by(PointerButton::Primary)
-            && ui.input(|i| i.modifiers.command)
+        // ⌘ held over a path or a web address: it is underlined (and the pointer is a hand),
+        // and a click hands the word to the app to open.
+        if ui.input(|i| i.modifiers.command)
             && let Some(p) = hover
         {
             let (col, row, _) = at(p);
-            let point = grid_point(offset, col, row);
-            let cols = term.columns();
-            let line = &term.grid()[point.line];
-            let chars: Vec<char> = (0..cols).map(|c| line[Column(c)].c).collect();
-            let word = |c: char| !c.is_whitespace() && c != '\0';
-            let (mut s, mut e) = (col.min(cols.saturating_sub(1)), col);
-            while s > 0 && word(chars[s - 1]) {
-                s -= 1;
-            }
-            while e < cols && word(chars[e]) {
-                e += 1;
-            }
-            if e > s {
-                out.link = Some(chars[s..e].iter().collect());
+            if let Some((s, e, word)) = word_at(&term, offset, col, row)
+                && looks_like_link(&word)
+            {
+                link_hover = Some((row, s, e));
+                if response.clicked_by(PointerButton::Primary) {
+                    out.link = Some(word);
+                }
             }
         }
         if let Some(p) = hover {
@@ -1147,7 +1193,9 @@ fn show_inner(
         }
     }
     if hover.is_some() {
-        ui.ctx().set_cursor_icon(if mouse_mode && !shift_held {
+        ui.ctx().set_cursor_icon(if link_hover.is_some() {
+            egui::CursorIcon::PointingHand
+        } else if mouse_mode && !shift_held {
             egui::CursorIcon::Default
         } else {
             egui::CursorIcon::Text
@@ -1391,6 +1439,13 @@ fn show_inner(
         paint_text(*row, *col, text, st, *width, st.fg);
         decorate(*row, *col, *width, st);
     }
+    if let Some((row, s, e)) = link_hover
+        && let Some(slot) = slot_of(row)
+    {
+        let r = cell_rect(s, slot, e - s);
+        let thickness = (1.0 / ppp).max(1.0);
+        painter.hline(r.x_range(), snap(r.bottom() - thickness * 1.5), Stroke::new(thickness, scheme.cursor));
+    }
 
     // Cursor.
     // Blinking stops a while after the last key (the cursor stays solid), so an idle window
@@ -1591,6 +1646,16 @@ mod tests {
     use super::*;
     use crate::core::{Feeder, new_terminal, term_config};
     use crate::scheme::SCHEMES;
+
+    #[test]
+    fn links_are_paths_files_and_web_addresses() {
+        for w in ["src/app.rs:120", "./run.sh", "Cargo.toml", "https://example.com/a", "(src/lib.rs:4:2)", "~/notes.md"] {
+            assert!(looks_like_link(w), "{w}");
+        }
+        for w in ["hello", "1.5", "...", "/", "https://", "v0.1.5:", "--force", "a."] {
+            assert!(!looks_like_link(w), "{w}");
+        }
+    }
 
     #[test]
     fn dim_darkens_every_indexed_colour() {

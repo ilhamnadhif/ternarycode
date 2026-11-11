@@ -58,12 +58,22 @@ pub enum Action {
     PrevPane,
     /// Starts a preset in a new pane of the active project.
     RunPreset(String),
+    /// From the Run Agent dialog: the preset, whether to continue its last session, where (0
+    /// new tab, 1 split right, 2 split down).
+    RunAgent(String, bool, usize),
     Resume(PaneId),
+    /// Forgets the session a restored pane could resume (its banner's Dismiss).
+    DismissResume(PaneId),
     RestartShell(PaneId),
     /// Start the shell of a pane restored asleep.
     WakePane(PaneId),
     /// Grid: only projects where something runs or waits (true), or all.
-    GridActiveOnly(bool),
+    /// Which projects the Grid shows.
+    GridFilter(tc_core::model::GridFilter),
+    /// Tiles across the Grid (0 = automatic).
+    GridColumns(u32),
+    /// The Grid tile that has the keyboard opens in Focus (⌘↵).
+    OpenGridTile,
     /// An editor command served by a language server (definition, rename, completion…).
     Ide(crate::lsp::IdeCmd),
     /// Opens a file with the caret at a line and char column (both 0-based).
@@ -71,6 +81,9 @@ pub enum Action {
     NextAttention,
     BackAttention,
     ToggleAttention,
+    /// Takes a pane out of the attention queue without going to it.
+    MarkSeen(PaneId),
+    MarkAllSeen,
     ToggleSidebar,
     Palette,
     SwitchProject,
@@ -82,8 +95,11 @@ pub enum Action {
     PlanInstall(AgentKind),
     ConfirmInstall,
     Uninstall(AgentKind),
+    UninstallNow(AgentKind),
     OpenFile(PathBuf, Option<usize>),
     CloseFile(usize),
+    /// Closes a file and drops its unsaved edits ("Don't Save").
+    DiscardAndCloseFile(usize),
     SaveFile,
     ForceSave,
     ReloadFile,
@@ -111,6 +127,8 @@ pub enum Action {
     QuickOpen,
     Find,
     Review,
+    /// Shows what changed in one file since the last commit (the Files column's Changes).
+    ReviewFile(PathBuf),
     FindAll,
     RevealMatch(PaneId, tc_term::alacritty_terminal::term::search::Match),
     Copy,

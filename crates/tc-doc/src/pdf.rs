@@ -58,11 +58,13 @@ pub struct TextChar {
 }
 
 /// A page's text in reading order, lower-cased for searching, with the box of each character
-/// (none for the spaces and line ends put between words and lines).
+/// (none for the spaces and line ends put between words and lines), and as written (for
+/// copying; `\0` where lower-casing made one character more).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PageText {
     pub chars: Vec<char>,
     pub rects: Vec<Option<[f32; 4]>>,
+    pub orig: Vec<char>,
 }
 
 impl PageText {
@@ -83,9 +85,12 @@ impl PageText {
                     out.push_sep(' ');
                 }
             }
-            for ch in c.text.chars().flat_map(char::to_lowercase) {
-                out.chars.push(ch);
-                out.rects.push(Some(r));
+            for ch in c.text.chars() {
+                for (k, low) in ch.to_lowercase().enumerate() {
+                    out.chars.push(low);
+                    out.rects.push(Some(r));
+                    out.orig.push(if k == 0 { ch } else { '\0' });
+                }
             }
             last = Some(r);
         }
@@ -95,6 +100,37 @@ impl PageText {
     fn push_sep(&mut self, c: char) {
         self.chars.push(c);
         self.rects.push(None);
+        self.orig.push(c);
+    }
+
+    /// The character at a point of the page (points from its top left), or the nearest one on
+    /// the nearest line; past the end of a line, the place after its last character. Used to
+    /// select text with the mouse.
+    pub fn index_at(&self, x: f32, y: f32) -> Option<usize> {
+        let mut best: Option<(f32, f32, usize)> = None;
+        for (i, r) in self.rects.iter().enumerate() {
+            let Some(r) = r else { continue };
+            let dy = if y < r[1] { r[1] - y } else if y > r[3] { y - r[3] } else { 0.0 };
+            let dx = if x < r[0] { r[0] - x } else if x > r[2] { x - r[2] } else { 0.0 };
+            // A character's right half selects up to after it.
+            let at = if x > (r[0] + r[2]) / 2.0 { i + 1 } else { i };
+            if best.is_none_or(|(by, bx, _)| dy < by - 0.01 || (dy - by).abs() <= 0.01 && dx < bx) {
+                best = Some((dy, dx, at));
+            }
+        }
+        best.map(|(_, _, i)| i)
+    }
+
+    /// The text of characters `a..b` as written.
+    pub fn text_between(&self, a: usize, b: usize) -> String {
+        let b = b.min(self.orig.len());
+        self.orig.get(a.min(b)..b).unwrap_or_default().iter().filter(|c| **c != '\0').collect()
+    }
+
+    /// The boxes of characters `a..b`, one per line.
+    pub fn boxes_between(&self, a: usize, b: usize) -> Vec<[f32; 4]> {
+        let b = b.min(self.rects.len());
+        merge_lines(self.rects.get(a.min(b)..b).unwrap_or_default().iter().flatten())
     }
 
     /// Where `query` occurs (case-insensitive; any run of spaces and line ends matches any
@@ -510,6 +546,14 @@ mod tests {
         // "ab" then a gap (a word space drawn as a move) then "c", then a new line "d".
         let text = PageText::from_chars(&[c("A", 0.0, 0.0), c("b", 6.0, 0.0), c("c", 20.0, 0.0), c("d", 0.0, 20.0)]);
         assert_eq!(text.chars.iter().collect::<String>(), "ab c\nd");
+        // As written, for copying; a point finds the character under it (or the line's end).
+        assert_eq!(text.text_between(0, text.chars.len()), "Ab c\nd");
+        assert_eq!(text.index_at(1.0, 5.0), Some(0));
+        assert_eq!(text.index_at(10.0, 5.0), Some(2));
+        assert_eq!(text.index_at(200.0, 5.0), Some(4));
+        assert_eq!(text.index_at(1.0, 25.0), Some(5));
+        assert_eq!(text.text_between(1, 4), "b c");
+        assert_eq!(text.boxes_between(0, 7).len(), 2);
         assert_eq!(text.find("b c").len(), 1);
         assert_eq!(text.find("AB").len(), 1);
         assert_eq!(text.find("c d")[0].len(), 2);

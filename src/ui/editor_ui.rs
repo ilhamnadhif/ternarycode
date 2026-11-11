@@ -13,17 +13,43 @@ use crate::app::App;
 use crate::i18n::{t, tf};
 
 pub const TAB_H: f32 = 36.0;
-const CRUMB_H: f32 = 26.0;
+const CRUMB_H: f32 = 28.0;
 const STATUS_H: f32 = 26.0;
+/// The Files column of the Code drawer, and the narrowest drawer that shows it.
+pub const FILES_W: f32 = 212.0;
+pub const FILES_MIN_DRAWER: f32 = 520.0;
 
 impl App {
-    pub fn editor_panel(&mut self, ui: &mut Ui, project: ProjectId, root: PathBuf) {
+    /// The Code drawer at the right of the panes: the Files column (unless hidden, or the
+    /// drawer is too narrow for it), then the editor or document of the open file.
+    pub fn code_drawer(&mut self, ui: &mut Ui, project: ProjectId, root: PathBuf) {
+        let full = ui.max_rect();
+        let files = !self.settings.files_hidden && full.width() >= FILES_MIN_DRAWER;
+        let editor = if files {
+            let col = Rect::from_min_size(full.min, vec2(FILES_W, full.height()));
+            #[cfg(debug_assertions)]
+            crate::devtest::record("files-column", col);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(col), |ui| {
+                ui.set_clip_rect(col);
+                self.files_column(ui, col);
+            });
+            Rect::from_min_max(pos2(col.right(), full.top()), full.max)
+        } else {
+            full
+        };
+        ui.scope_builder(egui::UiBuilder::new().max_rect(editor), |ui| {
+            ui.set_clip_rect(editor);
+            self.editor_panel(ui, project, root, !files);
+        });
+    }
+
+    pub fn editor_panel(&mut self, ui: &mut Ui, project: ProjectId, root: PathBuf, files_toggle: bool) {
         let p = style::pal(ui);
         let full = ui.max_rect();
         ui.painter().rect_filled(full, CornerRadius::ZERO, p.canvas);
 
         let tabs = Rect::from_min_size(full.min, vec2(full.width(), TAB_H));
-        self.editor_tabs(ui, project, tabs);
+        self.editor_tabs(ui, project, tabs, files_toggle);
         let body = Rect::from_min_max(pos2(full.left(), tabs.bottom()), full.max);
         let empty = self.editors.get(&project).is_none_or(|e| e.files.is_empty());
         if empty {
@@ -48,10 +74,18 @@ impl App {
             self.doc_panel(ui, project, body);
             return;
         }
-        // Path of the file, and the status line at the bottom.
+        // Path of the file, the problems (⇧⌘M) and the status line at the bottom.
         let crumb = Rect::from_min_size(body.min, vec2(body.width(), CRUMB_H));
         let status = Rect::from_min_max(pos2(body.left(), body.bottom() - STATUS_H), body.max);
-        let text_rect = Rect::from_min_max(pos2(body.left(), crumb.bottom()), pos2(body.right(), status.top()));
+        let problems_h = if self.problems_open { (30.0 + 6.0 * 26.0_f32).min(body.height() * 0.4) } else { 0.0 };
+        let problems = Rect::from_min_max(pos2(body.left(), status.top() - problems_h), pos2(body.right(), status.top()));
+        if self.problems_open {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(problems), |ui| {
+                ui.set_clip_rect(problems);
+                self.problems_panel(ui, project, problems);
+            });
+        }
+        let text_rect = Rect::from_min_max(pos2(body.left(), crumb.bottom()), pos2(body.right(), problems.top()));
         self.editor_crumb(ui, project, &root, crumb);
         self.editor_status(ui, project, status);
         ui.scope_builder(
@@ -65,16 +99,35 @@ impl App {
         );
     }
 
-    fn editor_tabs(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect) {
+    fn editor_tabs(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, files_toggle: bool) {
         let p = style::pal(ui);
         let painter = ui.painter();
         painter.rect_filled(rect, CornerRadius::ZERO, p.chrome);
         painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
 
-        let close = Rect::from_center_size(pos2(rect.right() - 20.0, rect.center().y), vec2(26.0, 26.0));
+        // The Files column hidden (or no room for it): a button at the left brings it back.
+        let mut rect = rect;
+        if files_toggle {
+            let cell = Rect::from_min_size(rect.min, vec2(36.0, rect.height()));
+            ui.painter().vline(cell.right() - 0.5, cell.y_range(), Stroke::new(1.0, p.border));
+            let b = Rect::from_center_size(pos2(cell.left() + 6.0 + 13.0, cell.center().y), vec2(26.0, 26.0));
+            let r = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(b), |ui| {
+                    kit::icon_button_ex(ui, icons::SIDEBAR_SIMPLE, t("Show Files"), false, 26.0)
+                })
+                .inner;
+            #[cfg(debug_assertions)]
+            crate::devtest::record("show-files", r.rect);
+            if r.clicked() {
+                self.actions.push(Action::ToggleFiles);
+            }
+            rect.min.x = cell.right();
+        }
+
+        let close = Rect::from_center_size(pos2(rect.right() - 19.0, rect.center().y), vec2(26.0, 26.0));
         let r = ui
             .scope_builder(egui::UiBuilder::new().max_rect(close), |ui| {
-                kit::icon_button_ex(ui, icons::X, &kit::tip(t("Close Editor"), Action::ToggleEditor), false, 26.0)
+                kit::icon_button_ex(ui, icons::X, &kit::tip(t("Close Code"), Action::ToggleEditor), false, 26.0)
             })
             .inner;
         #[cfg(debug_assertions)]
@@ -100,11 +153,11 @@ impl App {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         for (i, (name, dirty, path)) in files.iter().enumerate() {
                             let on = i == active;
-                            let font = style::medium(style::BODY - 0.5);
+                            let font = style::medium(13.0);
                             let galley = ui.painter().layout_no_wrap(name.clone(), font, egui::Color32::PLACEHOLDER);
-                            let w = 12.0 + 16.0 + 6.0 + galley.size().x + 8.0 + 18.0 + 8.0;
+                            let w = 12.0 + 14.0 + 7.0 + galley.size().x + 7.0 + 18.0 + 8.0;
                             let (r, resp) = ui.allocate_exact_size(vec2(w, TAB_H), Sense::click());
-                            let close_r = Rect::from_center_size(pos2(r.right() - 17.0, r.center().y), vec2(18.0, 18.0));
+                            let close_r = Rect::from_center_size(pos2(r.right() - 8.0 - 9.0, r.center().y), vec2(18.0, 18.0));
                             let close_resp = ui.interact(close_r, egui::Id::new(("tab-close", project, i)), Sense::click());
                             let painter = ui.painter();
                             if on {
@@ -116,7 +169,7 @@ impl App {
                             painter.vline(r.right() - 0.5, r.y_range(), Stroke::new(1.0, p.border));
                             let (icon, color) = icons::file_icon(name, false, false, &p);
                             painter.text(
-                                pos2(r.left() + 12.0 + 8.0, r.center().y),
+                                pos2(r.left() + 12.0 + 7.0, r.center().y),
                                 Align2::CENTER_CENTER,
                                 icon,
                                 style::icon_font(14.0),
@@ -124,7 +177,7 @@ impl App {
                             );
                             let text_color = if on { p.text } else { p.text_muted };
                             painter.galley(
-                                pos2(r.left() + 34.0, r.center().y - galley.size().y / 2.0),
+                                pos2(r.left() + 33.0, r.center().y - galley.size().y / 2.0),
                                 galley,
                                 text_color,
                             );
@@ -167,33 +220,25 @@ impl App {
     fn editor_crumb(&mut self, ui: &mut Ui, project: ProjectId, root: &Path, rect: Rect) {
         let p = style::pal(ui);
         let Some(file) = self.editors.get(&project).and_then(|e| e.file()) else { return };
-        let rel = file.path.strip_prefix(root).unwrap_or(&file.path);
-        let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-        let mut job = egui::text::LayoutJob::default();
-        let font = egui::FontId::proportional(style::SMALL + 0.5);
-        for (i, part) in parts.iter().enumerate() {
-            let last = i + 1 == parts.len();
-            if i > 0 {
-                job.append("  ›  ", 0.0, egui::TextFormat::simple(font.clone(), p.text_faint));
-            }
-            let color = if last { p.text_muted } else { p.text_faint };
-            job.append(part, 0.0, egui::TextFormat::simple(font.clone(), color));
-        }
-        let mut right = rect.right() - 12.0;
+        paint_crumb(ui, rect, root, &file.path, &p);
+        let dark = ui.visuals().dark_mode;
+        let painter = ui.painter();
+        let mut right = rect.right() - 14.0;
+        // What the file is: read-only, or just changed by an agent.
+        let mut pills: Vec<(Option<&str>, String, egui::Color32, egui::Color32)> = Vec::new();
         if file.read_only {
             let text = if file.truncated { t("Read-only · first 2 MB") } else { t("Read-only") };
-            let g = ui.painter().layout_no_wrap(text.to_string(), style::medium(style::SMALL), p.warn);
-            let pill = Rect::from_min_size(
-                pos2(right - g.size().x - 14.0, rect.center().y - 9.0),
-                vec2(g.size().x + 14.0, 18.0),
-            );
-            ui.painter().rect_filled(pill, CornerRadius::same(9), style::soft(p.warn, 0.14));
-            ui.painter().galley(pill.center() - g.size() / 2.0, g, p.warn);
-            right = pill.left() - 8.0;
+            pills.push((None, text.to_string(), p.text_muted, p.subtle));
         }
-        job.wrap = egui::text::TextWrapping::truncate_at_width((right - rect.left() - 14.0).max(10.0));
-        let g = ui.painter().layout_job(job);
-        ui.painter().galley(pos2(rect.left() + 14.0, rect.center().y - g.size().y / 2.0), g, p.text_muted);
+        if let Some((agent, at)) = file.changed_by.as_ref().filter(|(_, at)| at.elapsed().as_secs() < 600) {
+            let text = crate::i18n::tf("Changed by {} · {} ago", &[agent, &super::status::short_age(*at)]);
+            pills.push((Some(icons::SPARKLE), text, p.ok, style::tint(p.ok, dark)));
+        }
+        for (icon, text, fg, bg) in pills {
+            let w = kit::pill_width(painter, icon, &text);
+            kit::paint_pill(painter, pos2(right - w, rect.center().y), icon, &text, fg, bg);
+            right -= w + 6.0;
+        }
     }
 
     fn editor_status(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect) {
@@ -203,56 +248,39 @@ impl App {
         let (line, col) = file.caret;
         let mut parts = vec![
             tf("Ln {}, Col {}", &[&line.to_string(), &col.to_string()]),
-            crate::editor::language_name(&file.syntax),
+            crate::editor::language_for(&file.path, &file.syntax),
         ];
         // Encoding and line ends only when there is room besides the language server's status.
         if rect.width() > 640.0 {
             parts.push(if file.lossy { t("Not UTF-8").to_string() } else { "UTF-8".to_string() });
             parts.push(if file.crlf { "CRLF".into() } else { "LF".into() });
         }
-        let text = parts.join("   ·   ");
-        let text_w = style::text_width(ui, &text);
+        let text = parts.join("  ·  ");
+        let text_w = ui.painter().layout_no_wrap(text.clone(), egui::FontId::proportional(style::SMALL), p.text_faint).size().x;
         ui.painter().text(
-            pos2(rect.left() + 14.0, rect.center().y),
+            pos2(rect.left() + 12.0, rect.center().y),
             Align2::LEFT_CENTER,
             text,
             egui::FontId::proportional(style::SMALL),
             p.text_faint,
         );
         let dirty = file.dirty() && !file.read_only;
-        // The language server and the file's problems, right of the caret's place.
+        // The language server and the file's problems at the right; Save for unsaved edits.
         let path = file.path.clone();
-        let right = rect.right() - if dirty { 158.0 } else { 8.0 };
-        let left = rect.left() + 14.0 + text_w + 20.0;
-        if right > left {
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(Rect::from_min_max(pos2(left, rect.top() + 2.0), pos2(right, rect.bottom() - 2.0)))
-                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
-                |ui| {
-                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    self.ide_status(ui, &path);
-                },
-            );
-        }
-        if dirty {
-            let r = Rect::from_min_max(pos2(rect.right() - 150.0, rect.top() + 2.0), pos2(rect.right() - 8.0, rect.bottom() - 2.0));
-            let resp = ui
-                .scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(r)
-                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
-                    |ui| {
-                        let save = kit::button_ex(ui, kit::Kind::Primary, Some(icons::FLOPPY_DISK), t("Save"), true);
-                        ui.label(RichText::new(t("Unsaved")).size(style::SMALL).color(p.warn));
-                        save
-                    },
-                )
-                .inner;
-            if resp.on_hover_text(kit::tip(t("Save"), Action::SaveFile)).clicked() {
-                self.actions.push(Action::SaveFile);
-            }
+        let inner = Rect::from_min_max(pos2(rect.left() + 12.0 + text_w + 20.0, rect.top() + 2.0), pos2(rect.right() - 12.0, rect.bottom() - 2.0));
+        if inner.width() > 40.0 {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                ui.spacing_mut().item_spacing.x = 10.0;
+                self.ide_status(ui, &path);
+                if dirty {
+                    let save = kit::button_keys(ui, kit::Kind::Primary, Some(icons::FLOPPY_DISK), t("Save"), kit::keys(&Action::SaveFile), true);
+                    if save.clicked() {
+                        self.actions.push(Action::SaveFile);
+                    }
+                    ui.label(RichText::new(t("Unsaved")).size(style::SMALL).color(p.warn));
+                }
+            });
         }
     }
 
@@ -294,17 +322,12 @@ impl App {
             f.refresh(file);
             egui::Frame::NONE
                 .fill(p.chrome)
-                .inner_margin(egui::Margin::symmetric(12, 5))
+                .inner_margin(egui::Margin { left: 12, right: 8, top: 5, bottom: 5 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut f.query)
-                                .id(find_id)
-                                .hint_text(t("Find in file, or :line"))
-                                .desired_width(230.0),
-                        );
+                        let r = kit::field(ui, find_id, &mut f.query, None, t("Find in file, or :line"), 220.0, true);
                         #[cfg(debug_assertions)]
                         crate::devtest::record("editor-find", r.rect);
                         if f.focus {
@@ -327,6 +350,20 @@ impl App {
                             r.request_focus();
                             find_focused = true;
                         }
+                        // Aa: match case.
+                        let (ar, aresp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                        if f.case {
+                            ui.painter().rect_filled(ar, CornerRadius::same(style::RADIUS), p.accent_soft);
+                        } else if aresp.hovered() {
+                            ui.painter().rect_filled(ar, CornerRadius::same(style::RADIUS), p.hover);
+                        }
+                        ui.painter().text(ar.center(), Align2::CENTER_CENTER, "Aa", style::semibold(11.0), if f.case { p.accent_text } else { p.text_muted });
+                        if aresp.on_hover_text(t("Match Case")).clicked() {
+                            f.case = !f.case;
+                            f.refresh(file);
+                            go = Some(true);
+                            f.current = None;
+                        }
                         let info = if let Some(line) = f.goto_line() {
                             (tf("Enter: go to line {}", &[&(line + 1).to_string()]), p.text_muted)
                         } else if f.query.is_empty() {
@@ -341,20 +378,24 @@ impl App {
                                 None => (tf("{} results", &[&format!("{n}{more}")]), p.text_muted),
                             }
                         };
+                        ui.add_space(2.0);
                         ui.label(RichText::new(info.0).size(style::SMALL).color(info.1));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if kit::icon_button_ex(ui, icons::X, t("Close"), false, 24.0).clicked() {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            if kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0).clicked() {
                                 close = true;
                             }
-                            if kit::icon_button_ex(ui, icons::ARROW_DOWN, t("Next"), false, 24.0).clicked() {
+                            if kit::icon_button_ex(ui, icons::ARROW_DOWN, t("Next"), false, 22.0).clicked() {
                                 go = Some(true);
                             }
-                            if kit::icon_button_ex(ui, icons::ARROW_UP, t("Previous"), false, 24.0).clicked() {
+                            if kit::icon_button_ex(ui, icons::ARROW_UP, t("Previous"), false, 22.0).clicked() {
                                 go = Some(false);
                             }
                         });
                     });
                 });
+            let full = ui.min_rect();
+            ui.painter().hline(full.x_range(), full.bottom() - 0.5, Stroke::new(1.0, p.border));
             if let Some(line) = f.goto_line() {
                 // `:N` + Enter: the caret to line N, and back to the text.
                 if enter {
@@ -388,35 +429,50 @@ impl App {
         if file.conflict {
             let mut reload = false;
             let mut force = false;
+            let who = file.changed_by.as_ref().map(|(a, _)| a.clone());
+            let title = match &who {
+                Some(agent) => tf("{} changed this file while you were editing it.", &[agent]),
+                None => t("This file changed on disk while you were editing it.").to_string(),
+            };
             egui::Frame::NONE
                 .fill(style::soft(p.warn, 0.12))
                 .inner_margin(egui::Margin::symmetric(14, 8))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        kit::icon(ui, icons::WARNING, 15.0, p.warn);
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(t("This file changed on disk while you were editing it (probably an agent). Nothing was overwritten."))
-                                    .color(p.text),
-                            )
-                            .wrap(),
-                        );
-                    });
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if kit::button_ex(ui, kit::Kind::Secondary, None, t("Reload from Disk"), true).clicked() {
-                            reload = true;
-                        }
-                        let label = if file.compare { t("Hide Differences") } else { t("Compare") };
-                        if kit::button_ex(ui, kit::Kind::Secondary, None, label, true).clicked() {
-                            file.compare = !file.compare;
-                        }
-                        if kit::button_ex(ui, kit::Kind::Danger, None, t("Keep Mine and Save"), true).clicked() {
-                            force = true;
-                        }
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        kit::icon(ui, icons::WARNING, 16.0, p.warn);
+                        let mut job = egui::text::LayoutJob::default();
+                        job.append(&title, 0.0, egui::TextFormat::simple(style::medium(12.5), p.warn));
+                        job.append(t("Nothing was overwritten."), 5.0, egui::TextFormat::simple(egui::FontId::proportional(12.5), p.text_muted));
+                        job.wrap.max_width = ui.available_width();
+                        ui.label(job);
                     });
                 });
+            let line = ui.min_rect();
+            ui.painter().hline(line.x_range(), ui.cursor().top() - 0.5, Stroke::new(1.0, style::soft(p.warn, 0.3)));
+            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let label = if file.compare { t("Hide Differences") } else { t("Compare") };
+                    if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::COLUMNS), label, true).clicked() {
+                        file.compare = !file.compare;
+                    }
+                    let use_theirs = match &who {
+                        Some(agent) => tf("Use {}’s Version", &[agent]),
+                        None => t("Reload from Disk").to_string(),
+                    };
+                    if kit::button_ex(ui, kit::Kind::Secondary, None, &use_theirs, true).clicked() {
+                        reload = true;
+                    }
+                    if kit::button_ex(ui, kit::Kind::Danger, None, t("Keep Mine and Save"), true).clicked() {
+                        force = true;
+                    }
+                });
+            });
+            let line = ui.cursor().top();
+            ui.painter().hline(ui.max_rect().x_range(), line - 0.5, Stroke::new(1.0, p.border));
             if reload {
                 self.actions.push(Action::ReloadFile);
             }
@@ -430,22 +486,42 @@ impl App {
                 file.compare_diff = Some(crate::editor::compare_diff(file));
             }
             let diff = file.compare_diff.as_deref().unwrap_or_default();
-            egui::ScrollArea::both()
-                .id_salt(("compare", project))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add_space(6.0);
-                    for line in diff.lines() {
-                        let color = if line.starts_with("+ ") {
-                            p.ok
-                        } else if line.starts_with("- ") {
-                            p.err
-                        } else {
-                            p.text_muted
-                        };
-                        ui.label(RichText::new(line).monospace().size(font_size - 1.0).color(color));
+            // Two columns: the disk (what the agent wrote) and yours.
+            let disk_label = match &file.changed_by {
+                Some((agent, at)) => tf("On disk — {}, {} ago", &[agent, &super::status::age(*at)]),
+                None => t("On disk").to_string(),
+            };
+            let area = ui.available_rect_before_wrap();
+            let half = (area.width() / 2.0).floor();
+            let mono = egui::FontId::monospace(font_size - 1.0);
+            let left: Vec<(char, &str)> = diff.lines().filter(|l| !l.starts_with("+ ")).map(|l| (l.chars().next().unwrap_or(' '), l.get(2..).unwrap_or(""))).collect();
+            let right: Vec<(char, &str)> = diff.lines().filter(|l| !l.starts_with("- ")).map(|l| (l.chars().next().unwrap_or(' '), l.get(2..).unwrap_or(""))).collect();
+            egui::ScrollArea::vertical().id_salt(("compare", project)).auto_shrink([false, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let (head, _) = ui.allocate_exact_size(vec2(area.width(), 24.0), Sense::hover());
+                ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
+                ui.painter().vline(head.left() + half, head.y_range(), Stroke::new(1.0, p.border));
+                ui.painter().text(pos2(head.left() + 10.0, head.center().y), Align2::LEFT_CENTER, disk_label, egui::FontId::proportional(style::SMALL), p.text_faint);
+                ui.painter().text(pos2(head.left() + half + 10.0, head.center().y), Align2::LEFT_CENTER, t("Yours — not saved"), egui::FontId::proportional(style::SMALL), p.text_faint);
+                for i in 0..left.len().max(right.len()) {
+                    let (row, _) = ui.allocate_exact_size(vec2(area.width(), 19.0), Sense::hover());
+                    if !ui.is_rect_visible(row) {
+                        continue;
                     }
-                });
+                    for (side, x0, sign_c, bg_c) in [(left.get(i), row.left(), p.ok, p.ok), (right.get(i), row.left() + half, p.err, p.err)] {
+                        let Some((mark, text)) = side else { continue };
+                        let changed = *mark == '-' || *mark == '+';
+                        let cell = Rect::from_min_size(pos2(x0, row.top()), vec2(half, row.height()));
+                        let (sc, bg) = if changed { (if *mark == '-' { sign_c } else { bg_c }, style::soft(if *mark == '-' { p.ok } else { p.err }, 0.10)) } else { (p.text_faint, egui::Color32::TRANSPARENT) };
+                        ui.painter().rect_filled(cell, CornerRadius::ZERO, bg);
+                        let sign = match mark { '-' => "+", '+' => "−", _ => "" };
+                        ui.painter().text(pos2(cell.left() + 10.0, row.center().y), Align2::CENTER_CENTER, sign, mono.clone(), sc);
+                        let painter = ui.painter().with_clip_rect(cell);
+                        painter.text(pos2(cell.left() + 20.0, row.center().y), Align2::LEFT_CENTER, *text, mono.clone(), if changed { p.text } else { p.text_muted });
+                    }
+                    ui.painter().vline(row.left() + half, row.y_range(), Stroke::new(1.0, p.border));
+                }
+            });
             return;
         }
 
@@ -618,42 +694,42 @@ impl App {
             .unwrap_or_default();
         ui.add_space((ui.available_height() * 0.22).min(140.0));
         ui.vertical_centered(|ui| {
-            kit::icon(ui, icons::CODE, 34.0, p.text_faint);
-            ui.add_space(8.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let (r, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
+            ui.painter().circle_filled(r.center(), 26.0, p.subtle);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, icons::CODE, style::icon_font(24.0), p.text_muted);
+            ui.add_space(10.0);
             ui.label(RichText::new(t("No file open")).font(style::semibold(15.0)).color(p.text));
             ui.add_space(4.0);
             ui.label(
                 RichText::new(tf(
-                    "Click a file in the sidebar, or {}-click a path in the terminal.",
-                    &[if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" }],
+                    "Pick a file in Files, press {}, or {}-click a path in a terminal.",
+                    &[kit::keys(&Action::QuickOpen).unwrap_or(""), if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" }],
                 ))
-                    .size(style::SMALL + 0.5)
-                    .color(p.text_muted),
+                .size(style::SMALL)
+                .color(p.text_muted),
             );
             ui.add_space(12.0);
-            if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::MAGNIFYING_GLASS), &kit::tip(t("Open File…"), Action::QuickOpen), false)
-                .clicked()
-            {
+            if kit::button_keys(ui, kit::Kind::Secondary, None, t("Open File…"), kit::keys(&Action::QuickOpen), true).clicked() {
                 self.actions.push(Action::QuickOpen);
             }
             if !recent.is_empty() {
-                ui.add_space(20.0);
-                ui.label(RichText::new(t("RECENTLY CLOSED")).font(style::semibold(style::SMALL - 0.5)).color(p.text_faint));
-                ui.add_space(4.0);
+                ui.add_space(18.0);
+                let g = kit::section_galley(ui.painter(), t("Recently closed"), p.text_faint);
+                let (r, _) = ui.allocate_exact_size(vec2(260.0, g.size().y + 6.0), Sense::hover());
+                ui.painter().galley(r.min, g, p.text_faint);
                 for path in recent {
                     let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    // The icon in its file type's colour, as on the tabs and in the file tree.
                     let (icon, color) = icons::file_icon(&name, false, false, &p);
-                    let font = egui::FontId::proportional(style::BODY - 0.5);
-                    let mut job = egui::text::LayoutJob::default();
-                    job.append(icon, 0.0, egui::TextFormat::simple(font.clone(), color));
-                    job.append(&format!("  {rel}"), 0.0, egui::TextFormat::simple(font, p.text_muted));
-                    let r = ui.add(egui::Label::new(job).sense(Sense::click()));
-                    if r.hovered() {
+                    let (row, resp) = ui.allocate_exact_size(vec2(260.0, 24.0), Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(row, CornerRadius::same(4), p.faint_row());
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-                    if r.clicked() {
+                    ui.painter().text(pos2(row.left() + 4.0 + 7.0, row.center().y), Align2::CENTER_CENTER, icon, style::icon_font(14.0), color);
+                    ui.painter().text(pos2(row.left() + 4.0 + 14.0 + 6.0, row.center().y), Align2::LEFT_CENTER, rel, egui::FontId::proportional(12.0), p.text_muted);
+                    if resp.clicked() {
                         self.actions.push(Action::OpenFile(path, None));
                     }
                 }
@@ -677,4 +753,27 @@ fn line_start_char(text: &str, line: usize) -> usize {
         }
     }
     text.chars().count()
+}
+
+/// A file's path from the project folder, its parts separated by a caret, the last brighter.
+pub fn paint_crumb(ui: &Ui, rect: Rect, root: &Path, path: &Path, p: &style::Palette) {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let painter = ui.painter();
+    let font = egui::FontId::proportional(12.0);
+    let mut x = rect.left() + 14.0;
+    let cy = rect.center().y;
+    for (i, part) in parts.iter().enumerate() {
+        let last = i + 1 == parts.len();
+        if i > 0 {
+            let g = painter.layout_no_wrap(icons::CARET_RIGHT.to_string(), style::icon_font(10.0), p.text_faint);
+            painter.galley(pos2(x, cy - g.size().y / 2.0), g.clone(), p.text_faint);
+            x += g.size().x + 6.0;
+        }
+        let color = if last { p.text_muted } else { p.text_faint };
+        let g = painter.layout_no_wrap(part.clone(), font.clone(), color);
+        let w = g.size().x;
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, color);
+        x += w + 6.0;
+    }
 }

@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use eframe::egui::{self, Color32, FontId, text::LayoutJob};
-use syntect::highlighting::{Theme, ThemeSet};
+use syntect::highlighting::Theme;
 use syntect::parsing::SyntaxSet;
 
 /// Files larger than this open read-only (FR-E6).
@@ -54,6 +54,8 @@ pub struct OpenFile {
     pub highlight: Highlight,
     /// A document (PDF, Word, sheet, image…) shown instead of text.
     pub doc: Option<Box<crate::docview::DocView>>,
+    /// The agent at work when the file last changed on disk under a clean buffer, and when.
+    pub changed_by: Option<(String, std::time::Instant)>,
 }
 
 impl OpenFile {
@@ -88,12 +90,14 @@ pub struct Editor {
 #[derive(Default)]
 pub struct Find {
     pub query: String,
+    /// Letters must match in case too (Aa).
+    pub case: bool,
     /// Put the keyboard in the field on the next frame.
     pub focus: bool,
     pub matches: Vec<Match>,
     pub current: Option<usize>,
     /// Query, file and text revision the matches were found for.
-    key: Option<(String, PathBuf, u64)>,
+    key: Option<(String, PathBuf, u64, bool)>,
 }
 
 /// One occurrence: its line (0-based), its columns in that line and its characters in the
@@ -111,11 +115,11 @@ pub const MAX_MATCHES: usize = 10_000;
 impl Find {
     /// Brings the matches up to date with the query and text; returns whether they changed.
     pub fn refresh(&mut self, file: &OpenFile) -> bool {
-        let key = (self.query.clone(), file.path.clone(), file.rev);
+        let key = (self.query.clone(), file.path.clone(), file.rev, self.case);
         if self.key.as_ref() == Some(&key) {
             return false;
         }
-        self.matches = if self.query.starts_with(':') { Vec::new() } else { find_all(&file.text, &self.query) };
+        self.matches = if self.query.starts_with(':') { Vec::new() } else { find_all_case(&file.text, &self.query, self.case) };
         self.current = None;
         self.key = Some(key);
         true
@@ -146,16 +150,22 @@ impl Find {
 
 /// Every occurrence of `query` in `text`, ignoring ASCII case, in order.
 pub fn find_all(text: &str, query: &str) -> Vec<Match> {
+    find_all_case(text, query, false)
+}
+
+/// Every occurrence of `query` in `text` (in case too when `case`), in order.
+pub fn find_all_case(text: &str, query: &str, case: bool) -> Vec<Match> {
     let mut out = Vec::new();
     if query.is_empty() {
         return out;
     }
     let hay = text.as_bytes();
-    let needle: Vec<u8> = query.bytes().map(|b| b.to_ascii_lowercase()).collect();
+    let fold = |b: u8| if case { b } else { b.to_ascii_lowercase() };
+    let needle: Vec<u8> = query.bytes().map(fold).collect();
     let (mut line, mut line_start_char, mut chars, mut at) = (0usize, 0usize, 0usize, 0usize);
     let mut i = 0;
     while i + needle.len() <= hay.len() && out.len() < MAX_MATCHES {
-        if hay[i..i + needle.len()].iter().zip(&needle).all(|(a, b)| a.to_ascii_lowercase() == *b)
+        if hay[i..i + needle.len()].iter().zip(&needle).all(|(a, b)| fold(*a) == *b)
             && text.is_char_boundary(i)
             && text.is_char_boundary(i + needle.len())
         {
@@ -269,6 +279,7 @@ pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
         syntax: syntax_for(path),
         highlight: Highlight::default(),
         doc: None,
+        changed_by: None,
     })
 }
 
@@ -297,6 +308,7 @@ impl OpenFile {
             index: None,
             syntax: String::new(),
             highlight: Highlight::default(),
+            changed_by: None,
         }
     }
 }
@@ -476,7 +488,27 @@ pub fn compare_diff(file: &OpenFile) -> String {
     tc_agent::integrate::diff_lines(&disk, &text)
 }
 
-/// A readable name for the language of a file (shown in the editor's status line).
+/// A readable name for the language of a file (shown in the editor's status line): its own
+/// for the files whose colours borrow another language's (a .ts file is coloured as
+/// JavaScript, but it is TypeScript).
+pub fn language_for(path: &Path, syntax: &str) -> String {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let own = match ext.as_str() {
+        "ts" | "mts" | "cts" => Some("TypeScript"),
+        "tsx" => Some("TypeScript React"),
+        "jsx" => Some("JavaScript React"),
+        "toml" => Some("TOML"),
+        "lock" if name == "cargo.lock" => Some("TOML"),
+        "zsh" => Some("Zsh"),
+        "fish" => Some("Fish"),
+        "jsonc" => Some("JSON with Comments"),
+        _ => None,
+    };
+    own.map(str::to_string).unwrap_or_else(|| language_name(syntax))
+}
+
+/// A readable name for a syntax.
 pub fn language_name(syntax: &str) -> String {
     let h = highlighting();
     h.syntaxes
@@ -509,7 +541,6 @@ pub fn syntax_for(path: &Path) -> String {
 
 struct Highlighting {
     syntaxes: SyntaxSet,
-    themes: ThemeSet,
 }
 
 /// The syntaxes and themes, loaded when the editor first colours something and let go when it
@@ -525,7 +556,6 @@ fn highlighting() -> std::sync::Arc<Highlighting> {
     h.get_or_insert_with(|| {
         std::sync::Arc::new(Highlighting {
             syntaxes: SyntaxSet::load_defaults_newlines(),
-            themes: ThemeSet::load_defaults(),
         })
     })
     .clone()
@@ -543,13 +573,60 @@ pub fn release_highlighting() {
     }
 }
 
-fn theme(h: &Highlighting, dark: bool) -> &Theme {
-    let name = if dark { "base16-ocean.dark" } else { "InspiredGitHub" };
-    h.themes
-        .themes
-        .get(name)
-        .or_else(|| h.themes.themes.values().next())
-        .expect("syntect ships themes")
+/// Syntax colours in TernaryCode's own palette (the ANSI colours of its terminal schemes):
+/// keywords magenta, functions blue, types yellow, strings green, numbers orange, macros cyan,
+/// comments faint.
+fn theme(_h: &Highlighting, dark: bool) -> &'static Theme {
+    static DARK: OnceLock<Theme> = OnceLock::new();
+    static LIGHT: OnceLock<Theme> = OnceLock::new();
+    let cell = if dark { &DARK } else { &LIGHT };
+    cell.get_or_init(|| ternary_theme(dark))
+}
+
+fn ternary_theme(dark: bool) -> Theme {
+    use std::str::FromStr;
+    use syntect::highlighting::{Color as C, FontStyle, ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings};
+    let rgb = |v: u32| C { r: (v >> 16) as u8, g: (v >> 8) as u8, b: v as u8, a: 255 };
+    let (text, kw, func, ty, string, num, com, mac) = if dark {
+        (0xe6e6e6, 0xc58ad8, 0x6aa6e8, 0xe0be7a, 0x98c379, 0xe8a36a, 0x767676, 0x5fb8c2)
+    } else {
+        (0x1d1d1d, 0x8e44ad, 0x2563c9, 0x8a6100, 0x2f7d32, 0xb4561b, 0x8e8e8e, 0x16808a)
+    };
+    let item = |scope: &str, color: u32, style: Option<FontStyle>| ThemeItem {
+        scope: ScopeSelectors::from_str(scope).unwrap_or_default(),
+        style: StyleModifier { foreground: Some(rgb(color)), background: None, font_style: style },
+    };
+    Theme {
+        name: Some("TernaryCode".into()),
+        author: None,
+        settings: ThemeSettings { foreground: Some(rgb(text)), ..Default::default() },
+        scopes: vec![
+            item("comment, punctuation.definition.comment", com, Some(FontStyle::ITALIC)),
+            item("string, punctuation.definition.string", string, None),
+            item("constant.numeric, constant.language, constant.character", num, None),
+            item("keyword, storage, keyword.operator.word", kw, None),
+            item("entity.name.type, entity.name.struct, entity.name.enum, entity.name.class, entity.name.trait, support.type, support.class, storage.type.primitive", ty, None),
+            item("entity.name.function, support.function, meta.function-call variable.function, variable.function", func, None),
+            item("support.macro, entity.name.macro, variable.macro, meta.macro", mac, None),
+            item("keyword.operator, punctuation", text, None),
+        ],
+    }
+}
+
+/// The colours of one line of code (coloured on its own, from the start state): for diffs.
+pub fn line_colors(line: &str, syntax: &str, dark: bool, plain: Color32) -> Vec<(Color32, String)> {
+    let h = highlighting();
+    let Some(syntax_ref) = h.syntaxes.find_syntax_by_extension(syntax).or_else(|| h.syntaxes.find_syntax_by_token(syntax)) else {
+        return vec![(plain, line.to_string())];
+    };
+    let mut hl = syntect::easy::HighlightLines::new(syntax_ref, theme(&h, dark));
+    match hl.highlight_line(line, &h.syntaxes) {
+        Ok(ranges) => ranges
+            .into_iter()
+            .map(|(style, piece)| (Color32::from_rgb(style.foreground.r, style.foreground.g, style.foreground.b), piece.to_string()))
+            .collect(),
+        Err(_) => vec![(plain, line.to_string())],
+    }
 }
 
 /// The layout of `text` with syntax colours (plain above `HIGHLIGHT_AT_MOST`), coloured whole:

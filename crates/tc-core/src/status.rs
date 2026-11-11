@@ -226,7 +226,7 @@ impl Tracker {
         let changed = status != self.status || source != self.source || attention != self.unseen;
         if status != self.status {
             self.since = now;
-            if status != Status::NeedsInput {
+            if !matches!(status, Status::NeedsInput | Status::Done) {
                 self.message = None;
             }
         }
@@ -286,9 +286,13 @@ impl Tracker {
                 if signal == HookSignal::SessionEnd {
                     self.hooks_active = false;
                 }
-                if message.is_some() && self.status == Status::NeedsInput {
-                    self.message = message;
-                    return true;
+                // A question, or the agent's last words when it finished its turn.
+                if matches!(self.status, Status::NeedsInput | Status::Done) {
+                    let words = message.is_some() || signal == HookSignal::TurnDone;
+                    if words {
+                        self.message = message;
+                        return true;
+                    }
                 }
                 changed
             }

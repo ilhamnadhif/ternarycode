@@ -2,6 +2,7 @@
 /dist
 .DS_Store
 .claude/
-# Kept on this computer only: the PRD and the gate notes.
+# Kept on this computer only: the PRD, the gate notes and the design book.
 /PRD *.md
 /docs/gate-*.md
+/design/

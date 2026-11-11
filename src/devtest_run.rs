@@ -188,7 +188,7 @@ impl App {
                 Some(self.attention_queue().len().to_string() == arg.trim()).filter(|ok| *ok)
             }
             "wait-toast" => {
-                Some(self.toast.as_ref().is_some_and(|(t, _)| arg.trim().split('|').any(|w| t.contains(w)))).filter(|ok| *ok)
+                Some(self.toast.as_ref().is_some_and(|t| arg.trim().split('|').any(|w| t.text.contains(w)))).filter(|ok| *ok)
             }
             "wait-editor" => {
                 let text = self.active.and_then(|id| self.editors.get(&id)).and_then(|e| e.file()).map(|f| f.text.clone()).unwrap_or_default();
@@ -424,8 +424,11 @@ impl App {
                     "run" => Some(Action::RunPreset(rest.trim().to_string())),
                     "select" => rest.trim().parse().ok().map(Action::SelectProjectIndex),
                     "palette" => Some(Action::Palette),
+                    "pick" => Some(Action::PickPreset),
+                    "files-scope" => Some(Action::QuickOpen),
                     "grid" => Some(Action::SetView(tc_core::model::View::Grid)),
-                    "grid-all" => Some(Action::GridActiveOnly(false)),
+                    "grid-all" => Some(Action::GridFilter(tc_core::model::GridFilter::All)),
+                    "grid-waiting" => Some(Action::GridFilter(tc_core::model::GridFilter::Waiting)),
                     "ide" => {
                         use crate::lsp::{Goto, IdeCmd};
                         let cmd = match rest.trim() {
@@ -448,7 +451,7 @@ impl App {
                         };
                         cmd.map(Action::Ide)
                     }
-                    "grid-active" => Some(Action::GridActiveOnly(true)),
+                    "grid-active" => Some(Action::GridFilter(tc_core::model::GridFilter::Active)),
                     "focus" => Some(Action::SetView(tc_core::model::View::Focus)),
                     "save" => Some(Action::SaveFile),
                     "find" => Some(Action::Find),
@@ -466,7 +469,7 @@ impl App {
                     "integrations" => Some(Action::Integrations),
                     "install" => AgentKind::from_slug(rest.trim()).map(Action::PlanInstall),
                     "confirm-install" => Some(Action::ConfirmInstall),
-                    "uninstall" => AgentKind::from_slug(rest.trim()).map(Action::Uninstall),
+                    "uninstall" => AgentKind::from_slug(rest.trim()).map(Action::UninstallNow),
                     "quit" => Some(Action::Quit),
                     _ => None,
                 };

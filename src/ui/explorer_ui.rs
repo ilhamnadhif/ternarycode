@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, Ui, pos2, vec2};
 
-use super::sidebar::{SECTION_H, section_title};
 use super::{icons, kit, style};
 use crate::actions::Action;
 use crate::app::App;
@@ -15,7 +14,10 @@ use crate::explorer::{EditKind, Entry, Row};
 use crate::i18n::t;
 use crate::project::Change;
 
-const ROW_H: f32 = 22.0;
+const ROW_H: f32 = 24.0;
+/// The Files | Changes header and the buttons at the bottom of the column.
+const HEAD_H: f32 = 36.0;
+const FOOT_H: f32 = 34.0;
 const INDENT: f32 = 12.0;
 
 /// What a click in the tree asks for (applied after drawing).
@@ -31,40 +33,40 @@ enum EditOutcome {
 }
 
 impl App {
-    pub fn files_section(&mut self, ui: &mut Ui, open: bool) {
+    /// The Files column of the Code drawer: Files | Changes at the top, a filter, the tree (or
+    /// the files that match the filter, or what git says changed), and the buttons that make
+    /// files and folders at the bottom.
+    pub fn files_column(&mut self, ui: &mut Ui, area: Rect) {
         let p = style::pal(ui);
-        let area = ui.max_rect();
-        let title = Rect::from_min_size(area.min, vec2(area.width(), SECTION_H));
-        let Some(pid) = self.active else {
-            section_title(ui, title, t("FILES"));
-            return;
-        };
-
-        // Title: click folds the section; buttons on the right.
-        let fold = ui.interact(title, egui::Id::new("files-title"), Sense::click());
-        if fold.hovered() {
-            ui.painter().rect_filled(title, CornerRadius::ZERO, p.faint_row());
-        }
-        ui.painter().text(
-            pos2(title.left() + 10.0, title.center().y),
-            Align2::CENTER_CENTER,
-            if open { icons::CARET_DOWN } else { icons::CARET_RIGHT },
-            style::icon_font(10.0),
-            p.text_faint,
-        );
-        let mut title_text = title;
-        title_text.min.x += 8.0;
-        section_title(ui, title_text, t("FILES"));
-        if fold
-            .on_hover_text(if open { t("Hide Files") } else { t("Show Files") })
-            .clicked()
-        {
-            self.actions.push(Action::ToggleFiles);
-        }
-        if !open {
-            return;
-        }
+        let Some(pid) = self.active else { return };
+        ui.painter().rect_filled(area, CornerRadius::ZERO, p.chrome);
+        ui.painter().vline(area.right() - 0.5, area.y_range(), egui::Stroke::new(1.0, p.border));
         let root = self.project(pid).map(|x| x.path.clone()).unwrap_or_default();
+        let git = self.project(pid).and_then(|pr| pr.git.clone());
+        let changed = git.as_ref().map_or(0, |g| g.changes.len());
+
+        // Header: Files | Changes.
+        let head = Rect::from_min_size(area.min, vec2(area.width(), HEAD_H));
+        ui.painter().hline(head.x_range(), head.bottom() - 0.5, egui::Stroke::new(1.0, p.border));
+        let seg = Rect::from_min_max(pos2(head.left() + 8.0, head.center().y - kit::SEGMENTED_H / 2.0), pos2(head.right() - 7.0, head.center().y + kit::SEGMENTED_H / 2.0));
+        let changes_mode = self.explorers.get(&pid).is_some_and(|e| e.changes_mode);
+        let mut options = vec![kit::Seg::new(t("Files"), ""), kit::Seg::new(t("Changes"), "")];
+        if changed > 0 {
+            options[1] = options[1].clone().count(changed, p.warn);
+        }
+        #[cfg(debug_assertions)]
+        for (r, name) in kit::segment_rects(seg, 2).into_iter().zip(["files:files", "files:changes"]) {
+            crate::devtest::record(name, r);
+        }
+        if let Some(i) = kit::segmented_in(ui, seg, egui::Id::new(("files-mode", pid)), &options, changes_mode as usize)
+            && let Some(ex) = self.explorer_mut(pid)
+        {
+            ex.changes_mode = i == 1;
+        }
+
+        // Footer: new file, new folder; collapse all, refresh.
+        let foot = Rect::from_min_max(pos2(area.left(), area.bottom() - FOOT_H), area.max);
+        ui.painter().hline(foot.x_range(), foot.top() + 0.5, egui::Stroke::new(1.0, p.border));
         // New items go into the selected folder, or beside the selected file, as in VS Code.
         let target_dir = self
             .explorers
@@ -73,17 +75,19 @@ impl App {
             .map(|s| if s.is_dir() { s } else { s.parent().map(Path::to_path_buf).unwrap_or_default() })
             .filter(|d| d.starts_with(&root))
             .unwrap_or_else(|| root.clone());
-        let buttons: [(&str, String, Option<Action>); 5] = [
-            (icons::ARROWS_CLOCKWISE, t("Refresh").to_string(), None),
-            (icons::CARET_UP, t("Collapse All Folders").to_string(), None),
-            (icons::MAGNIFYING_GLASS, kit::tip(t("Open File…"), Action::QuickOpen), Some(Action::QuickOpen)),
-            (icons::FOLDER_PLUS, t("New Folder…").to_string(), Some(Action::NewFolderIn(target_dir.clone()))),
-            (icons::PLUS, t("New File…").to_string(), Some(Action::NewFileIn(target_dir.clone()))),
+        let buttons: [(&str, String, Option<Action>, bool); 4] = [
+            (icons::PLUS, t("New File…").to_string(), Some(Action::NewFileIn(target_dir.clone())), false),
+            (icons::FOLDER_PLUS, t("New Folder…").to_string(), Some(Action::NewFolderIn(target_dir.clone())), false),
+            (icons::CARET_UP, t("Collapse All Folders").to_string(), None, true),
+            (icons::ARROWS_CLOCKWISE, t("Refresh").to_string(), None, true),
         ];
-        let mut x = title.right() - 8.0;
-        for (i, (icon, tip, action)) in buttons.into_iter().enumerate() {
-            let r = Rect::from_center_size(pos2(x - 11.0, title.center().y), vec2(22.0, 22.0));
-            x -= 23.0;
+        let cy = foot.center().y + 0.5;
+        let mut left = foot.left() + 8.0;
+        let mut right = foot.right() - 8.0 - 22.0 * 2.0 - 2.0;
+        for (i, (icon, tip, action, at_right)) in buttons.into_iter().enumerate() {
+            let x = if at_right { &mut right } else { &mut left };
+            let r = Rect::from_min_size(pos2(*x, cy - 11.0), vec2(22.0, 22.0));
+            *x += 24.0;
             let resp = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, &tip, false, 22.0))
                 .inner;
@@ -92,7 +96,7 @@ impl App {
             if resp.clicked() {
                 match (i, action) {
                     (_, Some(a)) => self.actions.push(a),
-                    (0, None) => {
+                    (3, None) => {
                         if let Some(ex) = self.explorer_mut(pid) {
                             ex.refresh();
                         }
@@ -107,15 +111,151 @@ impl App {
             }
         }
 
-        // The tree.
-        let tree = Rect::from_min_max(pos2(area.left(), title.bottom()), area.max);
+        let body = Rect::from_min_max(pos2(area.left(), head.bottom()), pos2(area.right(), foot.top()));
+        if changes_mode {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+                ui.set_clip_rect(body);
+                self.changes_list(ui, pid, &root, body);
+            });
+            return;
+        }
+        // The filter.
+        let frow = Rect::from_min_size(body.min, vec2(body.width(), 38.0));
+        let field = Rect::from_min_size(pos2(frow.left() + 8.0, frow.top() + 6.0), vec2(frow.width() - 16.0, 26.0));
+        let mut filter = self.explorers.get(&pid).map(|e| e.filter.clone()).unwrap_or_default();
+        let fr = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
+                kit::field(ui, egui::Id::new(("files-filter", pid)), &mut filter, Some(icons::FUNNEL), t("Filter files"), field.width(), true)
+            })
+            .inner;
+        if fr.changed() {
+            if let Some(ex) = self.explorer_mut(pid) {
+                ex.filter = filter.clone();
+            }
+            self.want_project_files(pid);
+        }
+        if fr.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if let Some(ex) = self.explorer_mut(pid) {
+                ex.filter.clear();
+            }
+            fr.surrender_focus();
+        }
+        let tree = Rect::from_min_max(pos2(body.left(), frow.bottom()), body.max);
+        if !filter.trim().is_empty() {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(tree), |ui| {
+                ui.set_clip_rect(tree);
+                self.filtered_files(ui, pid, &root, &filter, tree);
+            });
+            return;
+        }
+        self.tree_rows(ui, pid, &root, tree, git);
+    }
+
+    /// What git says changed in the project, one file a row: a click shows its changes.
+    fn changes_list(&mut self, ui: &mut Ui, pid: tc_core::ProjectId, root: &Path, area: Rect) {
+        let p = style::pal(ui);
+        let mut changes: Vec<(PathBuf, Change)> = self
+            .project(pid)
+            .and_then(|pr| pr.git.as_ref())
+            .map(|g| g.changes.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .unwrap_or_default();
+        changes.sort_by(|a, b| a.0.cmp(&b.0));
+        if changes.is_empty() {
+            ui.painter().text(
+                pos2(area.left() + 14.0, area.top() + 18.0),
+                Align2::LEFT_CENTER,
+                t("Nothing changed."),
+                egui::FontId::proportional(style::SMALL),
+                p.text_faint,
+            );
+            return;
+        }
+        ui.scope_builder(egui::UiBuilder::new().max_rect(area.shrink2(vec2(4.0, 0.0)).with_min_y(area.top() + 6.0)), |ui| {
+            let area = egui::ScrollArea::vertical().id_salt(("changes", pid)).auto_shrink([false, false]);
+            kit::show_rows(area, ui, ROW_H, changes.len(), |ui, range| {
+                for (path, c) in &changes[range] {
+                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(rect, CornerRadius::same(4), p.faint_row());
+                    }
+                    let color = change_color(*c, &p);
+                    ui.painter().text(pos2(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, c.letter(), style::medium(11.0), color);
+                    let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().into_owned();
+                    let mut job = egui::text::LayoutJob::simple_singleline(rel.clone(), egui::FontId::proportional(12.5), style::tree_text(&p));
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 30.0).max(10.0));
+                    let g = ui.painter().layout_job(job);
+                    ui.painter().galley(pos2(rect.left() + 24.0, rect.center().y - g.size().y / 2.0), g, p.text);
+                    if resp.on_hover_text(kit::tip(t("Review Changes…"), Action::Review)).clicked() {
+                        self.actions.push(Action::ReviewFile(path.clone()));
+                    }
+                }
+            });
+        });
+    }
+
+    /// The project's files whose path matches the filter, best first.
+    fn filtered_files(&mut self, ui: &mut Ui, pid: tc_core::ProjectId, root: &Path, filter: &str, area: Rect) {
+        let p = style::pal(ui);
+        let Some(files) = self.project_files.get(&pid) else {
+            ui.painter().text(pos2(area.left() + 14.0, area.top() + 12.0), Align2::LEFT_CENTER, t("Listing the project's files…"), egui::FontId::proportional(style::SMALL), p.text_faint);
+            return;
+        };
+        let mut hits: Vec<(i32, &PathBuf)> = files
+            .iter()
+            .filter_map(|f| {
+                let rel = f.strip_prefix(root).unwrap_or(f).to_string_lossy();
+                super::palette::score(filter.trim(), &rel).map(|s| (s, f))
+            })
+            .collect();
+        hits.sort_by_key(|h| std::cmp::Reverse(h.0));
+        hits.truncate(200);
+        if hits.is_empty() {
+            ui.painter().text(pos2(area.left() + 14.0, area.top() + 12.0), Align2::LEFT_CENTER, t("Nothing matches."), egui::FontId::proportional(style::SMALL), p.text_faint);
+            return;
+        }
+        let hits: Vec<PathBuf> = hits.into_iter().map(|(_, f)| f.clone()).collect();
+        let mut open = None;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(area.shrink2(vec2(4.0, 0.0))), |ui| {
+            let sa = egui::ScrollArea::vertical().id_salt(("filtered", pid)).auto_shrink([false, false]);
+            kit::show_rows(sa, ui, ROW_H, hits.len(), |ui, range| {
+                for path in &hits[range] {
+                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(rect, CornerRadius::same(4), p.faint_row());
+                    }
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let (icon, color) = icons::file_icon(&name, false, false, &p);
+                    ui.painter().text(pos2(rect.left() + 8.0 + 7.0, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_font(14.0), color);
+                    let folder = path.parent().and_then(|d| d.strip_prefix(root).ok()).map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                    let mut job = egui::text::LayoutJob::default();
+                    job.append(&name, 0.0, egui::TextFormat::simple(egui::FontId::proportional(13.0), style::tree_text(&p)));
+                    if !folder.is_empty() {
+                        job.append(&folder, 6.0, egui::TextFormat::simple(egui::FontId::proportional(11.0), p.text_faint));
+                    }
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 36.0).max(10.0));
+                    let g = ui.painter().layout_job(job);
+                    ui.painter().galley(pos2(rect.left() + 28.0, rect.center().y - g.size().y / 2.0), g, p.text);
+                    if resp.clicked() {
+                        open = Some(path.clone());
+                    }
+                }
+            });
+        });
+        if let Some(path) = open {
+            self.actions.push(Action::OpenFile(path, None));
+        }
+    }
+
+    /// The tree of the project's files.
+    fn tree_rows(&mut self, ui: &mut Ui, pid: tc_core::ProjectId, root: &Path, tree: Rect, git: Option<std::sync::Arc<crate::project::GitInfo>>) {
+        let p = style::pal(ui);
+        let root = root.to_path_buf();
         let editing = self
             .editors
             .get(&pid)
             .filter(|e| e.visible)
             .and_then(|e| e.file())
             .map(|f| f.path.clone());
-        let git = self.project(pid).and_then(|pr| pr.git.clone());
         let Some(explorer) = self.explorer_mut(pid) else { return };
         let count = explorer.rows().len();
         let selected = editing.or_else(|| explorer.selected.clone());
@@ -208,7 +348,7 @@ impl App {
                                         p.text_faint,
                                     );
                                 }
-                                x += 14.0;
+                                x += 16.0;
                                 let (icon, mut icon_color) = if entry.is_dir {
                                     (if open { icons::FOLDER_OPEN } else { icons::FOLDER }, p.folder)
                                 } else {
@@ -254,7 +394,7 @@ impl App {
                                 }
                                 let mut job = egui::text::LayoutJob::simple_singleline(
                                     entry.name.clone(),
-                                    egui::FontId::proportional(style::BODY - 0.5),
+                                    egui::FontId::proportional(13.0),
                                     name_color,
                                 );
                                 job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(10.0));

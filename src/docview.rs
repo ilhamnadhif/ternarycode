@@ -41,6 +41,9 @@ pub enum Pic {
     Failed,
 }
 
+/// A page of a PDF and a point on it, in points from its top left.
+pub type PagePoint = (usize, [f32; 2]);
+
 pub struct Pdf {
     renderer: tc_doc::pdf::Renderer,
     /// Each page's size in points.
@@ -52,9 +55,62 @@ pub struct Pdf {
     pub page: usize,
     /// Scroll to this page on the next frame.
     pub jump: Option<usize>,
-    /// Each page's text, once a search asked for it.
+    /// Each page's text, once a search (or selecting with the mouse) asked for it.
     pub text: Vec<Option<tc_doc::pdf::PageText>>,
     text_asked: bool,
+    /// Text selected with the mouse: from where the drag started to where it is, each as a page
+    /// and a point on it (in points), so it holds before the page's text is read.
+    pub sel: Option<(PagePoint, PagePoint)>,
+}
+
+impl Pdf {
+    /// The selection as characters: each page it covers, with its first and end character
+    /// (only pages whose text is read).
+    pub fn selection(&self) -> Vec<(usize, usize, usize)> {
+        let Some((a, b)) = self.sel else { return Vec::new() };
+        let at = |(page, pt): PagePoint| -> Option<(usize, usize)> {
+            Some((page, self.text.get(page)?.as_ref()?.index_at(pt[0], pt[1])?))
+        };
+        let (Some(a), Some(b)) = (at(a), at(b)) else { return Vec::new() };
+        let (from, to) = if a <= b { (a, b) } else { (b, a) };
+        (from.0..=to.0)
+            .filter_map(|page| {
+                let t = self.text.get(page)?.as_ref()?;
+                let start = if page == from.0 { from.1 } else { 0 };
+                let end = if page == to.0 { to.1 } else { t.chars.len() };
+                (end > start).then_some((page, start, end))
+            })
+            .collect()
+    }
+
+    /// The selected text as written, pages one after another.
+    pub fn selected_text(&self) -> String {
+        self.selection()
+            .iter()
+            .filter_map(|(page, a, b)| Some(self.text.get(*page)?.as_ref()?.text_between(*a, *b)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Selects the word at a point of a page (a double-click); false when there is none.
+    pub fn select_word(&mut self, page: usize, pt: [f32; 2]) -> bool {
+        let Some(t) = self.text.get(page).and_then(|t| t.as_ref()) else { return false };
+        let Some(i) = t.index_at(pt[0], pt[1]) else { return false };
+        let word = |i: usize| t.chars.get(i).is_some_and(|c| c.is_alphanumeric() || *c == '_');
+        // The character under the point (`index_at` may give the place after it).
+        let i = if word(i) { i } else if i > 0 && word(i - 1) { i - 1 } else { return false };
+        let (mut a, mut b) = (i, i + 1);
+        while a > 0 && word(a - 1) {
+            a -= 1;
+        }
+        while word(b) {
+            b += 1;
+        }
+        let (Some(Some(first)), Some(Some(last))) = (t.rects.get(a), t.rects.get(b - 1)) else { return false };
+        let mid = |r: &[f32; 4]| (r[1] + r[3]) / 2.0;
+        self.sel = Some(((page, [first[0] + 0.01, mid(first)]), (page, [last[2] - 0.01, mid(last)])));
+        true
+    }
 }
 
 /// ⌘F in a document: what is searched for and where it was found.
@@ -119,6 +175,9 @@ pub struct DocView {
     pub image_size: Option<(u32, u32)>,
     /// Laid-out text of a Word or PowerPoint file, for the width it was laid out at.
     pub layout: Option<crate::ui::docview_ui::Layout>,
+    /// A deck: the slide at the middle of the view (0-based), and one to scroll to.
+    pub slide: usize,
+    pub slide_jump: Option<usize>,
     /// The file changed on disk: read it again when shown.
     pub reload: bool,
     /// The sheet's scroll offset, and whether to bring the selected cell into view.
@@ -152,6 +211,8 @@ impl DocView {
             image: None,
             image_size: None,
             layout: None,
+            slide: 0,
+            slide_jump: None,
             reload: false,
             sheet_scroll: egui::Vec2::ZERO,
             scroll_to_cell: false,
@@ -187,6 +248,7 @@ impl DocView {
                     jump: (page > 0).then_some(page),
                     text: Vec::new(),
                     text_asked: false,
+                    sel: None,
                 });
                 self.zoom = zoom;
                 self.state = State::Loading;
@@ -278,6 +340,11 @@ impl DocView {
     /// Opens the search (⌘F), or puts the keyboard back in it. A PDF's text is read from now on.
     pub fn open_find(&mut self) {
         self.find.get_or_insert_with(Default::default).focus = true;
+        self.want_text();
+    }
+
+    /// A PDF's text is read (once), for searching it or selecting in it.
+    pub fn want_text(&mut self) {
         if let Some(pdf) = self.pdf.as_mut()
             && !pdf.text_asked
             && !pdf.pages.is_empty()

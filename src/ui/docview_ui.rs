@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use eframe::egui::{self, Align2, Color32, CornerRadius, Galley, Rect, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Galley, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 use tc_core::ProjectId;
 use tc_doc::office::{Block, Para, ParaStyle, Picture, Span};
 
@@ -15,10 +15,10 @@ use crate::app::App;
 use crate::docview::{Content, DocMatch, DocView, MAX_DOC_MATCHES, Pic, State};
 use crate::i18n::{t, tf};
 
-const BAR_H: f32 = 34.0;
+const BAR_H: f32 = 36.0;
 const STATUS_H: f32 = 26.0;
 const TABS_H: f32 = 30.0;
-const CELL_BAR_H: f32 = 30.0;
+const CELL_BAR_H: f32 = 32.0;
 const FIND_H: f32 = 36.0;
 const ZOOMS: [f32; 13] = [0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
 
@@ -34,6 +34,7 @@ impl App {
     pub fn doc_panel(&mut self, ui: &mut Ui, project: ProjectId, body: Rect) {
         let ctx = ui.ctx().clone();
         let p = style::pal(ui);
+        let root = self.project(project).map(|x| x.path.clone()).unwrap_or_default();
         let Some(view) = self
             .editors
             .get_mut(&project)
@@ -58,11 +59,25 @@ impl App {
         }
         if doc_area.has_focus() {
             self.editor_seen = true;
+            // ← → move through a deck's slides.
+            if let State::Ready(Content::Slides(deck)) = &view.state {
+                let n = deck.slides.len();
+                let (back, on) = ui.input_mut(|i| {
+                    (
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
+                    )
+                });
+                if n > 0 && (back || on) {
+                    let at = view.slide.min(n - 1);
+                    view.slide_jump = Some(if on { (at + 1).min(n - 1) } else { at.saturating_sub(1) });
+                }
+            }
         }
         #[cfg(debug_assertions)]
         crate::devtest::record("doc-body", content);
         let mut ask = None;
-        toolbar(ui, view, bar, &mut ask);
+        toolbar(ui, view, bar, &root, &mut ask);
         status_line(ui, view, status);
         if view.find.is_some() {
             refresh_find(view);
@@ -110,62 +125,111 @@ impl App {
     }
 }
 
+// ----- selecting text ------------------------------------------------------------------------
+
+/// A PDF's text is selected (noted while it is drawn, cleared after each frame's actions).
+const DOC_SELECTION: &str = "doc-selection";
+
+fn set_doc_selection(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(DOC_SELECTION), true));
+}
+
+/// Text is selected in a document (a PDF's, or a Word or PowerPoint file's): ⌘C copies it.
+pub fn has_doc_selection(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(egui::Id::new(DOC_SELECTION))).unwrap_or(false)
+        || ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().has_selection()
+}
+
+/// Forgets last frame's note (the PDF notes it again while it is shown with a selection).
+pub fn end_doc_selection_frame(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<bool>(egui::Id::new(DOC_SELECTION)));
+}
+
 // ----- toolbar and status line ---------------------------------------------------------------
 
-fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, ask: &mut Option<Ask>) {
+/// The document's toolbar: at the left what moves through it (a PDF's pages) or where it is
+/// (its path); at the right find, zoom, Open as Text (CSV), open in the default app, reveal.
+fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, ask: &mut Option<Ask>) {
     let p = style::pal(ui);
     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.canvas);
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
-    let name = view.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let (icon, color) = icons::file_icon(&name, false, false, &p);
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(vec2(10.0, 3.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        |ui| {
+    let inner = Rect::from_min_max(pos2(rect.left() + 12.0, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
+    // What the arrows at the left move through: a PDF's pages, or a deck's slides.
+    let slides = match &view.state {
+        State::Ready(Content::Slides(deck)) => deck.slides.len(),
+        _ => 0,
+    };
+    let pages = view
+        .pdf
+        .as_ref()
+        .map(|p| (p.page, p.pages.len()))
+        .or((slides > 0).then_some((view.slide.min(slides.saturating_sub(1)), slides)))
+        .filter(|(_, n)| *n > 0);
+    // Right side first.
+    let left_end = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(egui::RichText::new(icon).font(style::icon_font(15.0)).color(color));
-            ui.add_space(2.0);
-            let pdf_pages = view.pdf.as_ref().map(|p| (p.page, p.pages.len())).filter(|(_, n)| *n > 0);
-            ui.add(egui::Label::new(egui::RichText::new(&name).font(style::medium(style::BODY - 0.5)).color(p.text)).truncate());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                if kit::icon_button_ex(ui, icons::FOLDER_OPEN, reveal_label(), false, 26.0).clicked() {
-                    *ask = Some(Ask::Reveal);
+            let b = |ui: &mut Ui, icon: &str, tip: &str| kit::icon_button_ex(ui, icon, tip, false, 22.0);
+            if b(ui, icons::FOLDER_OPEN, reveal_label()).clicked() {
+                *ask = Some(Ask::Reveal);
+            }
+            if b(ui, icons::ARROW_SQUARE_OUT, t("Open in Default App")).clicked() {
+                *ask = Some(Ask::OpenDefault);
+            }
+            if view.kind == tc_doc::Kind::Csv && kit::button_ex(ui, kit::Kind::Ghost, Some(icons::CODE), t("Open as Text"), true).clicked() {
+                *ask = Some(Ask::EditAsText);
+            }
+            if matches!(view.state, State::Ready(_)) {
+                kit::vdivider(ui, 16.0);
+                zoom_controls(ui, view);
+                kit::vdivider(ui, 16.0);
+                if b(ui, icons::MAGNIFYING_GLASS, &format!("{}   {}", t("Find"), kit::keys(&crate::actions::Action::Find).unwrap_or(""))).clicked() {
+                    view.open_find();
                 }
-                if kit::icon_button_ex(ui, icons::ARROW_SQUARE_OUT, t("Open in Default App"), false, 26.0).clicked() {
-                    *ask = Some(Ask::OpenDefault);
-                }
-                if view.kind == tc_doc::Kind::Csv
-                    && kit::button_ex(ui, kit::Kind::Ghost, Some(icons::CODE), t("Edit as Text"), true).clicked()
-                {
-                    *ask = Some(Ask::EditAsText);
-                }
-                if matches!(view.state, State::Ready(_)) {
-                    kit::vdivider(ui, 16.0);
-                    zoom_controls(ui, view);
-                }
-                if let Some((page, n)) = pdf_pages {
-                    kit::vdivider(ui, 16.0);
-                    if kit::icon_button_ex(ui, icons::CARET_DOWN, t("Next Page"), false, 24.0).clicked()
-                        && let Some(pdf) = view.pdf.as_mut()
-                    {
-                        pdf.jump = Some((page + 1).min(n - 1));
-                    }
-                    ui.label(
-                        egui::RichText::new(tf("{} of {}", &[&(page + 1).to_string(), &n.to_string()]))
-                            .size(style::SMALL + 0.5)
-                            .color(p.text_muted),
-                    );
-                    if kit::icon_button_ex(ui, icons::CARET_UP, t("Previous Page"), false, 24.0).clicked()
-                        && let Some(pdf) = view.pdf.as_mut()
-                    {
-                        pdf.jump = Some(page.saturating_sub(1));
-                    }
-                }
-            });
-        },
-    );
+            }
+            ui.min_rect().left()
+        })
+        .inner;
+    let left = Rect::from_min_max(inner.min, pos2(left_end - 8.0, inner.bottom()));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(left).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+        ui.set_clip_rect(left.intersect(ui.clip_rect()));
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if let Some((page, n)) = pages {
+            let deck = view.pdf.is_none();
+            let jump = |view: &mut DocView, to: usize| match view.pdf.as_mut() {
+                Some(pdf) => pdf.jump = Some(to),
+                None => view.slide_jump = Some(to),
+            };
+            let (prev, next) = if deck { (t("Previous Slide"), t("Next Slide")) } else { (t("Previous Page"), t("Next Page")) };
+            if deck {
+                ui.label(egui::RichText::new(t("Slide")).size(style::SMALL).color(p.text_muted));
+            }
+            if kit::icon_button_ex(ui, icons::CARET_UP, prev, false, 22.0).clicked() {
+                jump(view, page.saturating_sub(1));
+            }
+            // The number can be typed.
+            let id = egui::Id::new(("doc-page", view.path.clone()));
+            let focused = ui.ctx().memory(|m| m.has_focus(id));
+            let mut text: String = ui.data(|d| d.get_temp::<String>(id)).filter(|_| focused).unwrap_or_else(|| (page + 1).to_string());
+            let r = kit::field(ui, id, &mut text, None, "", 40.0, true);
+            ui.data_mut(|d| d.insert_temp(id, text.clone()));
+            if r.lost_focus()
+                && let Ok(n_typed) = text.trim().parse::<usize>()
+            {
+                jump(view, n_typed.clamp(1, n) - 1);
+            }
+            ui.label(egui::RichText::new(tf("of {}", &[&n.to_string()])).size(style::SMALL).color(p.text_muted));
+            if kit::icon_button_ex(ui, icons::CARET_DOWN, next, false, 22.0).clicked() {
+                jump(view, (page + 1).min(n - 1));
+            }
+        } else {
+            let cell = Rect::from_min_size(ui.cursor().min, vec2(left.width(), inner.height()));
+            let mut crumb = cell;
+            crumb.min.x -= 14.0;
+            super::editor_ui::paint_crumb(ui, crumb, root, &view.path, &p);
+            ui.allocate_rect(cell, Sense::hover());
+        }
+    });
 }
 
 fn reveal_label() -> &'static str {
@@ -174,15 +238,15 @@ fn reveal_label() -> &'static str {
 
 fn zoom_controls(ui: &mut Ui, view: &mut DocView) {
     let p = style::pal(ui);
-    if kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS_PLUS, t("Zoom In"), false, 24.0).clicked() {
+    if kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS_PLUS, t("Zoom In"), false, 22.0).clicked() {
         view.zoom = ZOOMS.iter().copied().find(|z| *z > view.zoom + 0.01).unwrap_or(view.zoom);
     }
     let pct = format!("{:.0}%", view.zoom * 100.0);
-    let r = ui.add(egui::Button::new(egui::RichText::new(pct).size(style::SMALL + 0.5).color(p.text_muted)).frame(false).min_size(vec2(44.0, 22.0)));
-    if r.on_hover_text(t("Fit")).clicked() {
+    let r = ui.add(egui::Button::new(egui::RichText::new(pct).size(style::SMALL).color(p.text_muted)).frame(false).min_size(vec2(40.0, 22.0)));
+    if r.on_hover_text(t("Actual Size")).clicked() {
         view.zoom = 1.0;
     }
-    if kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS_MINUS, t("Zoom Out"), false, 24.0).clicked() {
+    if kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS_MINUS, t("Zoom Out"), false, 22.0).clicked() {
         view.zoom = ZOOMS.iter().rev().copied().find(|z| *z < view.zoom - 0.01).unwrap_or(view.zoom);
     }
 }
@@ -233,8 +297,20 @@ fn loading(ui: &mut Ui, rect: Rect) {
 }
 
 fn failed(ui: &mut Ui, rect: Rect, error: &str, ask: &mut Option<Ask>) {
+    // The reader's reason, as a title and a sentence a person would write.
+    let (title, body) = match error {
+        e if e.contains("password") => (t("This PDF is password-protected"), t("TernaryCode can’t show protected PDFs. Your default app can.").to_string()),
+        e if e.contains("too big") => (t("This file is too big to show here"), e.to_string()),
+        e if e.contains("cannot be shown here") => (t("This format can’t be shown here"), t("Supported: PDF, Word, PowerPoint, Excel, ODS, CSV/TSV and images.").to_string()),
+        e if e.contains("no pages") => (t("This PDF has no pages"), String::new()),
+        e if e.contains("no sheets") => (t("This workbook has no sheets"), String::new()),
+        e => (t("This document cannot be shown"), {
+            let mut c = e.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        }),
+    };
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-        kit::empty_state(ui, icons::FILE, t("This document cannot be shown"), error, |ui| {
+        kit::empty_state(ui, icons::FILE, title, &body, |ui| {
             if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Open in Default App"), false).clicked() {
                 *ask = Some(Ask::OpenDefault);
             }
@@ -426,10 +502,11 @@ fn char_boxes(galley: &Galley, start: usize, end: usize) -> Vec<Rect> {
     out
 }
 
-/// Highlight colours: every match, and the current one (marker yellow and orange, readable
-/// on white pages and on both themes).
+/// Highlight colours: every match, and the current one, as the editor's (the warn colour at
+/// 22% and 55%: readable on white pages and on both themes).
 fn match_colors() -> (Color32, Color32) {
-    (Color32::from_rgba_unmultiplied(255, 200, 40, 80), Color32::from_rgba_unmultiplied(255, 130, 0, 150))
+    let p = style::palette(true);
+    (style::soft(p.warn, 0.22), style::soft(p.warn, 0.55))
 }
 
 // ----- PDF -----------------------------------------------------------------------------------
@@ -501,9 +578,30 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
     let ppp = ui.ctx().pixels_per_point();
     let scale = quantize(k * ppp);
     let pages = pdf.pages.clone();
+    let sel_fill = ui.visuals().selection.bg_fill.gamma_multiply(0.45);
     area.show_viewport(ui, |ui, vp| {
-        let (r, _) = ui.allocate_exact_size(vec2(total.x.max(vp.width()), total.y), Sense::hover());
+        let (r, resp) = ui.allocate_exact_size(vec2(total.x.max(vp.width()), total.y), Sense::click_and_drag());
         let o = r.min;
+        let page_rect = |i: usize| {
+            let (w, h) = (pages[i].0 * k, pages[i].1 * k);
+            Rect::from_min_size(pos2(o.x + (r.width() - w) / 2.0, o.y + tops[i]), vec2(w, h))
+        };
+        // A point of the view as a page and a point on it (in points), clamped to the page.
+        let page_at = |pos: Pos2| -> (usize, [f32; 2]) {
+            let i = (0..pages.len()).rfind(|i| o.y + tops[*i] <= pos.y).unwrap_or(0);
+            let pr = page_rect(i);
+            let q = (pos.clamp(pr.min, pr.max) - pr.min) / k;
+            (i, [q.x, q.y])
+        };
+        // Selecting text: drag over it, double-click a word, click elsewhere to clear.
+        if let Some(h) = resp.hover_pos()
+            && (0..pages.len()).any(|i| page_rect(i).contains(h))
+        {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
+        if resp.drag_started() || resp.double_clicked() {
+            view.want_text();
+        }
         let visible: Vec<usize> = (0..pages.len())
             .filter(|i| {
                 let top = tops[*i];
@@ -519,6 +617,34 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
         let mid = vp.center().y;
         let Some(pdf) = view.pdf.as_mut() else { return };
         pdf.page = (0..pages.len()).rfind(|i| tops[*i] <= mid).unwrap_or(0);
+        if resp.drag_started()
+            && let Some(at) = ui.input(|i| i.pointer.press_origin())
+        {
+            let at = page_at(at);
+            pdf.sel = Some((at, at));
+        } else if resp.dragged()
+            && let Some(pos) = resp.interact_pointer_pos()
+            && let Some((_, head)) = pdf.sel.as_mut()
+        {
+            *head = page_at(pos);
+        }
+        if resp.double_clicked()
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            let (page, pt) = page_at(pos);
+            if !pdf.select_word(page, pt) {
+                pdf.sel = None;
+            }
+        } else if resp.clicked() {
+            pdf.sel = None;
+        }
+        let selection = pdf.selection();
+        if !selection.is_empty() {
+            set_doc_selection(ui.ctx());
+            if ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
+                ui.ctx().copy_text(pdf.selected_text());
+            }
+        }
         let painter = ui.painter();
         for i in visible {
             let (w, h) = (pages[i].0 * k, pages[i].1 * k);
@@ -539,6 +665,13 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
                     painter.rect_filled(hr, CornerRadius::same(2), if *is_current { current } else { all });
                 }
             }
+            for (_, a, b) in selection.iter().filter(|(pg, _, _)| *pg == i) {
+                let Some(text) = pdf.text.get(i).and_then(|t| t.as_ref()) else { continue };
+                for r in text.boxes_between(*a, *b) {
+                    let hr = Rect::from_min_max(page.min + vec2(r[0] * k, r[1] * k), page.min + vec2(r[2] * k, r[3] * k));
+                    painter.rect_filled(hr, CornerRadius::ZERO, sel_fill);
+                }
+            }
         }
     });
 }
@@ -550,6 +683,8 @@ pub struct Layout {
     key: (u32, u32, bool),
     items: Vec<Item>,
     height: f32,
+    /// A deck: where each slide starts (its "Slide N" label).
+    slides: Vec<f32>,
 }
 
 enum Item {
@@ -812,7 +947,7 @@ fn build_layout(ui: &Ui, content: &Content, width: f32, zoom: f32, key: (u32, u3
             let x = ((width - col) / 2.0).max(margin);
             let mut b = Builder { ui, p, zoom, pictures: &doc.images, items: Vec::new() };
             let y = b.blocks(&doc.blocks, x, col, margin, 14.5 * zoom);
-            Layout { key, items: b.items, height: y + margin }
+            Layout { key, items: b.items, height: y + margin, slides: Vec::new() }
         }
         Content::Slides(deck) => {
             let card_w = (width - margin * 2.0).min(960.0 * zoom).max(200.0);
@@ -821,7 +956,9 @@ fn build_layout(ui: &Ui, content: &Content, width: f32, zoom: f32, key: (u32, u3
             let s = card_w / 900.0;
             let mut b = Builder { ui, p, zoom: s, pictures: &deck.images, items: Vec::new() };
             let mut y = margin;
+            let mut slides = Vec::with_capacity(deck.slides.len());
             for (i, slide) in deck.slides.iter().enumerate() {
+                slides.push(y);
                 let label = ui.painter().layout_no_wrap(tf("Slide {}", &[&(i + 1).to_string()]), egui::FontId::proportional(style::SMALL), p.text_faint);
                 b.items.push(Item::Text { rect: Rect::from_min_size(pos2(x, y), label.size()), galley: label });
                 y += 20.0;
@@ -842,9 +979,9 @@ fn build_layout(ui: &Ui, content: &Content, width: f32, zoom: f32, key: (u32, u3
                 }
                 y = card_top + h + 28.0;
             }
-            Layout { key, items: b.items, height: y + margin }
+            Layout { key, items: b.items, height: y + margin, slides }
         }
-        _ => Layout { key, items: Vec::new(), height: 0.0 },
+        _ => Layout { key, items: Vec::new(), height: 0.0, slides: Vec::new() },
     }
 }
 
@@ -885,10 +1022,21 @@ fn rich_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
         let y = ir.min.y + galley.pos_from_cursor(egui::text::CCursor::new(start)).min.y;
         area = area.vertical_scroll_offset((y - rect.height() / 3.0).max(0.0));
     }
+    // A slide asked for (the toolbar's arrows or number, ← →): its top a little below the view's.
+    if let Some(j) = view.slide_jump.take()
+        && let Some(top) = view.layout.as_ref().and_then(|l| l.slides.get(j))
+    {
+        area = area.vertical_scroll_offset((top - 12.0).max(0.0));
+    }
     area.show_viewport(ui, |ui, vp| {
             let Some(layout) = view.layout.as_ref() else { return };
             let (r, _) = ui.allocate_exact_size(vec2(rect.width(), layout.height), Sense::hover());
             let o = r.min.to_vec2();
+            if !layout.slides.is_empty() {
+                // The slide at the view's upper third.
+                let at = vp.min.y + vp.height() / 3.0;
+                view.slide = layout.slides.iter().rposition(|top| *top <= at).unwrap_or(0);
+            }
             let painter = ui.painter();
             for (ix, item) in layout.items.iter().enumerate() {
                 let ir = item.rect();
@@ -902,7 +1050,13 @@ fn rich_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
                                 painter.rect_filled(b.translate(rect.min.to_vec2() + o).expand(1.0), CornerRadius::same(2), if *is_current { current } else { all });
                             }
                         }
-                        painter.galley(rect.min + o, galley.clone(), p.text);
+                        // Selectable (drag across paragraphs, double-click a word); ⌘C copies it.
+                        let pos = rect.min + o;
+                        let resp = ui.interact(galley.rect.translate(pos.to_vec2()), ui.id().with(("doc-text", ix)), Sense::click_and_drag());
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                        }
+                        egui::text_selection::LabelSelectionState::label_text_selection(ui, &resp, pos, galley.clone(), p.text, Stroke::NONE);
                     }
                     Item::Fill { rect, color, radius, stroke } => {
                         painter.rect(rect.translate(o), CornerRadius::same(*radius), *color, *stroke, egui::StrokeKind::Inside);
@@ -975,14 +1129,20 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
     ui.painter().hline(bar.x_range(), bar.bottom() - 0.5, Stroke::new(1.0, p.border));
     if let Some((r, c)) = view.cell {
         let name = cell_name(sheet, r, c);
-        let nr = Rect::from_min_size(pos2(bar.left() + 10.0, bar.top() + 5.0), vec2(64.0, bar.height() - 10.0));
+        let nr = Rect::from_min_size(pos2(bar.left() + 10.0, bar.center().y - 11.0), vec2(56.0, 22.0));
         ui.painter().rect(nr, CornerRadius::same(4), p.surface, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
-        ui.painter().text(nr.center(), Align2::CENTER_CENTER, name, style::medium(style::SMALL), p.text_muted);
-        let text = sheet.cell(r, c).text().replace('\n', " ⏎ ");
-        let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(style::BODY - 1.0), p.text);
-        job.wrap = egui::text::TextWrapping::truncate_at_width((bar.right() - nr.right() - 24.0).max(10.0));
+        ui.painter().text(nr.center(), Align2::CENTER_CENTER, name, style::medium(style::SMALL), p.text);
+        let cell = sheet.cell(r, c);
+        // What kind of value it is, at the right.
+        let kind = cell.kind_label();
+        let kg = ui.painter().layout_no_wrap(kind.to_string(), egui::FontId::proportional(style::SMALL), p.text_faint);
+        let kw = kg.size().x;
+        ui.painter().galley(pos2(bar.right() - 10.0 - kw, bar.center().y - kg.size().y / 2.0), kg, p.text_faint);
+        let text = cell.text().replace('\n', " ⏎ ");
+        let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(12.5), p.text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((bar.right() - nr.right() - 24.0 - kw - 10.0).max(10.0));
         let g = ui.painter().layout_job(job);
-        ui.painter().galley(pos2(nr.right() + 12.0, bar.center().y - g.size().y / 2.0), g, p.text);
+        ui.painter().galley(pos2(nr.right() + 10.0, bar.center().y - g.size().y / 2.0), g, p.text);
     } else {
         ui.painter().text(pos2(bar.left() + 12.0, bar.center().y), Align2::LEFT_CENTER, t("Click a cell to see all of its text."), egui::FontId::proportional(style::SMALL), p.text_faint);
     }
@@ -1241,4 +1401,22 @@ fn image_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
             painter.image(tex, img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             ui.painter().rect_stroke(img, CornerRadius::ZERO, Stroke::new(1.0, p.border), egui::StrokeKind::Outside);
         });
+}
+
+/// What kind of value a cell holds, for the cell bar.
+trait KindLabel {
+    fn kind_label(&self) -> &'static str;
+}
+
+impl KindLabel for tc_doc::sheet::Cell {
+    fn kind_label(&self) -> &'static str {
+        use tc_doc::sheet::Cell;
+        match self {
+            Cell::Empty => t("Empty"),
+            Cell::Text(_) => t("Text"),
+            Cell::Number(_) => t("Number"),
+            Cell::Bool(_) => t("True or false"),
+            Cell::Error(_) => t("Error"),
+        }
+    }
 }

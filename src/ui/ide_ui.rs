@@ -11,7 +11,7 @@ use eframe::epaint::text::CharIndex;
 use tc_lsp::pos::{Encoding, LineIndex};
 use tc_lsp::types as lt;
 
-use super::{kit, style};
+use super::{icons, kit, style};
 use crate::actions::Action;
 use crate::app::App;
 use crate::editor::OpenFile;
@@ -288,31 +288,48 @@ pub fn overlay(
         file.caret_index = Some(at);
         kit::select_text(ui.ctx(), resp.id, at, at);
     }
-    if lsp_on {
-        resp.context_menu(|ui| {
-            let mut item = |ui: &mut Ui, label: &str, cmd: IdeCmd| {
-                let keys = kit::keys(&crate::actions::Action::Ide(cmd.clone())).unwrap_or_default();
-                let b = ui.add(egui::Button::new(label).shortcut_text(keys));
-                if b.clicked() {
-                    cmds.push(cmd);
-                    ui.close();
-                }
-            };
-            item(ui, t("Go to Definition"), IdeCmd::Goto(Goto::Definition));
-            item(ui, t("Go to Type Definition"), IdeCmd::Goto(Goto::TypeDefinition));
-            item(ui, t("Go to Implementation"), IdeCmd::Goto(Goto::Implementation));
-            item(ui, t("Find References"), IdeCmd::References);
-            ui.separator();
-            item(ui, t("Rename Symbol"), IdeCmd::Rename);
-            item(ui, t("Code Actions…"), IdeCmd::CodeActions);
-            item(ui, t("Format Document"), IdeCmd::Format);
-            ui.separator();
-            item(ui, t("Go to Symbol in File…"), IdeCmd::Symbols);
-            item(ui, t("Problems"), IdeCmd::Problems);
-            item(ui, t("Back"), IdeCmd::Back);
-            item(ui, t("Forward"), IdeCmd::Forward);
-        });
-    }
+    // Right-click: copy and paste always; the language's commands when they are on.
+    resp.context_menu(|ui| {
+        kit::menu_body(ui);
+        let ctx = ui.ctx().clone();
+        if kit::menu_item(ui, Some(icons::COPY), t("Copy"), kit::keys(&crate::actions::Action::Copy), false).clicked() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy);
+            ui.close();
+        }
+        if kit::menu_item(ui, Some(icons::CLIPBOARD_TEXT), t("Paste"), kit::keys(&crate::actions::Action::Paste), false).clicked() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            ui.close();
+        }
+        if kit::menu_item(ui, Some(icons::SELECTION), t("Select All"), kit::keys(&crate::actions::Action::SelectAll), false).clicked() {
+            let len = file.text.chars().count();
+            kit::select_text(&ctx, resp.id, 0, len);
+            ui.close();
+        }
+        if !lsp_on {
+            return;
+        }
+        kit::menu_sep(ui);
+        let mut item = |ui: &mut Ui, icon: &str, label: &str, cmd: IdeCmd| {
+            let keys = kit::keys(&crate::actions::Action::Ide(cmd.clone()));
+            if kit::menu_item(ui, Some(icon), label, keys, false).clicked() {
+                cmds.push(cmd);
+                ui.close();
+            }
+        };
+        item(ui, icons::ARROW_SQUARE_OUT, t("Go to Definition"), IdeCmd::Goto(Goto::Definition));
+        item(ui, icons::ARROW_SQUARE_OUT, t("Go to Type Definition"), IdeCmd::Goto(Goto::TypeDefinition));
+        item(ui, icons::ARROW_SQUARE_OUT, t("Go to Implementation"), IdeCmd::Goto(Goto::Implementation));
+        item(ui, icons::LIST, t("Find References"), IdeCmd::References);
+        kit::menu_sep(ui);
+        item(ui, icons::PENCIL_SIMPLE, t("Rename Symbol"), IdeCmd::Rename);
+        item(ui, icons::LIGHTNING, t("Code Actions…"), IdeCmd::CodeActions);
+        item(ui, icons::TEXT_AA, t("Format Document"), IdeCmd::Format);
+        kit::menu_sep(ui);
+        item(ui, icons::LIST, t("Go to Symbol in File…"), IdeCmd::Symbols);
+        item(ui, icons::WARNING, t("Problems"), IdeCmd::Problems);
+        item(ui, icons::ARROW_LEFT, t("Back"), IdeCmd::Back);
+        item(ui, icons::ARROW_RIGHT, t("Forward"), IdeCmd::Forward);
+    });
     geom
 }
 
@@ -430,8 +447,16 @@ impl App {
                 .order(egui::Order::Foreground)
                 .fixed_pos(caret.left_bottom() + vec2(-4.0, 2.0))
                 .show(ctx, |ui| {
+                    // The chosen item's signature and documentation beside the list, when it has any.
+                    let chosen = pop.shown.get(pop.selected).and_then(|&i| pop.items.get(i));
+                    let docs: Vec<tc_lsp::assist::Block> = chosen.and_then(|it| it.documentation.as_ref()).map(tc_lsp::assist::doc_blocks).unwrap_or_default();
+                    let sig = chosen.and_then(|it| it.detail.clone());
+                    let side = !docs.is_empty();
                     frame.show(ui, |ui| {
-                        ui.set_width(380.0);
+                        ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.vertical(|ui| {
+                        ui.set_width(if side { 240.0 } else { 380.0 });
                         egui::ScrollArea::vertical().max_height(230.0).show(ui, |ui| {
                             for (row, &i) in pop.shown.iter().enumerate().take(100) {
                                 let it = &pop.items[i];
@@ -459,6 +484,34 @@ impl App {
                                     clicked = Some(row);
                                 }
                             }
+                        });
+                        });
+                        if side {
+                            let top = ui.min_rect().top();
+                            let x = ui.cursor().left();
+                            ui.painter().vline(x + 0.5, top..=(top + 230.0_f32.min(ui.min_rect().height())), Stroke::new(1.0, p.border));
+                            ui.add_space(10.0);
+                            ui.vertical(|ui| {
+                                ui.set_width(220.0);
+                                ui.set_max_height(230.0);
+                                egui::ScrollArea::vertical().id_salt("completion-doc").max_height(230.0).show(ui, |ui| {
+                                    ui.add_space(4.0);
+                                    if let Some(sig) = &sig {
+                                        ui.add(egui::Label::new(egui::RichText::new(sig).font(egui::FontId::monospace(11.5)).color(p.text)).wrap());
+                                        ui.add_space(6.0);
+                                    }
+                                    for b in &docs {
+                                        if b.code {
+                                            ui.add(egui::Label::new(egui::RichText::new(&b.text).font(egui::FontId::monospace(11.5)).color(p.text)).wrap());
+                                        } else {
+                                            ui.add(egui::Label::new(egui::RichText::new(&b.text).size(12.0).color(p.text_muted)).wrap());
+                                        }
+                                    }
+                                    ui.add_space(8.0);
+                                    ui.label(egui::RichText::new(t("↵ insert · ⇥ insert · esc")).size(style::SMALL).color(p.text_faint));
+                                });
+                            });
+                        }
                         });
                     });
                 });
@@ -538,14 +591,29 @@ impl App {
                                         egui::Frame::NONE
                                             .fill(style::soft(p.text, 0.06))
                                             .corner_radius(CornerRadius::same(4))
-                                            .inner_margin(egui::Margin::symmetric(6, 4))
+                                            .inner_margin(egui::Margin::symmetric(8, 6))
                                             .show(ui, |ui| {
                                                 ui.label(egui::RichText::new(&b.text).font(mono.clone()).color(p.text));
                                             });
                                     } else {
-                                        ui.label(egui::RichText::new(&b.text).color(p.text_muted));
+                                        ui.label(egui::RichText::new(&b.text).size(12.5).color(p.text_muted));
                                     }
                                 }
+                                // Where to go from here.
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 12.0;
+                                    for (label, cmd) in [(t("Go to Definition"), IdeCmd::Goto(Goto::Definition)), (t("References"), IdeCmd::References)] {
+                                        let keys = kit::keys(&crate::actions::Action::Ide(cmd.clone())).unwrap_or_default();
+                                        let r = ui.add(egui::Label::new(egui::RichText::new(format!("{label} {keys}")).size(style::SMALL).color(p.accent_text)).sense(Sense::click()));
+                                        if r.hovered() {
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                        }
+                                        if r.clicked() {
+                                            cmds.push(cmd);
+                                        }
+                                    }
+                                });
                             }
                         });
                     });
@@ -560,15 +628,40 @@ impl App {
                 .order(egui::Order::Foreground)
                 .fixed_pos(caret.left_bottom() + vec2(-4.0, 2.0))
                 .show(ctx, |ui| {
-                    frame.show(ui, |ui| {
-                        ui.set_min_width(260.0);
-                        for (i, it) in menu.items.iter().enumerate() {
-                            let title = match it {
-                                lt::CodeActionOrCommand::Command(c) => c.title.clone(),
-                                lt::CodeActionOrCommand::CodeAction(a) => a.title.clone(),
+                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                        kit::menu_body(ui);
+                        ui.set_min_width(300.0);
+                        // Grouped by kind: quick fixes first, then refactors, then the rest.
+                        let kind_of = |it: &lt::CodeActionOrCommand| match it {
+                            lt::CodeActionOrCommand::CodeAction(a) => {
+                                let k = a.kind.as_ref().map(|k| k.as_str().to_string()).unwrap_or_default();
+                                if k.starts_with("quickfix") { 0 } else if k.starts_with("refactor") { 1 } else { 2 }
+                            }
+                            lt::CodeActionOrCommand::Command(_) => 2,
+                        };
+                        let mut order: Vec<usize> = (0..menu.items.len()).collect();
+                        order.sort_by_key(|i| kind_of(&menu.items[*i]));
+                        let mut group = None;
+                        for i in order {
+                            let it = &menu.items[i];
+                            let k = kind_of(it);
+                            if group != Some(k) {
+                                group = Some(k);
+                                kit::menu_header(ui, [t("Quick fix"), t("Refactor"), t("Actions")][k]);
+                            }
+                            let (title, disabled) = match it {
+                                lt::CodeActionOrCommand::Command(c) => (c.title.clone(), false),
+                                lt::CodeActionOrCommand::CodeAction(a) => (a.title.clone(), a.disabled.is_some()),
                             };
-                            let b = ui.add(egui::Button::selectable(i == menu.selected, title));
-                            if b.clicked() {
+                            let icon = if k == 0 { icons::LIGHTNING } else { icons::PENCIL_SIMPLE };
+                            let r = ui.add_enabled_ui(!disabled, |ui| {
+                                if i == menu.selected {
+                                    let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 26.0));
+                                    ui.painter().rect_filled(rect, CornerRadius::same(5), p.accent_soft);
+                                }
+                                kit::menu_item(ui, Some(icon), &title, None, false)
+                            }).inner;
+                            if r.clicked() {
                                 cmds.push(IdeCmd::RunAction(i));
                             }
                         }
@@ -591,8 +684,11 @@ impl App {
                 .fixed_pos(caret.left_bottom() + vec2(-4.0, 2.0))
                 .show(ctx, |ui| {
                     frame.show(ui, |ui| {
-                        ui.label(egui::RichText::new(t("Rename to")).size(style::SMALL).color(p.text_faint));
-                        let r = ui.add(egui::TextEdit::singleline(&mut field.text).id(id).font(mono.clone()).desired_width(240.0));
+                        ui.label(egui::RichText::new(t("Rename symbol")).size(style::SMALL).color(p.text_faint));
+                        ui.add_space(2.0);
+                        let r = kit::field(ui, id, &mut field.text, None, "", 280.0, true);
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(t("↵ rename everywhere · esc cancel")).size(style::SMALL).color(p.text_faint));
                         #[cfg(debug_assertions)]
                         crate::devtest::record("ide-rename", r.rect);
                         if std::mem::take(&mut field.focus) {
@@ -627,15 +723,27 @@ impl App {
     /// The language server's state and the file's problems, for the editor's status line.
     pub fn ide_status(&mut self, ui: &mut Ui, path: &std::path::Path) {
         let p = style::pal(ui);
+        // Laid out right to left: the server, then the problems, then Undo Refactor.
+        self.lsp_chip(ui, path);
         let (errors, warnings) = self.lsp.counts(path);
         if errors + warnings > 0 {
-            let text = format!("⊗ {errors}  ⚠ {warnings}");
-            let color = if errors > 0 { p.err } else { p.warn };
-            let r = ui.add(egui::Label::new(egui::RichText::new(text).size(style::SMALL).color(color)).sense(Sense::click()));
-            if r.on_hover_text(t("Problems")).clicked() {
+            let mut job = egui::text::LayoutJob::default();
+            let small = egui::FontId::proportional(style::SMALL);
+            if errors > 0 {
+                job.append(icons::X_CIRCLE, 0.0, egui::TextFormat::simple(style::icon_font(12.0), p.err));
+                job.append(&errors.to_string(), 3.0, egui::TextFormat::simple(small.clone(), p.err));
+            }
+            if warnings > 0 {
+                job.append(icons::WARNING, if errors > 0 { 8.0 } else { 0.0 }, egui::TextFormat::simple(style::icon_font(12.0), p.warn));
+                job.append(&warnings.to_string(), 3.0, egui::TextFormat::simple(small, p.warn));
+            }
+            let r = ui.add(egui::Label::new(job).sense(Sense::click()));
+            if r.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if r.on_hover_text(kit::tip(t("Problems"), Action::Ide(IdeCmd::Problems))).clicked() {
                 self.actions.push(Action::Ide(IdeCmd::Problems));
             }
-            ui.label(egui::RichText::new("·").size(style::SMALL).color(p.text_faint));
         }
         if let Some(u) = &self.lsp.ide.undo
             && u.at.elapsed() < Duration::from_secs(60)
@@ -644,9 +752,43 @@ impl App {
             if r.clicked() {
                 self.actions.push(Action::Ide(IdeCmd::UndoRefactor));
             }
-            ui.label(egui::RichText::new("·").size(style::SMALL).color(p.text_faint));
         }
-        let Some(server) = self.lsp.server_for(path) else { return };
+    }
+
+    /// The language server of the file: its state as a dot and words; a server that starts
+    /// when needed and has not yet says so.
+    fn lsp_chip(&mut self, ui: &mut Ui, path: &std::path::Path) {
+        let p = style::pal(ui);
+        let chip = |ui: &mut Ui, dot: Option<Color32>, text: &str| {
+            let w = 6.0 + 6.0 + style::text_width(ui, text) * (style::SMALL / style::BODY) + 6.0;
+            let g = ui.painter().layout_no_wrap(text.to_string(), egui::FontId::proportional(style::SMALL), p.text_faint);
+            let (rect, r) = ui.allocate_exact_size(vec2(6.0 + 6.0 + g.size().x, 18.0), Sense::click());
+            let c = pos2(rect.left() + 3.0, rect.center().y);
+            match dot {
+                Some(d) => {
+                    ui.painter().circle_filled(c, 3.0, d);
+                }
+                None => {
+                    ui.painter().circle_stroke(c, 2.5, Stroke::new(1.0, p.text_faint));
+                }
+            }
+            ui.painter().galley(pos2(rect.left() + 12.0, rect.center().y - g.size().y / 2.0), g, p.text_faint);
+            let _ = w;
+            #[cfg(debug_assertions)]
+            crate::devtest::record("ide-status", rect);
+            r
+        };
+        let Some(server) = self.lsp.server_for(path) else {
+            // Not started: on demand, the first edit or language feature starts it.
+            if self.settings.lsp
+                && self.settings.lsp_on_demand
+                && let Some((spec, _)) = tc_lsp::servers::for_path(path)
+            {
+                chip(ui, None, &format!("{} · {}", spec.name, t("starts when needed")))
+                    .on_hover_text(t("It starts when you edit the file or ask for a language feature."));
+            }
+            return;
+        };
         use crate::lsp::ServerState as S;
         let (dot, text) = match &server.state {
             S::Ready => match &server.progress {
@@ -657,26 +799,108 @@ impl App {
             S::Missing => (p.warn, format!("{} · {}", server.spec.name, t("not installed"))),
             S::Failed(_) => (p.err, format!("{} · {}", server.spec.name, t("stopped"))),
         };
-        let (rect, r) = ui.allocate_exact_size(vec2(style::text_width(ui, &text) + 16.0, 18.0), Sense::click());
-        ui.painter().circle_filled(pos2(rect.left() + 4.0, rect.center().y), 3.0, dot);
-        ui.painter().text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, &text, egui::FontId::proportional(style::SMALL), p.text_faint);
-        #[cfg(debug_assertions)]
-        crate::devtest::record("ide-status", rect);
         let tip = match &server.state {
             S::Missing => format!("{}\n{}", t("Install it from a terminal (click to copy):"), server.spec.install),
             S::Failed(why) => format!("{why}\n{}", t("Click to restart it.")),
             _ => format!("{}\n{}", server.spec.name, pid_text(server)),
         };
-        let r = r.on_hover_text(tip);
+        let state = server.state.clone();
+        let install = server.spec.install;
+        let r = chip(ui, Some(dot), &text).on_hover_text(tip);
         if r.clicked() {
-            match &server.state {
+            match state {
                 S::Missing => {
-                    ui.ctx().copy_text(server.spec.install.to_string());
-                    self.toast(t("Install command copied.").into());
+                    ui.ctx().copy_text(install.to_string());
+                    self.toast_ok(t("Install command copied.").into());
                 }
                 S::Failed(_) => self.actions.push(Action::Ide(IdeCmd::RestartServer)),
                 _ => {}
             }
+        }
+    }
+
+    /// The problems panel at the bottom of the editor (⇧⌘M): the language server's errors,
+    /// warnings and notes, for this file or the whole project. A click goes there.
+    pub fn problems_panel(&mut self, ui: &mut Ui, project: tc_core::ProjectId, rect: Rect) {
+        let p = style::pal(ui);
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.chrome);
+        ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
+        let root = self.project(project).map(|x| x.path.clone()).unwrap_or_default();
+        let current = self.editors.get(&project).and_then(|e| e.file()).map(|f| f.path.clone());
+        let mut rows: Vec<(u8, String, std::path::PathBuf, usize, usize)> = Vec::new();
+        for (path, (_, diags)) in &self.lsp.diagnostics {
+            let here = if self.problems_project { path.starts_with(&root) } else { Some(path) == current.as_ref() };
+            if !here {
+                continue;
+            }
+            for d in diags {
+                let sev = match d.severity {
+                    Some(lt::DiagnosticSeverity::ERROR) | None => 0,
+                    Some(lt::DiagnosticSeverity::WARNING) => 1,
+                    _ => 2,
+                };
+                let msg = d.message.lines().next().unwrap_or_default().to_string();
+                rows.push((sev, msg, path.clone(), d.range.start.line as usize, d.range.start.character as usize));
+            }
+        }
+        rows.sort_by(|a, b| (a.0, &a.2, a.3).cmp(&(b.0, &b.2, b.3)));
+        let counts = [0, 1, 2].map(|s| rows.iter().filter(|r| r.0 == s).count());
+        // Header.
+        let head = Rect::from_min_size(rect.min, vec2(rect.width(), 30.0));
+        let mut x = head.left() + 12.0;
+        let g = ui.painter().layout_no_wrap(t("Problems").to_string(), style::semibold(12.0), p.text);
+        let gw = g.size().x;
+        ui.painter().galley(pos2(x, head.center().y - g.size().y / 2.0), g, p.text);
+        x += gw + 8.0;
+        let dark = ui.visuals().dark_mode;
+        for (i, (icon, c)) in [(icons::X_CIRCLE, p.err), (icons::WARNING, p.warn), (icons::INFO, p.info)].into_iter().enumerate() {
+            let r = kit::paint_pill(ui.painter(), pos2(x, head.center().y), Some(icon), &counts[i].to_string(), c, style::tint(c, dark));
+            x = r.right() + 6.0;
+        }
+        let close = Rect::from_center_size(pos2(head.right() - 6.0 - 11.0, head.center().y), vec2(22.0, 22.0));
+        if ui.scope_builder(egui::UiBuilder::new().max_rect(close), |ui| kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0)).inner.clicked() {
+            self.problems_open = false;
+        }
+        let options = [kit::Seg::new(t("This file"), ""), kit::Seg::new(t("Project"), "")];
+        let sw = kit::segmented_width(ui, &options);
+        let seg = Rect::from_min_size(pos2(close.left() - 6.0 - sw, head.center().y - kit::SEGMENTED_H / 2.0), vec2(sw, kit::SEGMENTED_H));
+        if let Some(i) = kit::segmented_in(ui, seg, egui::Id::new("problems-scope"), &options, self.problems_project as usize) {
+            self.problems_project = i == 1;
+        }
+        // Rows.
+        let list = Rect::from_min_max(pos2(rect.left(), head.bottom()), rect.max);
+        let mut go = None;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
+            ui.set_clip_rect(list);
+            if rows.is_empty() {
+                ui.painter().text(pos2(list.left() + 12.0, list.top() + 14.0), Align2::LEFT_CENTER, t("No problems found."), egui::FontId::proportional(style::SMALL), p.text_faint);
+                return;
+            }
+            egui::ScrollArea::vertical().id_salt("problems").auto_shrink([false, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (sev, msg, path, line, col) in &rows {
+                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(r, CornerRadius::ZERO, p.faint_row());
+                    }
+                    let (icon, c) = [(icons::X_CIRCLE, p.err), (icons::WARNING, p.warn), (icons::INFO, p.info)][*sev as usize];
+                    ui.painter().text(pos2(r.left() + 12.0 + 7.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(14.0), c);
+                    let place = format!("{}:{}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), line + 1);
+                    let pg = ui.painter().layout_no_wrap(place, egui::FontId::proportional(style::SMALL), p.text_faint);
+                    let pw = pg.size().x;
+                    ui.painter().galley(pos2(r.right() - 12.0 - pw, r.center().y - pg.size().y / 2.0), pg, p.text_faint);
+                    let mut job = egui::text::LayoutJob::simple_singleline(msg.clone(), egui::FontId::proportional(12.5), p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((r.width() - 12.0 - 14.0 - 8.0 - pw - 24.0).max(10.0));
+                    let g = ui.painter().layout_job(job);
+                    ui.painter().galley(pos2(r.left() + 12.0 + 14.0 + 8.0, r.center().y - g.size().y / 2.0), g, p.text);
+                    if resp.clicked() {
+                        go = Some((path.clone(), *line, *col));
+                    }
+                }
+            });
+        });
+        if let Some((path, line, col)) = go {
+            self.actions.push(Action::GotoLocation(path, line, col));
         }
     }
 }

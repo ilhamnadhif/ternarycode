@@ -122,6 +122,18 @@ pub fn soft(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (alpha.clamp(0.0, 1.0) * 255.0) as u8)
 }
 
+/// The soft fill behind status-coloured text (pills, icon badges): 18% in the dark theme, 12%
+/// in the light one.
+pub fn tint(c: Color32, dark: bool) -> Color32 {
+    soft(c, if dark { 0.18 } else { 0.12 })
+}
+
+/// `c` at `alpha` laid over `base`, opaque (a tinted surface that hides what is behind it).
+pub fn over(base: Color32, c: Color32, alpha: f32) -> Color32 {
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * alpha).round() as u8;
+    Color32::from_rgb(mix(base.r(), c.r()), mix(base.g(), c.g()), mix(base.b(), c.b()))
+}
+
 // ---------------------------------------------------------------------------------------------
 // Type
 // ---------------------------------------------------------------------------------------------
@@ -168,7 +180,7 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
             s.button_padding = vec2(10.0, 4.0);
             s.interact_size = vec2(24.0, 26.0);
             s.window_margin = Margin::same(20);
-            s.menu_margin = Margin::same(6);
+            s.menu_margin = Margin::same(5);
             s.indent = 16.0;
             s.icon_width = 15.0;
             s.icon_width_inner = 9.0;
@@ -208,7 +220,7 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
             v.selection.stroke = Stroke::new(1.0, p.accent_text);
             v.window_corner_radius = CornerRadius::same(RADIUS_LG);
             v.menu_corner_radius = CornerRadius::same(8);
-            v.window_stroke = Stroke::new(1.0, p.border);
+            v.window_stroke = Stroke::new(1.0, p.border_strong);
             v.window_shadow = Shadow {
                 offset: [0, 10],
                 blur: 30,

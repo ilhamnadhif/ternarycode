@@ -172,6 +172,11 @@ pub struct Pane {
     pub pending_resize: Option<(GridSize, u16, u16, Instant)>,
     /// The grid the PTY has now (as started, or last resized to).
     pty_grid: Option<GridSize>,
+    /// Progress a program reports (OSC 9;4): its state (1 normal, 2 error, 3 indeterminate,
+    /// 4 paused) and percentage. Gone when it reports 0 or the shell is back at its prompt.
+    pub progress: Option<(u8, Option<u8>)>,
+    /// Why the shell could not start (shown over the pane, with Try Again).
+    pub start_error: Option<String>,
 }
 
 impl Pane {
@@ -222,6 +227,8 @@ impl Pane {
             snapshot_pending: false,
             pending_resize: None,
             pty_grid: None,
+            progress: None,
+            start_error: None,
         };
         if start {
             pane.start_shell(spawn);
@@ -245,6 +252,7 @@ impl Pane {
             old.pty.hang_up(Duration::from_millis(1500));
         }
         self.generation += 1;
+        self.start_error = None;
         let size = {
             let term = self.shared.term.lock();
             use tc_term::alacritty_terminal::grid::Dimensions;
@@ -321,6 +329,7 @@ impl Pane {
         let msg = tf("[The shell could not start: {}]", &[why]);
         tcore::write_status(&mut self.feeder.lock(), &msg);
         self.exit = Some(ExitInfo::Unknown);
+        self.start_error = Some(why.to_string());
         self.tracker
             .apply(Event::Exited(Some(127)), Instant::now());
     }
@@ -475,7 +484,11 @@ impl Pane {
                 }
                 false
             }
-            OscSignal::Progress { .. } | OscSignal::PromptRedraw(_) => false,
+            OscSignal::Progress { state, value } => {
+                self.progress = (state != 0).then_some((state, value));
+                false
+            }
+            OscSignal::PromptRedraw(_) => false,
         }
     }
 
@@ -581,6 +594,7 @@ impl Pane {
         }
         if fg == Foreground::Shell {
             self.program_title = None;
+            self.progress = None;
         }
         if fg == Foreground::Shell && self.tracker.agent.is_some() {
             // The agent was quit: nothing to resume later.

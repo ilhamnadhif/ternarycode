@@ -401,6 +401,14 @@ fn link_end(s: &[char], i: usize) -> Option<(usize, usize)> {
     Some((text_end, close('(', ')', text_end + 2)?))
 }
 
+/// A completion item's documentation as blocks.
+pub fn doc_blocks(doc: &lsp_types::Documentation) -> Vec<Block> {
+    match doc {
+        lsp_types::Documentation::String(s) => markdown(s),
+        lsp_types::Documentation::MarkupContent(MarkupContent { value, .. }) => markdown(value),
+    }
+}
+
 /// A hover's contents as blocks.
 pub fn hover_blocks(contents: &HoverContents) -> Vec<Block> {
     let marked = |m: &MarkedString| match m {

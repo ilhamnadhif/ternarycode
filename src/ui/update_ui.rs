@@ -47,6 +47,21 @@ pub enum UpdateEvent {
     Restart,
 }
 
+impl Updater {
+    /// The version an update is available for (or downloading, or ready), if any.
+    /// An update is being downloaded.
+    pub fn downloading(&self) -> bool {
+        matches!(self.state, State::Downloading(_))
+    }
+
+    pub fn available_version(&self) -> Option<String> {
+        match &self.state {
+            State::Available(r) | State::Downloading(r) | State::Ready(r, _) => Some(r.version.clone()),
+            _ => None,
+        }
+    }
+}
+
 pub struct Updater {
     state: State,
     rx: Option<mpsc::Receiver<Msg>>,
@@ -356,6 +371,7 @@ impl Updater {
         }
         let mut event = UpdateEvent::None;
         let mut close = false;
+        let mut retry = false;
         let mut install_release = None;
         let screen = ctx.content_rect();
         let dark = ctx.global_style().visuals.dark_mode;
@@ -393,37 +409,42 @@ impl Updater {
                         });
                     }
                     State::UpToDate => {
-                        if dialogs::header(ui, icons::CHECK_CIRCLE, p.ok, t("TernaryCode is up to date"), Some(&tf("Version {} is the latest version.", &[CURRENT]))) {
+                        if dialogs::header(ui, icons::CHECK_CIRCLE, p.ok, t("TernaryCode is up to date"), Some(&tf("Version {} is the latest.", &[CURRENT]))) {
                             close = true;
                         }
-                        dialogs::footer_with(ui, None, |ui| {
+                        ui.add_space(12.0);
+                        dialogs::footer_with(ui, Some(&tf("↵ {}", &[t("OK")])), |ui| {
                             if kit::button_ex(ui, kit::Kind::Primary, None, t("OK"), false).clicked() || enter {
                                 close = true;
                             }
                         });
                     }
                     State::Error(e) => {
-                        if dialogs::header(ui, icons::WARNING, p.err, t("Software Update"), None) {
+                        let sub = format!("{}. {}", e.trim_end_matches('.'), t("Nothing was changed."));
+                        if dialogs::header(ui, icons::WARNING, p.err, t("The update could not be downloaded"), Some(&sub)) {
                             close = true;
                         }
-                        dialogs::body(ui, |ui| {
-                            ui.add(egui::Label::new(RichText::new(e.as_str()).color(p.text)).wrap());
-                        });
+                        ui.add_space(12.0);
                         dialogs::footer_with(ui, None, |ui| {
                             if kit::button_ex(ui, kit::Kind::Primary, None, t("OK"), false).clicked() {
                                 close = true;
                             }
-                            if kit::secondary(ui, Some(icons::ARROW_SQUARE_OUT), t("Open Releases Page")).clicked() {
-                                update::open_page(&format!("https://github.com/{}/releases/latest", update::REPO));
+                            if kit::secondary(ui, None, t("Try Again")).clicked() {
+                                retry = true;
                             }
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_SQUARE_OUT), t("Open Releases Page"), false).clicked() {
+                                    update::open_page(&format!("https://github.com/{}/releases/latest", update::REPO));
+                                }
+                            });
                         });
                     }
                     State::Available(release) => {
                         let sub = match &release.date {
-                            Some(date) => tf("Version {} ({}) · you have {}", &[&release.version, date, CURRENT]),
-                            None => tf("Version {} · you have {}", &[&release.version, CURRENT]),
+                            Some(date) => tf("Released {} · you have {}", &[date, CURRENT]),
+                            None => tf("You have {}", &[CURRENT]),
                         };
-                        if dialogs::header(ui, icons::ARROW_CIRCLE_UP, p.accent, t("A new version of TernaryCode is available"), Some(&sub)) {
+                        if dialogs::header(ui, icons::ARROW_CIRCLE_UP, p.accent, &tf("TernaryCode {} is available", &[&release.version]), Some(&sub)) {
                             close = true;
                         }
                         let installable = update::installable(release);
@@ -434,15 +455,18 @@ impl Updater {
                                 ui.add_space(4.0);
                                 ui.add(egui::Label::new(RichText::new(update::manual_reason()).size(style::SMALL).color(p.text_muted)).wrap());
                             }
-                            ui.add_space(4.0);
-                            let skip = ui.checkbox(&mut self.skip_ticked, tf("Don't show again for version {}", &[&release.version]));
-                            #[cfg(debug_assertions)]
-                            crate::devtest::record("update-skip", skip.rect);
-                            let _ = skip;
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                let skip = kit::switch(ui, &mut self.skip_ticked);
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record("update-skip", skip.rect);
+                                ui.label(RichText::new(tf("Don’t remind me about {}", &[&release.version])).size(style::SMALL).color(p.text_muted));
+                            });
                         });
                         dialogs::footer_with(ui, None, |ui| {
                             if installable {
-                                let install = kit::button_ex(ui, kit::Kind::Primary, None, t("Install Update"), false);
+                                let install = kit::button_ex(ui, kit::Kind::Primary, None, t("Install and Restart"), false);
                                 #[cfg(debug_assertions)]
                                 crate::devtest::record("update-install", install.rect);
                                 if install.clicked() {
@@ -458,9 +482,11 @@ impl Updater {
                             if later.clicked() {
                                 close = true;
                             }
-                            if kit::secondary(ui, Some(icons::ARROW_SQUARE_OUT), t("View on GitHub")).clicked() {
-                                update::open_page(&release.page);
-                            }
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_SQUARE_OUT), t("View on GitHub"), false).clicked() {
+                                    update::open_page(&release.page);
+                                }
+                            });
                         });
                     }
                     State::Downloading(release) => {
@@ -477,8 +503,16 @@ impl Updater {
                             Stage::Verifying => (1.0, t("Verifying…").to_string()),
                         };
                         dialogs::body(ui, |ui| {
-                            ui.add(egui::ProgressBar::new(fraction).desired_height(6.0).fill(p.accent));
-                            ui.label(RichText::new(text).size(style::SMALL).color(p.text_muted));
+                            let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
+                            ui.painter().rect_filled(bar, egui::CornerRadius::same(3), p.subtle);
+                            ui.painter().rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * fraction.clamp(0.0, 1.0), 6.0)), egui::CornerRadius::same(3), p.accent);
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(text).size(style::SMALL).color(p.text_muted));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new(t("Then verifying SHA-256 and signature")).size(style::SMALL).color(p.text_muted));
+                                });
+                            });
                         });
                         dialogs::footer_with(ui, Some(t("It keeps going in the background.")), |ui| {
                             if kit::secondary(ui, None, t("Hide")).clicked() {
@@ -489,13 +523,14 @@ impl Updater {
                     State::Ready(release, _) => {
                         if dialogs::header(
                             ui,
-                            icons::ARROW_CIRCLE_UP,
+                            icons::CHECK_CIRCLE,
                             p.ok,
-                            &tf("TernaryCode {} is ready to install", &[&release.version]),
-                            Some(t("TernaryCode quits, installs the new version and opens again. Your projects and tabs come back.")),
+                            &tf("TernaryCode {} is ready", &[&release.version]),
+                            Some(t("TernaryCode restarts with your projects and tabs. Agents that support it can be resumed.")),
                         ) {
                             close = true;
                         }
+                        ui.add_space(12.0);
                         dialogs::footer_with(ui, None, |ui| {
                             let restart = kit::button_ex(ui, kit::Kind::Primary, None, t("Restart Now"), false);
                             #[cfg(debug_assertions)]
@@ -517,6 +552,9 @@ impl Updater {
         if let Some(release) = install_release {
             self.skip_ticked = false;
             self.start_download(ctx, release);
+        }
+        if retry {
+            self.check_now(ctx);
         }
         if close {
             self.close_dialog();
@@ -548,14 +586,15 @@ impl crate::app::App {
     pub fn update_status_item(&mut self, ui: &mut egui::Ui) {
         let Some(text) = self.updater.status_text() else { return };
         let p = style::pal(ui);
-        let font = egui::FontId::proportional(style::SMALL);
-        let icon = ui.painter().layout_no_wrap(icons::ARROW_CIRCLE_UP.to_string(), style::icon_font(12.5), p.accent_text);
+        let font = style::medium(style::SMALL);
+        let glyph = if self.updater.downloading() { icons::DOWNLOAD_SIMPLE } else { icons::ARROW_CIRCLE_UP };
+        let icon = ui.painter().layout_no_wrap(glyph.to_string(), style::icon_font(13.0), p.accent_text);
         let label = ui.painter().layout_no_wrap(text, font, p.accent_text);
-        let size = egui::vec2(icon.size().x + label.size().x + 5.0 + 16.0, 20.0);
+        let size = egui::vec2(7.0 + icon.size().x + 5.0 + label.size().x + 9.0, 20.0);
         let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
         let fill = if resp.hovered() { p.accent_soft.gamma_multiply(1.4) } else { p.accent_soft };
         ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
-        let mut x = rect.left() + 8.0;
+        let mut x = rect.left() + 7.0;
         ui.painter().galley(egui::pos2(x, rect.center().y - icon.size().y / 2.0), icon.clone(), p.accent_text);
         x += icon.size().x + 5.0;
         ui.painter().galley(egui::pos2(x, rect.center().y - label.size().y / 2.0), label, p.accent_text);

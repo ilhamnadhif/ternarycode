@@ -123,7 +123,8 @@ impl AppMenu {
 
         let palette = item(t("Command Palette…"), Action::Palette);
         let switch = item(t("Switch Project…"), Action::SwitchProject);
-        let editor = item(t("Show/Hide Editor"), Action::ToggleEditor);
+        let editor = item(t("Show/Hide Code"), Action::ToggleEditor);
+        let files = item(t("Show/Hide Files"), Action::ToggleFiles);
         let sidebar = item(t("Show/Hide Sidebar"), Action::ToggleSidebar);
         let focus = item(t("Focus View"), Action::SetView(View::Focus));
         let grid = item(t("Grid of All Projects"), Action::ToggleGrid);
@@ -142,6 +143,7 @@ impl AppMenu {
                 &switch,
                 &sidebar,
                 &editor,
+                &files,
                 &PredefinedMenuItem::separator(),
                 &focus,
                 &grid,
