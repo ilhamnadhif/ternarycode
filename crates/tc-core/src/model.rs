@@ -214,6 +214,10 @@ pub struct Settings {
     /// The editor's language features (language servers: definitions, rename, completion…).
     #[serde(default = "yes")]
     pub lsp: bool,
+    /// A language server starts only when a file it serves is edited or a language feature is
+    /// asked for (definition, references, rename…), not when a file is only opened to be read.
+    #[serde(default = "yes")]
+    pub lsp_on_demand: bool,
     /// Completion pops up while typing (else only with ⌃Space).
     #[serde(default = "yes")]
     pub auto_complete: bool,
@@ -257,6 +261,7 @@ impl Default for Settings {
             files_hidden: false,
             ui_rev: UI_REV,
             lsp: true,
+            lsp_on_demand: true,
             auto_complete: true,
             format_on_save: false,
         }

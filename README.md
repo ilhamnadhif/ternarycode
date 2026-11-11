@@ -158,7 +158,7 @@ update check is the only network connection TernaryCode makes.
   restart.
 - **A real terminal**: 24-bit colour, mouse reporting, synchronized output, IME, pixel-exact
   box drawing, scrollback search in one pane (`⌘F`) or all of them (`⇧⌘F`), and `⌘`-click on a
-  `path:line` to open it in the editor.
+  `path:line` to open it in the editor, from a Grid tile too.
 - **Shell integration** (zsh, bash, fish and PowerShell) marks prompts and commands, so a command that fails or
   finishes after a long time is noticed, and resizing never leaves prompt fragments behind.
 
@@ -192,8 +192,10 @@ for byte when you have not edited it since.
   implementations, references (`⇧F12`), rename across files (`F2`, with one-step undo), code
   actions and quick fixes (`⌘.`), completion, hover, signature help, document and workspace
   symbols, problems (`⇧⌘M`) and format on save.
-- Servers start when you open a file they serve and stop ten minutes after the last one closes. A
-  missing server is named in the status line together with its install command.
+- Servers start when you edit a file they serve or ask for a language feature, so a file you only
+  read costs nothing (Settings → Editor → *Start servers only when needed*; turn it off to start
+  them when a file opens). They stop ten minutes after the last one closes. A missing server is
+  named in the status line together with its install command.
 
 ### Documents
 
@@ -214,7 +216,8 @@ previous match.
 
 `⇧⌘R` shows what changed: since the agent in this pane started (a snapshot taken outside your git
 index, so your staging area is never touched), or since the last commit. Open any file from the
-diff in the editor.
+diff in the editor. When an agent finishes, **Review** on its Grid tile and in the list of what
+waits opens it straight away.
 
 ## Keyboard shortcuts
 

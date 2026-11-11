@@ -160,7 +160,7 @@ satu-satunya koneksi jaringan yang dibuat TernaryCode.
   restart.
 - **Terminal sungguhan**: warna 24-bit, mouse reporting, synchronized output, IME, box drawing yang
   presisi, pencarian scrollback di satu pane (`⌘F`) atau semua pane (`⇧⌘F`), dan `⌘`-klik pada
-  `path:baris` untuk membukanya di editor.
+  `path:baris` untuk membukanya di editor, dari tile Grid juga.
 - **Shell integration** (zsh, bash, fish, dan PowerShell) menandai prompt dan perintah, jadi perintah yang gagal
   atau selesai setelah lama tetap ketahuan, dan resize tidak pernah meninggalkan potongan prompt.
 
@@ -194,8 +194,10 @@ mengembalikan file byte demi byte kalau Anda belum mengubahnya sejak itu.
   implementation, referensi (`⇧F12`), rename lintas file (`F2`, bisa di-undo sekali), code action
   dan quick fix (`⌘.`), autocomplete, hover, signature help, simbol dokumen dan workspace, problem
   (`⇧⌘M`), dan format saat menyimpan.
-- Server mulai saat Anda membuka file yang dilayaninya dan berhenti sepuluh menit setelah file
-  terakhir ditutup. Server yang belum terpasang disebut di status line beserta perintah
+- Server mulai saat Anda mengedit file yang dilayaninya atau memakai fitur bahasa, jadi file yang
+  hanya dibaca tidak membebani apa pun (Settings → Editor → *Nyalakan server hanya saat
+  dibutuhkan*; matikan agar server mulai saat file dibuka). Server berhenti sepuluh menit setelah
+  file terakhir ditutup. Server yang belum terpasang disebut di status line beserta perintah
   pemasangannya.
 
 ### Dokumen
@@ -216,7 +218,8 @@ sel yang cocok, lintas sheet. `Enter` dan `⇧Enter` pindah ke hasil berikutnya 
 
 `⇧⌘R` menampilkan apa yang berubah: sejak agent di pane ini mulai (snapshot diambil di luar index
 git, jadi staging area Anda tidak tersentuh), atau sejak commit terakhir. Buka file mana pun dari
-diff di editor.
+diff di editor. Saat agent selesai, tombol **Tinjau** di tile Grid dan di daftar yang menunggu
+langsung membukanya.
 
 ## Shortcut keyboard
 

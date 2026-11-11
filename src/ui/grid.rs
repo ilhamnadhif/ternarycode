@@ -23,6 +23,9 @@ use crate::i18n::{t, tf};
 
 const TILE_HEADER: f32 = 30.0;
 const GAP: f32 = 8.0;
+/// The Grid's scroll bar, and the room between it and the tiles.
+const SCROLL_BAR: f32 = 8.0;
+const SCROLL_GAP: f32 = 4.0;
 /// Tiles never draw terminal text smaller than this share of the font size (so ⌘= and ⌘−
 /// work here too); a terminal too big to fit at that size is cut around its cursor instead of
 /// shrunk further.
@@ -186,11 +189,24 @@ impl App {
         let total = rows as f32 * h + GAP * (rows as f32 - 1.0);
         let scrolls = total > area.height() + 0.5;
         // Room for the scroll bar beside the tiles.
-        let width = area.width() - if scrolls { 10.0 } else { 0.0 };
+        let width = area.width() - if scrolls { SCROLL_BAR + SCROLL_GAP } else { 0.0 };
         let w = (width - GAP * (cols as f32 - 1.0)) / cols as f32;
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-            // A thin bar always in view when there is more below the 2 × 2.
-            ui.spacing_mut().scroll = egui::style::ScrollStyle::thin();
+            // A bar always in view when there is more below the 2 × 2: a track, and a handle
+            // that stands out from the dark Grid (the plain widget fill would not).
+            let p = style::pal(ui);
+            let tiles_widgets = ui.visuals().widgets.clone();
+            ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                bar_width: SCROLL_BAR,
+                bar_inner_margin: SCROLL_GAP,
+                bar_outer_margin: 0.0,
+                handle_min_length: 48.0,
+                ..egui::style::ScrollStyle::solid()
+            };
+            let handle = &mut ui.visuals_mut().widgets;
+            handle.inactive.bg_fill = p.text_faint;
+            handle.hovered.bg_fill = p.text_muted;
+            handle.active.bg_fill = p.text_muted;
             let bar = if scrolls {
                 egui::scroll_area::ScrollBarVisibility::AlwaysVisible
             } else {
@@ -201,6 +217,7 @@ impl App {
                 .auto_shrink([false, false])
                 .scroll_bar_visibility(bar)
                 .show(ui, |ui| {
+                    ui.visuals_mut().widgets = tiles_widgets;
                     let (content, _) = ui.allocate_exact_size(vec2(width, total), Sense::hover());
                     let visible = ui.clip_rect();
                     let mut drawn = Vec::new();
@@ -216,6 +233,15 @@ impl App {
                             self.tile(ui, id, rect, !scrolls);
                         }
                     }
+                    // More below: how many, at the bottom of the view; a click brings the next row.
+                    let row_rect = |r: usize| {
+                        Rect::from_min_size(content.min + vec2(0.0, r as f32 * (h + GAP)), vec2(width, h))
+                    };
+                    let next_row = (0..rows).find(|r| row_rect(*r).top() >= visible.bottom() - 1.0);
+                    if let Some(next) = next_row {
+                        let below = n - (next * cols).min(n);
+                        self.more_below(ui, visible, below, row_rect(next));
+                    }
                     // The keyboard was meant for a pane out of view (the project open before):
                     // it would jump there when scrolled to, after the user chose another tile.
                     if self.focus_request.is_some_and(|f| !drawn.contains(&f)) {
@@ -223,6 +249,34 @@ impl App {
                     }
                 });
         });
+    }
+
+    /// The note at the bottom of a scrolled Grid: how many projects are further down. Clicked, it
+    /// scrolls the next row into view.
+    fn more_below(&mut self, ui: &mut Ui, visible: Rect, below: usize, next_row: Rect) {
+        let p = style::pal(ui);
+        let text = format!("{}  {}", icons::CARET_DOWN, tf("{} more below", &[&below.to_string()]));
+        let font = egui::FontId::proportional(style::SMALL);
+        let g = ui.painter().layout_no_wrap(text, font, p.text);
+        let pill = Rect::from_center_size(
+            pos2(visible.center().x, visible.bottom() - 22.0),
+            vec2(g.size().x + 24.0, 26.0),
+        );
+        let r = ui.interact(pill, egui::Id::new("grid-more-below"), Sense::click());
+        #[cfg(debug_assertions)]
+        crate::devtest::record("grid-more", pill);
+        let fill = if r.hovered() { p.hover } else { p.surface };
+        let painter = ui.painter();
+        painter.rect_filled(pill.translate(vec2(0.0, 2.0)), CornerRadius::same(13), egui::Color32::from_black_alpha(60));
+        painter.rect_filled(pill, CornerRadius::same(13), fill);
+        painter.rect_stroke(pill, CornerRadius::same(13), Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+        painter.galley(pill.center() - g.size() / 2.0, g, p.text);
+        if r.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if r.clicked() {
+            ui.scroll_to_rect(next_row, Some(egui::Align::Max));
+        }
     }
 
     /// "Active" with nothing running or waiting.
@@ -282,6 +336,8 @@ impl App {
                     .map(|(a, _)| (id, a.label()))
             })
         });
+        // An agent that finished its turn: what it changed is one click away.
+        let review = pane_id.filter(|id| self.panes.get(id).is_some_and(|x| x.tracker.status == Status::Done));
         let keyboard_here = self
             .grid_focus
             .is_some_and(|f| layout.as_ref().is_some_and(|l| l.contains(f)));
@@ -343,6 +399,23 @@ impl App {
             crate::devtest::record(format!("tile-resume:{id}"), b.rect);
             if b.on_hover_text(tf("Continue {}'s last session here", &[agent])).clicked() {
                 self.actions.push(Action::Resume(id));
+            }
+        }
+        if let Some(id) = review {
+            let text = t("Review");
+            let w = style::text_width(ui, text) + 22.0;
+            let r = Rect::from_center_size(pos2(right - w / 2.0, cy), vec2(w, 22.0));
+            right -= w + 8.0;
+            let b = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+                    kit::button_ex(ui, kit::Kind::Secondary, None, text, true)
+                })
+                .inner;
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("tile-review:{id}"), b.rect);
+            if b.on_hover_text(kit::tip(t("Review what the agent changed"), Action::Review)).clicked() {
+                self.actions.push(Action::FocusPane(id));
+                self.actions.push(Action::Review);
             }
         }
         // Panes (when split), branch, and how many files changed: only what fits.
@@ -535,6 +608,13 @@ impl App {
         }
         if resp.reconnect {
             self.actions.push(Action::RestartShell(pane_id));
+        }
+        // ⌘-click on a file: it opens beside this terminal, in its project's Focus view.
+        if let Some(word) = resp.link
+            && let Some(open) = super::focus::term_link(&word, &pane.cwd)
+        {
+            self.actions.push(Action::FocusPane(pane_id));
+            self.actions.push(open);
         }
         // Clicked: the keyboard goes here, whatever was asked for before.
         if resp.activated && self.focus_request.is_some_and(|f| f != pane_id) {

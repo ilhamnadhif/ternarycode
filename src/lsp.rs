@@ -126,6 +126,8 @@ pub enum IdeCmd {
     Forward,
     /// Completion: `true` when asked for (⌃Space), else while typing.
     Complete(bool),
+    /// The file was edited (servers on demand start then).
+    Edited,
     Signature,
     HoverAt(usize),
     UndoRefactor,
@@ -227,6 +229,8 @@ pub struct Lsp {
     /// The server's last list was incomplete: its file, where its word starts and the revision
     /// last asked for. Typing on in that word asks again rather than only narrowing it.
     incomplete: Option<(PathBuf, usize, u64)>,
+    /// A language feature asked for while its server was starting: run once it is ready.
+    deferred: Option<(PathBuf, IdeCmd)>,
 }
 
 impl Lsp {
@@ -359,21 +363,9 @@ impl App {
         }
     }
 
-    /// A file was opened in the editor: its server serves it (started if needed).
-    pub fn lsp_open(&mut self, ctx: &egui::Context, path: &Path) {
-        if !self.settings.lsp {
-            return;
-        }
-        let Some((spec, lang)) = servers::for_path(path) else { return };
-        let big = self
-            .editors
-            .values()
-            .flat_map(|e| e.files.iter())
-            .find(|f| f.path == path)
-            .is_some_and(|f| f.read_only || f.text.len() > crate::editor::HIGHLIGHT_AT_MOST);
-        if big {
-            return;
-        }
+    /// The server that serves `path` (where it would run) and the language it reads it as.
+    fn server_key(&self, path: &Path) -> Option<(&'static Spec, &'static str, ServerKey)> {
+        let (spec, lang) = servers::for_path(path)?;
         let project = self
             .projects
             .iter()
@@ -384,6 +376,38 @@ impl App {
             name: spec.name,
             root: servers::find_root(spec, path, &project),
         };
+        Some((spec, lang, key))
+    }
+
+    /// A file was opened in the editor. With servers on demand, a file only read starts none:
+    /// it joins its server when that one runs already, else at its first edit or language
+    /// feature (`ide_cmd`).
+    pub fn lsp_file_opened(&mut self, ctx: &egui::Context, path: &Path) {
+        if self.settings.lsp_on_demand
+            && !self
+                .server_key(path)
+                .is_some_and(|(_, _, key)| self.lsp.servers.contains_key(&key))
+        {
+            return;
+        }
+        self.lsp_open(ctx, path);
+    }
+
+    /// Its server serves a file of the editor (started if needed).
+    pub fn lsp_open(&mut self, ctx: &egui::Context, path: &Path) {
+        if !self.settings.lsp {
+            return;
+        }
+        let big = self
+            .editors
+            .values()
+            .flat_map(|e| e.files.iter())
+            .find(|f| f.path == path)
+            .is_some_and(|f| f.read_only || f.text.len() > crate::editor::HIGHLIGHT_AT_MOST);
+        if big {
+            return;
+        }
+        let Some((spec, lang, key)) = self.server_key(path) else { return };
         if !self.lsp.servers.contains_key(&key) {
             self.lsp_start(ctx, spec, key.clone());
         }
@@ -504,6 +528,19 @@ impl App {
     pub fn lsp_tick(&mut self, ctx: &egui::Context) {
         if self.lsp.servers.is_empty() {
             return;
+        }
+        // What was asked while its server started, once it has: still for the file in front.
+        let started = self
+            .lsp
+            .deferred
+            .as_ref()
+            .and_then(|(path, _)| self.lsp.server_for(path))
+            .is_none_or(|s| s.state != ServerState::Starting);
+        if started && let Some((path, cmd)) = self.lsp.deferred.take() {
+            let ready = self.lsp.server_for(&path).is_some_and(|s| s.state == ServerState::Ready);
+            if ready && self.ide_target().is_some_and(|(p, _)| p == path) {
+                self.ide_cmd(ctx, cmd);
+            }
         }
         self.lsp_sync(false);
         let now = Instant::now();
@@ -906,8 +943,23 @@ impl App {
             _ => {}
         }
         let Some((path, caret)) = self.ide_target() else { return };
+        // Servers on demand: an edit, or a language feature asked for, starts the file's server
+        // (hovering and typing help never do: they follow an edit anyway).
+        let serve = self.settings.lsp_on_demand && self.lsp.key_of(&path).is_none();
+        if cmd == IdeCmd::Edited {
+            // What was asked before the edit points at text that moved.
+            self.lsp.deferred = None;
+            if serve {
+                self.lsp_open(ctx, &path);
+            }
+            return;
+        }
         // Asked for while typing or hovering: quiet when no server can answer.
         let quiet = matches!(cmd, IdeCmd::HoverAt(_) | IdeCmd::Complete(false) | IdeCmd::Signature);
+        if serve && !quiet {
+            self.lsp_open(ctx, &path);
+        }
+        let again = (!quiet).then(|| cmd.clone());
         let at = match cmd {
             IdeCmd::DefinitionAt(a) | IdeCmd::HoverAt(a) => a,
             _ => caret,
@@ -1000,6 +1052,12 @@ impl App {
             _ => false,
         };
         if !sent && !quiet {
+            // A server still starting answers once it is ready (`lsp_tick`).
+            if self.lsp.server_for(&path).is_some_and(|s| s.state == ServerState::Starting)
+                && let Some(cmd) = again
+            {
+                self.lsp.deferred = Some((path.clone(), cmd));
+            }
             self.no_server(&path);
         }
     }

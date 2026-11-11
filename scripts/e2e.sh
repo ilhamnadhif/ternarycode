@@ -115,23 +115,25 @@ run grid-fit 50 "sleep 1000;; action add-project $P1;; sleep 1200;; action split
 # the prompt, the resize clears it before the reflow, zsh redraws it).
 run prompt-resize 60 "sleep 1000;; action add-project $P1;; sleep 1500;; keys echo hi\\r;; wait-screen hi;; sleep 600;; action split-right;; sleep 1500;; action close-pane;; sleep 1500;; action editor;; sleep 1500;; action editor;; sleep 1500;; expect-screen-count alpha % 2;; expect-no-line %;; shot e2e-prompt-resize;; quit"
 
-# The editor's language features (v1.3), with a language server answering from plain text:
-# go to definition (another file) and back, references, diagnostics, completion, rename across
+# The editor's language features (v1.3), with a language server answering from plain text.
+# Opening a file starts no server (servers on demand): go to definition starts it and runs once
+# it is ready. Then: definition (another file) and back, references, diagnostics, completion, rename across
 # files (on disk) and its undo, a code action, formatting.
 L="$WORK/lsp"; mkdir -p "$L/src"
 printf 'fn main() {\n    let x = helper(1);\n    println!("{x}");\n}\n' > "$L/src/main.rs"
 printf 'pub fn helper(a: i32) -> i32 {\n    a + 1\n}\n\n// BUG here\n' > "$L/src/util.rs"
-run lsp 90 "sleep 1000;; action add-project $L;; sleep 1200;; open-file $L/src/main.rs;; wait-lsp ready;; goto $L/src/main.rs 1 14;; sleep 400;; action ide def;; wait-active util.rs;; wait-caret 1;; wait-diag 1 0;; action ide back;; wait-active main.rs;; wait-caret 2;; action ide refs;; wait-locations 2;; key esc;; sleep 300;; action ide rename;; wait-rename;; sleep 300;; keys helper2\\r;; sleep 1200;; expect-file $L/src/util.rs fn helper2(;; expect-file $L/src/main.rs helper2(1);; action ide undo;; sleep 800;; expect-file $L/src/util.rs fn helper(;; expect-file $L/src/main.rs helper(1);; goto $L/src/main.rs 2 4;; sleep 400;; keys al;; wait-completion;; key enter;; wait-editor alpha_item;; action ide actions;; sleep 600;; action ide run-action;; wait-editor // TODO;; shot e2e-lsp;; quit"
+run lsp 90 "sleep 1000;; action add-project $L;; sleep 1200;; open-file $L/src/main.rs;; sleep 800;; expect-no-lsp;; goto $L/src/main.rs 1 14;; sleep 400;; action ide def;; wait-active util.rs;; wait-caret 1;; wait-diag 1 0;; action ide back;; wait-active main.rs;; wait-caret 2;; action ide refs;; wait-locations 2;; key esc;; sleep 300;; action ide rename;; wait-rename;; sleep 300;; keys helper2\\r;; sleep 1200;; expect-file $L/src/util.rs fn helper2(;; expect-file $L/src/main.rs helper2(1);; action ide undo;; sleep 800;; expect-file $L/src/util.rs fn helper(;; expect-file $L/src/main.rs helper(1);; goto $L/src/main.rs 2 4;; sleep 400;; keys al;; wait-completion;; key enter;; wait-editor alpha_item;; action ide actions;; sleep 600;; action ide run-action;; wait-editor // TODO;; shot e2e-lsp;; quit"
 # Typing while the server works on a rename: its answer is for the old text, so nothing is
 # applied (the file not open in the editor keeps its name on disk too).
 S="$WORK/lsp-stale"; mkdir -p "$S/src"
 printf 'fn main() {\n    let x = helper(1);\n    println!("{x}");\n}\n' > "$S/src/main.rs"
 printf 'pub fn helper(a: i32) -> i32 {\n    a + 1\n}\n' > "$S/src/util.rs"
-TC_FAKE_LSP_DELAY_MS=1500 run lsp-stale 60 "sleep 1000;; action add-project $S;; sleep 1200;; open-file $S/src/main.rs;; wait-lsp ready;; goto $S/src/main.rs 1 14;; sleep 400;; action ide rename;; wait-rename;; sleep 300;; keys helper2\\r;; sleep 300;; keys zz;; wait-editor zz;; wait-toast nothing was applied|tidak ada yang diterapkan;; expect-file $S/src/util.rs fn helper(;; expect-not-file $S/src/util.rs helper2;; quit"
-# ⌘-click on a symbol goes to its definition; the pointer resting on one shows its hover.
-run lsp-click 60 "sleep 1000;; action add-project $L;; sleep 1200;; open-file $L/src/main.rs;; wait-lsp ready;; goto $L/src/main.rs 1 14;; sleep 500;; mouse move editor-caret;; wait-hover;; mouse cmd-move editor-caret;; sleep 200;; mouse cmd-down editor-caret;; mouse cmd-up editor-caret;; wait-active util.rs;; wait-caret 1;; shot e2e-lsp-click;; quit"
+TC_FAKE_LSP_DELAY_MS=1500 run lsp-stale 60 "sleep 1000;; action add-project $S;; sleep 1200;; open-file $S/src/main.rs;; goto $S/src/main.rs 1 14;; sleep 400;; action ide rename;; wait-lsp ready;; wait-rename;; sleep 300;; keys helper2\\r;; sleep 300;; keys zz;; wait-editor zz;; wait-toast nothing was applied|tidak ada yang diterapkan;; expect-file $S/src/util.rs fn helper(;; expect-not-file $S/src/util.rs helper2;; quit"
+# ⌘-click on a symbol goes to its definition (starting the server: hovering alone starts none);
+# then the pointer resting on one shows its hover.
+run lsp-click 60 "sleep 1000;; action add-project $L;; sleep 1200;; open-file $L/src/main.rs;; goto $L/src/main.rs 1 14;; sleep 500;; mouse move editor-caret;; sleep 1200;; expect-no-lsp;; mouse cmd-move editor-caret;; sleep 200;; mouse cmd-down editor-caret;; mouse cmd-up editor-caret;; wait-active util.rs;; wait-caret 1;; action ide back;; wait-active main.rs;; goto $L/src/main.rs 1 14;; sleep 500;; mouse move editor-caret;; wait-hover;; shot e2e-lsp-click;; quit"
 # Without the server installed: the status line says so, with how to install it.
-LSP=/nonexistent/tc-no-lsp run lsp-missing 40 "sleep 1000;; action add-project $L;; sleep 1200;; open-file $L/src/util.rs;; wait-lsp missing;; expect-rect ide-status;; quit"
+LSP=/nonexistent/tc-no-lsp run lsp-missing 40 "sleep 1000;; action add-project $L;; sleep 1200;; open-file $L/src/util.rs;; action ide def;; wait-lsp missing;; expect-rect ide-status;; quit"
 
 # Grid filter (v1.2): "Active" keeps only projects running something or waiting.
 run grid-active 50 "sleep 1000;; action add-project $P1;; sleep 900;; action add-project $P2;; sleep 1200;; keys sleep 30\\r;; wait-status running;; sleep 2500;; action grid;; sleep 800;; expect-shown tile:beta;; expect-shown tile:alpha;; click grid:active;; sleep 600;; expect-shown tile:beta;; expect-hidden tile:alpha;; shot e2e-grid-active;; click grid:all;; sleep 600;; expect-shown tile:alpha;; quit"
@@ -165,6 +167,9 @@ F="$WORK/files"; mkdir -p "$F"; printf 'x\n' > "$F/a.txt"
 run files-actions 50 "sleep 1000;; action add-project $F;; sleep 1500;; wait-tree a.txt;; sleep 300;; click files-button:4;; sleep 400;; keys hello.txt\\r;; wait-open hello.txt;; wait-tree hello.txt;; action rename hello.txt;; sleep 400;; keys renamed\\r;; wait-tree renamed.txt;; wait-open renamed.txt;; click files-button:3;; sleep 400;; keys docs/api\\r;; wait-tree docs;; shot e2e-files;; quit"
 run ctrl-d 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 2600;; wait-tabs 0:2,3;; key ctrl+d;; wait-tabs 0:2;; sleep 300;; key ctrl+d;; wait-tabs 0:4;; sleep 600;; key ctrl+d;; wait-tabs 0:5;; quit"
 run review 60 "sleep 1000;; action add-project $R;; sleep 1200;; hook 2 claude SessionStart;; sleep 300;; wait-snapshot;; write-file $R/edit.txt line 1\\nline 2 changed\\nline 3\\n;; write-file $R/new.txt brand new\\n;; rm-file $R/gone.txt;; sleep 300;; action review;; sleep 1500;; wait-review Added:new.txt,Deleted:gone.txt,Modified:edit.txt;; quit"
+# An agent that finished while another project was open: Review in the list of what waits, and
+# on its Grid tile, opens what it changed.
+run review-done 70 "sleep 1000;; action add-project $R;; sleep 1200;; hook 2 claude SessionStart;; sleep 300;; wait-snapshot;; write-file $R/done.txt finished\\n;; action add-project $P1;; sleep 1200;; hook 2 claude Stop;; sleep 600;; action attention;; sleep 600;; click att-review:2;; sleep 1500;; wait-review Added:done.txt;; expect-project repo;; key esc;; sleep 600;; action select 0;; sleep 800;; hook 2 claude Stop;; sleep 600;; action grid;; sleep 1200;; click tile-review:2;; sleep 1500;; wait-review Added:done.txt;; expect-project repo;; shot e2e-review-done;; quit"
 
 # Shell integration (OSC 133) with the user's own shell configuration: a quick failure stays
 # quiet; a long one is reported as failed with its exit code.

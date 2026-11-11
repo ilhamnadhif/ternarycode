@@ -459,9 +459,16 @@ mod tests {
             .current_dir("/tmp")
             .spawn()
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(100));
         let pid = child.id() as i32;
-        let p = info(pid).expect("info");
+        // A busy machine may not have run `exec` yet: until then the child has no arguments.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let p = loop {
+            let p = info(pid).expect("info");
+            if !p.argv.is_empty() || std::time::Instant::now() > deadline {
+                break p;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
         assert_eq!(p.argv, ["/bin/sleep", "5"]);
         assert_eq!(p.name(), "sleep");
         let dir = cwd(pid).expect("cwd");

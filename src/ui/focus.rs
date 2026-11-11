@@ -401,12 +401,10 @@ impl App {
             if resp.reconnect {
                 self.actions.push(Action::RestartShell(pane_id));
             }
-            if let Some(word) = resp.link {
-                if word.starts_with("http://") || word.starts_with("https://") {
-                    crate::platform::reveal(std::path::Path::new(&word));
-                } else if let Some((path, line)) = crate::editor::parse_location(&word, &pane.cwd) {
-                    self.actions.push(Action::OpenFile(path, line));
-                }
+            if let Some(word) = resp.link
+                && let Some(open) = term_link(&word, &pane.cwd)
+            {
+                self.actions.push(open);
             }
             if request && resp.focused {
                 self.focus_request = None;
@@ -870,6 +868,17 @@ impl App {
         self.last_full_body = Some(body);
         body
     }
+}
+
+/// ⌘-click (Ctrl-click elsewhere) on a word of a terminal: a web address opens in the browser
+/// (nothing to do here); a file, maybe with a line (`src/app.rs:120`), gives the action that
+/// opens it in the editor.
+pub(super) fn term_link(word: &str, cwd: &std::path::Path) -> Option<Action> {
+    if word.starts_with("http://") || word.starts_with("https://") {
+        crate::platform::reveal(std::path::Path::new(word));
+        return None;
+    }
+    crate::editor::parse_location(word, cwd).map(|(path, line)| Action::OpenFile(path, line))
 }
 
 /// A terminal tab in the project header: its status icon (when something runs or waits), its

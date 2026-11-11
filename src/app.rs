@@ -2087,11 +2087,11 @@ impl App {
             }
             Action::OpenFile(path, line) => {
                 self.open_file(path.clone(), line);
-                self.lsp_open(ctx, &path);
+                self.lsp_file_opened(ctx, &path);
             }
             Action::GotoLocation(path, line, col) => {
                 self.goto_location(path.clone(), line, col);
-                self.lsp_open(ctx, &path);
+                self.lsp_file_opened(ctx, &path);
             }
             Action::Ide(cmd) => self.ide_cmd(ctx, cmd),
             Action::CloseFile(i) => {
@@ -2207,7 +2207,7 @@ impl App {
                 }
                 // The language server closes the old name (the next sync) and opens the new.
                 for path in moved {
-                    self.lsp_open(ctx, &path);
+                    self.lsp_file_opened(ctx, &path);
                 }
             }
             Action::DuplicatePath(path) => {

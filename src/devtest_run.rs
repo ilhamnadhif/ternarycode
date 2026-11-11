@@ -459,6 +459,7 @@ impl App {
                     "editor" => Some(Action::ToggleEditor),
                     "files" => Some(Action::ToggleFiles),
                     "sidebar" => Some(Action::ToggleSidebar),
+                    "attention" => Some(Action::ToggleAttention),
                     "rename" => self.project(self.active.unwrap_or_default()).map(|p| Action::RenamePath(p.path.join(rest.trim()))),
                     "settings" => Some(Action::Settings),
                     "add-dialog" => Some(Action::AddProject),
@@ -578,6 +579,13 @@ impl App {
                     .env(tc_agent::ENV_PANE, pane.to_string())
                     .env(tc_agent::ENV_TOKEN, token)
                     .status();
+            }
+            // `expect-no-lsp`: no language server serves the active file (servers on demand
+            // start at an edit or a language feature, not when a file is opened).
+            "expect-no-lsp" => {
+                let file = self.active.and_then(|id| self.editors.get(&id)).and_then(|e| e.file()).map(|f| f.path.clone());
+                let served = file.as_ref().is_some_and(|f| self.lsp.server_for(f).is_some());
+                self.devtest.check(file.is_some() && !served, "expect-no-lsp");
             }
             "expect-project" => {
                 let name = self.active_project().map(|p| p.name.clone()).unwrap_or_default();

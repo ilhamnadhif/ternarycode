@@ -151,6 +151,9 @@ impl App {
                 row(ui, t("Language features (LSP)"), |ui| {
                     ui.checkbox(&mut self.settings.lsp, "");
                 });
+                row(ui, t("Start servers only when needed"), |ui| {
+                    ui.add_enabled(self.settings.lsp, egui::Checkbox::new(&mut self.settings.lsp_on_demand, ""));
+                });
                 row(ui, t("Completion while typing"), |ui| {
                     ui.add_enabled(self.settings.lsp, egui::Checkbox::new(&mut self.settings.auto_complete, ""));
                 });
@@ -158,7 +161,7 @@ impl App {
                     ui.add_enabled(self.settings.lsp, egui::Checkbox::new(&mut self.settings.format_on_save, ""));
                 });
                 ui.label(
-                    RichText::new(t("Language features use the language servers installed on this computer (rust-analyzer, gopls, typescript-language-server, dart…). A server starts when a file it serves is opened in the editor and stops 10 minutes after the last one is closed; with this off, none runs."))
+                    RichText::new(t("Language features use the language servers installed on this computer (rust-analyzer, gopls, typescript-language-server, dart…). A server starts when a file it serves is opened in the editor, or, only when needed, when you edit the file or ask for a language feature (definition, references, rename…): reading a file starts none. It stops 10 minutes after its last file is closed. With language features off, none runs."))
                         .size(style::SMALL)
                         .color(p.text_muted),
                 );
@@ -199,14 +202,15 @@ impl App {
             if self.settings.theme != before.theme {
                 style::apply(ui.ctx(), self.settings.theme);
             }
-            if self.settings.lsp != before.lsp {
-                if self.settings.lsp {
+            if self.settings.lsp != before.lsp || self.settings.lsp_on_demand != before.lsp_on_demand {
+                // On demand, open files wait for an edit or a language feature to start theirs.
+                if self.settings.lsp && !self.settings.lsp_on_demand {
                     let ctx = ui.ctx().clone();
                     let open: Vec<std::path::PathBuf> = self.editors.values().flat_map(|e| e.files.iter().map(|f| f.path.clone())).collect();
                     for path in open {
                         self.lsp_open(&ctx, &path);
                     }
-                } else {
+                } else if !self.settings.lsp {
                     self.lsp_stop_all();
                 }
             }

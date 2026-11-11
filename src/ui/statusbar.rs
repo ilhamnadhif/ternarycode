@@ -114,6 +114,11 @@ impl App {
                         }
                         for e in &queue {
                             let Some(pane) = self.panes.get(&e.pane) else { continue };
+                            // An agent that finished its turn: Review, at the right of its row.
+                            let review = (e.status == Status::Done).then(|| {
+                                let text = t("Review");
+                                (text, style::text_width(ui, text) + 22.0)
+                            });
                             let project = self.project(pane.project).map(|x| x.name.clone()).unwrap_or_default();
                             let c = status::color(e.status, &p);
                             // The hover fill goes under the row, known only once the row is laid out.
@@ -123,6 +128,9 @@ impl App {
                                     ui.spacing_mut().item_spacing.x = 8.0;
                                     kit::icon(ui, status::icon(e.status), 15.0, c);
                                     ui.vertical(|ui| {
+                                        if let Some((_, w)) = review {
+                                            ui.set_max_width((ui.available_width() - w - 8.0).max(120.0));
+                                        }
                                         ui.horizontal(|ui| {
                                             ui.label(RichText::new(format!("{project} · {}", pane.label())).font(style::medium(12.5)));
                                             // What the program says it is doing, quieter.
@@ -150,7 +158,26 @@ impl App {
                                     egui::Shape::rect_filled(r.rect.expand(2.0), egui::CornerRadius::same(6), p.faint_row()),
                                 );
                             }
-                            if r.clicked() {
+                            // Added after the row, so it takes its own clicks.
+                            let reviewed = review.is_some_and(|(text, w)| {
+                                let br = egui::Rect::from_center_size(
+                                    egui::pos2(r.rect.right() - w / 2.0, r.rect.center().y),
+                                    vec2(w, 22.0),
+                                );
+                                let b = ui
+                                    .scope_builder(egui::UiBuilder::new().max_rect(br), |ui| {
+                                        kit::button_ex(ui, kit::Kind::Secondary, None, text, true)
+                                    })
+                                    .inner;
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record(format!("att-review:{}", e.pane), b.rect);
+                                b.on_hover_text(kit::tip(t("Review what the agent changed"), Action::Review)).clicked()
+                            });
+                            if reviewed {
+                                self.actions.push(Action::FocusPane(e.pane));
+                                self.actions.push(Action::Review);
+                                close = true;
+                            } else if r.clicked() {
                                 self.actions.push(Action::FocusPane(e.pane));
                                 close = true;
                             }

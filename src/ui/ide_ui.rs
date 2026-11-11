@@ -148,6 +148,7 @@ pub fn overlay(
     let caret = out.cursor_range.map(|c| c.primary.index.0);
     // (A read-only text says it changed when typed into, though it did not.)
     if let (Some(c), true) = (caret, resp.changed() && resp.has_focus() && lsp_on && !file.read_only) {
+        cmds.push(IdeCmd::Edited);
         let line = ix.line_of(c);
         let col = c - ix.line_start(line);
         let before = ix.line_text(text, line).chars().nth(col.wrapping_sub(1));
