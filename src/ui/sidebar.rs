@@ -1,6 +1,6 @@
-//! The sidebar: the project list (FR-P3) on top, each project with its most urgent status and
-//! pane count (drag to reorder, right-click for the rest), and below it the file tree of the
-//! active project, split by a divider that can be dragged.
+//! The sidebar: the Focus | Grid switch, the project list (FR-P3), by name, each project with its
+//! most urgent status and pane count (right-click for the rest), and below it the file tree of
+//! the active project, split by a divider that can be dragged.
 
 use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 
@@ -13,11 +13,15 @@ use tc_core::model::View;
 use tc_core::status::Status;
 
 const ROW_H: f32 = 30.0;
+/// The Focus | Grid switch at the top of the list.
+const VIEWS_H: f32 = 30.0;
 /// A project: its icon and name over a line about it.
 const PROJECT_H: f32 = 46.0;
 /// Centre of a project's icon, and where its text starts (from the row's left).
-const ICON_X: f32 = 19.0;
-const TEXT_X: f32 = 36.0;
+const ICON_X: f32 = 17.0;
+const TEXT_X: f32 = 28.0;
+/// Where a project's name starts: names alone, no icon before them.
+const NAME_X: f32 = 12.0;
 /// Height of the row at the top of the sidebar and of the project header beside it.
 pub const TOP_H: f32 = 40.0;
 /// Height of a section title ("PROJECTS", "FILES").
@@ -47,8 +51,8 @@ impl App {
         // and the project list takes the whole sidebar.
         let files_shown = self.active.is_some() && self.view == View::Focus;
         let files_open = !self.settings.files_hidden && files_shown;
-        // All Projects, the section title, the projects and the row that adds one.
-        let content_h = ROW_H + 6.0 + SECTION_H + self.projects.len() as f32 * (PROJECT_H + 2.0) + ROW_H + 8.0;
+        // The view switch, the section title, the projects and the row that adds one.
+        let content_h = VIEWS_H + 8.0 + SECTION_H + self.projects.len() as f32 * (PROJECT_H + 2.0) + ROW_H + 8.0;
         let files_h = if !files_shown {
             0.0
         } else if files_open {
@@ -103,9 +107,9 @@ impl App {
         let p = style::pal(ui);
         let mut area = ui.max_rect();
         if !self.projects.is_empty() {
-            let row = Rect::from_min_size(area.min + vec2(PAD - 2.0, 4.0), vec2(area.width() - 2.0 * (PAD - 2.0), ROW_H));
-            self.all_projects_row(ui, row, &p);
-            area.min.y = row.bottom() + 2.0;
+            let row = Rect::from_min_size(area.min + vec2(PAD, 4.0), vec2(area.width() - 2.0 * PAD, VIEWS_H));
+            self.view_switch(ui, row);
+            area.min.y = row.bottom() + 4.0;
         }
         let title = Rect::from_min_size(area.min, vec2(area.width(), SECTION_H));
         section_title(ui, title, t("PROJECTS"));
@@ -129,7 +133,7 @@ impl App {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     for (i, row) in rows.iter().enumerate() {
-                        let ProjectRow { id, name, color, kind, status, waiting, asleep, split, branch, place, chip } = row;
+                        let ProjectRow { id, name, color, status, waiting, asleep, split, branch, place, chip } = row;
                         let (rect, response) =
                             ui.allocate_exact_size(vec2(ui.available_width(), PROJECT_H), Sense::click());
                         #[cfg(debug_assertions)]
@@ -146,7 +150,7 @@ impl App {
                         };
                         painter.rect_filled(rect, CornerRadius::same(style::RADIUS + 2), fill);
 
-                        // The project's colour: its icon, and a bar at the left of the open one.
+                        // The project's colour: a bar at the left of the open one.
                         let (r, g, b) = COLORS[*color as usize % COLORS.len()];
                         let mut tint = egui::Color32::from_rgb(r, g, b);
                         if *asleep {
@@ -161,13 +165,6 @@ impl App {
                         }
                         let top_y = rect.top() + 14.5;
                         let bottom_y = rect.top() + 31.0;
-                        painter.text(
-                            pos2(rect.left() + ICON_X, top_y),
-                            Align2::CENTER_CENTER,
-                            kind_icon(*kind),
-                            style::icon_font(16.0),
-                            tint,
-                        );
 
                         // Right of the name: what waits (a count in the status colour); else,
                         // hovered, the shortcut; else a split mark when the project is split.
@@ -195,7 +192,7 @@ impl App {
                         }
 
                         // The name.
-                        let x = rect.left() + TEXT_X;
+                        let x = rect.left() + NAME_X;
                         let name_color = if *asleep {
                             p.text_muted
                         } else if active || attention {
@@ -326,59 +323,19 @@ impl App {
         });
     }
 
-    /// The way to every project at once: selected, the Grid shows them all; a project below opens
-    /// it in Focus. What waits anywhere is counted at the right.
-    fn all_projects_row(&mut self, ui: &mut Ui, rect: Rect, p: &style::Palette) {
-        let response = ui.interact(rect, egui::Id::new("all-projects"), Sense::click());
+    /// The switch between the two views, at the top of the list: Focus (the active project on its
+    /// own) and Grid (every project). A project in the list opens in Focus.
+    fn view_switch(&mut self, ui: &mut Ui, rect: Rect) {
+        let focus_tip = kit::tip(t("Focus View"), Action::ToggleGrid);
+        let grid_tip = kit::tip(t("Grid of All Projects"), Action::ToggleGrid);
+        let options = [(t("Focus"), focus_tip.as_str()), (t("Grid"), grid_tip.as_str())];
         #[cfg(debug_assertions)]
-        crate::devtest::record("all-projects", rect);
-        let on = self.view == View::Grid;
-        let hovered = response.hovered();
-        let painter = ui.painter_at(rect);
-        let fill = if on {
-            p.accent_soft
-        } else if hovered {
-            p.faint_row()
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-        painter.rect_filled(rect, CornerRadius::same(style::RADIUS + 2), fill);
-        if on {
-            let bar = Rect::from_min_max(pos2(rect.left() + 1.0, rect.top() + 8.0), pos2(rect.left() + 4.0, rect.bottom() - 8.0));
-            painter.rect_filled(bar, CornerRadius::same(2), p.accent);
+        for (r, name) in kit::segment_rects(rect, 2).into_iter().zip(["view:focus", "view:grid"]) {
+            crate::devtest::record(name, r);
         }
-        let cy = rect.center().y;
-        let (icon_c, text_c) = if on { (p.accent_text, p.text) } else { (p.text_muted, p.text.gamma_multiply(0.9)) };
-        painter.text(pos2(rect.left() + ICON_X, cy), Align2::CENTER_CENTER, icons::SQUARES_FOUR, style::icon_font(16.0), icon_c);
-        // Right: how many wait, in the colour of the most urgent; else, hovered, the shortcut.
-        let mut right = rect.right() - 8.0;
-        let queue = self.attention_queue();
-        if let Some(first) = queue.first() {
-            let c = status::color(first.status, p);
-            let g = painter.layout_no_wrap(queue.len().to_string(), style::medium(style::SMALL - 0.5), p.on_accent);
-            let w = (g.size().x + 9.0).max(17.0);
-            let badge = Rect::from_center_size(pos2(right - w / 2.0, cy), vec2(w, 16.0));
-            painter.rect_filled(badge, CornerRadius::same(8), c);
-            painter.galley(badge.center() - g.size() / 2.0, g, p.on_accent);
-            right -= w + 6.0;
-        } else if hovered && let Some(keys) = kit::keys(&Action::ToggleGrid) {
-            let g = painter.layout_no_wrap(keys.to_string(), egui::FontId::proportional(style::SMALL), p.text_faint);
-            right -= g.size().x;
-            painter.galley(pos2(right, cy - g.size().y / 2.0), g, p.text_faint);
-            right -= 6.0;
-        }
-        let x = rect.left() + TEXT_X;
-        let font = if on { style::semibold(style::BODY) } else { style::medium(style::BODY) };
-        let mut job = egui::text::LayoutJob::simple_singleline(t("All Projects").to_string(), font, text_c);
-        job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(10.0));
-        let g = painter.layout_job(job);
-        painter.galley(pos2(x, cy - g.size().y / 2.0), g, text_c);
-        let response = response.on_hover_text(kit::tip(t("Grid of All Projects"), Action::ToggleGrid));
-        if hovered {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if response.clicked() {
-            self.actions.push(Action::SetView(View::Grid));
+        let on = (self.view == View::Grid) as usize;
+        if let Some(i) = kit::segmented_in(ui, rect, egui::Id::new("sidebar-views"), &options, on) {
+            self.actions.push(Action::SetView(if i == 1 { View::Grid } else { View::Focus }));
         }
     }
 
@@ -420,7 +377,6 @@ struct ProjectRow {
     id: u64,
     name: String,
     color: u8,
-    kind: crate::project::Kind,
     /// What happens there (none when every shell idles).
     status: Option<Status>,
     waiting: usize,
@@ -432,25 +388,6 @@ struct ProjectRow {
     place: String,
     /// Under the name, at the right: what is at work or waits (icon, text, colour).
     chip: Option<(&'static str, String, egui::Color32)>,
-}
-
-/// The icon of a kind of project.
-pub fn kind_icon(kind: crate::project::Kind) -> &'static str {
-    use crate::project::Kind;
-    match kind {
-        Kind::Folder => icons::FOLDER_SIMPLE,
-        Kind::Rust => icons::GEAR_SIX,
-        Kind::Go => icons::CUBE,
-        Kind::TypeScript => icons::BRACKETS_CURLY,
-        Kind::JavaScript => icons::HEXAGON,
-        Kind::React => icons::ATOM,
-        Kind::Flutter | Kind::Dart => icons::DEVICE_MOBILE,
-        Kind::Python => icons::FILE_PY,
-        Kind::Swift => icons::BIRD,
-        Kind::Java => icons::COFFEE_BEAN,
-        Kind::Cpp => icons::FILE_CPP,
-        Kind::Web => icons::GLOBE,
-    }
 }
 
 /// Where a project lives, short: its parent folder (`~/Developments`), or its last two names
@@ -498,7 +435,6 @@ impl App {
             id: pr.id,
             name: pr.name.clone(),
             color: pr.color,
-            kind: pr.kind,
             status,
             waiting,
             asleep,

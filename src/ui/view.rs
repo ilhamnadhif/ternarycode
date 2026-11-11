@@ -97,9 +97,14 @@ impl App {
     fn central(&mut self, ui: &mut Ui) {
         if self.projects.is_empty() {
             let full = ui.max_rect();
-            let body = self.top_bar(ui, full, |_, ui| {
-                ui.label(egui::RichText::new("TernaryCode").font(style::semibold(14.0)));
-            });
+            let body = self.top_bar(
+                ui,
+                full,
+                |_, ui| {
+                    ui.label(egui::RichText::new("TernaryCode").font(style::semibold(14.0)));
+                },
+                None,
+            );
             // The Focus view's area (the same top bar above it): the first project's shell
             // starts at its final size.
             self.last_body = Some(body);

@@ -337,34 +337,85 @@ pub fn icon_button_ex(ui: &mut Ui, icon: &str, tooltip: &str, on: bool, side: f3
     resp
 }
 
-/// A segmented control of words (`(label, tooltip)`), `on` selected. Returns the option clicked
-/// when it is not the selected one.
+/// Height of a segmented control sized by its words.
+pub const SEGMENTED_H: f32 = 24.0;
+/// Room around a segment's word.
+const SEGMENT_PAD: f32 = 18.0;
+
+fn segment_font(height: f32) -> egui::FontId {
+    style::medium(if height >= 28.0 { style::BODY } else { style::SMALL })
+}
+
+fn word_width(ui: &Ui, text: &str, font: &egui::FontId) -> f32 {
+    ui.painter().layout_no_wrap(text.to_string(), font.clone(), Color32::PLACEHOLDER).size().x
+}
+
+/// A segmented control of words (`(label, tooltip)`), `on` selected, each segment as wide as its
+/// word. Returns the option clicked when it is not the selected one.
 pub fn segmented(ui: &mut Ui, options: &[(&str, &str)], on: usize) -> Option<usize> {
-    let p = style::pal(ui);
-    let h = 24.0;
-    let font = style::medium(style::SMALL);
-    let galleys: Vec<_> = options
-        .iter()
-        .map(|(text, _)| ui.painter().layout_no_wrap(text.to_string(), font.clone(), Color32::PLACEHOLDER))
-        .collect();
-    let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + 18.0).collect();
-    let (rect, base) = ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 4.0, h), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(RADIUS), p.subtle);
+    let font = segment_font(SEGMENTED_H);
+    let widths: Vec<f32> = options.iter().map(|(text, _)| word_width(ui, text, &font) + SEGMENT_PAD).collect();
+    let (rect, base) = ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 4.0, SEGMENTED_H), Sense::hover());
     let mut x = rect.left() + 2.0;
+    let segments: Vec<Rect> = widths
+        .iter()
+        .map(|w| {
+            let r = Rect::from_min_size(egui::pos2(x, rect.top() + 2.0), vec2(*w, rect.height() - 4.0));
+            x += w;
+            r
+        })
+        .collect();
+    paint_segmented(ui, rect, base.id, &segments, options, on)
+}
+
+/// The same control filling `rect`, its segments of equal width (`segment_rects`). `id` tells
+/// it apart from other controls.
+pub fn segmented_in(ui: &mut Ui, rect: Rect, id: egui::Id, options: &[(&str, &str)], on: usize) -> Option<usize> {
+    let segments = segment_rects(rect, options.len());
+    paint_segmented(ui, rect, id, &segments, options, on)
+}
+
+/// How wide `segmented_in` needs to be for its words to fit in segments of equal width, at
+/// `SEGMENTED_H`.
+pub fn segmented_width(ui: &Ui, options: &[(&str, &str)]) -> f32 {
+    let font = segment_font(SEGMENTED_H);
+    let widest = options.iter().map(|(text, _)| word_width(ui, text, &font)).fold(0.0, f32::max);
+    options.len() as f32 * (widest + SEGMENT_PAD) + 4.0
+}
+
+/// The segments of a `segmented_in` control over `rect`.
+pub fn segment_rects(rect: Rect, n: usize) -> Vec<Rect> {
+    let inner = rect.shrink(2.0);
+    let w = inner.width() / n.max(1) as f32;
+    (0..n)
+        .map(|i| Rect::from_min_size(egui::pos2(inner.left() + i as f32 * w, inner.top()), vec2(w, inner.height())))
+        .collect()
+}
+
+fn paint_segmented(
+    ui: &mut Ui,
+    rect: Rect,
+    id: egui::Id,
+    segments: &[Rect],
+    options: &[(&str, &str)],
+    on: usize,
+) -> Option<usize> {
+    let p = style::pal(ui);
+    let font = segment_font(rect.height());
+    ui.painter().rect_filled(rect, CornerRadius::same(RADIUS), p.subtle);
     let mut out = None;
-    for (i, ((galley, w), (text, tip))) in galleys.into_iter().zip(widths).zip(options).enumerate() {
-        let r = Rect::from_min_size(egui::pos2(x, rect.top() + 2.0), vec2(w, h - 4.0));
-        x += w;
-        let resp = ui.interact(r, base.id.with(("option", i)), Sense::click()).on_hover_text(*tip);
+    for (i, (r, (text, tip))) in segments.iter().zip(options).enumerate() {
+        let resp = ui.interact(*r, id.with(("option", i)), Sense::click()).on_hover_text(*tip);
         let selected = i == on;
         resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, *text));
         if selected {
-            ui.painter().rect_filled(r, CornerRadius::same(RADIUS - 2), p.surface);
-            ui.painter().rect_stroke(r, CornerRadius::same(RADIUS - 2), Stroke::new(1.0, p.border), StrokeKind::Inside);
+            ui.painter().rect_filled(*r, CornerRadius::same(RADIUS - 2), p.surface);
+            ui.painter().rect_stroke(*r, CornerRadius::same(RADIUS - 2), Stroke::new(1.0, p.border), StrokeKind::Inside);
         } else if resp.hovered() {
-            ui.painter().rect_filled(r, CornerRadius::same(RADIUS - 2), p.hover);
+            ui.painter().rect_filled(*r, CornerRadius::same(RADIUS - 2), p.hover);
         }
         let color = if selected || resp.hovered() { p.text } else { p.text_muted };
+        let galley = ui.painter().layout_no_wrap(text.to_string(), font.clone(), color);
         ui.painter().galley(r.center() - galley.size() / 2.0, galley, color);
         if resp.clicked() && !selected {
             out = Some(i);

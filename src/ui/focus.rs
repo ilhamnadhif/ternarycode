@@ -20,10 +20,20 @@ const PANE_HEADER_H: f32 = 28.0;
 /// Space between a pane's edge and its text.
 const TERM_PAD: f32 = 6.0;
 
+/// What draws a part of the top bar in the rect it is given.
+pub type BarPart<'a> = dyn FnMut(&mut App, &mut Ui, Rect) + 'a;
+
 impl App {
     /// The bar at the top of the content: the window drag area, what is shown on the left
-    /// (drawn by `left`), and the toolbar on the right. Returns the rect below it.
-    pub fn top_bar(&mut self, ui: &mut Ui, full: Rect, left: impl FnOnce(&mut Self, &mut Ui)) -> Rect {
+    /// (drawn by `left`), an optional control in the middle (`centre`: its width, and what draws
+    /// it in the rect it is given) and the toolbar on the right. Returns the rect below it.
+    pub fn top_bar(
+        &mut self,
+        ui: &mut Ui,
+        full: Rect,
+        left: impl FnOnce(&mut Self, &mut Ui),
+        centre: Option<(f32, &mut BarPart<'_>)>,
+    ) -> Rect {
         let p = style::pal(ui);
         let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H));
         ui.painter().rect_filled(header, CornerRadius::ZERO, p.chrome);
@@ -45,8 +55,19 @@ impl App {
             )
             .inner;
 
-        // Left part, clipped before the toolbar.
-        let mut left_rect = Rect::from_min_max(inner.min, pos2((used.left() - 12.0).max(inner.left()), inner.bottom()));
+        // Middle part: centred on the bar, moved left when it would reach the toolbar.
+        let mut left_end = used.left() - 12.0;
+        if let Some((w, draw)) = centre {
+            let mut r = Rect::from_center_size(header.center(), vec2(w, kit::SEGMENTED_H));
+            if r.right() > left_end {
+                r = r.translate(vec2(left_end - r.right(), 0.0));
+            }
+            draw(self, ui, r);
+            left_end = r.left() - 12.0;
+        }
+
+        // Left part, clipped before the middle part or the toolbar.
+        let mut left_rect = Rect::from_min_max(inner.min, pos2(left_end.max(inner.left()), inner.bottom()));
         if self.settings.sidebar_hidden {
             let fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
             left_rect.min.x = header.left() + crate::platform::traffic_light_inset(fullscreen).max(10.0);
@@ -64,31 +85,32 @@ impl App {
                 {
                     self.actions.push(Action::ToggleSidebar);
                 }
+                // The views' switch lives at the top of the sidebar; with the sidebar hidden, here.
+                if self.settings.sidebar_hidden && !self.projects.is_empty() {
+                    self.view_switch_compact(ui);
+                    ui.add_space(6.0);
+                }
                 left(self, ui);
             },
         );
         Rect::from_min_max(pos2(full.left(), header.bottom()), full.max)
     }
 
-    /// Right side of the top bar (added right to left).
-    fn toolbar(&mut self, ui: &mut Ui) {
-        if self.projects.is_empty() {
-            return;
-        }
-        let view = self.view;
-        let (focus_tip, grid_tip) = (kit::tip(t("Focus View"), Action::ToggleGrid), kit::tip(t("Grid of All Projects"), Action::ToggleGrid));
-        // Words, not icons: the app's two main views must say what they are. Added as one
-        // widget, so the options go in reading order even in this right-to-left bar.
-        let views = [View::Focus, View::Grid];
+    /// The Focus | Grid switch in the top bar, for when the sidebar (where it lives) is hidden.
+    fn view_switch_compact(&mut self, ui: &mut Ui) {
+        let focus_tip = kit::tip(t("Focus View"), Action::ToggleGrid);
+        let grid_tip = kit::tip(t("Grid of All Projects"), Action::ToggleGrid);
         let options = [(t("Focus"), focus_tip.as_str()), (t("Grid"), grid_tip.as_str())];
-        let on = views.iter().position(|v| *v == view).unwrap_or(0);
-        if let Some(i) = kit::segmented(ui, &options, on) {
-            self.actions.push(Action::SetView(views[i]));
+        if let Some(i) = kit::segmented(ui, &options, (self.view == View::Grid) as usize) {
+            self.actions.push(Action::SetView(if i == 1 { View::Grid } else { View::Focus }));
         }
-        if view != View::Focus || self.active.is_none() {
+    }
+
+    /// Right side of the top bar (added right to left): what acts on the active project.
+    fn toolbar(&mut self, ui: &mut Ui) {
+        if self.view != View::Focus || self.active.is_none() {
             return;
         }
-        kit::vdivider(ui, 18.0);
         let editor_on = self.active.and_then(|id| self.editors.get(&id)).is_some_and(|e| e.visible);
         let e = kit::icon_toggle(ui, icons::CODE, &kit::tip(t("Show/Hide Editor"), Action::ToggleEditor), editor_on);
         #[cfg(debug_assertions)]
@@ -251,7 +273,7 @@ impl App {
             if kit::icon_button_ex(ui, icons::PLUS, &kit::tip(t("New Tab"), Action::NewTab), false, 26.0).clicked() {
                 app.actions.push(Action::NewTab);
             }
-        });
+        }, None);
 
         // ----- editor beside the panes ------------------------------------------------------------
         self.last_full_body = Some(body);
@@ -809,27 +831,40 @@ impl App {
         let n = self.projects.len();
         let waiting = self.attention_queue().len();
         let active = self.active_projects();
-        let body = self.top_bar(ui, full, |app, ui| {
-            ui.label(RichText::new(t("All Projects")).font(style::semibold(14.0)).color(p.text));
-            ui.label(
-                RichText::new(format!(
-                    "{} · {} · {}",
-                    crate::i18n::count(n, t("1 project"), t("{} projects")),
-                    tf("{} active", &[&active.to_string()]),
-                    tf("{} waiting", &[&waiting.to_string()])
-                ))
-                    .size(style::SMALL)
-                    .color(p.text_faint),
-            );
-            ui.add_space(6.0);
-            let options = [
-                (t("All"), t("Every project's terminal, two columns; scroll for more")),
-                (t("Active"), t("Only projects where something runs or waits")),
-            ];
-            if let Some(i) = kit::segmented(ui, &options, app.grid_active_only as usize) {
+        // The filter, in the middle where it is easy to find.
+        let options = [
+            (t("All"), t("Every project's terminal, two columns; scroll for more")),
+            (t("Active"), t("Only projects where something runs or waits")),
+        ];
+        let width = kit::segmented_width(ui, &options);
+        let mut filter = |app: &mut Self, ui: &mut Ui, rect: Rect| {
+            #[cfg(debug_assertions)]
+            for (r, name) in kit::segment_rects(rect, 2).into_iter().zip(["grid:all", "grid:active"]) {
+                crate::devtest::record(name, r);
+            }
+            let id = egui::Id::new("grid-filter");
+            if let Some(i) = kit::segmented_in(ui, rect, id, &options, app.grid_active_only as usize) {
                 app.actions.push(Action::GridActiveOnly(i == 1));
             }
-        });
+        };
+        let body = self.top_bar(
+            ui,
+            full,
+            |_, ui| {
+                ui.label(RichText::new(t("All Projects")).font(style::semibold(14.0)).color(p.text));
+                ui.label(
+                    RichText::new(format!(
+                        "{} · {} · {}",
+                        crate::i18n::count(n, t("1 project"), t("{} projects")),
+                        tf("{} active", &[&active.to_string()]),
+                        tf("{} waiting", &[&waiting.to_string()])
+                    ))
+                    .size(style::SMALL)
+                    .color(p.text_faint),
+                );
+            },
+            Some((width, &mut filter)),
+        );
         // The same area as the Focus view's (one top bar above both): panes shown in the Grid
         // are sized against it.
         self.last_full_body = Some(body);

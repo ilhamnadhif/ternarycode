@@ -45,9 +45,9 @@ sekitar 0,2 detik, CPU 0 % saat diam, dan sepuluh pane terbuka memakai sekitar 7
   kembali. Status bar menyebut namanya, Dock menampilkan badge, dan notifikasi muncul saat jendela
   di latar belakang. Fokus keyboard tidak pernah pindah sendiri.
 - **Grid** menampilkan semua project secara live, berdampingan, dengan terminal yang memenuhi
-  kartunya: **Semua Project** di bagian atas sidebar (atau `⌘0`) membukanya, project di bawahnya
-  membuka project itu sendiri. **Aktif** hanya menampilkan project yang sedang menjalankan sesuatu
-  atau menunggu.
+  kartunya: switch **Focus | Grid** di bagian atas sidebar (atau `⌘0`) membukanya, dan project di
+  daftar membuka project itu sendiri. **Aktif** di tengah header-nya hanya menampilkan project yang
+  sedang menjalankan sesuatu atau menunggu.
 - **Editor di samping terminal**, dengan language server yang sudah Anda punya (rust-analyzer,
   gopls, typescript-language-server, Dart, pyright, clangd…): ⌘-klik ke definisi, referensi,
   rename lintas file, code action, autocomplete, hover, dan daftar problem.
