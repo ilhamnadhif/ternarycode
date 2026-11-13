@@ -1266,7 +1266,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a b.rs");
         std::fs::write(&file, "fn main() {}\n").unwrap();
-        let url = format!("file://host{}", file.to_string_lossy().replace(' ', "%20"));
+        // `file://host/Users/…` here, `file:///C:/Users/…` on Windows.
+        let path = file.to_string_lossy().replace('\\', "/").replace(' ', "%20");
+        let url = if path.starts_with('/') { format!("file://host{path}") } else { format!("file:///{path}") };
         assert_eq!(file_url_path(&url).as_deref(), Some(file.as_path()));
         assert!(matches!(term_link(&url, dir.path()), Some(Action::OpenFile(p, None)) if p == file));
         // Schemes that could start other apps, and files that are not there: nothing.
