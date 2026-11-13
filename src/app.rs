@@ -41,6 +41,8 @@ pub fn since_start() -> Option<Duration> {
 /// Extra messages to the UI thread besides the panes' own.
 pub enum AppMsg {
     Git(ProjectId, Option<GitInfo>, crate::project::Kind),
+    /// Whether a pane's local server answered on its port.
+    ServerProbe(PaneId, u16, bool),
     /// The files of a project, for quick open.
     ProjectFiles(ProjectId, Vec<PathBuf>),
     /// Files changed under a project folder.
@@ -305,6 +307,12 @@ pub struct App {
     pub review_switch: Option<crate::ui::review::Base>,
     /// Where each pane was drawn last frame (for overlays).
     pub pane_rects: HashMap<PaneId, egui::Rect>,
+    /// Where each terminal was drawn last frame, in the Focus view and in the Grid: files
+    /// dropped on one have their paths typed there.
+    pub term_rects: Vec<(PaneId, egui::Rect)>,
+    /// Files are dragged over the window: the pane they would be typed into (none: they would
+    /// be added as projects).
+    pub drag_over: Option<Option<PaneId>>,
     /// How each pane is drawn this frame (see [`crate::pane::Shown`]).
     pub shown_now: HashMap<PaneId, crate::pane::Shown>,
     watchers: crate::watch::Watchers,
@@ -480,6 +488,8 @@ impl App {
             review_close: false,
             review_switch: None,
             pane_rects: HashMap::new(),
+            term_rects: Vec::new(),
+            drag_over: None,
             shown_now: HashMap::new(),
             watchers: crate::watch::Watchers::default(),
             git_due: HashMap::new(),
@@ -974,6 +984,46 @@ impl App {
         self.session_lists.get(&(agent, path.to_path_buf())).and_then(|x| x.as_deref())
     }
 
+    /// Asks the local servers panes named whether they answer (a connection to their port on
+    /// this machine, IPv4 or IPv6: Vite on Node listens on `::1` only), off the UI thread, every
+    /// few seconds while any is listed.
+    fn probe_servers(&mut self, ctx: &egui::Context, now: Instant) {
+        for pane in self.panes.values_mut() {
+            let Some(due) = pane.servers_probe_at else { continue };
+            if due > now {
+                continue;
+            }
+            pane.servers_probe_at = Some(now + crate::pane::SERVER_PROBE_EVERY);
+            let (id, ports): (PaneId, Vec<u16>) = (pane.id, pane.servers.iter().map(|s| s.port).collect());
+            let (tx, ctx) = (self.app_tx.clone(), ctx.clone());
+            self.rt.spawn_blocking(move || {
+                for port in ports {
+                    let answers = [std::net::IpAddr::from([127, 0, 0, 1]), std::net::IpAddr::from(std::net::Ipv6Addr::LOCALHOST)]
+                        .into_iter()
+                        .any(|ip| std::net::TcpStream::connect_timeout(&(ip, port).into(), Duration::from_millis(150)).is_ok());
+                    let _ = tx.send(AppMsg::ServerProbe(id, port, answers));
+                }
+                ctx.request_repaint();
+            });
+        }
+        if let Some(due) = self.panes.values().filter_map(|p| p.servers_probe_at).min() {
+            ctx.request_repaint_after(due.saturating_duration_since(now));
+        }
+    }
+
+    /// The local servers of a project's panes that answer, in pane order: the pane and its
+    /// server.
+    pub fn project_servers(&self, project: ProjectId) -> Vec<(PaneId, crate::pane::Server)> {
+        let mut v: Vec<(PaneId, crate::pane::Server)> = self
+            .panes
+            .values()
+            .filter(|p| p.project == project)
+            .flat_map(|p| p.live_servers().map(|s| (p.id, s.clone())))
+            .collect();
+        v.sort_by_key(|(id, s)| (*id, s.port));
+        v
+    }
+
     /// The agent running in `pane` without TernaryCode's hooks, where none are on their way:
     /// typed by hand while nothing is installed for it. Its status can only read "Active", so
     /// it never says when it needs the user. Counted after a few seconds in the foreground (a
@@ -1164,6 +1214,11 @@ impl App {
                 AppMsg::LspPath(path) => self.lsp_path_found(ctx, path),
                 AppMsg::Sessions(agent, path, list) => {
                     self.session_lists.insert((agent, path), Some(list));
+                }
+                AppMsg::ServerProbe(pane, port, answers) => {
+                    if let Some(p) = self.panes.get_mut(&pane) {
+                        p.probed(port, answers);
+                    }
                 }
                 AppMsg::Review(msg) => self.on_review_msg(msg),
                 AppMsg::Snapshot(pane, agent, result) => {
@@ -2828,16 +2883,43 @@ impl App {
         }
     }
 
-    /// Folders dropped on the window become projects (FR-P1).
+    /// Files dragged over the window, and dropped: onto a terminal their paths are typed there;
+    /// elsewhere they become projects (`route_drop`). While they are dragged, the window
+    /// hears of no pointer movement: where the pointer is is asked of the system.
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
-        let dropped: Vec<PathBuf> = ctx.input(|i| {
-            i.raw
-                .dropped_files
-                .iter()
-                .map(|f| f.path().to_path_buf())
-                .collect()
+        let (dropped, hovering): (Vec<PathBuf>, bool) = ctx.input(|i| {
+            (i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect(), !i.raw.hovered_files.is_empty())
         });
-        for path in dropped {
+        if dropped.is_empty() && !hovering {
+            self.drag_over = None;
+            return;
+        }
+        let target = platform::pointer_in_window(ctx).and_then(|p| self.term_rects.iter().find(|(_, r)| r.contains(p)).map(|(id, _)| *id));
+        if dropped.is_empty() {
+            self.drag_over = Some(target);
+            ctx.request_repaint_after(Duration::from_millis(33));
+            return;
+        }
+        self.drag_over = None;
+        self.route_drop(target, dropped);
+    }
+
+    /// Files dropped on a terminal: their paths are typed there, as a paste (an agent takes a
+    /// screenshot that way). Anywhere else a folder, or a file's folder, becomes a project
+    /// (FR-P1).
+    pub fn route_drop(&mut self, pane: Option<PaneId>, paths: Vec<PathBuf>) {
+        if let Some(id) = pane
+            && let Some(p) = self.panes.get_mut(&id)
+            && p.alive()
+        {
+            let mut text = paths.iter().map(|p| platform::dropped_path(&p.to_string_lossy())).collect::<Vec<_>>().join(" ");
+            text.push(' ');
+            let bytes = tc_term::widget::paste_bytes(&p.shared, &text);
+            p.input(bytes);
+            self.actions.push(Action::FocusPane(id));
+            return;
+        }
+        for path in paths {
             let dir = if path.is_dir() {
                 path
             } else {
@@ -2848,6 +2930,33 @@ impl App {
             };
             self.actions.push(Action::AddProjectPath(dir));
         }
+    }
+
+    /// While files are dragged over the window: where they would go. The terminal under the
+    /// pointer is outlined ("Drop to insert the path"); elsewhere the window says they would
+    /// become projects.
+    fn drop_overlay(&self, ctx: &egui::Context) {
+        let Some(target) = self.drag_over else { return };
+        let p = crate::ui::style::palette(ctx.global_style().visuals.dark_mode);
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop-overlay")));
+        let screen = ctx.content_rect();
+        let (rect, icon, text) = match target.and_then(|id| self.term_rects.iter().find(|(p, _)| *p == id)) {
+            Some((_, r)) => (*r, crate::ui::icons::TERMINAL_WINDOW, t("Drop to insert the path")),
+            None => (screen.shrink(6.0), crate::ui::icons::FOLDER_PLUS, t("Drop to add as a project")),
+        };
+        painter.rect_filled(rect, egui::CornerRadius::same(crate::ui::style::RADIUS), crate::ui::style::soft(p.accent, 0.08));
+        painter.rect_stroke(rect, egui::CornerRadius::same(crate::ui::style::RADIUS), egui::Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
+        let font = crate::ui::style::medium(13.0);
+        let g = painter.layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE);
+        let ig = painter.layout_no_wrap(icon.to_string(), crate::ui::style::icon_font(14.0), egui::Color32::WHITE);
+        let size = egui::vec2(ig.size().x + 8.0 + g.size().x + 28.0, 32.0);
+        let pill = egui::Rect::from_center_size(rect.center(), size);
+        painter.rect_filled(pill, egui::CornerRadius::same(16), p.accent);
+        let x = pill.left() + 14.0;
+        painter.galley(egui::pos2(x, pill.center().y - ig.size().y / 2.0), ig.clone(), egui::Color32::WHITE);
+        painter.galley(egui::pos2(x + ig.size().x + 8.0, pill.center().y - g.size().y / 2.0), g, egui::Color32::WHITE);
+        #[cfg(debug_assertions)]
+        crate::devtest::record("drop-overlay", pill);
     }
 
     /// A notification was clicked: open its pane (FR-N4).
@@ -3030,6 +3139,7 @@ impl App {
         if let Some(due) = self.panes.values().filter_map(|p| p.fg_due).min() {
             ctx.request_repaint_after(due.saturating_duration_since(now));
         }
+        self.probe_servers(ctx, now);
         // A write that failed (disk full, folder gone) is tried again a little later.
         for path in self.saver.take_failed() {
             if path == paths::workspace_file() {
@@ -3086,6 +3196,7 @@ impl App {
         // Where panes are is learned again as they are drawn (a pane not drawn has no place:
         // its find bar closes instead of floating over another view).
         self.pane_rects.clear();
+        self.term_rects.clear();
         // A drag the view it began in no longer sees (⌘0 or ⌘B while dragging) ends with the
         // button: otherwise its ghost would follow the pointer, repainting, until a later click.
         if !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
@@ -3093,6 +3204,7 @@ impl App {
             self.pane_drag = None;
         }
         self.draw(ui);
+        self.drop_overlay(&ctx);
         // The title bar region moves the window, except over the tabs (they can be dragged).
         let movable = !self.tabs_hot && self.tab_drag.is_none() && self.pane_drag.is_none();
         if self.window_movable != Some(movable) {

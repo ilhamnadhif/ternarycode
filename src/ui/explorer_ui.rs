@@ -123,11 +123,18 @@ impl App {
         let frow = Rect::from_min_size(body.min, vec2(body.width(), 38.0));
         let field = Rect::from_min_size(pos2(frow.left() + 8.0, frow.top() + 6.0), vec2(frow.width() - 16.0, 26.0));
         let mut filter = self.explorers.get(&pid).map(|e| e.filter.clone()).unwrap_or_default();
+        let fid = egui::Id::new(("files-filter", pid));
         let fr = ui
             .scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
-                kit::field(ui, egui::Id::new(("files-filter", pid)), &mut filter, Some(icons::FUNNEL), t("Filter files"), field.width(), true)
+                kit::field(ui, fid, &mut filter, Some(icons::FUNNEL), t("Filter files"), field.width(), true)
             })
             .inner;
+        #[cfg(debug_assertions)]
+        crate::devtest::record("files-filter", fr.rect);
+        // Esc is the field's (egui would otherwise take the keyboard away on it first).
+        if fr.has_focus() {
+            ui.memory_mut(|m| m.set_focus_lock_filter(fid, egui::EventFilter { escape: true, ..Default::default() }));
+        }
         if fr.changed() {
             if let Some(ex) = self.explorer_mut(pid) {
                 ex.filter = filter.clone();

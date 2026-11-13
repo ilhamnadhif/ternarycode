@@ -188,6 +188,11 @@ impl App {
                 (i, label, waiting, doing, tab.focused, progress)
             })
             .collect();
+        let servers: Vec<(String, String)> = self
+            .project_servers(pid)
+            .into_iter()
+            .map(|(id, s)| (s.url, self.panes.get(&id).map(|p| p.label()).unwrap_or_default()))
+            .collect();
         let mut tab_rects: Vec<Rect> = Vec::with_capacity(tabs.len());
         // The part of the strip in view (tabs scrolled out of it are no place to drop on).
         let mut strip_shown: Option<Rect> = None;
@@ -203,6 +208,9 @@ impl App {
                 if r.on_hover_text(kit::tip(t("Review Changes…"), Action::Review)).clicked() {
                     app.actions.push(Action::Review);
                 }
+            }
+            if !servers.is_empty() {
+                server_chip(ui, &servers);
             }
             kit::vdivider(ui, 18.0);
             // More tabs than fit scroll sideways (wheel or trackpad), a fade at the edge that
@@ -392,6 +400,7 @@ impl App {
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("pane:{pane_id}"), term_rect);
             self.pane_rects.insert(pane_id, term_rect);
+            self.term_rects.push((pane_id, term_rect.intersect(ui.clip_rect())));
             let request = self.focus_request == Some(pane_id);
             let Some(pane) = self.panes.get_mut(&pane_id) else {
                 continue;
@@ -425,6 +434,9 @@ impl App {
                     pane.entered(now);
                 }
                 pane.input(resp.input);
+            }
+            if let Some(bytes) = resp.paste_without_text {
+                pane.paste_without_text(bytes);
             }
             if resp.activated && !is_focused {
                 self.actions.push(Action::FocusPane(pane_id));
@@ -1036,15 +1048,52 @@ impl App {
     }
 }
 
-/// ⌘-click (Ctrl-click elsewhere) on a word of a terminal: a web address opens in the browser
-/// (nothing to do here); a file, maybe with a line (`src/app.rs:120`), gives the action that
-/// opens it in the editor.
-pub(super) fn term_link(word: &str, cwd: &std::path::Path) -> Option<Action> {
-    if word.starts_with("http://") || word.starts_with("https://") {
-        crate::platform::reveal(std::path::Path::new(word));
+/// ⌘-click (Ctrl-click elsewhere) on a link in a terminal: a web or e-mail address opens in
+/// the browser (nothing to do here); a `file://` hyperlink or a word that is a file, maybe with
+/// a line (`src/app.rs:120`), gives the action that opens it in the editor (a folder is shown in
+/// the file manager). Other schemes are ignored: a program must not start apps through them.
+pub(super) fn term_link(target: &str, cwd: &std::path::Path) -> Option<Action> {
+    if crate::platform::openable_url(target) {
+        crate::platform::open_url(target);
         return None;
     }
-    crate::editor::parse_location(word, cwd).map(|(path, line)| Action::OpenFile(path, line))
+    if let Some(path) = file_url_path(target) {
+        if path.is_dir() {
+            crate::platform::reveal_in_folder(&path);
+            return None;
+        }
+        return path.is_file().then_some(Action::OpenFile(path, None));
+    }
+    if target.contains("://") {
+        return None;
+    }
+    crate::editor::parse_location(target, cwd).map(|(path, line)| Action::OpenFile(path, line))
+}
+
+/// The path of a `file://host/path` address (`%20` and the like decoded).
+fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    // The host (often this machine's name) comes before the path.
+    let path = &rest[rest.find('/')?..];
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(h), Some(l)) = (bytes.get(i + 1).and_then(|&b| hex(b)), bytes.get(i + 2).and_then(|&b| hex(b)))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    let path = String::from_utf8(out).ok()?;
+    // Windows: `file:///C:/x` is `C:/x`.
+    let path = if cfg!(windows) { path.trim_start_matches('/').to_string() } else { path };
+    Some(std::path::PathBuf::from(path))
 }
 
 /// The branch in the project header, as a quiet button that opens the Review: its icon, its
@@ -1068,6 +1117,60 @@ fn branch_chip(ui: &mut Ui, branch: &str, changed: usize) -> egui::Response {
     ui.painter().text(pos2(rect.left() + 8.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icons::GIT_BRANCH, style::icon_font(13.0), p.text_faint);
     ui.painter().galley(pos2(rect.left() + 8.0 + 13.0 + 5.0, rect.center().y - g.size().y / 2.0), g, p.text_muted);
     resp
+}
+
+/// The address a local server is shown by: its host and port (`localhost:5173`).
+pub(super) fn server_label(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.split('/').next().unwrap_or(rest)
+}
+
+/// The local servers a project's panes started (that answer), in the project header: the
+/// first one's address with a green dot, "+N" for the others. A click opens it in the browser;
+/// with several, a menu lists them all with the pane each runs in.
+fn server_chip(ui: &mut Ui, servers: &[(String, String)]) {
+    let p = style::pal(ui);
+    let Some((url, pane)) = servers.first() else { return };
+    let font = style::medium(12.0);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(server_label(url), 0.0, egui::TextFormat::simple(font.clone(), p.text_muted));
+    if servers.len() > 1 {
+        job.append(&format!("+{}", servers.len() - 1), 5.0, egui::TextFormat::simple(font, p.text_faint));
+    }
+    let g = ui.painter().layout_job(job);
+    let w = 8.0 + 7.0 + 6.0 + g.size().x + 6.0 + 12.0 + 8.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+    #[cfg(debug_assertions)]
+    crate::devtest::record("server-chip", rect);
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(style::RADIUS), p.hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let cy = rect.center().y;
+    ui.painter().circle_filled(pos2(rect.left() + 8.0 + 3.5, cy), 3.5, p.ok);
+    let x = rect.left() + 8.0 + 7.0 + 6.0;
+    ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g.clone(), p.text_muted);
+    ui.painter().text(pos2(x + g.size().x + 6.0 + 6.0, cy), Align2::CENTER_CENTER, icons::ARROW_SQUARE_OUT, style::icon_font(12.0), p.text_faint);
+    if servers.len() == 1 {
+        let resp = resp.on_hover_text(format!("{}\n{pane}", tf("Open {} in the browser", &[url])));
+        if resp.clicked() {
+            crate::platform::open_url(url);
+        }
+        return;
+    }
+    let resp = resp.on_hover_text(t("Local servers"));
+    egui::Popup::menu(&resp).align(egui::RectAlign::BOTTOM_START).show(|ui| {
+        kit::menu_body(ui);
+        ui.set_min_width(220.0);
+        kit::menu_header(ui, t("Local servers"));
+        for (url, pane) in servers {
+            let r = kit::menu_item(ui, Some(icons::ARROW_SQUARE_OUT), server_label(url), Some(pane), false);
+            if r.on_hover_text(tf("Open {} in the browser", &[url])).clicked() {
+                crate::platform::open_url(url);
+                ui.close();
+            }
+        }
+    });
 }
 
 /// A terminal tab in the project header: its status icon (the terminal's when nothing runs or
@@ -1152,4 +1255,25 @@ pub fn term_rect(pane: Rect, single: bool) -> Rect {
         pos2(pane.left() + TERM_PAD, top),
         pos2(pane.right() - TERM_PAD, pane.bottom() - 2.0),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn links_open_only_what_they_safely_can() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a b.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let url = format!("file://host{}", file.to_string_lossy().replace(' ', "%20"));
+        assert_eq!(file_url_path(&url).as_deref(), Some(file.as_path()));
+        assert!(matches!(term_link(&url, dir.path()), Some(Action::OpenFile(p, None)) if p == file));
+        // Schemes that could start other apps, and files that are not there: nothing.
+        for target in ["javascript:alert(1)", "smb://server/share", "ssh://host", "file:///nonexistent/x.rs", "missing.rs:3"] {
+            assert!(term_link(target, dir.path()).is_none(), "{target}");
+        }
+        std::fs::write(dir.path().join("main.rs"), "x\n").unwrap();
+        assert!(matches!(term_link("main.rs:2", dir.path()), Some(Action::OpenFile(_, Some(2)))));
+    }
 }

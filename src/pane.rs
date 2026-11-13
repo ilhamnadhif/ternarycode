@@ -108,6 +108,41 @@ impl Shown {
 /// prompt (still long enough to take the sizes of a window settling as one).
 const EARLY_SETTLE: Duration = Duration::from_millis(40);
 
+/// A local server the program in a pane said it listens on (`http://localhost:5173/`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Server {
+    pub url: String,
+    pub port: u16,
+    /// It answered the last probe (shown only then).
+    pub alive: bool,
+    /// Probes it did not answer since it last did (or since it was found).
+    pub misses: u8,
+}
+
+/// Probes a server that never answered may miss before it is forgotten.
+pub const SERVER_MISSES: u8 = 3;
+/// How often listed servers are probed.
+pub const SERVER_PROBE_EVERY: Duration = Duration::from_secs(5);
+
+/// What a probe of `port` found, in a pane's `servers`; whether what is shown changed.
+fn probed(servers: &mut Vec<Server>, port: u16, answers: bool) -> bool {
+    let Some(i) = servers.iter().position(|s| s.port == port) else { return false };
+    let s = &mut servers[i];
+    let was = s.alive;
+    if answers {
+        s.alive = true;
+        s.misses = 0;
+    } else if was {
+        servers.remove(i);
+    } else {
+        s.misses += 1;
+        if s.misses >= SERVER_MISSES {
+            servers.remove(i);
+        }
+    }
+    was != answers
+}
+
 pub struct Pane {
     pub id: PaneId,
     pub project: ProjectId,
@@ -147,6 +182,10 @@ pub struct Pane {
     /// The session the agent here works in, as its hooks say (Run Agent goes here instead of
     /// starting the same session twice).
     pub agent_session: Option<String>,
+    /// Local servers its program named, at most three, the ones that answer shown.
+    pub servers: Vec<Server>,
+    /// The next probe of `servers` is due.
+    pub servers_probe_at: Option<Instant>,
     /// The hook socket and this pane's token, as given to its shell.
     pub hook_env: Option<(String, String)>,
     /// TernaryCode itself ended the shell (pane closed, app quitting): its exit is not a failure.
@@ -216,6 +255,8 @@ impl Pane {
             fg_due: None,
             resume: None,
             agent_session: None,
+            servers: Vec::new(),
+            servers_probe_at: None,
             last_agent: None,
             hook_env: None,
             closing: false,
@@ -309,7 +350,7 @@ impl Pane {
                     // messages taken in now and then (its status, a command waiting for the
                     // prompt), not the whole window redrawn for every line it prints.
                     let (urgent, output) = match &e {
-                        SessionEvent::Output(f) => (!f.signals.is_empty() || f.bell, f.repaint),
+                        SessionEvent::Output(f) => (!f.signals.is_empty() || f.bell || !f.servers.is_empty(), f.repaint),
                         _ => (true, false),
                     };
                     let _ = tx.send(UiMsg::Pane(id, generation, e));
@@ -360,6 +401,47 @@ impl Pane {
 
     pub fn alive(&self) -> bool {
         self.session.is_some() && self.exit.is_none()
+    }
+
+    /// A local server named in the output: listed (once per port) and probed at once.
+    fn found_server(&mut self, found: tc_term::servers::Found, now: Instant) {
+        if self.servers.iter().any(|s| s.port == found.port) || self.servers.len() >= 3 {
+            return;
+        }
+        self.servers.push(Server { url: found.url, port: found.port, alive: false, misses: 0 });
+        self.servers_probe_at = Some(now);
+    }
+
+    /// What a probe of `port` found. A server that stops answering is dropped; one that never
+    /// answered is given a few probes to start.
+    pub fn probed(&mut self, port: u16, answers: bool) -> bool {
+        let changed = probed(&mut self.servers, port, answers);
+        if self.servers.is_empty() {
+            self.servers_probe_at = None;
+        }
+        changed
+    }
+
+    /// The servers that answer.
+    pub fn live_servers(&self) -> impl Iterator<Item = &Server> {
+        self.servers.iter().filter(|s| s.alive)
+    }
+
+    /// The agent in the foreground, when it reads an image from the clipboard on Ctrl+V
+    /// (Claude Code, Codex, Gemini CLI, OpenCode).
+    pub fn reads_clipboard_images(&self) -> bool {
+        matches!(
+            &self.tracker.fg,
+            Foreground::Program { agent: Some(AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini | AgentKind::OpenCode), .. }
+        )
+    }
+
+    /// The paste shortcut found no text on the clipboard: an agent gets Ctrl+V (`bytes`) to
+    /// take the image from it.
+    pub fn paste_without_text(&mut self, bytes: Vec<u8>) {
+        if self.reads_clipboard_images() {
+            self.input(bytes);
+        }
     }
 
     pub fn write(&self, bytes: Vec<u8>) {
@@ -418,6 +500,9 @@ impl Pane {
                 for signal in fed.signals {
                     changed |= self.on_signal(signal, now);
                 }
+                for found in fed.servers {
+                    self.found_server(found, now);
+                }
                 self.read_title(command_started);
                 if fed.bell {
                     changed |= self.tracker.apply(Event::Bell, now);
@@ -470,9 +555,11 @@ impl Pane {
                 self.tracker.apply(Event::Notify { message }, now)
             }
             OscSignal::Prompt(mark) => {
-                // Back at the prompt: what the program said it was doing is over.
+                // Back at the prompt: what the program said it was doing is over, and the
+                // servers it started with it.
                 if matches!(mark, PromptMark::PromptStart | PromptMark::CommandFinished(_)) {
                     self.program_title = None;
+                    self.servers.clear();
                 }
                 let mark = match mark {
                     PromptMark::CommandExecuted => ShellMark::CommandStart,
@@ -599,6 +686,7 @@ impl Pane {
         if fg == Foreground::Shell {
             self.program_title = None;
             self.progress = None;
+            self.servers.clear();
         }
         if fg == Foreground::Shell && self.tracker.agent.is_some() {
             // The agent was quit: nothing to resume later.
@@ -815,6 +903,25 @@ fn login_shell(env: &HashMap<String, String>) -> Option<(String, Vec<String>)> {
 #[cfg(test)]
 mod place_tests {
     use super::*;
+
+    #[test]
+    fn a_server_shows_while_it_answers() {
+        let mut servers = vec![Server { url: "http://localhost:5173/".into(), port: 5173, alive: false, misses: 0 }];
+        let mut probe = |port, answers| {
+            probed(&mut servers, port, answers);
+            servers.iter().map(|s| (s.port, s.alive)).collect::<Vec<_>>()
+        };
+        // Not answering yet (still starting): kept a few probes, then forgotten.
+        assert_eq!(probe(5173, false), vec![(5173, false)]);
+        assert_eq!(probe(5173, true), vec![(5173, true)]);
+        // It stops: gone.
+        assert_eq!(probe(5173, false), vec![]);
+        let mut never = vec![Server { url: "http://localhost:1/".into(), port: 1, alive: false, misses: 0 }];
+        for _ in 0..SERVER_MISSES {
+            probed(&mut never, 1, false);
+        }
+        assert!(never.is_empty());
+    }
 
     #[test]
     fn panes_say_where_they_are_relative_to_the_project() {

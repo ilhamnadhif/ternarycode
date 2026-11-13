@@ -51,12 +51,12 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "x11", "wayland"] }
 
 # OpenGL, and Direct3D 12 (only that wgpu backend) for machines without OpenGL 2 (virtual
-# machines, Remote Desktop, no graphics driver), as in TernaryShell. windows-sys: the Recycle Bin.
+# machines, Remote Desktop, no graphics driver), as in TernaryShell. windows-sys: the Recycle Bin, where the pointer is while files are dragged in.
 # getrandom: the token of the single-instance port (src/instance.rs).
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "wgpu_no_default_features"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 getrandom = "0.4.3"
 
 # The icon and version information of ternarycode.exe (Explorer, the taskbar, Start menu).

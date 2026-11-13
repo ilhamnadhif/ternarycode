@@ -175,6 +175,9 @@ impl App {
         let (cmd, arg) = step.split_once(' ').unwrap_or((step, ""));
         match cmd {
             "wait-screen" => Some(self.current_screen().contains(arg)).filter(|ok| *ok),
+            // A widget drawn in the last frame, or not drawn any more.
+            "wait-shown" => Some(devtest::shown(arg.trim())).filter(|ok| *ok),
+            "wait-hidden" => Some(!devtest::shown(arg.trim())).filter(|ok| *ok),
             "wait-status" | "hook-latency" => {
                 let want = if cmd == "hook-latency" {
                     arg.split_whitespace().nth(2).unwrap_or("")
@@ -379,6 +382,25 @@ impl App {
                     None => self.devtest.check(false, &format!("mouse: no widget named {name}")),
                 }
             }
+            // `drop <widget>[@fx,fy] <path>`: files dropped at a point of a widget (an OS drag
+            // can't be injected): typed into the terminal there, or added as a project.
+            "drop" => {
+                let (target, path) = arg.trim().split_once(' ').unwrap_or((arg.trim(), ""));
+                let (name, at) = target.split_once('@').unwrap_or((target, "0.5,0.5"));
+                let (fx, fy) = at
+                    .split_once(',')
+                    .and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))
+                    .unwrap_or((0.5, 0.5));
+                match devtest::rect_of(name) {
+                    Some(r) => {
+                        let pos = r.lerp_inside(egui::vec2(fx, fy));
+                        let pane = self.term_rects.iter().find(|(_, r)| r.contains(pos)).map(|(id, _)| *id);
+                        self.route_drop(pane, vec![std::path::PathBuf::from(devtest::unescape(path))]);
+                        ctx.request_repaint();
+                    }
+                    None => self.devtest.check(false, &format!("drop: no widget named {name}")),
+                }
+            }
             // `scroll <widget>[@fx,fy] <dy>`: the mouse wheel over a widget (negative: down).
             "scroll" => {
                 let (target, dy) = arg.trim().rsplit_once(' ').unwrap_or((arg.trim(), "0"));
@@ -514,7 +536,7 @@ impl App {
             "wait-screen" | "wait-status" | "wait-queue" | "wait-editor" | "wait-conflict"
             | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
-            | "wait-lsp" | "wait-doc" | "wait-toast" => {
+            | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" => {
                 WAIT.with(|w| {
                     *w.borrow_mut() = Some(Wait {
                         step: step.clone(),

@@ -53,6 +53,12 @@ printf '%s\n' '{"type":"user","message":{"content":"fix the checkout"},"gitBranc
     > "$CLAUDE_SESSIONS/11111111-1111-1111-1111-111111111111.jsonl"
 # A program the panes take for Claude Code by its name (it only sleeps), with no hooks.
 mkdir -p "$WORK/bin"; ln -s /bin/sleep "$WORK/bin/claude"
+# Links the app opens are written here instead of opening a browser.
+OPENED="$WORK/opened.txt"; export TERNARYCODE_E2E_OPENED="$OPENED"; : > "$OPENED"
+# A local server that says where it listens, as dev servers do, then listens there.
+printf '#!/bin/sh\nprintf "  Local:   http://localhost:%%s/\\n" "$1"\nexec nc -lk "$1"\n' > "$WORK/bin/serve"; chmod +x "$WORK/bin/serve"
+# A file to drop on a terminal (a screenshot, with a space in its name).
+printf 'png' > "$WORK/drop me.png"
 
 run smoke 40 "sleep 1200;; action add-project $P1;; sleep 1500;; keys echo hello-tc\\r;; wait-screen hello-tc;; wait-status idle;; expect-project alpha;; hook-latency claude PermissionRequest needs-input;; hook-latency claude Stop idle|done;; quit"
 
@@ -71,6 +77,20 @@ run run-agent-sessions 40 "sleep 1000;; action add-project $P1;; sleep 1200;; ac
 # The sidebar's project search: it narrows the list, Enter opens the chosen project and empties
 # it, ↓ moves the choice, Esc empties it.
 run project-search 40 "sleep 1000;; action add-project $P1;; sleep 1000;; action add-project $P2;; sleep 1200;; expect-project beta;; click project-filter;; sleep 300;; keys alp;; sleep 400;; expect-shown project:alpha;; expect-hidden project:beta;; shot e2e-project-search;; key enter;; sleep 400;; expect-project alpha;; expect-shown project:beta;; click project-filter;; sleep 300;; key down;; key enter;; sleep 400;; expect-project beta;; click project-filter;; sleep 300;; keys zzz;; sleep 400;; expect-hidden project:alpha;; expect-hidden project:beta;; key esc;; sleep 400;; expect-shown project:alpha;; expect-shown project:beta;; quit"
+
+# ⌘-click on a web address opens it, without the brackets and the full stop around it, also in
+# a program that takes the mouse (mouse reporting on): the click is not reported to it.
+URL_A="https://example.com/opened-from-the-terminal-by-cmd-click"
+URL_B="https://example.com/opened-while-the-program-takes-the-mouse"
+run term-link 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys clear; for i in 1 2 3 4 5 6; do echo '($URL_A).'; done\\r;; wait-screen opened-from;; sleep 300;; mouse cmd-move pane:2@0.2,0.06;; sleep 300;; mouse cmd-down pane:2@0.2,0.06;; mouse cmd-up pane:2@0.2,0.06;; sleep 500;; expect-file $OPENED $URL_A\\n;; keys clear; for i in 1 2 3 4 5 6; do echo '($URL_B).'; done; printf '\\033[?1000h'; sleep 30\\r;; wait-screen opened-while;; sleep 300;; mouse cmd-move pane:2@0.2,0.06;; sleep 300;; mouse cmd-down pane:2@0.2,0.06;; mouse cmd-up pane:2@0.2,0.06;; sleep 500;; expect-file $OPENED $URL_B\\n;; key ctrl+c;; keys printf '\\033[?1000l'\\r;; quit"
+
+# A file dropped on a terminal: its path is typed there, escaped (an agent attaches a screenshot
+# that way), and no project is added; a folder dropped on the sidebar becomes a project.
+run drop-path 40 "sleep 1000;; action add-project $P1;; sleep 1200;; drop pane:2 $WORK/drop me.png;; wait-screen drop\\ me.png;; expect-project alpha;; drop project-filter $P2;; sleep 1200;; expect-shown project:beta;; quit"
+
+# A dev server that says where it listens: its address shows in the project header while it
+# answers, opens on a click, and goes when the server stops.
+run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WORK/bin/serve 47613\\r;; wait-shown server-chip;; shot e2e-local-server;; click server-chip;; sleep 400;; expect-file $OPENED http://localhost:47613/;; key ctrl+c;; wait-hidden server-chip;; quit"
 
 run foreground 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 1000;; focus-pane 0;; sleep 500;; keys sleep 30\\r;; wait-status running;; key ctrl+c;; sleep 500;; wait-status idle;; quit"
 
@@ -127,7 +147,7 @@ PY
 run docs 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOCS/report.pdf;; wait-doc kind=pdf state=ready pages=2;; wait-doc rendered>0;; shot e2e-doc-pdf;; open-file $DOCS/data.csv;; wait-doc kind=csv state=ready rows=3 cols=3;; open-file $DOCS/notes.docx;; wait-doc kind=word state=ready blocks=2;; open-file $DOCS/dot.png;; wait-doc kind=image pictures=1;; open-file $DOCS/data.csv;; wait-doc rows=3;; quit"
 # ⌘F in a document (after a click in it took the keyboard from the terminal): a PDF's text on
 # both pages, then Enter to the second; a sheet's cell (selected); a Word file's words.
-run doc-find 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOCS/report.pdf;; wait-doc kind=pdf state=ready pages=2;; click doc-body;; sleep 200;; action find;; sleep 300;; keys quarterly;; wait-doc matches=2 current=1;; key enter;; wait-doc current=2;; shot e2e-doc-find-pdf;; key esc;; open-file $DOCS/data.csv;; wait-doc kind=csv state=ready;; click doc-body;; action find;; sleep 300;; keys beta;; wait-doc matches=1 cell=2,0;; key esc;; open-file $DOCS/notes.docx;; wait-doc kind=word state=ready;; click doc-body;; action find;; sleep 300;; keys docs;; wait-doc matches=1 current=1;; shot e2e-doc-find-word;; quit"
+run doc-find 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOCS/report.pdf;; wait-doc kind=pdf state=ready pages=2;; click doc-body;; sleep 200;; action find;; sleep 300;; keys quarterly;; wait-doc matches=2 current=1;; key enter;; wait-doc current=2;; shot e2e-doc-find-pdf;; key esc;; sleep 300;; expect-hidden doc-find;; open-file $DOCS/data.csv;; wait-doc kind=csv state=ready;; click doc-body;; action find;; sleep 300;; keys beta;; wait-doc matches=1 cell=2,0;; key esc;; open-file $DOCS/notes.docx;; wait-doc kind=word state=ready;; click doc-body;; action find;; sleep 300;; keys docs;; wait-doc matches=1 current=1;; shot e2e-doc-find-word;; quit"
 
 # The sidebar keeps the width it is dragged to (it used to shrink back to its narrowest).
 run sidebar-resize 40 "sleep 1000;; action add-project $P1;; sleep 1200;; expect-width sidebar 240 256;; mouse down sidebar@1.0,0.5;; sleep 100;; mouse drag sidebar@1.4,0.5;; sleep 150;; mouse up sidebar@1.0,0.5;; sleep 1500;; expect-width sidebar 335 360;; sleep 1500;; expect-width sidebar 335 360;; quit"
@@ -187,6 +207,8 @@ run pane-drag 50 "sleep 1000;; action add-project $P2;; sleep 1200;; action spli
 # The file tree's own actions: a new file (named in place, then opened), renamed in place (the
 # open file follows), and a nested folder.
 F="$WORK/files"; mkdir -p "$F"; printf 'x\n' > "$F/a.txt"
+# Esc in the files filter empties it (the whole tree is back).
+run explorer-filter-esc 40 "sleep 1000;; action add-project $T;; sleep 1500;; action files;; sleep 800;; wait-tree edit.txt;; click files-filter;; sleep 300;; keys zzz;; sleep 500;; expect-hidden tree:edit.txt;; key esc;; sleep 500;; expect-shown tree:edit.txt;; quit"
 run files-actions 50 "sleep 1000;; action add-project $F;; sleep 1500;; action files;; sleep 800;; wait-tree a.txt;; sleep 300;; click files-button:0;; sleep 400;; keys hello.txt\\r;; wait-open hello.txt;; wait-tree hello.txt;; action rename hello.txt;; sleep 400;; keys renamed\\r;; wait-tree renamed.txt;; wait-open renamed.txt;; click files-button:1;; sleep 400;; keys docs/api\\r;; wait-tree docs;; shot e2e-files;; quit"
 run ctrl-d 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 2600;; wait-tabs 0:2,3;; key ctrl+d;; wait-tabs 0:2;; sleep 300;; key ctrl+d;; wait-tabs 0:4;; sleep 600;; key ctrl+d;; wait-tabs 0:5;; quit"
 run review 60 "sleep 1000;; action add-project $R;; sleep 1200;; hook 2 claude SessionStart;; sleep 300;; wait-snapshot;; write-file $R/edit.txt line 1\\nline 2 changed\\nline 3\\n;; write-file $R/new.txt brand new\\n;; rm-file $R/gone.txt;; sleep 300;; action review;; sleep 1500;; wait-review Added:new.txt,Deleted:gone.txt,Modified:edit.txt;; quit"

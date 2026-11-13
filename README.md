@@ -157,8 +157,17 @@ update check is the only network connection TernaryCode makes.
   command). Panes of agents that can continue a conversation offer **Resume** after a
   restart.
 - **A real terminal**: 24-bit colour, mouse reporting, synchronized output, IME, pixel-exact
-  box drawing, scrollback search in one pane (`⌘F`) or all of them (`⇧⌘F`), and `⌘`-click on a
-  `path:line` to open it in the editor, from a Grid tile too.
+  box drawing, and scrollback search in one pane (`⌘F`) or all of them (`⇧⌘F`).
+- **Links open with `⌘`-click or `Ctrl`-click** (Ctrl-click on Windows and Linux), from a Grid
+  tile too. A web address opens in the browser, even one wrapped over several rows or in
+  brackets, and even inside a program that uses the mouse. OSC 8 hyperlinks also open. A
+  `path:line` opens in the editor. Right-click a link to open or copy it.
+- **Drop a file on a terminal** and its path is typed there, so an agent can read a screenshot.
+  A folder dropped on the sidebar becomes a project. **`⌘V` with an image** on the clipboard
+  hands it to Claude Code, Codex, Gemini CLI or OpenCode.
+- **Local servers show up.** When a pane prints `http://localhost:5173` (Vite, Next.js, Rails,
+  Django…), its address appears in the project header and on the Grid tile while the server
+  answers. Click it to open it in the browser.
 - **Shell integration** (zsh, bash, fish and PowerShell) marks prompts and commands, so a command that fails or
   finishes after a long time is noticed, and resizing never leaves prompt fragments behind.
 

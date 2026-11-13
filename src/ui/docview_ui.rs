@@ -342,6 +342,11 @@ fn find_bar(ui: &mut Ui, view: &mut DocView, rect: Rect, project: ProjectId) -> 
                 f.focus = false;
             }
             focused = r.has_focus();
+            // Esc is the field's: it closes the bar (egui would otherwise take the keyboard
+            // away on it first).
+            if focused {
+                ui.memory_mut(|m| m.set_focus_lock_filter(id, egui::EventFilter { escape: true, ..Default::default() }));
+            }
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let back = ui.input(|i| i.modifiers.shift);
                 f.step(!back);

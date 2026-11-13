@@ -299,6 +299,8 @@ pub struct Fed {
     pub signals: Vec<OscSignal>,
     /// The program rang the bell.
     pub bell: bool,
+    /// Local servers the output names (`http://localhost:5173/`).
+    pub servers: Vec<crate::servers::Found>,
 }
 
 /// Feeds program output into a terminal and answers the parser's queries.
@@ -306,6 +308,7 @@ pub struct Feeder {
     pub shared: SharedTerm,
     parser: Processor,
     osc: OscScanner,
+    servers: crate::servers::ServerScanner,
     pushes: KeyboardPushes,
     events: mpsc::Receiver<Event>,
     bell: bool,
@@ -317,6 +320,7 @@ impl Feeder {
             shared,
             parser: Processor::new(),
             osc: OscScanner::new(),
+            servers: crate::servers::ServerScanner::new(),
             pushes: KeyboardPushes::default(),
             events,
             bell: false,
@@ -329,6 +333,8 @@ impl Feeder {
     pub fn feed(&mut self, bytes: &[u8]) -> Fed {
         let mut found = Vec::new();
         self.osc.scan_at(bytes, &mut found);
+        let mut servers = Vec::new();
+        self.servers.scan(bytes, &mut servers);
         let mut repaint = false;
         let mut done = 0;
         for (end, signal) in &found {
@@ -350,6 +356,7 @@ impl Feeder {
             repaint,
             signals,
             bell: std::mem::take(&mut self.bell),
+            servers,
         }
     }
 

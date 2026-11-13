@@ -489,6 +489,29 @@ impl App {
                 self.actions.push(Action::PlanInstall(agent.1));
             }
         }
+        // A local server its panes started: ":5173" opens it in the browser.
+        let servers = self.project_servers(project_id);
+        if let Some((_, first)) = servers.first() {
+            let port = format!(":{}", first.port);
+            let more = if servers.len() > 1 { format!(" +{}", servers.len() - 1) } else { String::new() };
+            let g = ui.painter().layout_no_wrap(format!("{port}{more}"), small.clone(), p.text_muted);
+            let w = 6.0 + 6.0 + 5.0 + g.size().x + 6.0;
+            let r = Rect::from_center_size(pos2(right - w / 2.0, cy), vec2(w, 22.0));
+            right -= w + 6.0;
+            let resp = ui.interact(r, egui::Id::new(("tile-server", project_id)), Sense::click());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("tile-server:{name}"), r);
+            if resp.hovered() {
+                ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), p.hover);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            ui.painter().circle_filled(pos2(r.left() + 6.0 + 3.0, cy), 3.0, p.ok);
+            ui.painter().galley(pos2(r.left() + 6.0 + 6.0 + 5.0, cy - g.size().y / 2.0), g, p.text_muted);
+            let tip = servers.iter().map(|(_, s)| tf("Open {} in the browser", &[&s.url])).collect::<Vec<_>>().join("\n");
+            if resp.on_hover_text(tip).clicked() {
+                crate::platform::open_url(&first.url);
+            }
+        }
         // Branch, how many files changed, panes (when split): only what fits.
         let mut meta: Vec<(String, egui::FontId, egui::Color32)> = Vec::new();
         if let Some(b) = &branch {
@@ -697,6 +720,7 @@ impl App {
         if request {
             ui.memory_mut(|m| m.request_focus(widget::pane_widget_id(pane_id)));
         }
+        self.term_rects.push((pane_id, rect.intersect(ui.clip_rect())));
         let alive = pane.alive();
         let resp = widget::show_readable(ui, rect, &mut pane.view, &pane.shared, style, input_enabled, alive, min_scale, wheel);
         let how = crate::pane::Shown::of(ui, pane_id, &pane.view, crate::pane::Shown::Preview);
@@ -706,6 +730,9 @@ impl App {
                 pane.entered(std::time::Instant::now());
             }
             pane.input(resp.input);
+        }
+        if let Some(bytes) = resp.paste_without_text {
+            pane.paste_without_text(bytes);
         }
         if resp.reconnect {
             self.actions.push(Action::RestartShell(pane_id));

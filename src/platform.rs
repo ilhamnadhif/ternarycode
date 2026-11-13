@@ -122,6 +122,60 @@ pub fn return_free_memory() {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn return_free_memory() {}
 
+/// Where the pointer is in the window, in egui points, asked of the system: while files are
+/// dragged over the window the app hears of no pointer movement.
+#[cfg(target_os = "macos")]
+pub fn pointer_in_window(_ctx: &eframe::egui::Context) -> Option<eframe::egui::Pos2> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSEvent};
+    let mtm = MainThreadMarker::new()?;
+    let windows = NSApplication::sharedApplication(mtm).windows();
+    let w = (0..windows.count()).map(|i| windows.objectAtIndex(i)).max_by(|a, b| {
+        let (ra, rb) = (a.contentLayoutRect(), b.contentLayoutRect());
+        (ra.size.width * ra.size.height).total_cmp(&(rb.size.width * rb.size.height))
+    })?;
+    let p = w.convertPointFromScreen(NSEvent::mouseLocation());
+    let height = w.contentView().map(|v| v.frame().size.height)?;
+    Some(eframe::egui::pos2(p.x as f32, (height - p.y) as f32))
+}
+
+#[cfg(windows)]
+pub fn pointer_in_window(ctx: &eframe::egui::Context) -> Option<eframe::egui::Pos2> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut p = POINT { x: 0, y: 0 };
+    // SAFETY: a plain call filling a POINT owned here.
+    if unsafe { GetCursorPos(&mut p) } == 0 {
+        return None;
+    }
+    let (inner, ppp) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().native_pixels_per_point));
+    let ppp = ppp.unwrap_or(1.0);
+    Some(eframe::egui::pos2(p.x as f32 / ppp, p.y as f32 / ppp) - inner?.min.to_vec2())
+}
+
+/// Elsewhere the last position the window heard of.
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn pointer_in_window(ctx: &eframe::egui::Context) -> Option<eframe::egui::Pos2> {
+    ctx.input(|i| i.pointer.latest_pos())
+}
+
+/// A dropped file's path as the terminals of this system type it: with a backslash before
+/// spaces and the characters a shell reads (as Terminal.app, iTerm2 and Ghostty do); in double
+/// quotes on Windows when it has a space.
+pub fn dropped_path(path: &str) -> String {
+    if cfg!(windows) {
+        return if path.contains(' ') { format!("\"{path}\"") } else { path.to_string() };
+    }
+    let mut out = String::with_capacity(path.len() + 8);
+    for c in path.chars() {
+        if c.is_whitespace() || "\\'\"`$&|;<>()[]{}*?!#~^".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Turns off macOS's automatic window tabbing (it would add "Show Tab Bar" and "Show All Tabs"
 /// to the View menu; TernaryCode has its own tabs). Call before the window opens.
 #[cfg(target_os = "macos")]
@@ -207,6 +261,44 @@ pub fn reveal(path: &std::path::Path) {
         "xdg-open"
     };
     let _ = command(program).arg(path).spawn();
+}
+
+/// Whether `url` is an address `open_url` opens: a web page or an e-mail address. Other schemes
+/// (which could start any app) are not.
+pub fn openable_url(url: &str) -> bool {
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")
+}
+
+/// Opens a web address in the default browser (or an e-mail address in the mail app).
+pub fn open_url(url: &str) {
+    if !openable_url(url) {
+        return;
+    }
+    // The end-to-end tests note it instead.
+    #[cfg(debug_assertions)]
+    if let Some(file) = std::env::var_os("TERNARYCODE_E2E_OPENED") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
+            let _ = writeln!(f, "{url}");
+        }
+        return;
+    }
+    let mut cmd = if cfg!(target_os = "macos") {
+        command("/usr/bin/open")
+    } else if cfg!(windows) {
+        let mut c = command("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else {
+        command("xdg-open")
+    };
+    let _ = cmd
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 /// Shows a file or folder selected in the file manager (Finder, Explorer), or opens the folder
@@ -325,6 +417,28 @@ mod tests {
     #[test]
     fn applescript_strings_are_escaped() {
         assert_eq!(applescript_string(r#"say "hi" \ ok"#), r#""say \"hi\" \\ ok""#);
+    }
+
+    #[test]
+    fn only_web_and_mail_addresses_are_opened() {
+        for u in ["https://x.com/a", "http://localhost:3000/", "HTTPS://X.COM", "mailto:me@x.com"] {
+            assert!(openable_url(u), "{u}");
+        }
+        for u in ["javascript:alert(1)", "smb://server/share", "file:///etc/passwd", "x-apple.systempreferences:", "ssh://h", "http:/x", ""] {
+            assert!(!openable_url(u), "{u}");
+        }
+    }
+
+    #[test]
+    fn dropped_paths_are_typed_as_the_terminals_here_type_them() {
+        if cfg!(windows) {
+            assert_eq!(dropped_path(r"C:\a b\shot.png"), r#""C:\a b\shot.png""#);
+            assert_eq!(dropped_path(r"C:\x.png"), r"C:\x.png");
+        } else {
+            assert_eq!(dropped_path("/Users/me/Screenshot 1.png"), r"/Users/me/Screenshot\ 1.png");
+            assert_eq!(dropped_path("/tmp/it's (1)&$x.txt"), r"/tmp/it\'s\ \(1\)\&\$x.txt");
+            assert_eq!(dropped_path("/tmp/plain-name_1.rs"), "/tmp/plain-name_1.rs");
+        }
     }
 
     #[test]

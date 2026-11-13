@@ -159,8 +159,17 @@ satu-satunya koneksi jaringan yang dibuat TernaryCode.
   perintah Anda sendiri). Pane agent yang bisa melanjutkan percakapan menawarkan **Resume** setelah
   restart.
 - **Terminal sungguhan**: warna 24-bit, mouse reporting, synchronized output, IME, box drawing yang
-  presisi, pencarian scrollback di satu pane (`⌘F`) atau semua pane (`⇧⌘F`), dan `⌘`-klik pada
-  `path:baris` untuk membukanya di editor, dari tile Grid juga.
+  presisi, dan pencarian scrollback di satu pane (`⌘F`) atau semua pane (`⇧⌘F`).
+- **Link dibuka dengan `⌘`-klik atau `Ctrl`-klik** (Ctrl-klik di Windows dan Linux), dari tile
+  Grid juga. Alamat web terbuka di browser, termasuk yang terpotong ke beberapa baris, yang ada
+  dalam tanda kurung, dan yang ada di program yang memakai mouse. Hyperlink OSC 8 juga bisa
+  dibuka. `path:baris` terbuka di editor. Klik kanan link untuk membuka atau menyalinnya.
+- **Drop file ke terminal** dan path-nya langsung terketik di sana, jadi agent bisa membaca
+  screenshot. Folder yang di-drop ke sidebar menjadi project. **`⌘V` dengan gambar** di
+  clipboard diteruskan ke Claude Code, Codex, Gemini CLI, atau OpenCode.
+- **Server lokal langsung kelihatan.** Kalau pane mencetak `http://localhost:5173` (Vite,
+  Next.js, Rails, Django…), alamatnya muncul di header project dan tile Grid selama servernya
+  menjawab. Klik untuk membukanya di browser.
 - **Shell integration** (zsh, bash, fish, dan PowerShell) menandai prompt dan perintah, jadi perintah yang gagal
   atau selesai setelah lama tetap ketahuan, dan resize tidak pernah meninggalkan potongan prompt.
 

@@ -62,6 +62,10 @@ pub struct TermView {
     /// Paste was chosen (`request_paste`): the paste event the next frame brings is a paste,
     /// not a typed Ctrl+V.
     paste_requested: bool,
+    /// The link the context menu was opened on.
+    menu_link: Option<Link>,
+    /// The clipboard's text came since V was last released: the paste shortcut pasted text.
+    pasted_since_v: bool,
 }
 
 impl TermView {
@@ -120,8 +124,17 @@ pub struct TermResponse {
     pub activated: bool,
     /// Enter pressed in a pane whose session ended.
     pub reconnect: bool,
-    /// ⌘-click (Ctrl-click elsewhere) on a word: the word, for paths and links.
+    /// ⌘-click (Ctrl-click elsewhere) on a link: what it opens (a web address, an OSC 8
+    /// hyperlink's address, or a word that may be a path).
     pub link: Option<String>,
+    /// The paste shortcut was pressed with no text on the clipboard (an image, say): the bytes
+    /// Ctrl+V sends, for an agent that reads the clipboard itself.
+    pub paste_without_text: Option<Vec<u8>>,
+}
+
+/// The modifier held to open links: ⌘ or Ctrl on macOS, Ctrl elsewhere.
+pub fn link_modifier(m: egui::Modifiers) -> bool {
+    m.command || (cfg!(target_os = "macos") && m.ctrl)
 }
 
 pub fn cell_size(ctx: &egui::Context, font_size: f32) -> Vec2 {
@@ -458,10 +471,311 @@ fn word_at<T>(term: &term::Term<T>, offset: usize, col: usize, row: usize) -> Op
     Some((s, e, chars[s..e].iter().collect()))
 }
 
+/// What a link under the pointer is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkKind {
+    /// A web address in the text.
+    Web,
+    /// An OSC 8 hyperlink: the text shown is not the address.
+    Hyperlink,
+    /// A path or file name; the app decides whether it is one.
+    Path,
+}
+
+/// A link in the terminal: what opens, and the cells it covers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    pub target: String,
+    pub kind: LinkKind,
+    /// Viewport row, first column and end column of each piece in view (a wrapped address
+    /// has one per row).
+    pub cells: Vec<(usize, usize, usize)>,
+}
+
+impl Link {
+    /// The text shown is not simply the address (a hyperlink, or one cut over several rows).
+    pub fn hidden(&self) -> bool {
+        self.kind == LinkKind::Hyperlink || self.cells.len() > 1
+    }
+}
+
+/// The link under a viewport cell: an OSC 8 hyperlink, a web address (also one wrapped over
+/// several rows), or a word that looks like a path.
+pub fn link_at<T>(term: &term::Term<T>, offset: usize, col: usize, row: usize) -> Option<Link> {
+    let cols = term.columns();
+    if cols == 0 || col >= cols || row >= term.screen_lines() {
+        return None;
+    }
+    let point = grid_point(offset, col, row);
+    if let Some(link) = term.grid()[point].hyperlink() {
+        return Some(hyperlink_cells(term, offset, point, &link));
+    }
+    if let Some(link) = web_link(term, offset, point) {
+        return Some(link);
+    }
+    let (s, e, word) = word_at(term, offset, col, row)?;
+    // Next to a web address but not on it (its bracket, text glued to it): nothing.
+    (!word.contains("://") && looks_like_link(&word)).then(|| Link {
+        target: word.trim_matches(PATH_PUNCT).to_string(),
+        kind: LinkKind::Path,
+        cells: vec![(row, s, e)],
+    })
+}
+
+/// Rows an OSC 8 hyperlink or a wrapped address is followed over, each way.
+const LINK_ROWS: usize = 16;
+
+/// The cells of the OSC 8 hyperlink at `point`: the run of cells carrying it, across rows.
+fn hyperlink_cells<T>(
+    term: &term::Term<T>,
+    offset: usize,
+    point: Point,
+    link: &alacritty_terminal::term::cell::Hyperlink,
+) -> Link {
+    let cols = term.columns();
+    let (top, bottom) = (term.topmost_line(), term.bottommost_line());
+    let same = |line: Line, col: usize| term.grid()[line][Column(col)].hyperlink().as_ref() == Some(link);
+    let (mut line, mut s) = (point.line, point.column.0);
+    let mut cells = Vec::new();
+    // Back to where it starts.
+    for _ in 0..LINK_ROWS {
+        while s > 0 && same(line, s - 1) {
+            s -= 1;
+        }
+        if s == 0 && line > top && same(line - 1, cols - 1) {
+            line -= 1;
+            s = cols - 1;
+        } else {
+            break;
+        }
+    }
+    // Then forward, a piece per row.
+    for _ in 0..LINK_ROWS * 2 {
+        let mut e = s;
+        while e < cols && same(line, e) {
+            e += 1;
+        }
+        cells.push((line, s, e));
+        if e == cols && line < bottom && same(line + 1, 0) {
+            line += 1;
+            s = 0;
+        } else {
+            break;
+        }
+    }
+    Link {
+        target: link.uri().to_string(),
+        kind: LinkKind::Hyperlink,
+        cells: in_view(term, offset, cells),
+    }
+}
+
+/// Pieces at grid lines → the ones in view, at viewport rows.
+fn in_view<T>(term: &term::Term<T>, offset: usize, pieces: Vec<(Line, usize, usize)>) -> Vec<(usize, usize, usize)> {
+    let rows = term.screen_lines() as i32;
+    pieces
+        .into_iter()
+        .filter(|&(_, s, e)| e > s)
+        .filter_map(|(line, s, e)| {
+            let row = line.0 + offset as i32;
+            (0..rows).contains(&row).then_some((row as usize, s, e))
+        })
+        .collect()
+}
+
+fn blank(c: char) -> bool {
+    c.is_whitespace() || c == '\0'
+}
+
+/// A character that may be part of a web address.
+fn url_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c)
+}
+
+fn line_chars<T>(term: &term::Term<T>, line: Line) -> Vec<char> {
+    let row = &term.grid()[line];
+    (0..term.columns()).map(|c| row[Column(c)].c).collect()
+}
+
+fn wraps<T>(term: &term::Term<T>, line: Line) -> bool {
+    let cols = term.columns();
+    cols > 0 && term.grid()[line][Column(cols - 1)].flags.contains(Flags::WRAPLINE)
+}
+
+/// One row's part of a word: its line, first and end column, and its characters.
+struct Piece {
+    line: Line,
+    s: usize,
+    e: usize,
+    chars: Vec<char>,
+}
+
+impl Piece {
+    fn of(line: Line, chars: &[char], s: usize, e: usize) -> Self {
+        Piece { line, s, e, chars: chars[s..e].to_vec() }
+    }
+
+    fn has_scheme(&self) -> bool {
+        self.chars.windows(3).any(|w| w == [':', '/', '/'])
+    }
+}
+
+/// The piece of a row that carries on an address cut at the end of the row above by the
+/// program itself (Ink breaks long words at its width, then indents the rest): web-address
+/// characters only, no new address, and more than a word (a word at the next row's start is
+/// more likely text).
+fn continues_url(chars: &[char]) -> bool {
+    let body: &[char] = {
+        let mut e = chars.len();
+        while e > 0 && matches!(chars[e - 1], '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '\'' | '"') {
+            e -= 1;
+        }
+        &chars[..e]
+    };
+    !body.is_empty()
+        && chars.iter().all(|&c| url_char(c))
+        && !chars.windows(3).any(|w| w == [':', '/', '/'])
+        && body.iter().any(|c| !c.is_alphabetic())
+}
+
+/// The start of a row's first word, when only a small indent comes before it (where Ink
+/// continues a word it broke).
+const CONTINUE_INDENT: usize = 4;
+/// How close to the right edge a row's last word must end to be continued on the next row.
+const EDGE: usize = 2;
+
+/// A web address around `point`, followed over rows the terminal wrapped and rows a program
+/// broke at the edge itself, without the punctuation around it.
+fn web_link<T>(term: &term::Term<T>, offset: usize, point: Point) -> Option<Link> {
+    let cols = term.columns();
+    let (top, bottom) = (term.topmost_line(), term.bottommost_line());
+    let chars = line_chars(term, point.line);
+    let col = point.column.0;
+    if blank(chars[col]) {
+        return None;
+    }
+    let (mut s, mut e) = (col, col + 1);
+    while s > 0 && !blank(chars[s - 1]) {
+        s -= 1;
+    }
+    while e < cols && !blank(chars[e]) {
+        e += 1;
+    }
+    let mut pieces = vec![Piece::of(point.line, &chars, s, e)];
+    // Rows above it belongs to.
+    while pieces.len() < LINK_ROWS {
+        let first = &pieces[0];
+        let line = first.line;
+        if line <= top {
+            break;
+        }
+        let here = line_chars(term, line);
+        let above = line_chars(term, line - 1);
+        let Some(ae) = above.iter().rposition(|&c| !blank(c)).map(|i| i + 1) else { break };
+        let mut as_ = ae;
+        while as_ > 0 && !blank(above[as_ - 1]) {
+            as_ -= 1;
+        }
+        let soft = wraps(term, line - 1) && first.s == 0 && ae == cols;
+        let hard = !first.has_scheme()
+            && !wraps(term, line - 1)
+            && first.s <= CONTINUE_INDENT
+            && here[..first.s].iter().all(|&c| blank(c))
+            && continues_url(&first.chars)
+            && ae + EDGE >= cols
+            && above[as_..ae].iter().skip_while(|c| matches!(c, '(' | '[' | '<' | '"' | '\'' | '`')).all(|&c| url_char(c));
+        if !(soft || hard) {
+            break;
+        }
+        pieces.insert(0, Piece::of(line - 1, &above, as_, ae));
+    }
+    let joined: Vec<char> = pieces.iter().flat_map(|p| p.chars.iter().copied()).collect();
+    if !joined.windows(3).any(|w| w == [':', '/', '/']) {
+        return None;
+    }
+    // Rows below it goes on to.
+    while pieces.len() < LINK_ROWS * 2 {
+        let last = pieces.last().unwrap();
+        let line = last.line;
+        if line >= bottom {
+            break;
+        }
+        let here = line_chars(term, line);
+        let below = line_chars(term, line + 1);
+        let Some(bs) = below.iter().position(|&c| !blank(c)) else { break };
+        let mut be = bs;
+        while be < cols && !blank(below[be]) {
+            be += 1;
+        }
+        let soft = wraps(term, line) && last.e == cols && bs == 0;
+        let hard = !wraps(term, line)
+            && last.e + EDGE >= cols
+            && here[last.e..].iter().all(|&c| blank(c))
+            && bs <= CONTINUE_INDENT
+            && continues_url(&below[bs..be]);
+        if !(soft || hard) {
+            break;
+        }
+        pieces.push(Piece::of(line + 1, &below, bs, be));
+    }
+    let all: Vec<char> = pieces.iter().flat_map(|p| p.chars.iter().copied()).collect();
+    let (us, ue) = url_span(&all)?;
+    // The address's characters back on the rows they are drawn on.
+    let mut cells = Vec::new();
+    let mut at = 0;
+    for p in &pieces {
+        let (a, b) = (us.max(at), ue.min(at + p.chars.len()));
+        if a < b {
+            cells.push((p.line, p.s + (a - at), p.s + (b - at)));
+        }
+        at += p.chars.len();
+    }
+    // Only when the pointer is on the address itself (not on text glued to it).
+    let on_it = cells.iter().any(|&(l, a, b)| l == point.line && (a..b).contains(&col));
+    on_it.then(|| Link {
+        target: all[us..ue].iter().collect(),
+        kind: LinkKind::Web,
+        cells: in_view(term, offset, cells),
+    })
+}
+
+/// Where a web address is in a word: from `http://` or `https://` to its end, without the
+/// punctuation after it (a closing bracket stays when the address opened one, as in
+/// `…/wiki/Rust_(language)`). None without a host.
+pub fn url_span(chars: &[char]) -> Option<(usize, usize)> {
+    let starts = |i: usize, p: &str| p.chars().enumerate().all(|(k, c)| chars.get(i + k).is_some_and(|x| x.eq_ignore_ascii_case(&c)));
+    let s = (0..chars.len()).find(|&i| starts(i, "http://") || starts(i, "https://"))?;
+    let host = s + if starts(s, "https://") { 8 } else { 7 };
+    // Up to a character an address never has.
+    let mut e = (s..chars.len()).find(|&i| !url_char(chars[i])).unwrap_or(chars.len());
+    loop {
+        if e <= host {
+            return None;
+        }
+        let c = chars[e - 1];
+        let count = |ch: char| chars[s..e].iter().filter(|&&x| x == ch).count();
+        let unbalanced = match c {
+            ')' => count('(') < count(')'),
+            ']' => count('[') < count(']'),
+            _ => false,
+        };
+        if unbalanced || matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*') {
+            e -= 1;
+        } else {
+            break;
+        }
+    }
+    let host_end = (host..e).find(|&i| matches!(chars[i], '/' | '?' | '#')).unwrap_or(e);
+    chars[host..host_end].iter().any(|c| c.is_ascii_alphanumeric()).then_some((s, e))
+}
+
+/// Punctuation around a path in text (quotes, brackets, a list's comma).
+const PATH_PUNCT: &[char] = &['"', '\'', '`', '(', ')', '[', ']', '<', '>', ',', ';'];
+
 /// Whether a word reads as something ⌘-click opens: a web address, or a path or file name
 /// (`src/app.rs:120`, `./run.sh`, `Cargo.toml`). The app decides what it really is.
 pub fn looks_like_link(word: &str) -> bool {
-    let w = word.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';'));
+    let w = word.trim_matches(PATH_PUNCT);
     if w.starts_with("http://") || w.starts_with("https://") {
         return w.len() > "https://".len();
     }
@@ -482,6 +796,14 @@ pub fn looks_like_link(word: &str) -> bool {
                 && ext.chars().any(|c| c.is_ascii_alphabetic())
         }
         None => false,
+    }
+}
+
+/// At most `max` characters of `s`, with an ellipsis when cut.
+fn shorten(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s.to_string(),
     }
 }
 
@@ -877,6 +1199,17 @@ fn show_inner(
                     repeat,
                     modifiers,
                 } => {
+                    // The paste shortcut with no text on the clipboard (an image) sends no paste
+                    // event, only this release: Ctrl+V goes to the program on Linux as usual;
+                    // elsewhere the app passes it to an agent, which reads the clipboard itself.
+                    if key == Key::V && !pressed && modifiers.command && !std::mem::take(&mut view.pasted_since_v) && alive {
+                        let bytes = ctrl_key(Key::V, modifiers, modes);
+                        if cfg!(target_os = "linux") && !modifiers.shift {
+                            typed.extend(bytes);
+                        } else {
+                            out.paste_without_text = Some(bytes);
+                        }
+                    }
                     // ⌘ combinations are the app's (macOS). On Windows and Linux Ctrl goes to the
                     // program; the app's own shortcuts were taken out before.
                     if modifiers.mac_cmd {
@@ -947,6 +1280,9 @@ fn show_inner(
                 // Windows Terminal's habits also work there: Ctrl+C copies while text is
                 // selected, and Ctrl+V pastes.
                 Event::Paste(text) if alive => {
+                    if !menu_paste {
+                        view.pasted_since_v = true;
+                    }
                     let shift = ui.input(|i| i.modifiers.shift);
                     if cfg!(target_os = "macos") || cfg!(windows) || shift || menu_paste {
                         typed.extend(input::encode_paste(
@@ -1001,8 +1337,24 @@ fn show_inner(
     let mouse_mode = mode.intersects(TermMode::MOUSE_MODE) && alive;
     let shift_held = ui.input(|i| i.modifiers.shift);
     let sgr = mode.contains(TermMode::SGR_MOUSE);
-    // The link under the pointer while ⌘ is held: its row and columns.
-    let mut link_hover: Option<(usize, usize, usize)> = None;
+    // The link under the pointer. With the link modifier held it is underlined (the pointer a
+    // hand) and a click opens it, also in a program that takes the mouse: that click is not
+    // reported to it.
+    let pointer_link = hover.filter(|_| input_enabled).and_then(|p| {
+        let (col, row, _) = at(p);
+        link_at(&term, offset, col, row)
+    });
+    let link_mod = ui.input(|i| link_modifier(i.modifiers));
+    let mut link_hover: Vec<(usize, usize, usize)> = Vec::new();
+    if link_mod && let Some(link) = &pointer_link {
+        link_hover = link.cells.clone();
+        if response.clicked_by(PointerButton::Primary) {
+            out.link = Some(link.target.clone());
+        }
+    }
+    if response.secondary_clicked() {
+        view.menu_link = pointer_link.clone().filter(|l| l.kind != LinkKind::Path);
+    }
     if mouse_mode && !shift_held && input_enabled {
         let events = ui.input(|i| i.events.clone());
         for event in events {
@@ -1020,8 +1372,11 @@ fn show_inner(
                         _ => continue,
                     };
                     // Only presses that land on the terminal itself, not on a menu, popup or
-                    // dialog drawn over it.
+                    // dialog drawn over it, and not a click that opens a link.
                     if pressed && (!rect.contains(pos) || !on_terminal_layer(ui, pos)) {
+                        continue;
+                    }
+                    if pressed && b == MouseButton::Left && link_modifier(modifiers) && !link_hover.is_empty() {
                         continue;
                     }
                     if !pressed && view.reported_button != Some(b) {
@@ -1105,21 +1460,6 @@ fn show_inner(
         {
             ui.ctx().copy_text(text);
         }
-        // ⌘ held over a path or a web address: it is underlined (and the pointer is a hand),
-        // and a click hands the word to the app to open.
-        if ui.input(|i| i.modifiers.command)
-            && let Some(p) = hover
-        {
-            let (col, row, _) = at(p);
-            if let Some((s, e, word)) = word_at(&term, offset, col, row)
-                && looks_like_link(&word)
-            {
-                link_hover = Some((row, s, e));
-                if response.clicked_by(PointerButton::Primary) {
-                    out.link = Some(word);
-                }
-            }
-        }
         if let Some(p) = hover {
             let (col, row, side) = at(p);
             if response.triple_clicked() {
@@ -1192,8 +1532,26 @@ fn show_inner(
             }
         }
     }
+    // Resting on a web address: how to open it, and where it goes when the text does not say.
+    if !link_mod
+        && let Some(link) = pointer_link.as_ref().filter(|l| l.kind != LinkKind::Path)
+    {
+        let hint = if cfg!(target_os = "macos") {
+            crate::tr("⌘-click to open")
+        } else {
+            crate::tr("Ctrl-click to open")
+        };
+        let target = link.hidden().then(|| shorten(&link.target, 200));
+        response.clone().on_hover_ui_at_pointer(|ui| {
+            ui.set_max_width(420.0);
+            ui.label(hint);
+            if let Some(t) = target {
+                ui.label(egui::RichText::new(t).small().weak());
+            }
+        });
+    }
     if hover.is_some() {
-        ui.ctx().set_cursor_icon(if link_hover.is_some() {
+        ui.ctx().set_cursor_icon(if !link_hover.is_empty() {
             egui::CursorIcon::PointingHand
         } else if mouse_mode && !shift_held {
             egui::CursorIcon::Default
@@ -1439,12 +1797,12 @@ fn show_inner(
         paint_text(*row, *col, text, st, *width, st.fg);
         decorate(*row, *col, *width, st);
     }
-    if let Some((row, s, e)) = link_hover
-        && let Some(slot) = slot_of(row)
-    {
-        let r = cell_rect(s, slot, e - s);
-        let thickness = (1.0 / ppp).max(1.0);
-        painter.hline(r.x_range(), snap(r.bottom() - thickness * 1.5), Stroke::new(thickness, scheme.cursor));
+    for &(row, s, e) in &link_hover {
+        if let Some(slot) = slot_of(row) {
+            let r = cell_rect(s, slot, e - s);
+            let thickness = (1.0 / ppp).max(1.0);
+            painter.hline(r.x_range(), snap(r.bottom() - thickness * 1.5), Stroke::new(thickness, scheme.cursor));
+        }
     }
 
     // Cursor.
@@ -1565,7 +1923,20 @@ fn show_inner(
         return out;
     }
     let mut paste = false;
+    let menu_link = view.menu_link.clone();
+    let mut open_link = None;
     let menu = response.context_menu(|ui| {
+        if let Some(link) = &menu_link {
+            if ui.button(crate::tr("Open Link")).clicked() {
+                open_link = Some(link.target.clone());
+                ui.close();
+            }
+            if ui.button(crate::tr("Copy Link")).clicked() {
+                ui.ctx().copy_text(link.target.clone());
+                ui.close();
+            }
+            ui.separator();
+        }
         let term = shared.term.lock();
         let has_sel = term.selection.as_ref().is_some_and(|s| !s.is_empty());
         drop(term);
@@ -1597,6 +1968,12 @@ fn show_inner(
         }
     });
     view.menu_open = menu.is_some();
+    if menu.is_none() {
+        view.menu_link = None;
+    }
+    if open_link.is_some() {
+        out.link = open_link;
+    }
     if paste {
         view.request_paste(ui.ctx());
     }
@@ -1607,6 +1984,12 @@ fn on_terminal_layer(ui: &Ui, pos: Pos2) -> bool {
     ui.ctx()
         .layer_id_at(pos)
         .is_none_or(|layer| layer == ui.layer_id())
+}
+
+/// `text` as a paste into this terminal (bracketed when the program asked for that).
+pub fn paste_bytes(shared: &TermShared, text: &str) -> Vec<u8> {
+    let bracketed = shared.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
+    input::encode_paste(text, bracketed)
 }
 
 pub fn select_all(shared: &TermShared) {
@@ -1655,6 +2038,87 @@ mod tests {
         for w in ["hello", "1.5", "...", "/", "https://", "v0.1.5:", "--force", "a."] {
             assert!(!looks_like_link(w), "{w}");
         }
+    }
+
+    fn term_with(cols: usize, rows: usize, bytes: &[u8]) -> crate::core::SharedTerm {
+        let (shared, rx) = new_terminal(term_config(100, Default::default(), false), GridSize { cols, rows }, (&SCHEMES[0]).into());
+        Feeder::new(shared.clone(), rx).feed(bytes);
+        shared
+    }
+
+    fn link(shared: &crate::core::SharedTerm, col: usize, row: usize) -> Option<Link> {
+        let term = shared.term.lock();
+        link_at(&term, 0, col, row)
+    }
+
+    #[test]
+    fn a_web_address_is_cut_from_the_punctuation_around_it() {
+        let span = |s: &str| {
+            let chars: Vec<char> = s.chars().collect();
+            url_span(&chars).map(|(a, b)| chars[a..b].iter().collect::<String>())
+        };
+        assert_eq!(span("(https://x.com/a)."), Some("https://x.com/a".into()));
+        assert_eq!(span("<https://x.com/a?b=1&c=2>,"), Some("https://x.com/a?b=1&c=2".into()));
+        assert_eq!(span("[docs](https://x.com/d)"), Some("https://x.com/d".into()));
+        assert_eq!(span("https://en.wikipedia.org/wiki/Rust_(language)"), Some("https://en.wikipedia.org/wiki/Rust_(language)".into()));
+        assert_eq!(span("\"HTTP://Example.com/\"!"), Some("HTTP://Example.com/".into()));
+        assert_eq!(span("https://"), None);
+        assert_eq!(span("https://.../"), None);
+        assert_eq!(span("ftp://x.com"), None);
+    }
+
+    #[test]
+    fn links_under_the_pointer() {
+        // Claude Code prints a markdown link as its text and the address in brackets.
+        let t = term_with(40, 4, b"see (https://x.com/a). ok");
+        let l = link(&t, 8, 0).unwrap();
+        assert_eq!((l.target.as_str(), l.kind, l.cells.clone()), ("https://x.com/a", LinkKind::Web, vec![(0, 5, 20)]));
+        assert!(!l.hidden());
+        // Not on the address: the bracket, or the word after it.
+        assert_eq!(link(&t, 4, 0), None);
+        assert_eq!(link(&t, 24, 0), None);
+        // A path stays a path for the app to look up.
+        let t = term_with(40, 4, b"error at (src/app.rs:120), see");
+        let l = link(&t, 12, 0).unwrap();
+        assert_eq!((l.target.as_str(), l.kind), ("src/app.rs:120", LinkKind::Path));
+    }
+
+    #[test]
+    fn an_address_wrapped_by_the_terminal_is_one_link() {
+        let t = term_with(20, 4, b"https://example.com/abcdefgh");
+        for (col, row) in [(3, 0), (2, 1)] {
+            let l = link(&t, col, row).unwrap();
+            assert_eq!(l.target, "https://example.com/abcdefgh");
+            assert_eq!(l.cells, vec![(0, 0, 20), (1, 0, 8)]);
+            assert!(l.hidden());
+        }
+    }
+
+    #[test]
+    fn an_address_a_program_broke_at_the_edge_is_one_link() {
+        // Ink breaks a long word at its width and indents the rest (24 columns here).
+        let t = term_with(24, 4, b"> https://example.com/a1\r\n  b2/c3?d=4 next\r\n");
+        for (col, row) in [(5, 0), (4, 1)] {
+            let l = link(&t, col, row).unwrap();
+            assert_eq!(l.target, "https://example.com/a1b2/c3?d=4", "at {col},{row}");
+            assert_eq!(l.cells, vec![(0, 2, 24), (1, 2, 11)]);
+        }
+        // An address that ends at the edge by chance, followed by a word: not joined.
+        let t = term_with(24, 4, b"> https://example.com/a1\r\n  Next.\r\n");
+        assert_eq!(link(&t, 5, 0).unwrap().target, "https://example.com/a1");
+        assert_eq!(link(&t, 3, 1), None);
+        // Not at the edge: the next row is other text.
+        let t = term_with(40, 4, b"> see https://x.com/a\r\n  b2/c3\r\n");
+        assert_eq!(link(&t, 8, 0).unwrap().target, "https://x.com/a");
+    }
+
+    #[test]
+    fn an_osc8_hyperlink_opens_its_address() {
+        let t = term_with(40, 4, b"\x1b]8;;https://h.com/pr/12\x1b\\PR #12\x1b]8;;\x1b\\ merged");
+        let l = link(&t, 1, 0).unwrap();
+        assert_eq!((l.target.as_str(), l.kind, l.cells.clone()), ("https://h.com/pr/12", LinkKind::Hyperlink, vec![(0, 0, 6)]));
+        assert!(l.hidden());
+        assert_eq!(link(&t, 9, 0), None);
     }
 
     #[test]
@@ -1706,6 +2170,48 @@ mod tests {
         } else {
             assert_eq!(plain, b"\x1b[200~x\x1b[201~");
         }
+    }
+
+    /// The paste shortcut with only an image on the clipboard brings no paste event, only the
+    /// key's release: Ctrl+V for the app to give an agent (typed directly on Linux, where Ctrl+V
+    /// is the program's). After a paste of text nothing more is sent.
+    #[test]
+    fn a_paste_without_text_hands_over_ctrl_v() {
+        let ctx = egui::Context::default();
+        let (shared, rx) = new_terminal(term_config(100, Default::default(), false), GridSize { cols: 40, rows: 10 }, (&SCHEMES[0]).into());
+        drop(rx);
+        let style = TermStyle {
+            font_size: 13.0,
+            cell: vec2(8.0, 16.0),
+            scheme: &SCHEMES[0],
+            real_bold: false,
+            real_italic: false,
+            option_as_meta: false,
+            copy_on_select: false,
+            cursor_blink: false,
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 200.0));
+        let mut view = TermView::new(pane_widget_id(1));
+        let mut frame = |events: Vec<Event>| {
+            let raw = egui::RawInput { screen_rect: Some(rect), focused: true, events, ..Default::default() };
+            let mut resp = TermResponse::default();
+            let mut out = ctx.run_ui(raw, |ui| resp = show(ui, rect, &mut view, &shared, &style, true, true, true));
+            out.textures_delta.clear();
+            resp
+        };
+        let cmd = if cfg!(target_os = "macos") { egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND } else { egui::Modifiers::CTRL | egui::Modifiers::COMMAND };
+        let release = Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: cmd };
+        frame(vec![]);
+        frame(vec![]);
+        let r = frame(vec![release.clone()]);
+        if cfg!(target_os = "linux") {
+            assert_eq!((r.input, r.paste_without_text), (vec![0x16], None));
+        } else {
+            assert_eq!((r.input, r.paste_without_text), (vec![], Some(vec![0x16])));
+        }
+        let r = frame(vec![Event::Paste("x".into()), release]);
+        assert_eq!(r.paste_without_text, None);
+        assert!(!r.input.contains(&0x16) || cfg!(target_os = "linux"));
     }
 
     /// Keys go out as the program asked: in the kitty protocol a key carries the text it typed

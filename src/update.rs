@@ -988,26 +988,11 @@ fn remove_leftovers_beside(bundle: &Path, id: &str) {
     }
 }
 
-/// Opens a web page in the default browser.
+/// Opens a web page (https only) in the default browser.
 pub fn open_page(url: &str) {
-    if !url.starts_with("https://") {
-        return;
+    if url.starts_with("https://") {
+        crate::platform::open_url(url);
     }
-    let mut cmd = if cfg!(target_os = "macos") {
-        command("/usr/bin/open")
-    } else if cfg!(windows) {
-        let mut c = command("rundll32");
-        c.arg("url.dll,FileProtocolHandler");
-        c
-    } else {
-        command("xdg-open")
-    };
-    let _ = cmd
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
 }
 
 #[cfg(test)]

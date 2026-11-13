@@ -228,6 +228,14 @@ const ID: &[(&str, &str)] = &[
     ),
     ("[The shell could not start: {}]", "[Shell tidak bisa dijalankan: {}]"),
     // Terminal context menu (tc-term); "Copy", "Paste", "Select All", "Clear Scrollback" are above.
+    ("Open Link", "Buka Link"),
+    ("Open {} in the browser", "Buka {} di browser"),
+    ("Local servers", "Server lokal"),
+    ("Drop to insert the path", "Lepas untuk menyisipkan path"),
+    ("Drop to add as a project", "Lepas untuk menambah sebagai project"),
+    ("Copy Link", "Salin Link"),
+    ("⌘-click to open", "⌘-klik untuk membuka"),
+    ("Ctrl-click to open", "Ctrl-klik untuk membuka"),
     // Editor
     ("Not UTF-8", "Bukan UTF-8"),
     ("Open File…", "Buka File…"),
