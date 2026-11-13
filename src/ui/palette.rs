@@ -91,7 +91,7 @@ pub(crate) fn score(query: &str, text: &str) -> Option<i32> {
 
 /// The characters of `text` a query matched (the first place each letter fits), for
 /// highlighting.
-fn matched(query: &str, text: &str) -> Vec<bool> {
+pub(crate) fn matched(query: &str, text: &str) -> Vec<bool> {
     let lower: Vec<char> = text.to_lowercase().chars().collect();
     let mut out = vec![false; lower.len()];
     let mut from = 0;

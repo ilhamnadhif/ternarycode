@@ -26,6 +26,10 @@ use crate::{paths, platform, ui};
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
+/// An agent this long in the foreground without a hook is not connected (a launch's first hook
+/// arrives well before).
+pub const UNCONNECTED_AFTER: Duration = Duration::from_secs(5);
+
 pub fn mark_process_start() {
     let _ = PROCESS_START.set(Instant::now());
 }
@@ -49,6 +53,8 @@ pub enum AppMsg {
     Lsp(crate::lsp::ServerKey, u64, tc_lsp::client::Incoming),
     /// The user's PATH (read from their login shell), for finding language servers.
     LspPath(std::ffi::OsString),
+    /// An agent's earlier sessions in a project folder (Run Agent).
+    Sessions(AgentKind, PathBuf, Vec<tc_agent::sessions::Session>),
 }
 
 /// A line of a confirmation's list: a program that would be stopped, or a file whose changes
@@ -63,9 +69,9 @@ pub enum Dialog {
     /// The folder typed, a name, the preset to run once it is added (0 = none), and what was
     /// found at the folder (the path checked, and a line about it).
     AddProject { path: String, name: String, then: usize, found: Option<(String, Option<String>)> },
-    /// The agent picker: the preset chosen, whether to continue its last session, and where
-    /// it runs (0 new tab, 1 split right, 2 split down).
-    RunAgent { selected: usize, resume: bool, place: usize },
+    /// The agent picker: the preset chosen, the session row chosen (0 a new session, then the
+    /// earlier ones, or its last), and where it runs (0 new tab, 1 split right, 2 split down).
+    RunAgent { selected: usize, session: usize, place: usize },
     /// Closing a file with unsaved edits: its index in the editor, its name.
     ConfirmCloseFile(usize, String),
     /// Taking an agent's installed hooks out of its settings.
@@ -222,6 +228,11 @@ pub struct App {
     /// and where it was drawn this frame (a click outside it closes it).
     pub inbox_scroll: usize,
     pub inbox_rect: Option<egui::Rect>,
+    /// What the sidebar's project search holds, and the row of its results the keyboard is on.
+    pub project_filter: String,
+    pub project_filter_sel: usize,
+    /// Each agent's earlier sessions in a project folder, for Run Agent (`None` while listed).
+    pub session_lists: HashMap<(AgentKind, PathBuf), Option<Vec<tc_agent::sessions::Session>>>,
     /// What the Settings search holds.
     pub settings_search: String,
     /// The Problems panel under the editor, and whether it lists the whole project's.
@@ -423,6 +434,9 @@ impl App {
             attention_sel: 0,
             inbox_scroll: 0,
             inbox_rect: None,
+            project_filter: String::new(),
+            project_filter_sel: 0,
+            session_lists: HashMap::new(),
             settings_search: String::new(),
             problems_open: false,
             problems_project: false,
@@ -939,6 +953,90 @@ impl App {
         }
     }
 
+    /// The agent's earlier sessions in `path`: listed in the background the first time they are
+    /// asked for (until the Run Agent dialog opens again). `None` while they are being listed.
+    pub fn sessions(&mut self, agent: AgentKind, path: &Path) -> Option<&[tc_agent::sessions::Session]> {
+        let key = (agent, path.to_path_buf());
+        if !self.session_lists.contains_key(&key) {
+            self.session_lists.insert(key.clone(), None);
+            let (tx, ctx) = (self.app_tx.clone(), self.ctx.clone());
+            // Development: the agents' folders under another home (end-to-end tests).
+            let roots = match std::env::var_os("TERNARYCODE_AGENT_HOME").filter(|_| cfg!(debug_assertions)) {
+                Some(home) => tc_agent::sessions::Roots::under(Path::new(&home)),
+                None => tc_agent::sessions::Roots::from_env(&paths::home_dir()),
+            };
+            self.rt.spawn_blocking(move || {
+                let list = tc_agent::sessions::list(agent, &key.1, &roots, 20);
+                let _ = tx.send(AppMsg::Sessions(agent, key.1, list));
+                ctx.request_repaint();
+            });
+        }
+        self.session_lists.get(&(agent, path.to_path_buf())).and_then(|x| x.as_deref())
+    }
+
+    /// The agent running in `pane` without TernaryCode's hooks, where none are on their way:
+    /// typed by hand while nothing is installed for it. Its status can only read "Active", so
+    /// it never says when it needs the user. Counted after a few seconds in the foreground (a
+    /// hook may still be coming), and not for agents whose hooks are turned off.
+    pub fn unconnected(&self, pane: &Pane) -> Option<AgentKind> {
+        let t = &pane.tracker;
+        let tc_core::status::Foreground::Program { agent: Some(agent), .. } = &t.fg else {
+            return None;
+        };
+        let agent = *agent;
+        if t.hooks_active || t.fg_for(Instant::now()) < UNCONNECTED_AFTER {
+            return None;
+        }
+        if matches!(agent, AgentKind::Custom | AgentKind::Antigravity) {
+            return None;
+        }
+        // Installed hooks, or flags a preset added for this run: they are expected (an agent
+        // started before Install needs a restart; Install's message says so).
+        let expected = match self.settings.integration(agent) {
+            Integration::Off | Integration::Installed => true,
+            Integration::PerLaunch => pane.preset.is_some() && matches!(agent, AgentKind::Claude | AgentKind::Codex),
+        };
+        (!expected).then_some(agent)
+    }
+
+    /// Every pane with an agent that is not connected, in pane order.
+    pub fn unconnected_agents(&self) -> Vec<(PaneId, AgentKind)> {
+        let mut v: Vec<(PaneId, AgentKind)> = self.panes.values().filter_map(|p| self.unconnected(p).map(|a| (p.id, a))).collect();
+        v.sort_by_key(|x| x.0);
+        v
+    }
+
+    /// What "not connected" means, naming the panes.
+    pub fn unconnected_tip(&self, agents: &[(PaneId, AgentKind)]) -> String {
+        let names: Vec<String> = agents
+            .iter()
+            .filter_map(|(id, a)| {
+                let pane = self.panes.get(id)?;
+                let project = self.project(pane.project).map(|x| x.name.clone()).unwrap_or_default();
+                Some(format!("{project} · {}", a.label()))
+            })
+            .collect();
+        tf(
+            "Not connected: {}.\nTernaryCode can't tell when they need you: they were started without its hooks. Connect installs the hooks (you see the change first); then restart those agents.",
+            &[&names.join(", ")],
+        )
+    }
+
+    /// Connect for agents that are not: the Install dialog when they are all one agent, else
+    /// the integrations page.
+    pub fn connect_agents(&mut self, agents: &[(PaneId, AgentKind)]) {
+        let mut kinds: Vec<AgentKind> = Vec::new();
+        for (_, a) in agents {
+            if !kinds.contains(a) {
+                kinds.push(*a);
+            }
+        }
+        match kinds.as_slice() {
+            [one] => self.actions.push(Action::PlanInstall(*one)),
+            _ => self.actions.push(Action::Integrations),
+        }
+    }
+
     pub fn attention_queue(&self) -> Vec<Entry> {
         let mut q: Vec<Entry> = self
             .panes
@@ -1064,6 +1162,9 @@ impl App {
                 }
                 AppMsg::Lsp(key, generation, msg) => self.lsp_message(key, generation, msg),
                 AppMsg::LspPath(path) => self.lsp_path_found(ctx, path),
+                AppMsg::Sessions(agent, path, list) => {
+                    self.session_lists.insert((agent, path), Some(list));
+                }
                 AppMsg::Review(msg) => self.on_review_msg(msg),
                 AppMsg::Snapshot(pane, agent, result) => {
                     if let Some(p) = self.panes.get_mut(&pane) {
@@ -1593,12 +1694,20 @@ impl App {
     /// Starts a preset in a new pane: in a new tab, or split right or down (`place` 0, 1, 2;
     /// none: beside the pane in view, or a new tab when its tab is crowded). `resume` runs its
     /// command that continues the last session.
-    fn run_preset(&mut self, ctx: &egui::Context, preset_id: &str, resume: bool, place: Option<usize>) {
+    fn run_preset(&mut self, ctx: &egui::Context, preset_id: &str, launch: crate::actions::Launch, place: Option<usize>) {
         let Some(preset) = self.presets().into_iter().find(|p| p.id == preset_id) else {
             return;
         };
         if self.active.is_none() {
             self.toast(t("Add a project first.").into());
+            return;
+        }
+        // A session already open in a pane: go there (two agents on one session would write
+        // over each other).
+        if let crate::actions::Launch::Session(id) = &launch
+            && let Some(pane) = self.panes.values().find(|p| p.agent_session.as_deref() == Some(id.as_str())).map(|p| p.id)
+        {
+            self.focus_pane(pane);
             return;
         }
         let crowded = self
@@ -1614,10 +1723,14 @@ impl App {
             None => self.split(ctx, SplitDir::Horizontal),
         };
         let Some(pane) = pane else { return };
-        let base = match (&preset.resume, resume) {
-            (Some(r), true) if !r.trim().is_empty() => r.clone(),
-            _ => preset.command.clone(),
-        };
+        let base = match &launch {
+            crate::actions::Launch::Last => preset.resume.clone().filter(|r| !r.trim().is_empty()),
+            crate::actions::Launch::Session(id) => {
+                preset.agent.and_then(|a| tc_agent::sessions::resume_command(a, &preset.command, id))
+            }
+            crate::actions::Launch::New => None,
+        }
+        .unwrap_or_else(|| preset.command.clone());
         if place.is_some() {
             self.last_agent_place = place.unwrap_or(0);
         }
@@ -1642,7 +1755,27 @@ impl App {
             .filter(|_| self.per_launch)
             .map(|a| self.settings.integration(a))
             .unwrap_or(Integration::Off);
-        integrate::launch_command(command, preset.agent, integration, self.codex_hooks)
+        // Without permission prompts, when that was chosen for this agent in Run Agent.
+        let mut command = command.trim().to_string();
+        if let Some(flag) = preset.agent.filter(|a| self.skips_permissions(*a)).and_then(tc_agent::sessions::skip_permissions_flag)
+            && !command.split_whitespace().any(|w| w == flag)
+        {
+            command = format!("{command} {flag}");
+        }
+        integrate::launch_command(&command, preset.agent, integration, self.codex_hooks)
+    }
+
+    /// Run Agent starts this agent without its permission prompts.
+    pub fn skips_permissions(&self, agent: AgentKind) -> bool {
+        self.settings.skip_permissions.iter().any(|s| s == agent.slug())
+    }
+
+    pub fn set_skips_permissions(&mut self, agent: AgentKind, on: bool) {
+        self.settings.skip_permissions.retain(|s| s != agent.slug());
+        if on {
+            self.settings.skip_permissions.push(agent.slug().to_string());
+        }
+        self.settings_changed();
     }
 
     fn resume(&mut self, ctx: &egui::Context, pane: PaneId) {
@@ -1704,12 +1837,9 @@ impl App {
     /// after), without going to them.
     fn mark_seen(&mut self, panes: &[PaneId]) {
         let now = Instant::now();
-        let current = self.current_pane().filter(|_| self.view == View::Focus);
         for id in panes {
             if let Some(p) = self.panes.get_mut(id) {
-                let focused = Some(*id) == current;
-                p.tracker.set_focused(true, now);
-                p.tracker.set_focused(focused, now);
+                p.tracker.mark_seen(now);
                 self.notified.insert(*id, p.tracker.ask);
             }
         }
@@ -2092,8 +2222,8 @@ impl App {
                     self.mark_dirty();
                 }
             }
-            Action::RunPreset(id) => self.run_preset(ctx, &id, false, None),
-            Action::RunAgent(id, resume, place) => self.run_preset(ctx, &id, resume, Some(place)),
+            Action::RunPreset(id) => self.run_preset(ctx, &id, crate::actions::Launch::New, None),
+            Action::RunAgent(id, launch, place) => self.run_preset(ctx, &id, launch, Some(place)),
             Action::Resume(id) => self.resume(ctx, id),
             Action::DismissResume(id) => {
                 if let Some(p) = self.panes.get_mut(&id) {
@@ -2145,7 +2275,9 @@ impl App {
                 } else {
                     let preferred = self.active_project().and_then(|p| p.preset.clone());
                     let selected = preferred.and_then(|id| self.presets().iter().position(|p| p.id == id)).unwrap_or(0);
-                    self.dialog = Some(Dialog::RunAgent { selected, resume: false, place: self.last_agent_place });
+                    // Listed again each time it opens (sessions change while agents run).
+                    self.session_lists.clear();
+                    self.dialog = Some(Dialog::RunAgent { selected, session: 0, place: self.last_agent_place });
                 }
             }
             Action::SetView(v) => {
@@ -2197,11 +2329,23 @@ impl App {
                                 &Self::install_record_path(plan.agent),
                                 &record,
                             );
+                            // The agent reads its hooks when it starts: the ones running now
+                            // connect after a restart.
+                            let running = self.unconnected_agents().iter().filter(|(_, a)| *a == plan.agent).count();
                             self.settings
                                 .integrations
                                 .insert(plan.agent.slug().into(), Integration::Installed);
                             self.settings_changed();
                             self.toast_ok(match saved {
+                                Ok(()) if running > 0 => format!(
+                                    "{} {}",
+                                    tf("Hooks installed for {}.", &[plan.agent.label()]),
+                                    crate::i18n::count(
+                                        running,
+                                        t("Restart the one already running to connect it."),
+                                        t("Restart the {} already running to connect them."),
+                                    )
+                                ),
                                 Ok(()) => tf("Hooks installed for {}.", &[plan.agent.label()]),
                                 // Without the record, Uninstall cannot put the file back.
                                 Err(e) => tf(

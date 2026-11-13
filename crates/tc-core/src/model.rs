@@ -225,6 +225,9 @@ pub struct Settings {
     /// User presets and edits of the built-in ones, by id.
     pub presets: Vec<Preset>,
     pub integrations: BTreeMap<String, Integration>,
+    /// Agents (by slug) Run Agent starts without their permission prompts (Claude Code's
+    /// `--dangerously-skip-permissions`, …), as last chosen there.
+    pub skip_permissions: Vec<String>,
     /// Shell integration (OSC 133) injected into zsh, bash and fish.
     pub shell_integration: bool,
     /// Look for a new version on GitHub at launch and every few hours.
@@ -286,6 +289,7 @@ impl Default for Settings {
             notifications: Notifications::default(),
             presets: Vec::new(),
             integrations: BTreeMap::new(),
+            skip_permissions: Vec::new(),
             shell_integration: true,
             check_updates: true,
             skipped_version: None,

@@ -44,10 +44,33 @@ mkdir -p "$P1/src" "$P2" "$R"
 printf 'fn main() {\n    println!("v1");\n}\n' > "$P1/src/main.rs"; printf 'notes v1\n' > "$P1/notes.txt"
 (cd "$R" && git init -q -b main && printf 'keep\n' > keep.txt && printf 'line 1\nline 2\nline 3\n' > edit.txt \
     && printf 'bye\n' > gone.txt && git add -A && git -c user.name=t -c user.email=t@t commit -qm init)
+# The agents' own folders (their earlier sessions) live here, not in the user's home: one Claude
+# Code session of alpha.
+export TERNARYCODE_AGENT_HOME="$WORK/agent-home"
+CLAUDE_SESSIONS="$TERNARYCODE_AGENT_HOME/.claude/projects/$(cd "$P1" && pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
+mkdir -p "$CLAUDE_SESSIONS"
+printf '%s\n' '{"type":"user","message":{"content":"fix the checkout"},"gitBranch":"main"}' '{"type":"ai-title","aiTitle":"Checkout bug"}' \
+    > "$CLAUDE_SESSIONS/11111111-1111-1111-1111-111111111111.jsonl"
+# A program the panes take for Claude Code by its name (it only sleeps), with no hooks.
+mkdir -p "$WORK/bin"; ln -s /bin/sleep "$WORK/bin/claude"
 
 run smoke 40 "sleep 1200;; action add-project $P1;; sleep 1500;; keys echo hello-tc\\r;; wait-screen hello-tc;; wait-status idle;; expect-project alpha;; hook-latency claude PermissionRequest needs-input;; hook-latency claude Stop idle|done;; quit"
 
-run jump 40 "sleep 1000;; action add-project $P2;; sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude Notification permission_prompt;; sleep 400;; wait-queue 1;; action next-attention;; sleep 400;; expect-project beta;; wait-queue 0;; action back-attention;; sleep 400;; expect-project alpha;; action select 1;; sleep 400;; expect-project beta;; quit"
+run jump 40 "sleep 1000;; action add-project $P2;; sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude Notification permission_prompt;; sleep 400;; wait-queue 1;; action next-attention;; sleep 400;; expect-project beta;; wait-queue 1;; key enter;; sleep 400;; wait-queue 0;; action back-attention;; sleep 400;; expect-project alpha;; action select 1;; sleep 400;; expect-project beta;; quit"
+
+# A question asked in the pane being looked at still waits for the user until it is answered.
+run focused-question 40 "sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude PermissionRequest;; sleep 400;; wait-queue 1;; expect-shown attention-summary;; key enter;; sleep 400;; wait-queue 0;; quit"
+
+# Claude Code typed by hand with no hooks installed: after a few seconds the status bar (and a
+# Grid tile say it is not connected.
+run unconnected 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WORK/bin/claude 60\\r;; sleep 7000;; expect-shown unconnected;; shot e2e-unconnected;; key ctrl+c;; sleep 800;; expect-hidden unconnected;; quit"
+
+# Run Agent lists the project's earlier Claude Code sessions.
+run run-agent-sessions 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action pick;; sleep 1000;; expect-dialog open;; expect-shown session:0;; expect-shown session:1;; expect-hidden session:2;; key down;; sleep 300;; shot e2e-run-agent-sessions;; key esc;; sleep 300;; expect-dialog closed;; quit"
+
+# The sidebar's project search: it narrows the list, Enter opens the chosen project and empties
+# it, ↓ moves the choice, Esc empties it.
+run project-search 40 "sleep 1000;; action add-project $P1;; sleep 1000;; action add-project $P2;; sleep 1200;; expect-project beta;; click project-filter;; sleep 300;; keys alp;; sleep 400;; expect-shown project:alpha;; expect-hidden project:beta;; shot e2e-project-search;; key enter;; sleep 400;; expect-project alpha;; expect-shown project:beta;; click project-filter;; sleep 300;; key down;; key enter;; sleep 400;; expect-project beta;; click project-filter;; sleep 300;; keys zzz;; sleep 400;; expect-hidden project:alpha;; expect-hidden project:beta;; key esc;; sleep 400;; expect-shown project:alpha;; expect-shown project:beta;; quit"
 
 run foreground 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 1000;; focus-pane 0;; sleep 500;; keys sleep 30\\r;; wait-status running;; key ctrl+c;; sleep 500;; wait-status idle;; quit"
 

@@ -276,7 +276,7 @@ impl App {
                         if *then > 0
                             && let Some(preset) = presets.get(*then - 1)
                         {
-                            self.actions.push(Action::RunAgent(preset.id.clone(), false, 1));
+                            self.actions.push(Action::RunAgent(preset.id.clone(), crate::actions::Launch::New, 1));
                         }
                         keep = false;
                     }
@@ -305,8 +305,8 @@ impl App {
                         keep = false;
                     }
                 }
-                Dialog::RunAgent { selected, resume, place } => {
-                    keep = self.run_agent_dialog(ui, selected, resume, place, enter);
+                Dialog::RunAgent { selected, session, place } => {
+                    keep = self.run_agent_dialog(ui, selected, session, place, enter);
                 }
                 Dialog::ConfirmCloseFile(i, name) => {
                     ui.set_width(460.0);
@@ -692,31 +692,78 @@ fn install_preview(ui: &mut Ui, path: &std::path::Path, diff: &str) {
 impl App {
     /// The Run Agent dialog: which agent (with how it tells TernaryCode that it needs you),
     /// whether to continue its last session, and where it runs. Returns whether it stays open.
-    fn run_agent_dialog(&mut self, ui: &mut Ui, selected: &mut usize, resume: &mut bool, place: &mut usize, enter: bool) -> bool {
+    fn run_agent_dialog(&mut self, ui: &mut Ui, selected: &mut usize, session: &mut usize, place: &mut usize, enter: bool) -> bool {
+        use crate::actions::Launch;
+        use tc_core::agent::AgentKind;
         let p = style::pal(ui);
         let presets = self.presets();
-        let project = self.active_project().map(|x| (x.name.clone(), crate::paths::contract_tilde(&x.path))).unwrap_or_default();
+        let project = self.active_project().map(|x| (x.name.clone(), crate::paths::contract_tilde(&x.path), x.path.clone()));
         ui.set_width(560.0);
         let mut keep = true;
-        if header(ui, icons::PLAY, p.accent, t("Run an agent"), Some(&tf("in {} · {}", &[&project.0, &project.1]))) {
+        if header(
+            ui,
+            icons::PLAY,
+            p.accent,
+            t("Run an agent"),
+            Some(&project.as_ref().map(|x| tf("in {} · {}", &[&x.0, &x.1])).unwrap_or_default()),
+        ) {
             keep = false;
         }
-        // Digits choose.
+        // Digits choose the agent.
         let n = presets.len();
+        let before = *selected;
         ui.input(|i| {
             for (k, d) in [(Key::Num1, 0), (Key::Num2, 1), (Key::Num3, 2), (Key::Num4, 3), (Key::Num5, 4), (Key::Num6, 5), (Key::Num7, 6), (Key::Num8, 7), (Key::Num9, 8)] {
                 if d < n && i.key_pressed(k) {
                     *selected = d;
                 }
             }
-            if i.key_pressed(Key::ArrowDown) && n > 0 {
-                *selected = (*selected + 1) % n;
-            }
-            if i.key_pressed(Key::ArrowUp) && n > 0 {
-                *selected = (*selected + n - 1) % n;
-            }
         });
         *selected = (*selected).min(n.saturating_sub(1));
+        if *selected != before {
+            *session = 0;
+        }
+
+        // The chosen agent's sessions: its earlier ones in this project when they can be listed,
+        // else its last one when it has a command for that.
+        enum Rows {
+            Listing,
+            Sessions(Vec<tc_agent::sessions::Session>),
+            Last(String),
+            Nothing,
+        }
+        let chosen = presets.get(*selected).cloned();
+        let agent = chosen.as_ref().and_then(|x| x.agent);
+        let resume_cmd = chosen.as_ref().and_then(|x| x.resume.clone()).filter(|r| !r.trim().is_empty());
+        let rows = match (agent, project.as_ref()) {
+            (Some(a), Some(x)) if tc_agent::sessions::listable(a) => match self.sessions(a, &x.2) {
+                None => Rows::Listing,
+                Some(list) => Rows::Sessions(list.to_vec()),
+            },
+            _ => match resume_cmd {
+                Some(c) => Rows::Last(c),
+                None => Rows::Nothing,
+            },
+        };
+        let count = match &rows {
+            Rows::Sessions(v) => v.len(),
+            Rows::Last(_) => 1,
+            _ => 0,
+        };
+        // ↑ ↓ choose the session.
+        let mut moved = false;
+        ui.input(|i| {
+            if i.key_pressed(Key::ArrowDown) {
+                *session = (*session + 1) % (count + 1);
+                moved = true;
+            }
+            if i.key_pressed(Key::ArrowUp) {
+                *session = (*session + count) % (count + 1);
+                moved = true;
+            }
+        });
+        *session = (*session).min(count);
+
         let mut run = enter;
         body(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -736,10 +783,10 @@ impl App {
                 let tile = egui::Rect::from_center_size(egui::pos2(rect.left() + 12.0 + 10.0 + 12.0 + 15.0, cy), egui::vec2(30.0, 30.0));
                 painter.rect_filled(tile, CornerRadius::same(8), p.subtle);
                 let mark = match preset.agent {
-                    Some(tc_core::agent::AgentKind::Claude) => "CC".to_string(),
-                    Some(tc_core::agent::AgentKind::Codex) => "Cx".to_string(),
-                    Some(tc_core::agent::AgentKind::Gemini) => "Gm".to_string(),
-                    Some(tc_core::agent::AgentKind::OpenCode) => "OC".to_string(),
+                    Some(AgentKind::Claude) => "CC".to_string(),
+                    Some(AgentKind::Codex) => "Cx".to_string(),
+                    Some(AgentKind::Gemini) => "Gm".to_string(),
+                    Some(AgentKind::OpenCode) => "OC".to_string(),
                     _ => initials(&preset.name),
                 };
                 painter.text(tile.center(), egui::Align2::CENTER_CENTER, mark, style::semibold(11.5), p.text_muted);
@@ -747,14 +794,14 @@ impl App {
                 painter.text(egui::pos2(x, cy - 8.0), egui::Align2::LEFT_CENTER, &preset.name, style::medium(13.5), p.text);
                 painter.text(egui::pos2(x, cy + 9.0), egui::Align2::LEFT_CENTER, &preset.command, egui::FontId::monospace(11.0), p.text_faint);
                 // How its status reaches TernaryCode.
-                let agent = preset.agent.unwrap_or(tc_core::agent::AgentKind::Custom);
+                let agent = preset.agent.unwrap_or(AgentKind::Custom);
                 let note = self.hooks_note(agent);
                 let hooked = self.installed(agent).is_some()
-                    || (matches!(agent, tc_core::agent::AgentKind::Claude | tc_core::agent::AgentKind::Codex)
+                    || (matches!(agent, AgentKind::Claude | AgentKind::Codex)
                         && self.settings.integrations.get(agent.slug()).copied().unwrap_or_default() == tc_core::model::Integration::PerLaunch);
                 let (icon, text, fg, bg) = if hooked {
                     (icons::PLUGS_CONNECTED, tf("Hooks · {}", &[note.trim_start_matches("hooks · ")]), p.ok, style::tint(p.ok, ui.visuals().dark_mode))
-                } else if agent == tc_core::agent::AgentKind::Custom {
+                } else if agent == AgentKind::Custom {
                     (icons::CIRCLE_HALF, t("Custom").to_string(), p.text_muted, p.subtle)
                 } else {
                     (icons::CIRCLE_HALF, t("No hooks · shows “Active”").to_string(), p.text_muted, p.subtle)
@@ -762,8 +809,9 @@ impl App {
                 let w = kit::pill_width(painter, Some(icon), &text);
                 kit::paint_pill(painter, egui::pos2(rect.right() - 12.0 - w, cy), Some(icon), &text, fg, bg);
                 let resp = if hooked { resp } else { resp.on_hover_text(t("Without hooks the status comes from the terminal: Settings → Agents")) };
-                if resp.clicked() {
+                if resp.clicked() && *selected != i {
                     *selected = i;
+                    *session = 0;
                 }
                 if resp.double_clicked() {
                     run = true;
@@ -773,22 +821,124 @@ impl App {
             ui.add_space(10.0);
             ui.painter().hline(rect.x_range(), ui.cursor().top(), Stroke::new(1.0, p.border));
             ui.add_space(12.0);
-            let chosen = presets.get(*selected);
-            let resume_cmd = chosen.and_then(|x| x.resume.clone()).filter(|r| !r.trim().is_empty());
+
+            // The session: a new one, or one to continue.
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.label(RichText::new(t("Session")).font(style::medium(13.0)).color(p.text));
+                if let Rows::Sessions(v) = &rows
+                    && !v.is_empty()
+                {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(crate::i18n::count(v.len(), t("1 earlier"), t("{} earlier"))).size(style::SMALL).color(p.text_faint));
+                }
+            });
+            ui.add_space(8.0);
+            let command = chosen.as_ref().map(|x| x.command.clone()).unwrap_or_default();
+            egui::Frame::NONE
+                .fill(p.canvas)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(egui::Margin::same(4))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical().id_salt("run-agent-sessions").max_height(206.0).auto_shrink([false, true]).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        // One row: its icon, two lines, and a pill at the right.
+                        let mut row = |ui: &mut Ui, index: usize, icon: &str, title: &str, sub: &str, mono: bool, pill: Option<String>| {
+                            let h = if sub.is_empty() { 34.0 } else { 44.0 };
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+                            #[cfg(debug_assertions)]
+                            crate::devtest::record(format!("session:{index}"), rect);
+                            let on = index == *session;
+                            if on && moved {
+                                ui.scroll_to_rect(rect, None);
+                            }
+                            let painter = ui.painter_at(rect);
+                            if on {
+                                painter.rect_filled(rect, CornerRadius::same(6), p.accent_soft);
+                            } else if resp.hovered() {
+                                painter.rect_filled(rect, CornerRadius::same(6), p.faint_row());
+                            }
+                            let cy = rect.center().y;
+                            painter.text(egui::pos2(rect.left() + 10.0 + 7.0, cy), egui::Align2::CENTER_CENTER, icon, style::icon_font(14.0), if on { p.accent_text } else { p.text_muted });
+                            let x = rect.left() + 10.0 + 14.0 + 10.0;
+                            let mut right = rect.right() - 10.0;
+                            if let Some(text) = &pill {
+                                let w = kit::pill_width(&painter, Some(icons::TERMINAL), text);
+                                kit::paint_pill(&painter, egui::pos2(right - w, cy), Some(icons::TERMINAL), text, p.accent_text, style::tint(p.accent, ui.visuals().dark_mode));
+                                right -= w + 8.0;
+                            }
+                            let line1 = if sub.is_empty() { cy } else { cy - 8.0 };
+                            let mut job = egui::text::LayoutJob::simple_singleline(title.to_string(), style::medium(13.0), p.text);
+                            job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(20.0));
+                            let g = painter.layout_job(job);
+                            painter.galley(egui::pos2(x, line1 - g.size().y / 2.0), g, p.text);
+                            if !sub.is_empty() {
+                                let font = if mono { egui::FontId::monospace(11.0) } else { egui::FontId::proportional(style::SMALL) };
+                                let mut job = egui::text::LayoutJob::simple_singleline(sub.to_string(), font, p.text_faint);
+                                job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(20.0));
+                                let g = painter.layout_job(job);
+                                painter.galley(egui::pos2(x, cy + 9.0 - g.size().y / 2.0), g, p.text_faint);
+                            }
+                            if resp.clicked() {
+                                *session = index;
+                            }
+                            if resp.double_clicked() {
+                                run = true;
+                            }
+                        };
+                        row(ui, 0, icons::PLUS, t("New session"), &command, true, None);
+                        let note = |ui: &mut Ui, text: &str| {
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
+                            ui.painter().text(egui::pos2(r.left() + 10.0 + 14.0 + 10.0, r.center().y), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(style::SMALL), p.text_faint);
+                        };
+                        match &rows {
+                            Rows::Listing => note(ui, t("Looking for sessions…")),
+                            Rows::Sessions(v) if v.is_empty() => note(ui, t("No earlier sessions in this project.")),
+                            Rows::Sessions(v) => {
+                                for (k, s) in v.iter().enumerate() {
+                                    let mut sub = vec![tf("{} ago", &[&ago(s.updated)])];
+                                    if let Some(b) = &s.branch {
+                                        sub.push(b.clone());
+                                    }
+                                    sub.push(s.id.chars().take(8).collect());
+                                    // Already open in a pane: choosing it goes there.
+                                    let open = self.panes.values().find(|x| x.agent_session.as_deref() == Some(s.id.as_str())).map(|x| tf("Open in {}", &[&x.label()]));
+                                    row(ui, k + 1, icons::CLOCK_COUNTER_CLOCKWISE, &s.title, &sub.join(" · "), false, open);
+                                }
+                            }
+                            Rows::Last(cmd) => row(ui, 1, icons::CLOCK_COUNTER_CLOCKWISE, t("Last session"), cmd, true, None),
+                            Rows::Nothing => note(ui, t("This agent has no command that resumes a session.")),
+                        }
+                    });
+                });
+            ui.add_space(12.0);
+            // Without permission prompts (remembered for the agent; what `yo`-style aliases do).
+            let flag = agent.and_then(tc_agent::sessions::skip_permissions_flag);
+            let mut skip = agent.is_some_and(|a| self.skips_permissions(a)) && flag.is_some();
             ui.horizontal(|ui| {
                 ui.add_space(4.0);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(RichText::new(t("Continue the last session")).font(style::medium(13.0)).color(p.text));
-                    let note = match &resume_cmd {
-                        Some(cmd) => tf("Runs {}", &[cmd]),
-                        None => t("This agent has no command that resumes a session.").to_string(),
+                    ui.label(RichText::new(t("Skip permission prompts")).font(style::medium(13.0)).color(p.text));
+                    let (note, c) = match flag {
+                        Some(f) if skip => (tf("Adds {}: the agent acts without asking first.", &[f]), p.warn),
+                        Some(f) => (tf("Adds {}: the agent acts without asking first.", &[f]), p.text_faint),
+                        None => (t("This agent has no option for this.").to_string(), p.text_faint),
                     };
-                    ui.label(RichText::new(note).size(style::SMALL).color(p.text_faint));
+                    ui.label(RichText::new(note).size(style::SMALL).color(c));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(4.0);
-                    ui.add_enabled_ui(resume_cmd.is_some(), |ui| kit::switch(ui, resume));
+                    let r = ui.add_enabled_ui(flag.is_some(), |ui| kit::switch(ui, &mut skip)).inner;
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record("skip-permissions", r.rect);
+                    if r.changed()
+                        && let Some(a) = agent
+                    {
+                        self.set_skips_permissions(a, skip);
+                    }
                 });
             });
             ui.add_space(10.0);
@@ -803,14 +953,12 @@ impl App {
                     }
                 });
             });
-            if resume_cmd.is_none() {
-                *resume = false;
-            }
         });
-        let name = presets.get(*selected).map(|x| x.name.clone()).unwrap_or_default();
-        let hint = tf("1–{} choose · ↵ run · Esc cancel", &[&n.min(9).to_string()]);
+        let name = chosen.as_ref().map(|x| x.name.clone()).unwrap_or_default();
+        let hint = tf("1–{} agent · ↑↓ session · ↵ run · Esc cancel", &[&n.min(9).to_string()]);
+        let label = if *session > 0 { tf("Resume {}", &[&name]) } else { tf("Run {}", &[&name]) };
         footer_with(ui, Some(&hint), |ui| {
-            let r = kit::button_keys(ui, kit::Kind::Primary, None, &tf("Run {}", &[&name]), Some("↵"), false);
+            let r = kit::button_keys(ui, kit::Kind::Primary, None, &label, Some("↵"), false);
             #[cfg(debug_assertions)]
             crate::devtest::record("dialog-ok", r.rect);
             run |= r.clicked();
@@ -818,8 +966,14 @@ impl App {
                 keep = false;
             }
         });
-        if run && let Some(preset) = presets.get(*selected) {
-            self.actions.push(Action::RunAgent(preset.id.clone(), *resume, *place));
+        if run && let Some(preset) = &chosen {
+            let launch = match (&rows, *session) {
+                (_, 0) => Launch::New,
+                (Rows::Sessions(v), k) => v.get(k - 1).map_or(Launch::New, |s| Launch::Session(s.id.clone())),
+                (Rows::Last(_), _) => Launch::Last,
+                _ => Launch::New,
+            };
+            self.actions.push(Action::RunAgent(preset.id.clone(), launch, *place));
             keep = false;
         }
         keep
@@ -838,5 +992,16 @@ fn initials(name: &str) -> String {
             format!("{first}{second}")
         }
         [] => String::new(),
+    }
+}
+
+/// How long ago, short: "just now", "5 min", "3 h", "2 d" (shown as "… ago").
+fn ago(at: std::time::SystemTime) -> String {
+    let s = std::time::SystemTime::now().duration_since(at).map(|d| d.as_secs()).unwrap_or(0);
+    match s {
+        0..60 => t("a moment").to_string(),
+        60..3600 => tf("{} min", &[&(s / 60).to_string()]),
+        3600..86400 => tf("{} h", &[&(s / 3600).to_string()]),
+        _ => tf("{} d", &[&(s / 86400).to_string()]),
     }
 }

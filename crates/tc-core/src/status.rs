@@ -124,7 +124,8 @@ pub struct Tracker {
     pub source: Source,
     /// When the status last changed.
     pub since: Instant,
-    /// The status wants the user's attention and they have not looked at the pane since.
+    /// The status wants the user's attention: they have not looked at the pane since, or it is
+    /// a question still open (looking does not answer it).
     pub unseen: bool,
     /// Short text from the signal (for example the agent's permission question).
     pub message: Option<String>,
@@ -232,25 +233,33 @@ impl Tracker {
         }
         self.status = status;
         self.source = source;
-        // Nothing to bring to the user's attention while they look at the pane.
-        self.unseen = attention && !self.focused;
+        // Nothing to bring to the user's attention while they look at the pane, except a
+        // question: it waits until it is answered.
+        self.unseen = attention && (!self.focused || status == Status::NeedsInput);
         changed
     }
 
-    /// The user starts or stops looking at the pane. Looking clears the attention mark; a
-    /// finished turn or command then simply reads as idle.
+    /// The user starts or stops looking at the pane. Looking clears the attention mark (a
+    /// finished turn or command then simply reads as idle), but not an open question: that one
+    /// is cleared by answering it, or by [`Tracker::mark_seen`].
     pub fn set_focused(&mut self, focused: bool, now: Instant) -> bool {
         let was = self.focused;
         self.focused = focused;
-        if focused && self.unseen {
-            self.unseen = false;
-            if matches!(self.status, Status::Done | Status::CommandDone) {
-                self.status = Status::Idle;
-                self.since = now;
-            }
+        if focused && self.unseen && self.status != Status::NeedsInput {
+            self.mark_seen(now);
             return true;
         }
         was != focused
+    }
+
+    /// The user dismissed what the pane asked for (Mark as Seen), or looked at it. A finished
+    /// turn or command then simply reads as idle.
+    pub fn mark_seen(&mut self, now: Instant) {
+        self.unseen = false;
+        if matches!(self.status, Status::Done | Status::CommandDone) {
+            self.status = Status::Idle;
+            self.since = now;
+        }
     }
 
     /// Applies one signal. Returns whether anything visible changed.
@@ -462,13 +471,21 @@ mod tests {
         assert_eq!(t.source, Source::Hook(AgentKind::Claude));
         assert!(t.wants_attention());
         assert_eq!(t.message.as_deref(), Some("Allow Edit(src/main.rs)?"));
-        // The user looks: out of the queue, but the question is still open.
+        // The user looks: the question is still open, so it still waits for them.
         t.set_focused(true, t0);
-        assert!(!t.wants_attention());
+        assert!(t.wants_attention());
         assert_eq!(t.status, Status::NeedsInput);
-        // Answering (Enter) means the agent works again.
+        // Answering (Enter) means the agent works again, and nothing waits.
         t.apply(Event::Enter, t0);
         assert_eq!(t.status, Status::Running);
+        assert!(!t.wants_attention());
+        // A question asked while the user looks waits too; Mark as Seen dismisses it.
+        t.apply(hook(HookSignal::NeedsInput), t0);
+        assert!(t.wants_attention());
+        t.mark_seen(t0);
+        assert!(!t.wants_attention());
+        assert_eq!(t.status, Status::NeedsInput);
+        t.apply(Event::Enter, t0);
         t.set_focused(false, t0);
         t.apply(hook(HookSignal::TurnDone), t0);
         assert_eq!(t.status, Status::Done);

@@ -28,6 +28,10 @@ pub struct HookMsg {
     pub cwd: Option<String>,
 }
 
+/// Claude Code tools that stop and ask the user: the plan's approval ("Ready to code?") and a
+/// question with choices.
+pub const ASKING_TOOLS: &[&str] = &["ExitPlanMode", "AskUserQuestion"];
+
 /// Maps an agent's hook event to a status signal; `None` for events that say nothing about
 /// whether the user is needed.
 pub fn classify(agent: AgentKind, event: &str, kind: Option<&str>) -> Option<HookSignal> {
@@ -35,6 +39,9 @@ pub fn classify(agent: AgentKind, event: &str, kind: Option<&str>) -> Option<Hoo
     match agent {
         AgentKind::Claude => match event {
             "SessionStart" => Some(SessionStart),
+            // The plan's approval and a question to the user are tools that wait for them
+            // (`kind` is the tool's name).
+            "PreToolUse" if matches!(kind, Some(t) if ASKING_TOOLS.contains(&t)) => Some(NeedsInput),
             "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
             | "SubagentStart" | "PreCompact" => Some(Working),
             "PermissionRequest" | "Elicitation" => Some(NeedsInput),
@@ -116,6 +123,12 @@ pub fn extract(
     payload: &Value,
 ) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
     let kind = text(&payload["notification_type"])
+        .or_else(|| {
+            // Which tool is about to run (only the ones that ask the user matter).
+            (agent == AgentKind::Claude && event == "PreToolUse")
+                .then(|| text(&payload["tool_name"]))
+                .flatten()
+        })
         .or_else(|| text(&payload["type"]))
         .or_else(|| text(&payload["status"]["type"]))
         .or_else(|| text(&payload["status"]));
@@ -136,6 +149,18 @@ pub fn extract(
                 (None, _) => text(&payload["message"]),
             }
         }
+        // The plan to approve (its title), or the question asked.
+        (AgentKind::Claude, "PreToolUse") => match text(&payload["tool_name"]).as_deref() {
+            Some("ExitPlanMode") => text(&payload["tool_input"]["plan"]).and_then(|plan| {
+                plan.lines()
+                    .map(|l| l.trim().trim_start_matches('#').trim())
+                    .find(|l| !l.is_empty())
+                    .map(|l| format!("Plan: {l}"))
+            }),
+            Some("AskUserQuestion") => text(&payload["tool_input"]["questions"][0]["question"])
+                .or_else(|| text(&payload["tool_input"]["question"])),
+            _ => None,
+        },
         (AgentKind::Codex, "notify") => text(&payload["last-assistant-message"]),
         // A finished turn: the agent's last words, when the payload has them (a notification
         // that it is idle says nothing worth showing).
@@ -166,6 +191,10 @@ mod tests {
         let c = |e, k| classify(AgentKind::Claude, e, k);
         assert_eq!(c("SessionStart", None), Some(HookSignal::SessionStart));
         assert_eq!(c("PreToolUse", None), Some(HookSignal::Working));
+        assert_eq!(c("PreToolUse", Some("Bash")), Some(HookSignal::Working));
+        assert_eq!(c("PreToolUse", Some("ExitPlanMode")), Some(HookSignal::NeedsInput));
+        assert_eq!(c("PreToolUse", Some("AskUserQuestion")), Some(HookSignal::NeedsInput));
+        assert_eq!(classify(AgentKind::Codex, "PreToolUse", Some("ExitPlanMode")), Some(HookSignal::Working));
         assert_eq!(c("PermissionRequest", None), Some(HookSignal::NeedsInput));
         assert_eq!(c("Notification", Some("permission_prompt")), Some(HookSignal::NeedsInput));
         assert_eq!(c("Notification", Some("idle_prompt")), Some(HookSignal::TurnDone));
@@ -230,5 +259,27 @@ mod tests {
         assert_eq!(kind.as_deref(), Some("agent-turn-complete"));
         assert_eq!(msg.unwrap().chars().count(), MAX_MESSAGE);
         assert_eq!(session.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn plans_and_questions_say_what_they_ask() {
+        let plan = json!({
+            "tool_name": "ExitPlanMode",
+            "tool_input": {"plan": "\n# Claude gets its own Zen window\n\n## Context\n..."}
+        });
+        let (kind, msg, ..) = extract(AgentKind::Claude, "PreToolUse", &plan);
+        assert_eq!(kind.as_deref(), Some("ExitPlanMode"));
+        assert_eq!(msg.as_deref(), Some("Plan: Claude gets its own Zen window"));
+        let ask = json!({
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": "Which database?", "options": []}]}
+        });
+        let (kind, msg, ..) = extract(AgentKind::Claude, "PreToolUse", &ask);
+        assert_eq!(kind.as_deref(), Some("AskUserQuestion"));
+        assert_eq!(msg.as_deref(), Some("Which database?"));
+        // Other tools: their name, nothing to show.
+        let bash = json!({"tool_name": "Bash", "tool_input": {"command": "ls"}});
+        let (kind, msg, ..) = extract(AgentKind::Claude, "PreToolUse", &bash);
+        assert_eq!((kind.as_deref(), msg), (Some("Bash"), None));
     }
 }

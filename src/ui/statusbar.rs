@@ -45,6 +45,18 @@ impl App {
                     }
                 }
             }
+            // Agents that can't say when they need the user (started without the hooks).
+            let unconnected = self.unconnected_agents();
+            if !unconnected.is_empty() {
+                dot_sep(ui, &p);
+                let text = crate::i18n::count(unconnected.len(), t("1 agent not connected"), t("{} agents not connected"));
+                let r = item(ui, Some(icons::PLUGS_CONNECTED), &text, p.warn, None, None, 260.0, true);
+                #[cfg(debug_assertions)]
+                crate::devtest::record("unconnected", r.rect);
+                if r.on_hover_text(self.unconnected_tip(&unconnected)).clicked() {
+                    self.connect_agents(&unconnected);
+                }
+            }
             // Right: commands, then what is running and the memory it takes.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;

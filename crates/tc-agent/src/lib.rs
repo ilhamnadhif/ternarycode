@@ -8,6 +8,7 @@ pub mod integrate;
 pub mod proc;
 pub mod protocol;
 pub mod server;
+pub mod sessions;
 pub mod shell;
 
 /// Environment variables every pane gets, read by `ternarycode-hook`.

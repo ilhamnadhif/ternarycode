@@ -1,7 +1,8 @@
 //! The sidebar: where and who. The Focus | Grid switch, the inbox of what waits for the user
-//! (only while something does), the project list (FR-P3) by name, each project with its most
-//! urgent status, a dot per pane and a count of what it has that was not seen yet (right-click
-//! for the rest), and Settings at the bottom. Files live in the Code drawer at the right.
+//! (only while something does), the project list (FR-P3) by name with a search over it, each
+//! project with its most urgent status, a dot per pane and a count of what it has that was not
+//! seen yet (right-click for the rest), and Settings at the bottom. Files live in the Code drawer
+//! at the right.
 
 use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
@@ -15,8 +16,6 @@ use tc_core::status::Status;
 
 /// A project: its name over a line about it.
 const PROJECT_H: f32 = 46.0;
-/// The row that adds a project.
-const ADD_H: f32 = 32.0;
 /// Height of the row at the top of the sidebar and of the project header beside it.
 pub const TOP_H: f32 = 40.0;
 /// Height of a section title ("PROJECTS").
@@ -345,19 +344,17 @@ impl App {
     fn project_list(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
         let area = ui.max_rect();
-        // Title: PROJECTS, how many, and + at the right.
+        let total = self.projects.len();
+
+        // Title: PROJECTS, how many (how many found, while searching: below), and + at the right.
         let title = Rect::from_min_size(area.min, vec2(area.width(), SECTION_H));
         let g = kit::section_galley(ui.painter(), t("Projects"), p.text_faint);
-        let tw = g.size().x;
+        let count_at = pos2(title.left() + 14.0 + g.size().x + 6.0, title.center().y);
         ui.painter().galley(pos2(title.left() + 14.0, title.center().y - g.size().y / 2.0), g, p.text_faint);
-        ui.painter().text(
-            pos2(title.left() + 14.0 + tw + 6.0, title.center().y),
-            Align2::LEFT_CENTER,
-            self.projects.len().to_string(),
-            style::medium(10.5),
-            p.text_faint,
-        );
+        let paint_count = |ui: &Ui, text: String| ui.painter().text(count_at, Align2::LEFT_CENTER, text, style::medium(10.5), p.text_faint);
         let add = Rect::from_center_size(pos2(title.right() - PAD - 11.0, title.center().y), vec2(22.0, 22.0));
+        #[cfg(debug_assertions)]
+        crate::devtest::record("add-project", add);
         if ui
             .scope_builder(egui::UiBuilder::new().max_rect(add), |ui| {
                 kit::icon_button_ex(ui, icons::PLUS, &kit::tip(t("Add Project…"), Action::AddProject), false, 22.0)
@@ -367,50 +364,160 @@ impl App {
         {
             self.actions.push(Action::AddProject);
         }
+        if total == 0 {
+            paint_count(ui, "0".into());
+            ui.painter().text(
+                pos2(title.left() + 14.0, title.bottom() + 10.0),
+                Align2::LEFT_CENTER,
+                t("No projects yet."),
+                egui::FontId::proportional(style::SMALL),
+                p.text_faint,
+            );
+            return;
+        }
 
-        let rows: Vec<ProjectRow> = self.projects.iter().map(|pr| self.project_row(pr, &p)).collect();
-        let list = Rect::from_min_max(pos2(area.left(), title.bottom()), area.max);
+        // The search field. While it has the keyboard: ↑ ↓ choose a project, Enter opens it (and
+        // empties the search), Esc empties the search and gives the keyboard back.
+        let fid = egui::Id::new("project-filter");
+        let field = Rect::from_min_size(pos2(area.left() + PAD, title.bottom()), vec2(area.width() - 2.0 * PAD, 26.0));
+        #[cfg(debug_assertions)]
+        crate::devtest::record("project-filter", field);
+        let typing = ui.memory(|m| m.has_focus(fid));
+        let shown = self.project_matches();
+        let n = shown.len();
+        let mut sel = self.project_filter_sel.min(n.saturating_sub(1));
+        let mut reveal = false;
+        let mut open = None;
+        if typing {
+            use egui::{Key, Modifiers};
+            let (down, up, enter, esc) = ui.input_mut(|i| {
+                (
+                    i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                    i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                    i.consume_key(Modifiers::NONE, Key::Enter),
+                    i.consume_key(Modifiers::NONE, Key::Escape),
+                )
+            });
+            if down && n > 0 {
+                sel = (sel + 1) % n;
+                reveal = true;
+            }
+            if up && n > 0 {
+                sel = (sel + n - 1) % n;
+                reveal = true;
+            }
+            if enter && let Some(&i) = shown.get(sel) {
+                open = Some(self.projects[i].id);
+            }
+            if esc || open.is_some() {
+                self.project_filter.clear();
+                sel = 0;
+                ui.memory_mut(|m| m.surrender_focus(fid));
+            }
+        }
+        let mut text = self.project_filter.clone();
+        let fr = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
+                kit::field(ui, fid, &mut text, Some(icons::MAGNIFYING_GLASS), t("Search projects"), field.width(), true)
+            })
+            .inner;
+        if fr.changed() {
+            self.project_filter = text;
+            sel = 0;
+            reveal = true;
+        }
+        // Esc and ↑ ↓ are the field's (egui would otherwise take the keyboard away on them).
+        if fr.has_focus() {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(fid, egui::EventFilter { vertical_arrows: true, escape: true, ..Default::default() })
+            });
+        }
+        // An × empties it (and keeps the keyboard there).
+        if !self.project_filter.is_empty() {
+            let x = Rect::from_center_size(pos2(field.right() - 13.0, field.center().y), vec2(18.0, 18.0));
+            let r = ui.interact(x, fid.with("clear"), Sense::click()).on_hover_text(t("Clear"));
+            let c = if r.hovered() { p.text } else { p.text_faint };
+            ui.painter().text(x.center(), Align2::CENTER_CENTER, icons::X_CIRCLE, style::icon_font(14.0), c);
+            if r.clicked() {
+                self.project_filter.clear();
+                sel = 0;
+                ui.memory_mut(|m| m.request_focus(fid));
+            }
+        }
+        self.project_filter_sel = sel;
+        if let Some(id) = open {
+            self.actions.push(Action::SelectProject(id));
+        }
+        // The list follows what is in the field now (typed, or emptied by Enter, Esc or ×).
+        let shown = self.project_matches();
+        let query = self.project_filter.trim().to_string();
+        let filtering = !query.is_empty();
+        let typing = ui.memory(|m| m.has_focus(fid));
+        paint_count(ui, if filtering { crate::i18n::tf("{} of {}", &[&shown.len().to_string(), &total.to_string()]) } else { total.to_string() });
+
+        let list = Rect::from_min_max(pos2(area.left(), field.bottom() + 6.0), area.max);
+        if shown.is_empty() {
+            ui.painter().text(
+                pos2(list.left() + 14.0, list.top() + 12.0),
+                Align2::LEFT_CENTER,
+                t("No matching projects."),
+                egui::FontId::proportional(style::SMALL),
+                p.text_faint,
+            );
+            return;
+        }
+        let rows: Vec<(usize, ProjectRow, Vec<bool>)> = shown
+            .iter()
+            .map(|&i| {
+                let pr = &self.projects[i];
+                let marks = if filtering { super::palette::matched(&query, &pr.name) } else { Vec::new() };
+                (i, self.project_row(pr, &p), marks)
+            })
+            .collect();
         ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(vec2(6.0, 0.0))), |ui| {
+            ui.set_clip_rect(list);
+            // The search's results scroll on their own: the whole list keeps its place.
             egui::ScrollArea::vertical()
-                .id_salt("project-list")
+                .id_salt(if filtering { "project-list-found" } else { "project-list" })
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    for (i, row) in rows.iter().enumerate() {
+                    for (k, (i, row, marks)) in rows.iter().enumerate() {
                         let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), PROJECT_H), Sense::click());
                         #[cfg(debug_assertions)]
                         crate::devtest::record(format!("project:{}", row.name), rect);
                         let active = self.view == View::Focus && self.active == Some(row.id);
-                        let hovered = response.hovered();
-                        paint_project_row(ui, rect, row, active, hovered, kit::keys(&Action::SelectProjectIndex(i)), &p);
+                        // The keyboard's row (while the search has it) looks hovered, with ↵.
+                        let chosen = typing && k == sel;
+                        if chosen && reveal {
+                            ui.scroll_to_rect(rect, None);
+                        }
+                        let hovered = response.hovered() || chosen;
+                        let keys = if chosen { Some("↵") } else { kit::keys(&Action::SelectProjectIndex(*i)) };
+                        paint_project_row(ui, rect, row, marks, active, hovered, keys, &p);
                         if response.clicked() {
                             self.actions.push(Action::SelectProject(row.id));
                         }
                         let id = row.id;
                         let name = row.name.clone();
-                        let response = response.on_hover_ui(|ui| self.project_tooltip(ui, id, i));
+                        let index = *i;
+                        let response = response.on_hover_ui(|ui| self.project_tooltip(ui, id, index));
                         response.context_menu(|ui| self.project_menu(ui, id, &name));
-                    }
-                    // The last row adds a project.
-                    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ADD_H), Sense::click());
-                    let hovered = response.hovered();
-                    if hovered {
-                        ui.painter().rect_filled(rect, CornerRadius::same(style::RADIUS), p.faint_row());
-                    }
-                    let c = if hovered { p.text } else { p.text_faint };
-                    ui.painter().text(pos2(rect.left() + 12.0 + 7.0, rect.center().y), Align2::CENTER_CENTER, icons::PLUS, style::icon_font(14.0), c);
-                    ui.painter().text(
-                        pos2(rect.left() + 12.0 + 14.0 + 9.0, rect.center().y),
-                        Align2::LEFT_CENTER,
-                        t("Add Project…"),
-                        egui::FontId::proportional(13.0),
-                        c,
-                    );
-                    if response.clicked() {
-                        self.actions.push(Action::AddProject);
                     }
                 });
         });
+    }
+
+    /// The projects the sidebar's search finds (indexes into `projects`): those whose name holds
+    /// its letters in order, best first; every project, in the user's order, while it is empty.
+    fn project_matches(&self) -> Vec<usize> {
+        let query = self.project_filter.trim();
+        let mut found: Vec<(usize, i32)> =
+            self.projects.iter().enumerate().filter_map(|(i, pr)| super::palette::score(query, &pr.name).map(|s| (i, s))).collect();
+        if !query.is_empty() {
+            found.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        }
+        found.into_iter().map(|(i, _)| i).collect()
     }
 
     /// A project's tooltip: where it is and what kind, its branch, and each pane's status with
@@ -567,7 +674,8 @@ pub struct ProjectRow {
 
 /// Paints a project's row: name, pane dots and badge (or the shortcut, hovered) on the first
 /// line; branch and changes, and what is at work or waits, on the second.
-fn paint_project_row(ui: &Ui, rect: Rect, row: &ProjectRow, active: bool, hovered: bool, keys: Option<&str>, p: &style::Palette) {
+#[allow(clippy::too_many_arguments)]
+fn paint_project_row(ui: &Ui, rect: Rect, row: &ProjectRow, marks: &[bool], active: bool, hovered: bool, keys: Option<&str>, p: &style::Palette) {
     let painter = ui.painter_at(rect);
     let fill = if active {
         p.accent_soft
@@ -611,7 +719,18 @@ fn paint_project_row(ui: &Ui, rect: Rect, row: &ProjectRow, active: bool, hovere
         p.text.gamma_multiply(0.9)
     };
     let font = if active { style::semibold(style::BODY) } else { style::medium(style::BODY) };
-    let mut job = egui::text::LayoutJob::simple_singleline(row.name.clone(), font, name_color);
+    // The letters a search matched, in the accent.
+    let mut job = if marks.iter().any(|m| *m) {
+        let mut job = egui::text::LayoutJob::default();
+        for (ci, ch) in row.name.chars().enumerate() {
+            let hit = marks.get(ci).copied().unwrap_or(false);
+            let (f, c) = if hit { (style::semibold(style::BODY), p.accent_text) } else { (font.clone(), name_color) };
+            job.append(&ch.to_string(), 0.0, egui::TextFormat::simple(f, c));
+        }
+        job
+    } else {
+        egui::text::LayoutJob::simple_singleline(row.name.clone(), font, name_color)
+    };
     job.wrap = egui::text::TextWrapping::truncate_at_width((right - x - dots_w).max(10.0));
     let g = painter.layout_job(job);
     let name_w = g.size().x;

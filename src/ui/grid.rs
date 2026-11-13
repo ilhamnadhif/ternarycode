@@ -397,6 +397,8 @@ impl App {
         });
         // An agent that finished its turn: what it changed is one click away.
         let review = pane_id.filter(|id| self.panes.get(id).is_some_and(|x| x.tracker.status == Status::Done));
+        // An agent without the hooks (it can't say when it needs the user).
+        let unconnected = pane_id.and_then(|id| self.panes.get(&id).and_then(|x| self.unconnected(x)).map(|a| (id, a)));
         let keyboard_here = self
             .grid_focus
             .is_some_and(|f| layout.as_ref().is_some_and(|l| l.contains(f)));
@@ -471,6 +473,20 @@ impl App {
             if b.on_hover_text(kit::tip(t("Review what the agent changed"), Action::Review)).clicked() {
                 self.actions.push(Action::FocusPane(id));
                 self.actions.push(Action::Review);
+            }
+        }
+        if let Some(agent) = unconnected {
+            let r = Rect::from_center_size(pos2(right - 11.0, cy), vec2(22.0, 22.0));
+            right -= 22.0 + 6.0;
+            let resp = ui.interact(r, egui::Id::new(("tile-unconnected", project_id)), Sense::click());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("tile-unconnected:{}", agent.0), r);
+            if resp.hovered() {
+                ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), style::tint(p.warn, dark));
+            }
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, icons::WARNING, style::icon_font(13.0), p.warn);
+            if resp.on_hover_text(self.unconnected_tip(&[agent])).clicked() {
+                self.actions.push(Action::PlanInstall(agent.1));
             }
         }
         // Branch, how many files changed, panes (when split): only what fits.

@@ -6,6 +6,16 @@ use tc_core::agent::AgentKind;
 use tc_core::model::View;
 use tc_core::{PaneId, ProjectId};
 
+/// Which session an agent starts with.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Launch {
+    New,
+    /// Its last session (the preset's resume command, `claude --continue`).
+    Last,
+    /// An earlier session, by the agent's id for it.
+    Session(String),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     AddProject,
@@ -58,9 +68,9 @@ pub enum Action {
     PrevPane,
     /// Starts a preset in a new pane of the active project.
     RunPreset(String),
-    /// From the Run Agent dialog: the preset, whether to continue its last session, where (0
-    /// new tab, 1 split right, 2 split down).
-    RunAgent(String, bool, usize),
+    /// From the Run Agent dialog: the preset, which session (a new one, its last, or one chosen),
+    /// where (0 new tab, 1 split right, 2 split down).
+    RunAgent(String, Launch, usize),
     Resume(PaneId),
     /// Forgets the session a restored pane could resume (its banner's Dismiss).
     DismissResume(PaneId),

@@ -144,6 +144,9 @@ pub struct Pane {
     pub resume: Option<(AgentKind, String)>,
     /// The agent last seen in this pane (kept when it exits, for saving).
     pub last_agent: Option<AgentKind>,
+    /// The session the agent here works in, as its hooks say (Run Agent goes here instead of
+    /// starting the same session twice).
+    pub agent_session: Option<String>,
     /// The hook socket and this pane's token, as given to its shell.
     pub hook_env: Option<(String, String)>,
     /// TernaryCode itself ended the shell (pane closed, app quitting): its exit is not a failure.
@@ -212,6 +215,7 @@ impl Pane {
             fg_retries: 0,
             fg_due: None,
             resume: None,
+            agent_session: None,
             last_agent: None,
             hook_env: None,
             closing: false,
@@ -600,6 +604,7 @@ impl Pane {
             // The agent was quit: nothing to resume later.
             self.last_agent = None;
             self.preset = None;
+            self.agent_session = None;
         }
         self.tracker.apply(Event::Foreground(fg), now)
     }
@@ -614,6 +619,11 @@ impl Pane {
         }
         self.last_agent = Some(agent);
         self.resume = None;
+        if msg.event == "SessionEnd" {
+            self.agent_session = None;
+        } else if let Some(session) = &msg.session {
+            self.agent_session = Some(session.clone());
+        }
         let Some(signal) = tc_agent::protocol::classify(agent, &msg.event, msg.kind.as_deref())
         else {
             return false;

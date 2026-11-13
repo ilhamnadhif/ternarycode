@@ -770,6 +770,18 @@ impl App {
                                 ui.add_space(110.0 + 8.0);
                                 ui.add(egui::Label::new(RichText::new(hooks_note(agent)).size(style::SMALL).color(p.text_faint).line_height(Some(17.0))).wrap());
                             });
+                            if hooks.unconnected > 0 {
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(110.0 + 8.0);
+                                    let text = crate::i18n::count(
+                                        hooks.unconnected,
+                                        t("Typed by hand in 1 pane, it is not connected: Install connects it (then restart it there)."),
+                                        t("Typed by hand in {} panes, it is not connected: Install connects it (then restart it there)."),
+                                    );
+                                    ui.add(egui::Label::new(RichText::new(text).size(style::SMALL).color(p.warn).line_height(Some(17.0))).wrap());
+                                });
+                            }
                         } else {
                             ui.horizontal(|ui| {
                                 ui.add_space(110.0 + 8.0);
@@ -879,6 +891,7 @@ impl App {
         let installed = self.installed(agent).is_some();
         let per_launch = matches!(agent, AgentKind::Claude | AgentKind::Codex) && self.settings.integration(agent) == Integration::PerLaunch;
         let active = self.panes.values().filter(|p| p.tracker.hooks_active && p.tracker.agent == Some(agent)).count();
+        let unconnected = self.unconnected_agents().iter().filter(|x| x.1 == agent).count();
         Hooks {
             agent,
             hooked: installed || per_launch,
@@ -886,6 +899,7 @@ impl App {
             can_install: !matches!(agent, AgentKind::Custom | AgentKind::Antigravity),
             off: self.settings.integration(agent) == Integration::Off,
             active,
+            unconnected,
         }
     }
 }
@@ -897,6 +911,8 @@ struct Hooks {
     can_install: bool,
     off: bool,
     active: usize,
+    /// Panes where it runs without the hooks (typed by hand).
+    unconnected: usize,
 }
 
 impl Hooks {
@@ -904,8 +920,12 @@ impl Hooks {
         if self.agent == AgentKind::Custom {
             return (None, t("Custom").to_string(), p.text_muted, p.subtle);
         }
+        // Per launch covers what Run Agent starts, not the agent typed by hand.
+        if self.hooked && !self.installed && self.unconnected > 0 {
+            return (Some(icons::WARNING), t("Hooks · Run Agent only").to_string(), p.warn, style::tint(p.warn, dark));
+        }
         if self.hooked {
-            let how = if self.installed { t("installed") } else { t("per launch") };
+            let how = if self.installed { t("installed") } else { t("Run Agent only") };
             return (Some(icons::PLUGS_CONNECTED), tf("Hooks · {}", &[how]), p.ok, style::tint(p.ok, dark));
         }
         if self.off {

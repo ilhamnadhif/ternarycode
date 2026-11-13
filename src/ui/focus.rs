@@ -693,6 +693,7 @@ impl App {
         let hovered = ui.rect_contains_pointer(rect);
         let hooks = pane.tracker.hooks_active;
         let hooks_label = pane.tracker.agent.map(|a| a.label().to_string()).unwrap_or_default();
+        let unconnected = self.unconnected(pane).map(|a| (pane_id, a));
 
         // Buttons first, from the right (split and close only while hovered); the text on the
         // left is clipped before them.
@@ -731,6 +732,25 @@ impl App {
             ui.interact(r, egui::Id::new(("hooks", pane_id)), Sense::hover())
                 .on_hover_text(crate::i18n::tf("Status from {} hooks", &[&hooks_label]));
             right = x - 16.0 - 6.0;
+        } else if let Some(agent) = unconnected {
+            // An agent without the hooks: it can't say when it needs the user. Click: Connect.
+            let painter = ui.painter();
+            let g = painter.layout_no_wrap(t("not connected").to_string(), egui::FontId::proportional(11.0), p.warn);
+            let gw = g.size().x;
+            let b = Rect::from_min_max(pos2(right - 4.0 - gw - 16.0 - 6.0, cy - 10.0), pos2(right - 2.0, cy + 10.0));
+            let r = ui.interact(b, egui::Id::new(("unconnected", pane_id)), Sense::click());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("unconnected:{pane_id}"), b);
+            let painter = ui.painter();
+            if r.hovered() {
+                painter.rect_filled(b, CornerRadius::same(5), style::tint(p.warn, ui.visuals().dark_mode));
+            }
+            painter.galley(pos2(b.right() - 4.0 - gw, cy - g.size().y / 2.0), g, p.warn);
+            painter.text(pos2(b.right() - 4.0 - gw - 3.0, cy), Align2::RIGHT_CENTER, icons::WARNING, style::icon_font(11.0), p.warn);
+            if r.on_hover_text(self.unconnected_tip(&[agent])).clicked() {
+                self.actions.push(Action::PlanInstall(agent.1));
+            }
+            right = b.left() - 6.0;
         }
 
         let clip = Rect::from_min_max(rect.min, pos2((right - 4.0).max(rect.left()), rect.max.y));
