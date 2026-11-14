@@ -330,7 +330,7 @@ const ID: &[(&str, &str)] = &[
     ("Open in Terminal", "Buka di Terminal"),
     ("Active", "Aktif"),
     ("All", "Semua"),
-    ("Only projects where something runs or waits", "Hanya project yang sedang menjalankan sesuatu atau menunggu"),
+    ("Only projects where something runs or waits, or an agent can be resumed", "Hanya project yang sedang menjalankan sesuatu, menunggu, atau punya agent yang bisa dilanjutkan"),
     ("Show All Projects", "Tampilkan Semua Project"),
     ("Not started", "Belum dimulai"),
     ("{} active", "{} aktif"),
@@ -809,4 +809,5 @@ const ID: &[(&str, &str)] = &[
     ("{} tabs", "{} tab"),
     ("Tabs in {}", "Tab di {}"),
     ("Picked here: kept until something new waits in another tab", "Dipilih di sini: ditahan sampai ada yang baru menunggu di tab lain"),
+    ("Can resume", "Bisa dilanjutkan"),
 ];

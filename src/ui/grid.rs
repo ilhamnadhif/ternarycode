@@ -23,6 +23,8 @@ use crate::i18n::{t, tf};
 use crate::project::{Project, Tab};
 
 const TILE_HEADER: f32 = 34.0;
+/// The resume banner in a tile (lower than Focus's).
+const TILE_BANNER_H: f32 = 36.0;
 const GAP: f32 = 8.0;
 /// The Grid's scroll bar, and the room between it and the tiles.
 const SCROLL_BAR: f32 = 8.0;
@@ -99,7 +101,7 @@ impl App {
 
     /// How much a tab asks to be seen in a Grid tile, lower first: something waits (by its
     /// priority, the oldest first), an agent at work, a program running (or an agent at its
-    /// prompt), an idle shell.
+    /// prompt, or one that ran there before a restart and can be resumed), an idle shell.
     fn tab_rank(&self, tab: &Tab) -> (u8, Option<Instant>) {
         let panes: Vec<&crate::pane::Pane> = tab.layout.panes().iter().filter_map(|id| self.panes.get(id)).collect();
         if let Some(x) = panes.iter().filter(|x| x.tracker.wants_attention()).min_by_key(|x| (x.tracker.status.priority(), x.tracker.since)) {
@@ -108,7 +110,7 @@ impl App {
         if panes.iter().any(|x| x.tracker.agent.is_some() && matches!(x.tracker.status, Status::Running | Status::Unknown)) {
             return (4, None);
         }
-        if panes.iter().any(|x| x.tracker.agent.is_some() || matches!(x.tracker.fg, Foreground::Program { .. })) {
+        if panes.iter().any(|x| x.tracker.agent.is_some() || x.resume.is_some() || matches!(x.tracker.fg, Foreground::Program { .. })) {
             return (5, None);
         }
         (6, None)
@@ -412,8 +414,8 @@ impl App {
         );
     }
 
-    /// One project: header (name, status, branch, a resume button, open in Focus) over its tab's
-    /// panes. `wheel_free`: the mouse wheel may scroll the terminals (the Grid does not scroll);
+    /// One project: header (name, tabs, status, branch, open in Focus) over its tab's panes (one
+    /// whose agent can be resumed with Focus's banner on top). `wheel_free`: the mouse wheel may scroll the terminals (the Grid does not scroll);
     /// else only the one taking the keyboard gets it.
     fn tile(&mut self, ui: &mut Ui, project_id: ProjectId, rect: Rect, wheel_free: bool, shown: usize) {
         let p = style::pal(ui);
@@ -435,7 +437,8 @@ impl App {
                     let teller = self.telling_pane(&panes).or(Some(tab.focused)).and_then(|id| self.panes.get(&id));
                     let status = teller.map(|x| x.tracker.status).filter(|s| !matches!(s, Status::Idle | Status::Unknown));
                     let waits = panes.iter().filter_map(|id| self.panes.get(id)).any(|x| x.tracker.wants_attention());
-                    StripTab { label, status, waits }
+                    let resume = panes.iter().filter_map(|id| self.panes.get(id)).find_map(|x| x.resume.as_ref().map(|(a, _)| a.label().to_string()));
+                    StripTab { label, status, waits, resume }
                 })
                 .collect()
         } else {
@@ -461,15 +464,6 @@ impl App {
         // The tab shown, with all its panes (a split project shows its split).
         let layout = project.tabs.get(shown).map(|t| t.layout.clone());
         let count = layout.as_ref().map_or(0, |l| l.panes().len());
-        // An agent that ran in one of them and can be continued.
-        let resume = layout.as_ref().and_then(|l| {
-            l.panes().into_iter().find_map(|id| {
-                self.panes
-                    .get(&id)
-                    .and_then(|x| x.resume.as_ref())
-                    .map(|(a, _)| (id, a.label()))
-            })
-        });
         // An agent that finished its turn: what it changed is one click away.
         let review = pane_id.filter(|id| self.panes.get(id).is_some_and(|x| x.tracker.status == Status::Done));
         // An agent without the hooks (it can't say when it needs the user).
@@ -517,7 +511,7 @@ impl App {
         }
         let cy = header.center().y;
         let small = egui::FontId::proportional(style::SMALL);
-        // Right side first (open button, resume, review, panes, branch); the left side is cut
+        // Right side first (open button, review, panes, branch); the left side is cut
         // before it.
         let open_rect = Rect::from_center_size(pos2(header.right() - 6.0 - 11.0, cy), vec2(22.0, 22.0));
         let open = ui
@@ -537,14 +531,6 @@ impl App {
             *right -= w + 8.0;
             ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::button_ex(ui, kit::Kind::Secondary, icon, text, true)).inner
         };
-        if let Some((id, agent)) = resume {
-            let b = button(ui, Some(icons::PLAY), &tf("Resume {}", &[agent]), &mut right);
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("tile-resume:{id}"), b.rect);
-            if b.on_hover_text(tf("Continue {}'s last session here", &[agent])).clicked() {
-                self.actions.push(Action::Resume(id));
-            }
-        }
         if let Some(id) = review {
             let b = button(ui, Some(icons::GIT_DIFF), t("Review"), &mut right);
             #[cfg(debug_assertions)]
@@ -787,6 +773,20 @@ impl App {
             Some(l) => l.arrange(body),
             None => (vec![(pane_id, body)], Vec::new()),
         };
+        // A pane whose agent ran there before a restart: Focus's banner at its top (it is why
+        // the project counts as active), the terminal under it.
+        let mut banners = Vec::new();
+        let rects: Vec<(PaneId, Rect)> = rects
+            .into_iter()
+            .map(|(id, r)| {
+                if self.panes.get(&id).is_some_and(|x| x.resume.is_some()) && r.height() > 2.0 * TILE_BANNER_H {
+                    banners.push((id, Rect::from_min_size(r.min, vec2(r.width(), TILE_BANNER_H))));
+                    (id, Rect::from_min_max(pos2(r.left(), r.top() + TILE_BANNER_H), r.max))
+                } else {
+                    (id, r)
+                }
+            })
+            .collect();
         // The terminals take the tile's size (before they are drawn, so a sleeping shell starts
         // at it).
         let sizes = rects.iter().map(|(id, r)| (*id, widget::grid_for(*r, cell))).collect();
@@ -800,6 +800,9 @@ impl App {
         }
         for (id, r) in rects {
             self.grid_pane(ui, id, r, &style, min_scale, input_enabled, wheel_free || keyboard_here);
+        }
+        for (id, r) in banners {
+            self.resume_banner(ui, id, r, true);
         }
         // The border last, over the terminals' edges.
         ui.painter_at(rect.expand(2.0)).rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
@@ -877,12 +880,13 @@ impl App {
     }
 }
 
-/// A tab of a tile's strip: its label, what it holds (none: a quiet shell), and whether
-/// something there waits for the user.
+/// A tab of a tile's strip: its label, what it holds (none: a quiet shell), whether something
+/// there waits for the user, and the agent that ran there before a restart (to resume).
 struct StripTab {
     label: String,
     status: Option<Status>,
     waits: bool,
+    resume: Option<String>,
 }
 
 /// How a tile's strip of tabs is drawn, from the room there is: each tab with its icon and
@@ -940,9 +944,10 @@ impl App {
         } else {
             StripMode::Menu
         };
-        let icon_of = |t: &StripTab, on: bool| match t.status {
-            Some(s) => (status::icon(s), status::color(s, &p)),
-            None => (icons::TERMINAL, if on { p.accent_text } else { p.text_faint }),
+        let icon_of = |t: &StripTab, on: bool| match (t.status, &t.resume) {
+            (Some(s), _) => (status::icon(s), status::color(s, &p)),
+            (None, Some(_)) => (icons::CLOCK_COUNTER_CLOCKWISE, p.accent_text),
+            (None, None) => (icons::TERMINAL, if on { p.accent_text } else { p.text_faint }),
         };
         if mode == StripMode::Menu {
             // One chip: the number of tabs (warning when one not shown waits), a menu of them.
@@ -977,7 +982,8 @@ impl App {
                 kit::menu_body(ui);
                 kit::menu_header(ui, &tf("Tabs in {}", &[name]));
                 for (i, tab) in tabs.iter().enumerate() {
-                    let state = tab.status.map_or_else(|| t("Idle").to_string(), status::text);
+                    let quiet = if tab.resume.is_some() { t("Can resume") } else { t("Idle") };
+                    let state = tab.status.map_or_else(|| quiet.to_string(), status::text);
                     let icon = (i == shown).then_some(icons::CHECK);
                     if kit::menu_item(ui, icon, &tab.label, Some(&state), false).clicked() {
                         self.actions.push(Action::GridShowTab(project, i));
@@ -1028,9 +1034,12 @@ impl App {
             if waits {
                 chip_dot(painter, rect, p.warn, bg);
             }
-            let tip = match (mode, held && on) {
-                (_, true) => format!("{}\n{}", tab.label, t("Picked here: kept until something new waits in another tab")),
-                (StripMode::Icons, false) => tab.label.clone(),
+            // A quiet tab with an agent to resume says so.
+            let why = tab.resume.as_ref().filter(|_| tab.status.is_none()).map(|a| tf("{} ran here before the restart.", &[a]));
+            let tip = match (mode, held && on, why) {
+                (_, true, _) => format!("{}\n{}", tab.label, t("Picked here: kept until something new waits in another tab")),
+                (_, false, Some(why)) => format!("{} · {why}", tab.label),
+                (StripMode::Icons, false, None) => tab.label.clone(),
                 _ => String::new(),
             };
             let resp = if tip.is_empty() { resp } else { resp.on_hover_text(tip) };

@@ -425,7 +425,7 @@ impl App {
             // bar at the bottom. The terminal takes what is left.
             if self.panes.get(&pane_id).is_some_and(|x| x.resume.is_some()) {
                 let banner = Rect::from_min_size(pane_body.min, vec2(pane_body.width(), BANNER_H));
-                self.resume_banner(ui, pane_id, banner);
+                self.resume_banner(ui, pane_id, banner, false);
                 term_rect.min.y += BANNER_H;
             }
             if self.panes.get(&pane_id).is_some_and(|x| x.exit.is_some() && !x.alive()) {
@@ -877,8 +877,9 @@ impl App {
         }
     }
 
-    /// The banner over a restored pane whose agent can continue its last session.
-    fn resume_banner(&mut self, ui: &mut Ui, pane_id: PaneId, rect: Rect) {
+    /// The banner over a restored pane whose agent can continue its last session, in Focus or
+    /// in a Grid tile (`tile`).
+    pub(super) fn resume_banner(&mut self, ui: &mut Ui, pane_id: PaneId, rect: Rect, tile: bool) {
         let p = style::pal(ui);
         let Some((agent, _)) = self.panes.get(&pane_id).and_then(|x| x.resume.clone()) else { return };
         let painter = ui.painter_at(rect);
@@ -897,16 +898,24 @@ impl App {
             })
             .inner;
         #[cfg(debug_assertions)]
-        crate::devtest::record(format!("resume:{pane_id}"), resume.rect);
+        {
+            let at = if tile { "tile-" } else { "" };
+            crate::devtest::record(format!("{at}resume:{pane_id}"), resume.rect);
+            crate::devtest::record(format!("{at}dismiss:{pane_id}"), dismiss.rect);
+        }
         let text_x = rect.left() + 12.0 + 15.0 + 10.0;
         let mut job = egui::text::LayoutJob::simple_singleline(
             crate::i18n::tf("{} ran here before the restart.", &[agent.label()]),
             egui::FontId::proportional(12.5),
             p.text,
         );
-        job.wrap = egui::text::TextWrapping::truncate_at_width((left - 10.0 - text_x).max(10.0));
-        let g = painter.layout_job(job);
-        painter.galley(pos2(text_x, cy - g.size().y / 2.0), g, p.text);
+        // Too narrow (a small Grid tile): the icon and the buttons only.
+        let room = left - 10.0 - text_x;
+        if room >= 40.0 {
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            let g = painter.layout_job(job);
+            painter.galley(pos2(text_x, cy - g.size().y / 2.0), g, p.text);
+        }
         if resume.on_hover_text(tf("Continue {}'s last session here", &[agent.label()])).clicked() {
             self.actions.push(Action::Resume(pane_id));
         }
@@ -1011,7 +1020,7 @@ impl App {
         // The filter, in the middle where it is easy to find.
         let options = [
             kit::Seg::new(t("All"), t("Every project's terminal; scroll for more")).count(n, p.text_faint),
-            kit::Seg::new(t("Active"), t("Only projects where something runs or waits")).count(active, p.text_faint),
+            kit::Seg::new(t("Active"), t("Only projects where something runs or waits, or an agent can be resumed")).count(active, p.text_faint),
             kit::Seg::new(t("Waiting"), t("Only projects with something waiting for you")).count(waiting_projects, if waiting_projects > 0 { p.warn } else { p.text_faint }),
         ];
         let width = kit::segmented_width(ui, &options);

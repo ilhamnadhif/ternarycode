@@ -98,7 +98,16 @@ run hidden 40 "sleep 1000;; action add-project $P1;; sleep 1000;; action add-pro
 
 run quit-restore-1 40 "sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude SessionStart;; sleep 500;; keys sleep 300\\r;; sleep 1200;; action quit;; sleep 500;; expect-dialog open;; click dialog-ok;; sleep 3000" no-done
 mkdir -p "$WORK/data-quit-restore-2"; cp "$WORK/data-quit-restore-1/workspace.json" "$WORK/data-quit-restore-2/" 2>/dev/null
-run quit-restore-2 40 "sleep 2000;; expect-project alpha;; expect-rect resume:2;; action grid;; action grid-active;; sleep 800;; expect-shown tile:alpha;; expect-rect tile-resume:2;; action grid-all;; quit"
+run quit-restore-2 40 "sleep 2000;; expect-project alpha;; expect-rect resume:2;; action grid;; action grid-active;; sleep 800;; expect-shown tile:alpha;; expect-shown tile-resume:2;; action grid-all;; quit"
+
+# An agent to resume in the second tab of a project, the other tab last open (the keyboard in
+# beta): its Grid tile shows that tab with the banner, the project is Active for it; Dismiss
+# takes it out of Active, and the next restart does not offer it again.
+run grid-resume-1 40 "sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude SessionStart;; sleep 500;; action new-tab;; sleep 800;; wait-tabs 0:2 1:3;; action add-project $P2;; sleep 1200;; action quit;; sleep 3000" no-done
+mkdir -p "$WORK/data-grid-resume-2"; cp "$WORK/data-grid-resume-1/workspace.json" "$WORK/data-grid-resume-2/" 2>/dev/null
+run grid-resume-2 40 "sleep 2000;; action grid;; action grid-active;; sleep 1000;; expect-shown tile:alpha;; expect-tile-tab alpha 0;; expect-shown tile-resume:2;; expect-shown tile-tab:alpha:1;; shot e2e-grid-resume;; click tile-dismiss:2;; sleep 800;; expect-hidden tile:alpha;; action quit;; sleep 3000" no-done
+mkdir -p "$WORK/data-grid-resume-3"; cp "$WORK/data-grid-resume-2/workspace.json" "$WORK/data-grid-resume-3/" 2>/dev/null
+run grid-resume-3 40 "sleep 2000;; action grid;; action grid-active;; sleep 1000;; expect-hidden tile:alpha;; action select-name alpha;; sleep 500;; action select-tab 0;; sleep 800;; expect-project alpha;; expect-tab 0;; expect-shown pane:2;; expect-hidden resume:2;; quit"
 
 # Restored panes sleep until shown (v1.2): a restored Grid of six projects shows 2 × 2 and starts
 # only those four shells; the two below the fold start when scrolled to or opened.

@@ -2381,8 +2381,10 @@ impl App {
             Action::RunAgent(id, launch, place) => self.run_preset(ctx, &id, launch, Some(place)),
             Action::Resume(id) => self.resume(ctx, id),
             Action::DismissResume(id) => {
+                // Not offered again after the next restart either.
                 if let Some(p) = self.panes.get_mut(&id) {
                     p.resume = None;
+                    p.last_agent = None;
                 }
                 self.mark_dirty();
             }
