@@ -190,6 +190,16 @@ pub enum PaletteMode {
     Commands,
 }
 
+/// The tab a Grid tile shows, by a pane of it (tab indices change when tabs move or close).
+#[derive(Clone, Copy, Debug)]
+pub struct GridPick {
+    pub pane: PaneId,
+    /// Picked by the user from the tile's strip: held until something new waits in another tab.
+    pub manual: bool,
+    /// The latest ask of the project's panes when it was picked (newer ones release it).
+    pub asks: u64,
+}
+
 /// The find bar of one pane (⌘F).
 pub struct PaneSearch {
     pub pane: PaneId,
@@ -296,6 +306,8 @@ pub struct App {
     ui_panics: u32,
     /// The pane taking the keyboard in the Grid.
     pub grid_focus: Option<PaneId>,
+    /// The tab each Grid tile shows (projects with several tabs), until the Grid is left.
+    pub grid_pick: HashMap<ProjectId, GridPick>,
     /// Columns of the Grid (0 = automatic).
     pub grid_columns: u32,
     /// Which projects the Grid shows.
@@ -496,6 +508,7 @@ impl App {
             logic_panics: 0,
             ui_panics: 0,
             grid_focus: None,
+            grid_pick: HashMap::new(),
             grid_columns: 0,
             grid_filter: tc_core::model::GridFilter::All,
             lsp: crate::lsp::Lsp::default(),
@@ -699,6 +712,8 @@ impl App {
             self.fit_all_to_focus(&ctx);
         }
         self.grid_focus = None;
+        // The tiles choose again next time (a tab picked by hand is held only in the Grid).
+        self.grid_pick.clear();
     }
 
     pub(crate) fn new_pane(&mut self, ctx: &egui::Context, project: ProjectId, cwd: PathBuf, size: tc_term::core::GridSize) -> PaneId {
@@ -2330,6 +2345,21 @@ impl App {
             }
             Action::ClosePaneId(id) => self.close_pane(ctx, id),
             Action::FocusPane(id) => self.focus_pane(id),
+            Action::GridShowTab(project, index) => {
+                let chosen = self.project(project).and_then(|p| {
+                    let pane = p.tabs.get(index)?.focused;
+                    let asks = p.panes().iter().filter_map(|id| self.panes.get(id)).map(|x| x.tracker.ask).max().unwrap_or(0);
+                    let typing = self.grid_focus.is_some_and(|f| p.tab_of(f).is_some());
+                    Some((pane, asks, typing))
+                });
+                if let Some((pane, asks, typing)) = chosen {
+                    // Typing into this tile: the keyboard follows to the tab chosen.
+                    if typing {
+                        self.focus_request = Some(pane);
+                    }
+                    self.grid_pick.insert(project, crate::app::GridPick { pane, manual: true, asks });
+                }
+            }
             Action::OpenGridTile => {
                 if self.view == View::Grid
                     && let Some(pane) = self.grid_focus

@@ -47,7 +47,9 @@ It is one small native binary (no Electron, no webview, no Node.js): the window 
 - **The Grid** shows every project live, side by side, each terminal filling its tile: the
   **Focus | Grid** switch at the top of the sidebar (or `⌘0`) opens it, and a project in the list
   opens on its own. **Active**, in the middle of its header, keeps only the projects where
-  something runs or waits.
+  something runs or waits. A project with several tabs shows the one that needs you (or where an
+  agent works), never switching away from the one you type into; the tabs sit in the tile's
+  header, to pick one by hand.
 - **An editor beside the terminal**, with language servers you already have (rust-analyzer, gopls,
   typescript-language-server, Dart, pyright, clangd…): ⌘-click to a definition, references,
   rename across files, code actions, completion, hover and problems.

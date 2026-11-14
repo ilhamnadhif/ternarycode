@@ -18,8 +18,9 @@ use tc_term::widget;
 
 use super::{icons, kit, status, style};
 use crate::actions::Action;
-use crate::app::App;
+use crate::app::{App, GridPick};
 use crate::i18n::{t, tf};
+use crate::project::{Project, Tab};
 
 const TILE_HEADER: f32 = 34.0;
 const GAP: f32 = 8.0;
@@ -89,35 +90,85 @@ impl App {
     }
 
     /// The pane a tile's header describes: of the tab the tile shows, one that needs attention,
-    /// else one running an agent, else the tab's focused pane. Other tabs that wait are told
-    /// apart (`waiting_elsewhere`): the header never speaks of a pane not in view.
-    pub fn tile_pane(&self, project: ProjectId) -> Option<PaneId> {
-        let tab = self.project(project)?.tab()?;
+    /// else one running an agent, else the tab's focused pane. Other tabs speak through the
+    /// tile's strip: the header never speaks of a pane not in view.
+    pub fn tile_pane(&self, project: ProjectId, tab: usize) -> Option<PaneId> {
+        let tab = self.project(project)?.tabs.get(tab)?;
         self.telling_pane(&tab.layout.panes()).or(Some(tab.focused))
+    }
+
+    /// How much a tab asks to be seen in a Grid tile, lower first: something waits (by its
+    /// priority, the oldest first), an agent at work, a program running (or an agent at its
+    /// prompt), an idle shell.
+    fn tab_rank(&self, tab: &Tab) -> (u8, Option<Instant>) {
+        let panes: Vec<&crate::pane::Pane> = tab.layout.panes().iter().filter_map(|id| self.panes.get(id)).collect();
+        if let Some(x) = panes.iter().filter(|x| x.tracker.wants_attention()).min_by_key(|x| (x.tracker.status.priority(), x.tracker.since)) {
+            return (x.tracker.status.priority().unwrap_or(3), Some(x.tracker.since));
+        }
+        if panes.iter().any(|x| x.tracker.agent.is_some() && matches!(x.tracker.status, Status::Running | Status::Unknown)) {
+            return (4, None);
+        }
+        if panes.iter().any(|x| x.tracker.agent.is_some() || matches!(x.tracker.fg, Foreground::Program { .. })) {
+            return (5, None);
+        }
+        (6, None)
+    }
+
+    /// The tab that asks most to be seen; on a tie the one open in Focus, then the first.
+    fn best_tab(&self, p: &Project) -> usize {
+        (0..p.tabs.len())
+            .min_by(|a, b| {
+                self.tab_rank(&p.tabs[*a])
+                    .cmp(&self.tab_rank(&p.tabs[*b]))
+                    .then((*a != p.active_tab).cmp(&(*b != p.active_tab)))
+                    .then(a.cmp(b))
+            })
+            .unwrap_or(0)
+    }
+
+    /// The tab a project's tile shows, remembered for the next frame. The tab the keyboard is
+    /// in (or is going to) never changes by itself; a tab picked from the strip is held until
+    /// something new waits in another tab; otherwise the tab that asks most to be seen, changing
+    /// only when another asks strictly more (each change resizes its terminals to the tile, and
+    /// an agent there redraws).
+    pub fn grid_tab(&mut self, project: ProjectId) -> usize {
+        let Some(p) = self.project(project) else { return 0 };
+        if p.tabs.len() <= 1 {
+            self.grid_pick.remove(&project);
+            return 0;
+        }
+        let pick = self.grid_pick.get(&project).copied().and_then(|g| p.tab_of(g.pane).map(|i| (i, g)));
+        let keyboard = self.grid_focus.or(self.focus_request).and_then(|f| p.tab_of(f));
+        let (shown, manual, asks) = match (keyboard, pick) {
+            // The keyboard's tab (held as picked when it was).
+            (Some(i), Some((j, g))) if i == j => (i, g.manual, g.asks),
+            (Some(i), _) => (i, false, 0),
+            (None, Some((i, g))) if g.manual => {
+                let fresh = p
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, _)| *k != i)
+                    .flat_map(|(_, t)| t.layout.panes())
+                    .filter_map(|id| self.panes.get(&id))
+                    .any(|x| x.tracker.wants_attention() && x.tracker.ask > g.asks);
+                if fresh { (self.best_tab(p), false, 0) } else { (i, true, g.asks) }
+            }
+            (None, Some((i, _))) => {
+                let best = self.best_tab(p);
+                if self.tab_rank(&p.tabs[best]).0 < self.tab_rank(&p.tabs[i]).0 { (best, false, 0) } else { (i, false, 0) }
+            }
+            (None, None) => (self.best_tab(p), false, 0),
+        };
+        let pane = p.tabs[shown].focused;
+        self.grid_pick.insert(project, GridPick { pane, manual, asks });
+        shown
     }
 
     /// The same over all of a project's tabs: the pane its sidebar row speaks of.
     pub fn project_pane(&self, project: ProjectId) -> Option<PaneId> {
         let p = self.project(project)?;
         self.telling_pane(&p.panes()).or_else(|| p.current_pane())
-    }
-
-    /// Panes of a project's other tabs (not the one in view) that need attention: how many, and
-    /// the most urgent status among them.
-    fn waiting_elsewhere(&self, project: ProjectId) -> Option<(usize, Status)> {
-        let p = self.project(project)?;
-        let waiting: Vec<Status> = p
-            .tabs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != p.active_tab)
-            .flat_map(|(_, tab)| tab.layout.panes())
-            .filter_map(|id| self.panes.get(&id))
-            .filter(|x| x.tracker.wants_attention())
-            .map(|x| x.tracker.status)
-            .collect();
-        let most = waiting.iter().copied().min_by_key(|s| s.priority())?;
-        Some((waiting.len(), most))
     }
 
     /// The project's most active pane counts for it; an agent to resume makes it active.
@@ -251,8 +302,9 @@ impl App {
                         );
                         // Out of view: not drawn (and its shell not started for it).
                         if rect.intersects(visible) {
-                            drawn.extend(self.project(id).and_then(|p| p.tab()).map(|t| t.layout.panes()).unwrap_or_default());
-                            self.tile(ui, id, rect, !scrolls);
+                            let shown = self.grid_tab(id);
+                            drawn.extend(self.project(id).and_then(|p| p.tabs.get(shown)).map(|t| t.layout.panes()).unwrap_or_default());
+                            self.tile(ui, id, rect, !scrolls, shown);
                         }
                     }
                     // More below: how many, at the bottom of the view; a click brings the next row.
@@ -363,12 +415,33 @@ impl App {
     /// One project: header (name, status, branch, a resume button, open in Focus) over its tab's
     /// panes. `wheel_free`: the mouse wheel may scroll the terminals (the Grid does not scroll);
     /// else only the one taking the keyboard gets it.
-    fn tile(&mut self, ui: &mut Ui, project_id: ProjectId, rect: Rect, wheel_free: bool) {
+    fn tile(&mut self, ui: &mut Ui, project_id: ProjectId, rect: Rect, wheel_free: bool, shown: usize) {
         let p = style::pal(ui);
         let Some(project) = self.project(project_id) else {
             return;
         };
-        let pane_id = self.tile_pane(project_id);
+        let pane_id = self.tile_pane(project_id, shown);
+        // Where Focus opens from this tile: the tab it shows.
+        let open_pane = project.tabs.get(shown).map(|t| t.focused);
+        // Several tabs: a strip of them (each one's label, what it holds, whether something there
+        // waits for the user), and whether the tab shown was picked from it.
+        let strip: Vec<StripTab> = if project.tabs.len() > 1 {
+            project
+                .tabs
+                .iter()
+                .map(|tab| {
+                    let panes = tab.layout.panes();
+                    let label = tab.title.clone().unwrap_or_else(|| self.panes.get(&tab.focused).map(|x| x.label()).unwrap_or_default());
+                    let teller = self.telling_pane(&panes).or(Some(tab.focused)).and_then(|id| self.panes.get(&id));
+                    let status = teller.map(|x| x.tracker.status).filter(|s| !matches!(s, Status::Idle | Status::Unknown));
+                    let waits = panes.iter().filter_map(|id| self.panes.get(id)).any(|x| x.tracker.wants_attention());
+                    StripTab { label, status, waits }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let held = !strip.is_empty() && self.grid_pick.get(&project_id).is_some_and(|g| g.manual);
         let name = project.name.clone();
         let color = project.color32();
         let branch = project.git.as_ref().map(|g| g.branch.clone());
@@ -385,9 +458,8 @@ impl App {
                 x.program_title.clone(),
             )
         });
-        let elsewhere = self.waiting_elsewhere(project_id);
-        // The tab in view, with all its panes (a split project shows its split).
-        let layout = project.tab().map(|t| t.layout.clone());
+        // The tab shown, with all its panes (a split project shows its split).
+        let layout = project.tabs.get(shown).map(|t| t.layout.clone());
         let count = layout.as_ref().map_or(0, |l| l.panes().len());
         // An agent that ran in one of them and can be continued.
         let resume = layout.as_ref().and_then(|l| {
@@ -438,8 +510,10 @@ impl App {
 
         // Header.
         let hr = ui.interact(header, egui::Id::new(("tile-header", project_id)), Sense::click());
+        // To Focus: the tab this tile shows.
+        let open_action = open_pane.map_or(Action::SelectProject(project_id), Action::FocusPane);
         if hr.double_clicked() {
-            self.actions.push(Action::SelectProject(project_id));
+            self.actions.push(open_action.clone());
         }
         let cy = header.center().y;
         let small = egui::FontId::proportional(style::SMALL);
@@ -451,8 +525,10 @@ impl App {
                 kit::icon_button_ex(ui, icons::ARROW_SQUARE_OUT, &kit::tip(t("Open in Focus view"), Action::OpenGridTile), false, 22.0)
             })
             .inner;
+        #[cfg(debug_assertions)]
+        crate::devtest::record(format!("tile-open:{name}"), open.rect);
         if open.clicked() {
-            self.actions.push(Action::SelectProject(project_id));
+            self.actions.push(open_action.clone());
         }
         let mut right = open_rect.left() - 8.0;
         let button = |ui: &mut Ui, icon: Option<&str>, text: &str, right: &mut f32| {
@@ -532,12 +608,6 @@ impl App {
         if count > 1 {
             meta.push((format!("{} {count}", icons::SQUARE_SPLIT_HORIZONTAL), small.clone(), p.text_faint));
         }
-        // Another tab waits: said here, nearest the buttons (the last to give way), without
-        // switching the tile to it.
-        if let Some((n, s)) = elsewhere {
-            let text = format!("{} {}", status::icon(s), tf("+{} in other tabs", &[&n.to_string()]));
-            meta.push((text, small.clone(), status::color(s, &p)));
-        }
         let mut meta_left = right;
         let mut placed = Vec::new();
         for (i, (text, font, color)) in meta.into_iter().rev().enumerate() {
@@ -563,39 +633,62 @@ impl App {
             left.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
             x += gw + 5.0;
         }
-        let g = left.layout_no_wrap(name, style::semibold(13.0), p.text);
+        let g = left.layout_no_wrap(name.clone(), style::semibold(13.0), p.text);
         let gw = g.size().x;
         left.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
         x += gw + 8.0;
+        // The strip of tabs, after the name: the chips say what each tab holds, so the status
+        // that follows needs no label.
+        let with_strip = !strip.is_empty();
+        if with_strip {
+            x = self.tab_strip(ui, &left, project_id, &name, &strip, shown, held, x, cy, left_limit, scheme.background);
+        }
         if let Some((s, attention, message, label, said, doing)) = &pane_status {
-            // Quiet: the terminal icon and what runs there. Else the status as a pill, then what
-            // it asks (or what runs, and what the program says it is doing).
+            // Quiet: the terminal icon and what runs there (with a strip: nothing more). Else the
+            // status as a pill, then what it asks (or what runs, and what the program says it is
+            // doing).
             let quiet = matches!(s, Status::Idle | Status::Unknown);
             let c = status::color(*s, &p);
             let status_left = x;
             let mut job;
             if quiet {
-                left.text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, icons::TERMINAL, style::icon_font(12.5), p.text_faint);
-                x += 17.0;
-                job = egui::text::LayoutJob::simple_singleline(label.clone(), small.clone(), p.text_faint);
+                if with_strip {
+                    job = egui::text::LayoutJob::default();
+                } else {
+                    left.text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, icons::TERMINAL, style::icon_font(12.5), p.text_faint);
+                    x += 17.0;
+                    job = egui::text::LayoutJob::simple_singleline(label.clone(), small.clone(), p.text_faint);
+                }
             } else {
                 let pill_text = match s {
                     Status::Failed(c) => tf("Failed · code {}", &[&c.to_string()]),
                     _ => status::text(*s),
                 };
-                let r = kit::paint_pill(&left, pos2(x, cy), Some(status::icon(*s)), &pill_text, c, style::tint(c, dark));
-                x = r.right() + 8.0;
-                let (text, col) = match (s, message) {
-                    (Status::NeedsInput, Some(m)) => (format!("{label} · {m}"), p.text),
+                // The pill whole, or (no room for it) its icon.
+                if x + kit::pill_width(&left, Some(status::icon(*s)), &pill_text) <= left_limit {
+                    let r = kit::paint_pill(&left, pos2(x, cy), Some(status::icon(*s)), &pill_text, c, style::tint(c, dark));
+                    x = r.right() + 8.0;
+                } else {
+                    left.text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, status::icon(*s), style::icon_font(12.5), c);
+                    x += 17.0;
+                }
+                let (text, col) = match (s, message, with_strip) {
+                    (Status::NeedsInput, Some(m), true) => (m.clone(), p.text),
+                    (Status::NeedsInput, Some(m), false) => (format!("{label} · {m}"), p.text),
+                    (_, _, true) => (String::new(), p.text_muted),
                     _ => (label.clone(), p.text_muted),
                 };
                 job = egui::text::LayoutJob::simple_singleline(text, small.clone(), col);
                 if let Some((_, Some(v))) = progress {
-                    job.append(&format!(" · {v}%"), 0.0, egui::TextFormat::simple(small.clone(), p.text_muted));
+                    let sep = if job.text.is_empty() { "" } else { " · " };
+                    job.append(&format!("{sep}{v}%"), 0.0, egui::TextFormat::simple(small.clone(), p.text_muted));
                 }
             }
-            if let Some(doing) = doing.as_ref().filter(|_| *s != Status::NeedsInput) {
-                job.append(&format!(" · {doing}"), 0.0, egui::TextFormat::simple(small.clone(), p.text_faint));
+            if !(quiet && with_strip)
+                && let Some(doing) = doing.as_ref().filter(|_| *s != Status::NeedsInput)
+            {
+                let sep = if job.text.is_empty() { "" } else { " · " };
+                job.append(&format!("{sep}{doing}"), 0.0, egui::TextFormat::simple(small.clone(), p.text_faint));
             }
             job.wrap = egui::text::TextWrapping::truncate_at_width((left_limit - x).max(0.0));
             let sg = left.layout_job(job);
@@ -685,7 +778,7 @@ impl App {
             }
             let r = ui.interact(body, egui::Id::new(("tile-compact", project_id)), Sense::click());
             if r.on_hover_text(t("Open in Focus view")).clicked() {
-                self.actions.push(Action::SelectProject(project_id));
+                self.actions.push(open_action);
             }
             ui.painter_at(rect.expand(2.0)).rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
             return;
@@ -782,6 +875,178 @@ impl App {
         self.project(pane.project)?;
         Some(tf("Typing into {}", &[&format!("{} · {}", self.project_label(pane.project), pane.label())]))
     }
+}
+
+/// A tab of a tile's strip: its label, what it holds (none: a quiet shell), and whether
+/// something there waits for the user.
+struct StripTab {
+    label: String,
+    status: Option<Status>,
+    waits: bool,
+}
+
+/// How a tile's strip of tabs is drawn, from the room there is: each tab with its icon and
+/// label; icons only (labels in tooltips); or one chip with their number and a menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StripMode {
+    Labels,
+    Icons,
+    Menu,
+}
+
+const CHIP_H: f32 = 22.0;
+const CHIP_GAP: f32 = 2.0;
+
+impl App {
+    /// The strip of a tile's tabs (several tabs only), from `x` on the header's line `cy`: a chip
+    /// per tab, the one shown filled, one where something waits in the warning colour with a
+    /// dot; a click shows that tab (held). Narrow, the chips lose their labels, then become one
+    /// chip with a menu. Returns where what follows starts.
+    #[allow(clippy::too_many_arguments)]
+    fn tab_strip(
+        &mut self,
+        ui: &mut Ui,
+        painter: &egui::Painter,
+        project: ProjectId,
+        name: &str,
+        tabs: &[StripTab],
+        shown: usize,
+        held: bool,
+        x: f32,
+        cy: f32,
+        limit: f32,
+        bg: egui::Color32,
+    ) -> f32 {
+        let p = style::pal(ui);
+        let font = style::medium(11.5);
+        let labels: Vec<std::sync::Arc<egui::Galley>> = tabs
+            .iter()
+            .map(|t| {
+                let mut job = egui::text::LayoutJob::simple_singleline(t.label.clone(), font.clone(), p.text);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(140.0);
+                painter.layout_job(job)
+            })
+            .collect();
+        // The pin: 4 px after the label, 10.5 px wide.
+        let pin_w = 14.5;
+        let label_w = |i: usize| 6.0 + 12.0 + 5.0 + labels[i].size().x + if held && i == shown { pin_w } else { 0.0 } + 7.0;
+        let all_labels: f32 = (0..tabs.len()).map(label_w).sum::<f32>() + CHIP_GAP * (tabs.len() as f32 - 1.0);
+        let all_icons = 24.0 * tabs.len() as f32 + CHIP_GAP * (tabs.len() as f32 - 1.0);
+        let room = limit - x;
+        let mode = if all_labels <= room - 110.0 {
+            StripMode::Labels
+        } else if all_icons <= room - 70.0 {
+            StripMode::Icons
+        } else {
+            StripMode::Menu
+        };
+        let icon_of = |t: &StripTab, on: bool| match t.status {
+            Some(s) => (status::icon(s), status::color(s, &p)),
+            None => (icons::TERMINAL, if on { p.accent_text } else { p.text_faint }),
+        };
+        if mode == StripMode::Menu {
+            // One chip: the number of tabs (warning when one not shown waits), a menu of them.
+            let count = painter.layout_no_wrap(tabs.len().to_string(), style::medium(11.0), p.text_muted);
+            let w = 6.0 + 13.0 + 3.0 + count.size().x + 3.0 + 10.0 + 6.0;
+            let rect = Rect::from_min_size(pos2(x, cy - CHIP_H / 2.0), vec2(w, CHIP_H));
+            let resp = ui.interact(rect, egui::Id::new(("tile-tabs", project)), Sense::click());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("tile-tabs:{name}"), rect);
+            let waits = tabs.iter().enumerate().any(|(i, t)| i != shown && t.waits);
+            let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+            let fg = if waits { p.warn } else { p.text_muted };
+            let fill = if waits {
+                style::tint(p.warn, ui.visuals().dark_mode)
+            } else if resp.hovered() || open {
+                p.hover
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            painter.rect_filled(rect, CornerRadius::same(5), fill);
+            painter.text(pos2(rect.left() + 6.0 + 6.5, cy), Align2::CENTER_CENTER, icons::BROWSERS, style::icon_font(12.0), fg);
+            let cx = rect.left() + 6.0 + 13.0 + 3.0;
+            painter.galley(pos2(cx, cy - count.size().y / 2.0), count.clone(), fg);
+            painter.text(pos2(cx + count.size().x + 3.0 + 5.0, cy), Align2::CENTER_CENTER, icons::CARET_DOWN, style::icon_font(10.0), fg);
+            if waits {
+                chip_dot(painter, rect, p.warn, bg);
+            }
+            let resp = resp.on_hover_text(crate::i18n::count(tabs.len(), t("1 tab"), t("{} tabs")));
+            egui::Popup::menu(&resp).align(egui::RectAlign::BOTTOM_START).show(|ui| {
+                ui.set_min_width(230.0);
+                ui.set_max_width(260.0);
+                kit::menu_body(ui);
+                kit::menu_header(ui, &tf("Tabs in {}", &[name]));
+                for (i, tab) in tabs.iter().enumerate() {
+                    let state = tab.status.map_or_else(|| t("Idle").to_string(), status::text);
+                    let icon = (i == shown).then_some(icons::CHECK);
+                    if kit::menu_item(ui, icon, &tab.label, Some(&state), false).clicked() {
+                        self.actions.push(Action::GridShowTab(project, i));
+                        ui.close();
+                    }
+                }
+            });
+            return rect.right() + 8.0;
+        }
+        let mut cx = x;
+        for (i, tab) in tabs.iter().enumerate() {
+            let on = i == shown;
+            let w = if mode == StripMode::Labels { label_w(i) } else { 24.0 };
+            let rect = Rect::from_min_size(pos2(cx, cy - CHIP_H / 2.0), vec2(w, CHIP_H));
+            cx = rect.right() + CHIP_GAP;
+            let resp = ui.interact(rect, egui::Id::new(("tile-tab", project, i)), Sense::click());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("tile-tab:{name}:{i}"), rect);
+            let waits = !on && tab.waits;
+            if on {
+                painter.rect(rect, CornerRadius::same(5), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+            } else if waits {
+                painter.rect_filled(rect, CornerRadius::same(5), style::tint(p.warn, ui.visuals().dark_mode));
+            } else if resp.hovered() {
+                painter.rect_filled(rect, CornerRadius::same(5), p.hover);
+            }
+            let (icon, mut ic) = icon_of(tab, on);
+            if waits {
+                ic = p.warn;
+            }
+            let icon_x = if mode == StripMode::Labels { rect.left() + 6.0 + 6.0 } else { rect.center().x };
+            painter.text(pos2(icon_x, cy), Align2::CENTER_CENTER, icon, style::icon_font(12.0), ic);
+            if mode == StripMode::Labels {
+                let tc = if on {
+                    p.text
+                } else if waits {
+                    p.warn
+                } else {
+                    p.text_muted
+                };
+                let g = labels[i].clone();
+                let lx = rect.left() + 6.0 + 12.0 + 5.0;
+                painter.galley(pos2(lx, cy - g.size().y / 2.0), g.clone(), tc);
+                if held && on {
+                    painter.text(pos2(lx + g.size().x + 4.0 + 5.25, cy), Align2::CENTER_CENTER, icons::PUSH_PIN_SIMPLE, style::icon_font(10.5), p.text_faint);
+                }
+            }
+            if waits {
+                chip_dot(painter, rect, p.warn, bg);
+            }
+            let tip = match (mode, held && on) {
+                (_, true) => format!("{}\n{}", tab.label, t("Picked here: kept until something new waits in another tab")),
+                (StripMode::Icons, false) => tab.label.clone(),
+                _ => String::new(),
+            };
+            let resp = if tip.is_empty() { resp } else { resp.on_hover_text(tip) };
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !on {
+                self.actions.push(Action::GridShowTab(project, i));
+            }
+        }
+        cx - CHIP_GAP + 8.0
+    }
+}
+
+/// The dot of a chip whose tab waits for the user: at its top right corner, ringed by the tile.
+fn chip_dot(painter: &egui::Painter, rect: Rect, color: egui::Color32, ring: egui::Color32) {
+    let c = pos2(rect.right() - 1.0, rect.top() + 1.0);
+    painter.circle_filled(c, 4.5, ring);
+    painter.circle_filled(c, 3.0, color);
 }
 
 #[cfg(test)]

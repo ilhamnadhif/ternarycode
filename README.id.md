@@ -47,7 +47,9 @@ sekitar 0,2 detik, CPU 0 % saat diam, dan sepuluh pane terbuka memakai sekitar 7
 - **Grid** menampilkan semua project secara live, berdampingan, dengan terminal yang memenuhi
   kartunya: switch **Focus | Grid** di bagian atas sidebar (atau `⌘0`) membukanya, dan project di
   daftar membuka project itu sendiri. **Aktif** di tengah header-nya hanya menampilkan project yang
-  sedang menjalankan sesuatu atau menunggu.
+  sedang menjalankan sesuatu atau menunggu. Project dengan beberapa tab menampilkan tab yang butuh
+  Anda (atau tempat agent bekerja), tanpa pernah berpindah dari tab yang sedang Anda ketik; tab-tabnya
+  ada di header tile, untuk dipilih sendiri.
 - **Editor di samping terminal**, dengan language server yang sudah Anda punya (rust-analyzer,
   gopls, typescript-language-server, Dart, pyright, clangd…): ⌘-klik ke definisi, referensi,
   rename lintas file, code action, autocomplete, hover, dan daftar problem.

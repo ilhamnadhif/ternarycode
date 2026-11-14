@@ -77,7 +77,6 @@ const ID: &[(&str, &str)] = &[
     ("Resume", "Lanjutkan"),
     ("Continue {}'s last session here", "Lanjutkan sesi terakhir {} di sini"),
     ("No agent is waiting for you.", "Tidak ada agent yang menunggu kamu."),
-    ("+{} in other tabs", "+{} di tab lain"),
     ("Show everything that waits for you", "Tampilkan semua yang menunggu kamu"),
     ("Waiting for you", "Menunggu kamu"),
     ("Close", "Tutup"),
@@ -805,4 +804,9 @@ const ID: &[(&str, &str)] = &[
     ("When a branch is merged", "Saat branch sudah di-merge"),
     ("Offer to remove its worktree.", "Tawarkan untuk menghapus worktree-nya."),
     ("{} · worktree, its folder stays", "{} · worktree, foldernya tetap"),
+    // Grid: a project with several tabs
+    ("1 tab", "1 tab"),
+    ("{} tabs", "{} tab"),
+    ("Tabs in {}", "Tab di {}"),
+    ("Picked here: kept until something new waits in another tab", "Dipilih di sini: ditahan sampai ada yang baru menunggu di tab lain"),
 ];

@@ -476,6 +476,7 @@ impl App {
                         cmd.map(Action::Ide)
                     }
                     "grid-active" => Some(Action::GridFilter(tc_core::model::GridFilter::Active)),
+                    "grid-columns" => rest.trim().parse().ok().map(Action::GridColumns),
                     "focus" => Some(Action::SetView(tc_core::model::View::Focus)),
                     "save" => Some(Action::SaveFile),
                     "find" => Some(Action::Find),
@@ -638,6 +639,25 @@ impl App {
                 let file = self.active.and_then(|id| self.editors.get(&id)).and_then(|e| e.file()).map(|f| f.path.clone());
                 let served = file.as_ref().is_some_and(|f| self.lsp.server_for(f).is_some());
                 self.devtest.check(file.is_some() && !served, "expect-no-lsp");
+            }
+            // `expect-tile-tab <project> <i>`: the project's Grid tile shows its tab `i`.
+            "expect-tile-tab" => {
+                let (name, want) = arg.trim().rsplit_once(' ').unwrap_or((arg.trim(), "0"));
+                let shown = self.projects.iter().find(|p| p.name == name).map(|p| {
+                    if p.tabs.len() <= 1 {
+                        0
+                    } else {
+                        self.grid_pick.get(&p.id).and_then(|g| p.tab_of(g.pane)).unwrap_or(usize::MAX)
+                    }
+                });
+                let want: usize = want.parse().unwrap_or(0);
+                self.devtest.check(shown == Some(want), &format!("expect-tile-tab {name} {want} (shows {shown:?})"));
+            }
+            // `expect-tab <i>`: the open project shows its tab `i` (in Focus).
+            "expect-tab" => {
+                let tab = self.active_project().map(|p| p.active_tab);
+                let want: usize = arg.trim().parse().unwrap_or(0);
+                self.devtest.check(tab == Some(want), &format!("expect-tab {want} (open: {tab:?})"));
             }
             "expect-project" => {
                 let name = self.active_project().map(|p| p.name.clone()).unwrap_or_default();

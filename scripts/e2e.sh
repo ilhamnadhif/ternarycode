@@ -231,5 +231,11 @@ W="$WORK/wtrepo"; mkdir -p "$W"
 WT="$WORK/wtrepo.worktrees/feat"
 run worktree 90 "sleep 1000;; action add-project $W;; sleep 1500;; action worktree none feat main;; wait-project feat;; sleep 800;; expect-project feat;; expect-shown project:feat;; expect-file $WT/.env KEY=1;; expect-file $WT/a.txt one;; keys echo two >> a.txt && git commit -qam work && echo new > b.txt\\r;; sleep 1500;; action review;; sleep 1500;; wait-review Added:b.txt,Modified:a.txt;; shot e2e-worktree-review;; key esc;; sleep 400;; write-file $WT/b.txt new\\n;; rm-file $WT/b.txt;; sleep 800;; action merge-worktree;; sleep 500;; expect-dialog open;; click dialog-ok;; sleep 400;; expect-project wtrepo;; wait-screen Merge made;; wait-toast Merged tc/feat;; expect-file $W/a.txt two;; action select-name feat;; sleep 600;; action remove-worktree;; sleep 500;; expect-dialog open;; shot e2e-worktree-remove;; click dialog-ok;; sleep 2500;; expect-hidden project:feat;; expect-not-file $WT/a.txt one;; quit"
 
+# A Grid tile of a project with two tabs (alpha: the agent's tab 0, a shell in tab 1, the one
+# last open; the keyboard is in beta's tile): it shows the tab last open while nothing happens;
+# the agent asking brings its tab; a tab picked from the strip holds until something new waits;
+# the tile typed into never changes by itself; ↗ opens Focus on the tab shown.
+run grid-tabs 60 "sleep 1000;; action add-project $P1;; sleep 1200;; action new-tab;; sleep 800;; wait-tabs 0:2 1:3;; action add-project $P2;; sleep 1200;; action grid;; sleep 1200;; expect-tile-tab alpha 1;; hook 2 claude PermissionRequest;; sleep 800;; expect-tile-tab alpha 0;; expect-shown tile-tab:alpha:1;; shot e2e-grid-tabs;; click tile-tab:alpha:1;; sleep 600;; expect-tile-tab alpha 1;; sleep 1200;; expect-tile-tab alpha 1;; hook 2 claude Stop;; sleep 800;; expect-tile-tab alpha 0;; click tile-tab:alpha:1;; sleep 600;; expect-tile-tab alpha 1;; click tile-pane:3;; sleep 500;; hook 2 claude PermissionRequest;; sleep 800;; expect-tile-tab alpha 1;; click tile-open:alpha;; sleep 800;; expect-project alpha;; expect-tab 1;; quit"
+
 echo "---- $PASS passed, $FAIL failed (logs: $WORK)"
 [ "$FAIL" -eq 0 ]

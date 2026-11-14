@@ -100,6 +100,9 @@ pub enum Action {
     GridColumns(u32),
     /// The Grid tile that has the keyboard opens in Focus (⌘↵).
     OpenGridTile,
+    /// A Grid tile shows this tab of its project (a chip of its strip clicked): kept until
+    /// something new waits in another tab, or the Grid is left.
+    GridShowTab(ProjectId, usize),
     /// An editor command served by a language server (definition, rename, completion…).
     Ide(crate::lsp::IdeCmd),
     /// Opens a file with the caret at a line and char column (both 0-based).
