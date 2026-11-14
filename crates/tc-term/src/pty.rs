@@ -218,6 +218,23 @@ impl LocalPty {
     }
 }
 
+/// Ends these programs as the app quits: SIGHUP to each, then SIGKILL to those still there
+/// after `grace`, waited for here. `hang_up`'s thread would die with the app, and a shell still
+/// starting ignores SIGHUP; once the app has closed its terminal it then waits for it forever,
+/// holding one of the system's few hundred terminals. Returns at once when all have ended.
+pub fn hang_up_all(ptys: &[Arc<LocalPty>], grace: Duration) {
+    for p in ptys {
+        p.signal(libc::SIGHUP);
+    }
+    let start = std::time::Instant::now();
+    while start.elapsed() < grace && ptys.iter().any(|p| p.poll_exit().is_none()) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for p in ptys {
+        p.signal(libc::SIGKILL);
+    }
+}
+
 impl Drop for LocalPty {
     fn drop(&mut self) {
         // `Pty::drop` sends SIGHUP and then waits for the child: never on the UI thread.

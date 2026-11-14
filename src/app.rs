@@ -2102,11 +2102,16 @@ impl App {
     fn quit_now(&mut self, ctx: &egui::Context) {
         self.save_and_wait();
         self.lsp_stop_all();
-        for pane in self.panes.values_mut() {
-            pane.hang_up();
-        }
+        self.end_programs();
         self.allow_close = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Ends every pane's program as the app quits, the way closing its terminal does, and
+    /// makes sure none is left behind (waits at most 1.5 s, only for those that do not end).
+    fn end_programs(&mut self) {
+        let ptys: Vec<_> = self.panes.values_mut().filter_map(Pane::take_for_quit).collect();
+        tc_term::pty::hang_up_all(&ptys, Duration::from_millis(1500));
     }
 
     fn install_record_path(agent: AgentKind) -> PathBuf {
@@ -3583,18 +3588,14 @@ impl eframe::App for App {
         self.save_and_wait();
         // Language servers too, whichever way the app ends (they would outlive it).
         self.lsp_stop_all();
-        for pane in self.panes.values_mut() {
-            pane.hang_up();
-        }
+        self.end_programs();
     }
 
     #[cfg(not(target_os = "macos"))]
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_and_wait();
         self.lsp_stop_all();
-        for pane in self.panes.values_mut() {
-            pane.hang_up();
-        }
+        self.end_programs();
     }
 }
 

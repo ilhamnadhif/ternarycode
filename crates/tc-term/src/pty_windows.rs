@@ -487,6 +487,14 @@ impl LocalPty {
     }
 }
 
+/// Ends these programs as the app quits: each pseudoconsole closes, and a program still there
+/// after `grace` is terminated (its pseudoconsole's end takes its programs with it).
+pub fn hang_up_all(ptys: &[Arc<LocalPty>], grace: Duration) {
+    for p in ptys {
+        p.hang_up(grace);
+    }
+}
+
 impl Drop for LocalPty {
     fn drop(&mut self) {
         // Our pipe ends first (when no session took them), so closing never waits on output

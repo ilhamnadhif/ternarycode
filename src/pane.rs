@@ -847,6 +847,13 @@ impl Pane {
         }
     }
 
+    /// The pane's program, taken to be ended with the others as the app quits
+    /// (`pty::hang_up_all`).
+    pub fn take_for_quit(&mut self) -> Option<Arc<tc_term::pty::LocalPty>> {
+        self.closing = true;
+        self.session.take().map(|s| s.pty)
+    }
+
     /// Records a new size; the program hears about it (SIGWINCH) once the size has settled, so
     /// dragging a divider or the window edge doesn't make full-screen programs redraw on every
     /// frame (FR-T5).
