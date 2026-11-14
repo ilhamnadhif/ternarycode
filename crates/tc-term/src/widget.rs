@@ -138,7 +138,7 @@ pub fn link_modifier(m: egui::Modifiers) -> bool {
 }
 
 pub fn cell_size(ctx: &egui::Context, font_size: f32) -> Vec2 {
-    let font = FontId::new(font_size, FontFamily::Name(fonts::TERM_REGULAR.into()));
+    let font = FontId::new(font_size, family(false, false));
     ctx.fonts_mut(|f| vec2(f.glyph_width(&font, 'M'), f.row_height(&font)))
 }
 
@@ -225,6 +225,12 @@ struct TextRun {
 }
 
 /// Box-drawing weights per direction: 0 none, 1 light, 2 heavy, 3 double. (up, right, down, left)
+/// A box-drawing line that only runs left to right (`─`, `━`, `═`): drawn over several cells it
+/// is the same as drawn in each.
+fn horizontal_line(c: char) -> bool {
+    box_lines(c).is_some_and(|l| l[0] == 0 && l[2] == 0 && l[1] > 0 && l[1] == l[3])
+}
+
 fn box_lines(c: char) -> Option<[u8; 4]> {
     Some(match c {
         '─' => [0, 1, 0, 1],
@@ -288,7 +294,7 @@ fn box_lines(c: char) -> Option<[u8; 4]> {
 
 /// Draws box-drawing and block characters as shapes so lines join seamlessly across cells.
 /// Returns false for characters it does not handle.
-fn draw_special(painter: &egui::Painter, c: char, r: Rect, color: Color32, ppp: f32) -> bool {
+fn draw_special(out: &mut Vec<egui::Shape>, c: char, r: Rect, color: Color32, ppp: f32) -> bool {
     let px = 1.0 / ppp;
     let snap = |v: f32| (v * ppp).round() / ppp;
     if let Some((dx, dy)) = match c {
@@ -308,7 +314,7 @@ fn draw_special(painter: &egui::Painter, c: char, r: Rect, color: Color32, ppp: 
             points.push(center + vec2(-dx * rad * a.cos(), -dy * rad * a.sin()));
         }
         points.push(pos2(if dx > 0.0 { r.right() } else { r.left() }, cy));
-        painter.add(egui::Shape::line(points, Stroke::new(px.max(1.0), color)));
+        out.push(egui::Shape::line(points, Stroke::new(px.max(1.0), color)));
         return true;
     }
     if let Some(lines) = box_lines(c) {
@@ -382,7 +388,7 @@ fn draw_special(painter: &egui::Painter, c: char, r: Rect, color: Color32, ppp: 
                         pos2(cx - t, cy + off + w / 2.0),
                     ),
                 };
-                painter.rect_filled(rect, CornerRadius::ZERO, color);
+                out.push(egui::Shape::rect_filled(rect, CornerRadius::ZERO, color));
             }
         }
         return true;
@@ -394,8 +400,8 @@ fn draw_special(painter: &egui::Painter, c: char, r: Rect, color: Color32, ppp: 
             Rect::from_min_max(r.min, pos2(snap(r.left() + r.width() * f), r.bottom()))
         }
     };
-    let fill = |rect: Rect, col: Color32| {
-        painter.rect_filled(rect, CornerRadius::ZERO, col);
+    let mut fill = |rect: Rect, col: Color32| {
+        out.push(egui::Shape::rect_filled(rect, CornerRadius::ZERO, col));
     };
     match c {
         '█' => fill(r, color),
@@ -422,16 +428,13 @@ fn draw_special(painter: &egui::Painter, c: char, r: Rect, color: Color32, ppp: 
     true
 }
 
+/// The terminal font's family for a style, made once: its name is an `Arc<str>`, cloned per
+/// text run instead of allocated.
 fn family(bold: bool, italic: bool) -> FontFamily {
-    FontFamily::Name(
-        match (bold, italic) {
-            (false, false) => fonts::TERM_REGULAR,
-            (true, false) => fonts::TERM_BOLD,
-            (false, true) => fonts::TERM_ITALIC,
-            (true, true) => fonts::TERM_BOLD_ITALIC,
-        }
-        .into(),
-    )
+    static FAMILIES: std::sync::LazyLock<[FontFamily; 4]> = std::sync::LazyLock::new(|| {
+        [fonts::TERM_REGULAR, fonts::TERM_BOLD, fonts::TERM_ITALIC, fonts::TERM_BOLD_ITALIC].map(|name| FontFamily::Name(name.into()))
+    });
+    FAMILIES[bold as usize + 2 * italic as usize].clone()
 }
 
 /// Viewport cell under a screen position, clamped to the grid.
@@ -1567,6 +1570,9 @@ fn show_inner(
     let default_bg = palette(257, colors, scheme);
     ui.painter_at(rect).rect_filled(rect, CornerRadius::ZERO, default_bg);
     let painter = ui.painter_at(clip);
+    // The cells' shapes, handed to the painter at once (one lock of the context, not one per
+    // shape), in the order they are drawn.
+    let mut shapes: Vec<egui::Shape> = Vec::new();
 
     let offset = content.display_offset;
     let selection = content.selection;
@@ -1583,10 +1589,10 @@ fn show_inner(
     let mut runs: Vec<(usize, TextRun)> = Vec::new();
     let mut singles: Vec<(usize, usize, String, RunStyle, usize)> = Vec::new(); // row, col, text, style, width
     let mut bg_run: Option<(usize, usize, usize, Color32)> = None; // row, start col, end col, color
-    let flush_bg = |run: &mut Option<(usize, usize, usize, Color32)>| {
+    let flush_bg = |run: &mut Option<(usize, usize, usize, Color32)>, out: &mut Vec<egui::Shape>| {
         if let Some((row, start, end, color)) = run.take() {
             let r = cell_rect(start, row, end - start);
-            painter.rect_filled(r, CornerRadius::ZERO, color);
+            out.push(egui::Shape::rect_filled(r, CornerRadius::ZERO, color));
         }
     };
     let mut current: Option<(usize, TextRun)> = None;
@@ -1631,10 +1637,10 @@ fn show_inner(
                 *end = col + width
             }
             (_, Some(c)) => {
-                flush_bg(&mut bg_run);
+                flush_bg(&mut bg_run, &mut shapes);
                 bg_run = Some((row, col, col + width, c));
             }
-            (_, None) => flush_bg(&mut bg_run),
+            (_, None) => flush_bg(&mut bg_run, &mut shapes),
         }
 
         let mut ch = indexed.cell.c;
@@ -1717,16 +1723,21 @@ fn show_inner(
             singles.push((row, col, text, run_style, width));
         }
     }
-    flush_bg(&mut bg_run);
+    flush_bg(&mut bg_run, &mut shapes);
     if let Some(run) = current.take() {
         runs.push(run);
     }
+    let cursor_color = colors[NamedColor::Cursor as usize]
+        .map(rgb)
+        .unwrap_or(scheme.cursor);
+    // What is drawn from here on is owned: the program can write again while it is painted.
+    drop(term);
 
     let paint_text =
-        |row: usize, col: usize, text: &str, st: &RunStyle, width: usize, color: Color32| {
+        |out: &mut Vec<egui::Shape>, row: usize, col: usize, text: &str, st: &RunStyle, width: usize, color: Color32| {
             let r = cell_rect(col, row, width);
             if text.chars().count() == 1
-                && draw_special(&painter, text.chars().next().unwrap(), r, color, ppp)
+                && draw_special(out, text.chars().next().unwrap(), r, color, ppp)
             {
                 return;
             }
@@ -1752,38 +1763,42 @@ fn show_inner(
             );
             job.wrap = egui::text::TextWrapping::no_max_width();
             let galley = painter.layout_job(job);
+            if galley.is_empty() {
+                return;
+            }
             let pos = pos2(r.left(), r.top());
             if st.bold && !style.real_bold {
-                painter.galley(pos + vec2(0.5 / ppp.max(1.0), 0.0), galley.clone(), color);
+                out.push(egui::Shape::galley(pos + vec2(0.5 / ppp.max(1.0), 0.0), galley.clone(), color));
             }
-            painter.galley(pos, galley, color);
+            out.push(egui::Shape::galley(pos, galley, color));
         };
-    let decorate = |row: usize, col: usize, width: usize, st: &RunStyle| {
+    let decorate = |out: &mut Vec<egui::Shape>, row: usize, col: usize, width: usize, st: &RunStyle| {
         let r = cell_rect(col, row, width);
         let thickness = (1.0 / ppp).max(0.5);
         let ucolor = st.underline_color.unwrap_or(st.fg);
         if st.underline > 0 {
             let y = snap(r.bottom() - thickness * 1.5);
-            painter.hline(r.x_range(), y, Stroke::new(thickness.max(1.0), ucolor));
+            out.push(egui::Shape::hline(r.x_range(), y, Stroke::new(thickness.max(1.0), ucolor)));
             if st.underline == 2 {
-                painter.hline(
+                out.push(egui::Shape::hline(
                     r.x_range(),
                     y - 2.0,
                     Stroke::new(thickness.max(1.0), ucolor),
-                );
+                ));
             }
         }
         if st.strike {
-            painter.hline(
+            out.push(egui::Shape::hline(
                 r.x_range(),
                 snap(r.center().y),
                 Stroke::new(thickness.max(1.0), st.fg),
-            );
+            ));
         }
     };
 
     for (row, run) in &runs {
         paint_text(
+            &mut shapes,
             *row,
             run.col,
             &run.text,
@@ -1791,17 +1806,32 @@ fn show_inner(
             run.text.len(),
             run.style.fg,
         );
-        decorate(*row, run.col, run.text.len(), &run.style);
+        decorate(&mut shapes, *row, run.col, run.text.len(), &run.style);
     }
-    for (row, col, text, st, width) in &singles {
-        paint_text(*row, *col, text, st, *width, st.fg);
-        decorate(*row, *col, *width, st);
+    // A row of the same horizontal line (the top and bottom of an agent's boxes) is drawn as
+    // one stretch, not two rectangles per cell: the same pixels, far fewer shapes.
+    let mut i = 0;
+    while i < singles.len() {
+        let (row, col, text, st, width) = &singles[i];
+        let line = st.underline == 0 && !st.strike && text.chars().count() == 1 && text.chars().next().is_some_and(horizontal_line);
+        let (mut cols, mut j) = (*width, i + 1);
+        while line && j < singles.len() {
+            let (row2, col2, text2, st2, width2) = &singles[j];
+            if row2 != row || *col2 != col + cols || text2 != text || st2 != st {
+                break;
+            }
+            cols += width2;
+            j += 1;
+        }
+        paint_text(&mut shapes, *row, *col, text, st, cols, st.fg);
+        decorate(&mut shapes, *row, *col, cols, st);
+        i = j;
     }
     for &(row, s, e) in &link_hover {
         if let Some(slot) = slot_of(row) {
             let r = cell_rect(s, slot, e - s);
             let thickness = (1.0 / ppp).max(1.0);
-            painter.hline(r.x_range(), snap(r.bottom() - thickness * 1.5), Stroke::new(thickness, scheme.cursor));
+            shapes.push(egui::Shape::hline(r.x_range(), snap(r.bottom() - thickness * 1.5), Stroke::new(thickness, scheme.cursor)));
         }
     }
 
@@ -1819,9 +1849,6 @@ fn show_inner(
     } else {
         true
     };
-    let cursor_color = colors[NamedColor::Cursor as usize]
-        .map(rgb)
-        .unwrap_or(scheme.cursor);
     let mut cursor_rect = None;
     if let Some((row, col, text, fg, bg, wide)) = cursor_cell {
         let r = cell_rect(col, row, if wide { 2 } else { 1 });
@@ -1829,38 +1856,38 @@ fn show_inner(
         if !view.preedit.is_empty() {
             // Drawn below.
         } else if !has_focus_now {
-            painter.rect_stroke(
+            shapes.push(egui::Shape::Rect(egui::epaint::RectShape::stroke(
                 r,
                 CornerRadius::ZERO,
                 Stroke::new(1.0, cursor_color),
                 StrokeKind::Inside,
-            );
+            )));
         } else if blink_on {
             match cursor.shape {
                 CursorShape::Beam => {
-                    painter.rect_filled(
+                    shapes.push(egui::Shape::rect_filled(
                         Rect::from_min_size(r.min, vec2(2.0f32.max(1.0 / ppp), r.height())),
                         CornerRadius::ZERO,
                         cursor_color,
-                    );
+                    ));
                 }
                 CursorShape::Underline => {
-                    painter.rect_filled(
+                    shapes.push(egui::Shape::rect_filled(
                         Rect::from_min_max(pos2(r.left(), r.bottom() - 2.0), r.max),
                         CornerRadius::ZERO,
                         cursor_color,
-                    );
+                    ));
                 }
                 CursorShape::HollowBlock => {
-                    painter.rect_stroke(
+                    shapes.push(egui::Shape::Rect(egui::epaint::RectShape::stroke(
                         r,
                         CornerRadius::ZERO,
                         Stroke::new(1.0, cursor_color),
                         StrokeKind::Inside,
-                    );
+                    )));
                 }
                 _ => {
-                    painter.rect_filled(r, CornerRadius::ZERO, cursor_color);
+                    shapes.push(egui::Shape::rect_filled(r, CornerRadius::ZERO, cursor_color));
                     let text_color = if bg == cursor_color { fg } else { bg };
                     if text.trim() != "" {
                         let st = RunStyle {
@@ -1871,13 +1898,13 @@ fn show_inner(
                             underline_color: None,
                             strike: false,
                         };
-                        paint_text(row, col, &text, &st, if wide { 2 } else { 1 }, text_color);
+                        paint_text(&mut shapes, row, col, &text, &st, if wide { 2 } else { 1 }, text_color);
                     }
                 }
             }
         }
     }
-    drop(term);
+    painter.extend(shapes);
     if crop.cut_above {
         let first = origin.y + cell.y;
         fade(&ui.painter_at(rect), Rect::from_min_max(rect.min, pos2(rect.max.x, first)), default_bg, false);

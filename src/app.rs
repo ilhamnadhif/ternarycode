@@ -298,6 +298,9 @@ pub struct App {
     pub tabs_hot: bool,
     window_movable: Option<bool>,
     pub cell: Option<egui::Vec2>,
+    /// How terminals are drawn, worked out once a frame (every Grid tile asks): the frame, the
+    /// theme, the style.
+    pub term_style_memo: std::cell::Cell<Option<((u64, bool), tc_term::widget::TermStyle<'static>)>>,
     /// A name typed in the Add Project dialog, for the project about to be added.
     pub pending_rename: Option<(PathBuf, String)>,
     shells_ready_logged: bool,
@@ -513,6 +516,7 @@ impl App {
             tabs_hot: false,
             window_movable: None,
             cell: None,
+            term_style_memo: std::cell::Cell::new(None),
             pending_rename: None,
             shells_ready_logged: false,
             logic_panics: 0,

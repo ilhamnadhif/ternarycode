@@ -155,17 +155,21 @@ pub const SMALL: f32 = 11.5;
 
 /// Inter Medium: labels that need a little weight (tabs, buttons, row titles).
 pub fn medium(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name(fonts::MEDIUM.into()))
+    // Made once: a family's name is an `Arc<str>`, cloned here instead of allocated per call.
+    static FAMILY: std::sync::LazyLock<FontFamily> = std::sync::LazyLock::new(|| FontFamily::Name(fonts::MEDIUM.into()));
+    FontId::new(size, FAMILY.clone())
 }
 
 /// Inter SemiBold: titles and headings.
 pub fn semibold(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name(fonts::SEMIBOLD.into()))
+    static FAMILY: std::sync::LazyLock<FontFamily> = std::sync::LazyLock::new(|| FontFamily::Name(fonts::SEMIBOLD.into()));
+    FontId::new(size, FAMILY.clone())
 }
 
 /// The icon font alone (icons also render inside ordinary text).
 pub fn icon_font(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name(fonts::ICONS.into()))
+    static FAMILY: std::sync::LazyLock<FontFamily> = std::sync::LazyLock::new(|| FontFamily::Name(fonts::ICONS.into()));
+    FontId::new(size, FAMILY.clone())
 }
 
 // ---------------------------------------------------------------------------------------------

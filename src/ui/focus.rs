@@ -503,12 +503,18 @@ impl App {
     /// How terminals are drawn, in Focus and in the Grid alike: the settings' font (its real
     /// bold and italic faces where it has them) and the scheme of the current theme.
     pub(super) fn term_style(&self, ui: &Ui) -> widget::TermStyle<'static> {
+        let key = (ui.ctx().cumulative_pass_nr(), ui.visuals().dark_mode);
+        if let Some((k, style)) = self.term_style_memo.get()
+            && k == key
+        {
+            return style;
+        }
         let choice = tc_term::fonts::effective_choice(&tc_term::prefs::FontChoice {
             name: self.settings.font_name.clone(),
             path: self.settings.font_path.clone(),
             index: 0,
         });
-        widget::TermStyle {
+        let style = widget::TermStyle {
             font_size: self.settings.font_size,
             cell: widget::cell_size(ui.ctx(), self.settings.font_size),
             scheme: self.scheme(ui.visuals().dark_mode),
@@ -517,7 +523,9 @@ impl App {
             option_as_meta: self.settings.option_as_meta,
             copy_on_select: self.settings.copy_on_select,
             cursor_blink: self.settings.cursor_blink,
-        }
+        };
+        self.term_style_memo.set(Some((key, style)));
+        style
     }
 
     /// A tab or a pane header being dragged. A tab: a line where it would land in the strip,
