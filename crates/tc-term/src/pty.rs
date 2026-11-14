@@ -381,27 +381,43 @@ pub fn start(
             tokio::select! {
                 ready = reader.readable() => {
                     let Ok(mut guard) = ready else { break };
-                    match guard.try_io(|inner| {
-                        let mut f: &File = inner.get_ref();
-                        f.read(&mut buf)
-                    }) {
-                        Ok(Ok(0)) => break,
-                        Ok(Ok(n)) => {
-                            let fed = feeder.lock().feed(&buf[..n]);
-                            deliver(fed);
-                            if fg_due.is_none() {
-                                let at = fg_checked + FG_INTERVAL;
-                                if at <= tokio::time::Instant::now() {
-                                    check_fg(&mut fg_seen, &mut fg_checked);
-                                }
-                                // The check after the last output.
-                                fg_due = Some((fg_checked + FG_INTERVAL).max(at));
+                    // All the terminal holds now (a macOS read returns about 1 KB), parsed at
+                    // once: one lock, one pass of the scanners and one event for the lot.
+                    let mut n = 0;
+                    let mut closed = false;
+                    while n < buf.len() {
+                        match guard.try_io(|inner| {
+                            let mut f: &File = inner.get_ref();
+                            f.read(&mut buf[n..])
+                        }) {
+                            Ok(Ok(0)) => {
+                                closed = true;
+                                break;
                             }
+                            Ok(Ok(k)) => n += k,
+                            Ok(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {}
+                            // EIO: the program and everything holding the terminal are gone.
+                            Ok(Err(_)) => {
+                                closed = true;
+                                break;
+                            }
+                            Err(_would_block) => break,
                         }
-                        Ok(Err(e)) if e.kind() == io::ErrorKind::Interrupted => {}
-                        // EIO: the program and everything holding the terminal are gone.
-                        Ok(Err(_)) => break,
-                        Err(_would_block) => {}
+                    }
+                    if n > 0 {
+                        let fed = feeder.lock().feed(&buf[..n]);
+                        deliver(fed);
+                        if fg_due.is_none() {
+                            let at = fg_checked + FG_INTERVAL;
+                            if at <= tokio::time::Instant::now() {
+                                check_fg(&mut fg_seen, &mut fg_checked);
+                            }
+                            // The check after the last output.
+                            fg_due = Some((fg_checked + FG_INTERVAL).max(at));
+                        }
+                    }
+                    if closed {
+                        break;
                     }
                 }
                 _ = sync => {

@@ -94,14 +94,66 @@ impl Shown {
         })
     }
 
-    /// How long until output that arrives now is drawn: the next tick of this kind's period,
-    /// on a clock all panes share, so output from many panes lands in the same frames (four
-    /// busy Grid tiles make ~30 frames a second, not one frame per line each prints).
-    pub fn output_delay(self) -> Duration {
+    /// When output that arrives now is drawn: the next tick of this kind's period, on a clock
+    /// all panes share, so output from many panes lands in the same frames (four busy Grid
+    /// tiles make ~30 frames a second, not one frame per line each prints). How long until it,
+    /// and which tick it is (its time on that clock).
+    pub fn output_tick(self) -> (Duration, u64) {
         static EPOCH: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
         let period = self.period().as_nanos();
         let since = EPOCH.elapsed().as_nanos();
-        Duration::from_nanos((period - since % period) as u64)
+        let tick = (since / period + 1) * period;
+        (Duration::from_nanos((tick - since) as u64), tick as u64)
+    }
+}
+
+/// What a pane's signals said last, so a repeat (an unchanged progress, directory or server)
+/// does not ask for a frame of its own: it is drawn with the next output tick.
+#[derive(Default)]
+struct Said {
+    progress: Option<(u8, Option<u8>)>,
+    cwd: Option<String>,
+    servers: Vec<String>,
+}
+
+impl Said {
+    /// Whether this output needs a frame now: a notification, a command starting or ending,
+    /// the prompt back, or a progress, directory or local server that changed.
+    fn news(&mut self, f: &tc_term::core::Fed) -> bool {
+        let mut news = false;
+        for s in &f.signals {
+            match s {
+                OscSignal::Notify { .. } => news = true,
+                OscSignal::Prompt(PromptMark::CommandExecuted | PromptMark::CommandFinished(_) | PromptMark::PromptStart) => {
+                    // The prompt clears the pane's servers: the same address printed again is news.
+                    self.servers.clear();
+                    news = true;
+                }
+                OscSignal::Prompt(_) | OscSignal::PromptRedraw(_) => {}
+                OscSignal::Cwd(path) => {
+                    if self.cwd.as_ref() != Some(path) {
+                        self.cwd = Some(path.clone());
+                        news = true;
+                    }
+                }
+                OscSignal::Progress { state, value } => {
+                    if self.progress != Some((*state, *value)) {
+                        self.progress = Some((*state, *value));
+                        news = true;
+                    }
+                }
+            }
+        }
+        for found in &f.servers {
+            if !self.servers.contains(&found.url) {
+                if self.servers.len() >= 8 {
+                    self.servers.remove(0);
+                }
+                self.servers.push(found.url.clone());
+                news = true;
+            }
+        }
+        news
     }
 }
 /// The same before the shell printed anything: it must know its size before it draws its first
@@ -343,14 +395,24 @@ impl Pane {
                 let ctx = spawn.ctx.clone();
                 let (id, generation) = (self.id, self.generation);
                 let shown = self.shown.clone();
+                let said = std::sync::Mutex::new(Said::default());
+                // The tick (and the frame count) last asked for: reads before that tick would
+                // each ask for the same frame again, and wake the window every time. Any frame
+                // drawn after a read draws it (its bytes are in the terminal by then).
+                let asked = std::sync::Mutex::new((u64::MAX, u64::MAX));
                 let on_event: Arc<dyn Fn(SessionEvent) + Send + Sync> = Arc::new(move |e| {
-                    // Signals (agent status, notifications), the bell and the end of the session
-                    // are handled at once. Plain output is drawn when the pane is on screen,
-                    // reads a few ms apart sharing a frame; a pane out of view only needs its
-                    // messages taken in now and then (its status, a command waiting for the
-                    // prompt), not the whole window redrawn for every line it prints.
+                    // What changes the pane's status or calls for the user (a notification, a
+                    // command starting or ending, the bell, the end of the session) is handled
+                    // at once. Plain output, a program starting, and a progress, directory or
+                    // server said again are drawn on the pane's output tick: reads a few ms
+                    // apart share a frame, and a pane out of view only needs its messages taken
+                    // in now and then, not the whole window redrawn for every line it prints.
                     let (urgent, output) = match &e {
-                        SessionEvent::Output(f) => (!f.signals.is_empty() || f.bell || !f.servers.is_empty(), f.repaint),
+                        SessionEvent::Output(f) => {
+                            let news = said.lock().unwrap_or_else(|p| p.into_inner()).news(f);
+                            (f.bell || news, f.repaint || !f.signals.is_empty() || !f.servers.is_empty())
+                        }
+                        SessionEvent::Foreground => (false, true),
                         _ => (true, false),
                     };
                     let _ = tx.send(UiMsg::Pane(id, generation, e));
@@ -358,7 +420,13 @@ impl Pane {
                         ctx.request_repaint();
                     } else if output {
                         let how = Shown::from_u8(shown.load(std::sync::atomic::Ordering::Relaxed));
-                        ctx.request_repaint_after(how.output_delay());
+                        let (delay, tick) = how.output_tick();
+                        let pass = ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT);
+                        let mut asked = asked.lock().unwrap_or_else(|p| p.into_inner());
+                        if *asked != (tick, pass) {
+                            *asked = (tick, pass);
+                            ctx.request_repaint_after(delay);
+                        }
                     }
                 });
                 match pty::start(spawn.rt, pty, self.feeder.clone(), on_event) {

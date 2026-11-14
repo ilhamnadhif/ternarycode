@@ -705,7 +705,14 @@ pub fn start(
             tokio::select! {
                 chunk = chunks.recv() => {
                     // None: the output ended (the pseudoconsole closed).
-                    let Some(bytes) = chunk else { break };
+                    let Some(mut bytes) = chunk else { break };
+                    // What else already waits is parsed with it (one lock and one event).
+                    while bytes.len() < 64 * 1024 {
+                        match chunks.try_recv() {
+                            Ok(more) => bytes.extend_from_slice(&more),
+                            Err(_) => break,
+                        }
+                    }
                     let fed = feeder.lock().feed(&bytes);
                     deliver(fed);
                     if fg_due.is_none() && !exited {

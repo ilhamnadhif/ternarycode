@@ -402,8 +402,18 @@ impl App {
                 rt.handle(),
                 tc_agent::server::socket_path(paths::data_dir()),
                 std::sync::Arc::new(move |m| {
+                    // What changes an agent's status or calls for the user (a question, a turn
+                    // done, a session started or ended) is drawn at once; "still working" (each
+                    // tool an agent runs, many a second) shares the next frame.
+                    let working = AgentKind::from_slug(&m.agent)
+                        .and_then(|a| tc_agent::protocol::classify(a, &m.event, m.kind.as_deref()))
+                        == Some(tc_core::status::HookSignal::Working);
                     let _ = tx.send(UiMsg::Hook(m));
-                    ctx.request_repaint();
+                    if working {
+                        ctx.request_repaint_after(Duration::from_millis(33));
+                    } else {
+                        ctx.request_repaint();
+                    }
                 }),
             )
             .ok()
