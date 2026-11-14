@@ -65,6 +65,15 @@ impl Item {
     }
 }
 
+/// Quick Open's rows: what they were made for (query, project, file list, how many files, git
+/// letters, theme) and the best of them.
+type FileRowsKey = (String, Option<tc_core::ProjectId>, u64, usize, usize, bool);
+type FileRows = Option<(FileRowsKey, std::rc::Rc<Vec<(i32, Item)>>)>;
+
+thread_local! {
+    static FILE_ROWS: std::cell::RefCell<FileRows> = const { std::cell::RefCell::new(None) };
+}
+
 /// Subsequence match: higher is better, `None` when `query` doesn't match.
 pub(crate) fn score(query: &str, text: &str) -> Option<i32> {
     if query.is_empty() {
@@ -338,22 +347,39 @@ impl App {
             }
         }
         let Some(pal_ref) = self.palette.as_ref() else { return };
-        let all = self.palette_items(pal_ref.mode);
+        // Quick Open lists up to 20 000 files: its rows are made and scored again only when the
+        // query, the file list or their git letters change, not on every frame it is open.
+        let files_key = (pal_ref.mode == PaletteMode::Files).then(|| {
+            let git = self.active_project().and_then(|x| x.git.as_ref()).map_or(0, |g| std::sync::Arc::as_ptr(g) as usize);
+            (pal_ref.query.clone(), self.active, self.files_rev, pal_ref.files.len(), git, self.ctx.global_style().visuals.dark_mode)
+        });
+        let kept = files_key.as_ref().and_then(|k| FILE_ROWS.with(|c| c.borrow().as_ref().filter(|(key, _)| key == k).map(|(_, rows)| std::rc::Rc::clone(rows))));
+        let all = if kept.is_some() { Vec::new() } else { self.palette_items(pal_ref.mode) };
         let Some(mut pal) = self.palette.take() else { return };
         let typed = !pal.query.trim().is_empty() && pal.mode != PaletteMode::Search;
-        let mut items: Vec<(i32, Item)> = all
-            .into_iter()
-            .filter_map(|it| {
-                if pal.mode == PaletteMode::Search {
-                    return Some((0, it));
+        let items: std::rc::Rc<Vec<(i32, Item)>> = match kept {
+            Some(rows) => rows,
+            None => {
+                let mut items: Vec<(i32, Item)> = all
+                    .into_iter()
+                    .filter_map(|it| {
+                        if pal.mode == PaletteMode::Search {
+                            return Some((0, it));
+                        }
+                        score(&pal.query, &format!("{} {}", it.label, it.detail)).map(|s| (s, it))
+                    })
+                    .collect();
+                if typed {
+                    items.sort_by_key(|x| std::cmp::Reverse(x.0));
                 }
-                score(&pal.query, &format!("{} {}", it.label, it.detail)).map(|s| (s, it))
-            })
-            .collect();
-        if typed {
-            items.sort_by_key(|x| std::cmp::Reverse(x.0));
-        }
-        items.truncate(MAX_ROWS);
+                items.truncate(MAX_ROWS);
+                let items = std::rc::Rc::new(items);
+                if let Some(k) = files_key {
+                    FILE_ROWS.with(|c| *c.borrow_mut() = Some((k, std::rc::Rc::clone(&items))));
+                }
+                items
+            }
+        };
         // Group headers while nothing is typed (and always for places and search results).
         let grouped = !typed || matches!(pal.mode, PaletteMode::Locations | PaletteMode::Search);
         pal.selected = pal.selected.min(items.len().saturating_sub(1));

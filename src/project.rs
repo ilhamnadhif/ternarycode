@@ -379,9 +379,21 @@ pub fn git_info(path: &Path) -> Option<GitInfo> {
     };
     let out = git(&["status", "--porcelain=v1", "-z", "-b", "--untracked-files=normal"])?;
     // Status paths are relative to the repository root; the project may be a folder inside it.
-    let prefix = git(&["rev-parse", "--show-prefix"])
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim_end_matches('\n').to_string())
-        .unwrap_or_default();
+    // That place does not change: asked once per folder (again when the folder becomes a
+    // repository of its own).
+    static PREFIXES: std::sync::LazyLock<std::sync::Mutex<HashMap<(PathBuf, bool), String>>> = std::sync::LazyLock::new(Default::default);
+    let key = (path.to_path_buf(), path.join(".git").exists());
+    let known = PREFIXES.lock().ok().and_then(|m| m.get(&key).cloned());
+    let prefix = match known {
+        Some(p) => p,
+        None => {
+            let p = git(&["rev-parse", "--show-prefix"]).map(|o| String::from_utf8_lossy(&o.stdout).trim_end_matches('\n').to_string());
+            if let (Some(p), Ok(mut m)) = (p.as_ref(), PREFIXES.lock()) {
+                m.insert(key, p.clone());
+            }
+            p.unwrap_or_default()
+        }
+    };
     parse_status(&out.stdout, &prefix, path)
 }
 

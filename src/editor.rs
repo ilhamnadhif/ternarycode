@@ -675,8 +675,8 @@ pub struct Highlight {
     lines: Vec<HlLine>,
     /// The parser's state after the last line.
     end: Option<HlState>,
-    /// The layout of the text it was made for (by the text's hash).
-    job: Option<(u64, LayoutJob)>,
+    /// The layout of the text it was made for (its text is that text).
+    job: Option<LayoutJob>,
 }
 
 type HlState = (syntect::parsing::ParseState, syntect::highlighting::HighlightState);
@@ -709,18 +709,17 @@ pub fn cached_layout(
     font: FontId,
     plain: Color32,
 ) -> LayoutJob {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
-    let text_key = hasher.finish();
-    let key = (syntax.to_string(), dark, font.size.to_bits());
-    if cache.key.as_ref() != Some(&key) {
+    let same = cache.key.as_ref().is_some_and(|(s, d, f)| s == syntax && *d == dark && *f == font.size.to_bits());
+    if !same {
         *cache = Highlight {
-            key: Some(key),
+            key: Some((syntax.to_string(), dark, font.size.to_bits())),
             ..Default::default()
         };
     }
-    if let Some((k, job)) = cache.job.as_ref()
-        && *k == text_key
+    // The text it was made for, compared (asked every frame: comparing is several times
+    // quicker than hashing the whole file).
+    if let Some(job) = cache.job.as_ref()
+        && job.text == text
     {
         return job.clone();
     }
@@ -735,7 +734,7 @@ pub fn cached_layout(
     let Some(syntax_ref) = syntax_ref else {
         let mut job = LayoutJob::default();
         job.append(text, 0.0, egui::TextFormat::simple(font, plain));
-        cache.job = Some((text_key, job.clone()));
+        cache.job = Some(job.clone());
         return job;
     };
     let highlighter = syntect::highlighting::Highlighter::new(theme(&h, dark));
@@ -804,7 +803,7 @@ pub fn cached_layout(
             }
         }
     }
-    cache.job = Some((text_key, job.clone()));
+    cache.job = Some(job.clone());
     job
 }
 

@@ -209,6 +209,9 @@ pub struct PaneSearch {
     pub missing: bool,
 }
 
+/// Git status runs at once for at most this many projects (more wait their turn).
+const GIT_AT_ONCE: usize = 4;
+
 pub struct App {
     pub rt: tokio::runtime::Runtime,
     /// The UI's context (to wake it from other threads).
@@ -336,6 +339,9 @@ pub struct App {
     /// Every file of a project (`git ls-files`, else a walk), for the Files filter; listed off
     /// the UI thread, again when older than a minute.
     pub project_files: HashMap<ProjectId, Vec<PathBuf>>,
+    /// Counts the file lists received (what Quick Open and the Files filter showed is kept
+    /// until a new list comes).
+    pub files_rev: u64,
     project_files_at: HashMap<ProjectId, Instant>,
     pub pane_search: Option<PaneSearch>,
     pub review: Option<crate::ui::review::Review>,
@@ -360,6 +366,11 @@ pub struct App {
     git_due: HashMap<ProjectId, Instant>,
     git_running: HashSet<ProjectId>,
     git_again: HashSet<ProjectId>,
+    /// Projects whose git status waits for one of those running to end (launch: every project
+    /// at once would start dozens of git processes beside the shells).
+    git_waiting: std::collections::VecDeque<ProjectId>,
+    /// Project folders to watch once the first frame is drawn.
+    watch_later: Vec<(ProjectId, PathBuf)>,
     conflict_warned: HashMap<ProjectId, Instant>,
     budget_checked: Instant,
     /// Clicked notifications (pane ids), when native notifications are available.
@@ -534,6 +545,7 @@ impl App {
             term_scheme: "",
             editors: HashMap::new(),
             project_files: HashMap::new(),
+            files_rev: 0,
             project_files_at: HashMap::new(),
             explorers: HashMap::new(),
             pane_search: None,
@@ -552,6 +564,8 @@ impl App {
             git_due: HashMap::new(),
             git_running: HashSet::new(),
             git_again: HashSet::new(),
+            git_waiting: std::collections::VecDeque::new(),
+            watch_later: Vec::new(),
             conflict_warned: HashMap::new(),
             budget_checked: Instant::now(),
             clicked_rx: None,
@@ -822,11 +836,9 @@ impl App {
                     },
                 );
             }
-            self.watchers
-                .watch(project.id, project.path.clone(), self.app_tx.clone(), ctx.clone());
-            let id = project.id;
+            // Watched once the window is up (starting a watcher waits for it to run).
+            self.watch_later.push((project.id, project.path.clone()));
             self.projects.push(project);
-            self.refresh_git(id);
         }
         // Listed by name, however the workspace was saved.
         self.sort_projects();
@@ -835,6 +847,11 @@ impl App {
             .filter(|a| self.projects.iter().any(|p| p.id == *a))
             .or_else(|| self.projects.first().map(|p| p.id));
         self.focus_request = self.current_pane();
+        // Git for every project, the open one first (a few at a time: see `refresh_git`).
+        let ids: Vec<ProjectId> = self.active.into_iter().chain(self.projects.iter().map(|p| p.id).filter(|id| Some(*id) != self.active)).collect();
+        for id in ids {
+            self.refresh_git(id);
+        }
     }
 
     pub fn workspace(&self) -> Workspace {
@@ -946,11 +963,18 @@ impl App {
             self.git_again.insert(id);
             return;
         }
+        if self.git_running.len() >= GIT_AT_ONCE {
+            if !self.git_waiting.contains(&id) {
+                self.git_waiting.push_back(id);
+            }
+            return;
+        }
         let Some((path, worktree)) = self.project(id).map(|p| (p.path.clone(), p.worktree.clone())) else {
             return;
         };
         self.git_running.insert(id);
         let tx = self.app_tx.clone();
+        let ctx = self.ctx.clone();
         self.rt.spawn_blocking(move || {
             let kind = crate::project::Kind::detect(&path);
             let mut info = crate::project::git_info(&path);
@@ -958,6 +982,7 @@ impl App {
                 crate::worktree::branch_state(&path, wt, info);
             }
             let _ = tx.send(AppMsg::Git(id, info, kind));
+            ctx.request_repaint();
         });
         // A merge in a project moves its worktrees' bases: they are looked at again too.
         let kids: Vec<ProjectId> = self.projects.iter().filter(|p| p.parent == Some(id)).map(|p| p.id).collect();
@@ -1255,9 +1280,12 @@ impl App {
                 }
             }
         }
+        // File events, merged per project (an agent writing a file sends several).
+        let mut files_changed: HashMap<ProjectId, Vec<PathBuf>> = HashMap::new();
         while let Ok(msg) = self.app_rx.try_recv() {
             match msg {
                 AppMsg::ProjectFiles(id, files) => {
+                    self.files_rev += 1;
                     self.project_files.insert(id, files.clone());
                     if self.active == Some(id)
                         && let Some(pal) = self.palette.as_mut().filter(|p| p.mode == PaletteMode::Files && p.loading)
@@ -1276,6 +1304,11 @@ impl App {
                     if self.git_again.remove(&id) {
                         self.refresh_git(id);
                     }
+                    while self.git_running.len() < GIT_AT_ONCE
+                        && let Some(next) = self.git_waiting.pop_front()
+                    {
+                        self.refresh_git(next);
+                    }
                 }
                 AppMsg::WorktreeFacts(dir, facts) => {
                     self.worktree_facts.insert(dir, Some(facts));
@@ -1289,10 +1322,7 @@ impl App {
                         self.toast_err(tf("The worktree {} was not removed: {}", &[&name, &e]));
                     }
                 }
-                AppMsg::Files(id, paths) => {
-                    self.lsp_files_changed(&paths);
-                    self.on_files_changed(id, paths, now)
-                }
+                AppMsg::Files(id, paths) => files_changed.entry(id).or_default().extend(paths),
                 AppMsg::Lsp(key, generation, msg) => self.lsp_message(key, generation, msg),
                 AppMsg::LspPath(path) => self.lsp_path_found(ctx, path),
                 AppMsg::Sessions(agent, path, list) => {
@@ -1313,6 +1343,12 @@ impl App {
                     }
                 }
             }
+        }
+        for (id, mut paths) in files_changed {
+            paths.sort();
+            paths.dedup();
+            self.lsp_files_changed(&paths);
+            self.on_files_changed(id, paths, now);
         }
         // Ctrl+D or `exit` in a shell closes its pane.
         for id in ended {
@@ -1724,6 +1760,7 @@ impl App {
         self.explorers.remove(&id);
         self.git_due.remove(&id);
         self.git_again.remove(&id);
+        self.git_waiting.retain(|x| *x != id);
         self.conflict_warned.remove(&id);
         for pane in project.panes() {
             self.drop_pane(pane);
@@ -3144,6 +3181,14 @@ impl App {
     /// hooks, foreground checks, statuses, notifications, the badge, saving. eframe calls this
     /// before each frame and, while the window is hidden, whenever a repaint is requested.
     fn frame_logic(&mut self, ctx: &egui::Context) {
+        // The folders restored at launch are watched once the window is up, a few a frame.
+        if !self.watch_later.is_empty() && ctx.cumulative_pass_nr() > 0 {
+            let n = self.watch_later.len().saturating_sub(4);
+            for (id, path) in self.watch_later.split_off(n) {
+                self.watchers.watch(id, path, self.app_tx.clone(), ctx.clone());
+            }
+            ctx.request_repaint();
+        }
         self.window_focused = window_looked_at(ctx);
         self.sync_term_palette(ctx);
         self.handle_menu();

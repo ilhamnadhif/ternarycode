@@ -152,7 +152,12 @@ impl Hooks {
     /// Writes the `--settings` file and returns the variables every pane gets.
     pub fn pane_env(&self, integrations_dir: &Path) -> io::Result<Vec<(String, String)>> {
         let file = integrations_dir.join("claude-settings.json");
-        tc_core::persist::write_private(&file, self.claude_settings().as_bytes())?;
+        // Unchanged since the last launch (the usual case): not written again (each write syncs
+        // to disk).
+        let settings = self.claude_settings();
+        if std::fs::read(&file).ok().as_deref() != Some(settings.as_bytes()) {
+            tc_core::persist::write_private(&file, settings.as_bytes())?;
+        }
         Ok(vec![
             (
                 ENV_CLAUDE_SETTINGS.into(),

@@ -470,16 +470,17 @@ impl App {
             );
             return;
         }
-        // Each row: its project, what it shows, the letters found, dimmed (a project shown for
-        // a worktree found under it), and for a worktree whether another one follows it.
-        let rows: Vec<(usize, ProjectRow, Vec<bool>, bool, bool)> = shown
+        // Each row: its project, the letters found, dimmed (a project shown for a worktree found
+        // under it), and for a worktree whether another one follows it. What a row shows is
+        // worked out only when it is in view.
+        let rows: Vec<(usize, Vec<bool>, bool, bool)> = shown
             .iter()
             .enumerate()
             .map(|(k, &(i, dim))| {
                 let pr = &self.projects[i];
                 let marks = if filtering && !dim { super::palette::matched(&query, &pr.name) } else { Vec::new() };
                 let more = pr.is_worktree() && shown.get(k + 1).is_some_and(|&(j, _)| self.projects[j].parent == pr.parent);
-                (i, self.project_row(pr, &p), marks, dim, more)
+                (i, marks, dim, more)
             })
             .collect();
         ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(vec2(6.0, 0.0))), |ui| {
@@ -491,13 +492,14 @@ impl App {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     let mut result = 0;
-                    for (i, row, marks, dim, more) in rows.iter() {
+                    for (i, marks, dim, more) in rows.iter() {
                         let worktree = self.projects[*i].is_worktree();
                         let h = if worktree { WORKTREE_H } else { PROJECT_H };
                         let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
                         #[cfg(debug_assertions)]
-                        crate::devtest::record(format!("project:{}", row.name), rect);
-                        let active = self.view == View::Focus && self.active == Some(row.id);
+                        crate::devtest::record(format!("project:{}", self.projects[*i].name), rect);
+                        let id = self.projects[*i].id;
+                        let active = self.view == View::Focus && self.active == Some(id);
                         // The keyboard's row (while the search has it) looks hovered, with ↵.
                         let chosen = typing && !dim && result == sel;
                         if !dim {
@@ -506,8 +508,12 @@ impl App {
                         if chosen && reveal {
                             ui.scroll_to_rect(rect, None);
                         }
+                        // Scrolled out of view: only its place (it is drawn when scrolled to).
+                        if !ui.is_rect_visible(rect) {
+                            continue;
+                        }
+                        let row = &self.project_row(&self.projects[*i], &p);
                         let hovered = response.hovered() || chosen;
-                        let id = row.id;
                         if worktree {
                             let keys = chosen.then_some("↵");
                             paint_worktree_row(ui, rect, row, marks, active, hovered, *more, keys, &p);

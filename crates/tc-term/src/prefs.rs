@@ -40,8 +40,9 @@ pub fn expand_tilde(path: &str) -> PathBuf {
 
 /// `$HOME/x` → `~/x`, for display.
 pub fn contract_tilde(path: &std::path::Path) -> String {
-    let home = home_dir();
-    match path.strip_prefix(&home) {
+    // Asked for every project row every frame: the home folder is looked up once.
+    static HOME: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(home_dir);
+    match path.strip_prefix(&*HOME) {
         Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
         Ok(rest) => format!("~/{}", rest.display()),
         Err(_) => path.display().to_string(),

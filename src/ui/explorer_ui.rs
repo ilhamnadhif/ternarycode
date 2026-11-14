@@ -32,6 +32,14 @@ enum EditOutcome {
     Cancel,
 }
 
+/// The Files filter's matches: what they were found for (project, filter, file list) and the
+/// best of them.
+type FilterHits = Option<((tc_core::ProjectId, String, u64), std::rc::Rc<Vec<PathBuf>>)>;
+
+thread_local! {
+    static FILTER_HITS: std::cell::RefCell<FilterHits> = const { std::cell::RefCell::new(None) };
+}
+
 impl App {
     /// The Files column of the Code drawer: Files | Changes at the top, a filter, the tree (or
     /// the files that match the filter, or what git says changed), and the buttons that make
@@ -207,20 +215,31 @@ impl App {
             ui.painter().text(pos2(area.left() + 14.0, area.top() + 12.0), Align2::LEFT_CENTER, t("Listing the project's files…"), egui::FontId::proportional(style::SMALL), p.text_faint);
             return;
         };
-        let mut hits: Vec<(i32, &PathBuf)> = files
-            .iter()
-            .filter_map(|f| {
-                let rel = f.strip_prefix(root).unwrap_or(f).to_string_lossy();
-                super::palette::score(filter.trim(), &rel).map(|s| (s, f))
-            })
-            .collect();
-        hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-        hits.truncate(200);
+        // Scored again only when the filter or the file list changes (up to 20 000 paths), not
+        // on every frame the column is drawn.
+        let key = (pid, filter.trim().to_string(), self.files_rev);
+        let kept = FILTER_HITS.with(|c| c.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, hits)| std::rc::Rc::clone(hits)));
+        let hits = match kept {
+            Some(hits) => hits,
+            None => {
+                let mut scored: Vec<(i32, &PathBuf)> = files
+                    .iter()
+                    .filter_map(|f| {
+                        let rel = f.strip_prefix(root).unwrap_or(f).to_string_lossy();
+                        super::palette::score(filter.trim(), &rel).map(|s| (s, f))
+                    })
+                    .collect();
+                scored.sort_by_key(|h| std::cmp::Reverse(h.0));
+                scored.truncate(200);
+                let hits = std::rc::Rc::new(scored.into_iter().map(|(_, f)| f.clone()).collect::<Vec<PathBuf>>());
+                FILTER_HITS.with(|c| *c.borrow_mut() = Some((key, std::rc::Rc::clone(&hits))));
+                hits
+            }
+        };
         if hits.is_empty() {
             ui.painter().text(pos2(area.left() + 14.0, area.top() + 12.0), Align2::LEFT_CENTER, t("Nothing matches."), egui::FontId::proportional(style::SMALL), p.text_faint);
             return;
         }
-        let hits: Vec<PathBuf> = hits.into_iter().map(|(_, f)| f.clone()).collect();
         let mut open = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(area.shrink2(vec2(4.0, 0.0))), |ui| {
             let sa = egui::ScrollArea::vertical().id_salt(("filtered", pid)).auto_shrink([false, false]);
