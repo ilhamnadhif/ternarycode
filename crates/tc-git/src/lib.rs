@@ -17,6 +17,7 @@
 //! human-readable strings that include git's stderr.
 
 mod parse;
+pub mod worktree;
 
 use std::fs;
 use std::io;

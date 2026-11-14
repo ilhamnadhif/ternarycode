@@ -158,6 +158,11 @@ satu-satunya koneksi jaringan yang dibuat TernaryCode.
 - **Jalankan agent** di pane baru dari preset (Claude Code, Codex, Gemini CLI, OpenCode, atau
   perintah Anda sendiri). Pane agent yang bisa melanjutkan percakapan menawarkan **Resume** setelah
   restart.
+- **Satu worktree per agent**, saat beberapa agent bekerja di satu repository: **Run Agent →
+  Worktree baru** membuat git worktree dengan branch sendiri (`tc/‹nama›`, di samping repository)
+  dan menjalankan agent di sana, jadi agent tidak saling menimpa file. Worktree tampil di bawah
+  project-nya, di-review sejak bercabang, di-merge lewat perintah yang diketik di terminal project,
+  dan dihapus beserta foldernya (dan branch-nya bila sudah di-merge).
 - **Terminal sungguhan**: warna 24-bit, mouse reporting, synchronized output, IME, box drawing yang
   presisi, dan pencarian scrollback di satu pane (`⌘F`) atau semua pane (`⇧⌘F`).
 - **Link dibuka dengan `⌘`-klik atau `Ctrl`-klik** (Ctrl-klik di Windows dan Linux), dari tile
@@ -228,7 +233,8 @@ sel yang cocok, lintas sheet. `Enter` dan `⇧Enter` pindah ke hasil berikutnya 
 `⇧⌘R` menampilkan apa yang berubah: sejak agent di pane ini mulai (snapshot diambil di luar index
 git, jadi staging area Anda tidak tersentuh), atau sejak commit terakhir. Buka file mana pun dari
 diff di editor. Saat agent selesai, tombol **Tinjau** di tile Grid dan di daftar yang menunggu
-langsung membukanya.
+langsung membukanya. Di worktree, Review menampilkan branch-nya sejak bercabang: commit-nya dan
+yang belum di-commit, dengan **Merge** dan **Hapus** di dekatnya.
 
 ## Shortcut keyboard
 

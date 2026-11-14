@@ -685,3 +685,88 @@ fn errors_carry_git_stderr() {
             .contains("not a git repository")
     );
 }
+
+#[test]
+fn worktree_lifecycle() {
+    use tc_git::worktree;
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "pub fn a() {}\n");
+    repo.write(".gitignore", ".env\ntarget/\n");
+    repo.write(".env", "KEY=1\n");
+    repo.write("target/debug/x", "bin\n");
+    repo.commit_all("first");
+    let before = state(&repo.root);
+
+    // What a new worktree would not get: the ignored files at the top.
+    assert_eq!(worktree::ignored_top(&repo.root), [".env", "target/"]);
+    assert_eq!(worktree::branches(&repo.root), ["main"]);
+    assert_eq!(worktree::current_branch(&repo.root).as_deref(), Some("main"));
+    assert!(worktree::commit_line(&repo.root, "main").is_some_and(|(short, t)| short.len() >= 7 && t > 0));
+
+    // Created beside the repository, on its own branch, from main.
+    let dir = repo.root.parent().unwrap().join("repo.worktrees").join("generics");
+    let start = worktree::add(&repo.root, &dir, "tc/generics", "main").unwrap();
+    assert!(dir.join("src/lib.rs").is_file());
+    assert!(!dir.join(".env").exists(), "ignored files are not in a new worktree");
+    assert_eq!(worktree::current_branch(&dir).as_deref(), Some("tc/generics"));
+    assert_eq!(worktree::ahead_behind(&dir, "main", "HEAD").unwrap(), (0, 0));
+    // The main folder's checkout, index and files are untouched (only the new branch and the
+    // worktree's own records under .git/worktrees are new).
+    assert_eq!(worktree::current_branch(&repo.root).as_deref(), Some("main"));
+    let after = state(&repo.root);
+    assert_eq!(after.index_modified, before.index_modified, "index unchanged");
+    assert_eq!(after.status, before.status, "main folder unchanged");
+
+    // The same branch or folder again: git's own reason.
+    let again = worktree::add(&repo.root, &dir, "tc/generics", "main").unwrap_err();
+    assert!(again.contains("already exists"), "{again}");
+    assert!(!again.contains("failed in"), "{again}");
+
+    // The agent commits twice and leaves a file uncommitted.
+    git(&dir, &["config", "user.name", "Test"]);
+    git(&dir, &["config", "user.email", "test@example.com"]);
+    fs::write(dir.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+    git(&dir, &["commit", "-q", "--no-verify", "-am", "lexer: emit Shr as one token"]);
+    fs::write(dir.join("src/parser.rs"), "pub fn p() {}\n").unwrap();
+    git(&dir, &["add", "src/parser.rs"]);
+    git(&dir, &["commit", "-q", "--no-verify", "-m", "parser: split >> when closing generic lists"]);
+    fs::write(dir.join("notes.md"), "wip\n").unwrap();
+    fs::create_dir_all(dir.join("tests/fixtures")).unwrap();
+    fs::write(dir.join("tests/fixtures/nested.rs"), "x\n").unwrap();
+    assert_eq!(worktree::dirty_files(&dir), ["notes.md", "tests/fixtures/nested.rs"], "each file of a new folder");
+    assert_eq!(worktree::ahead_behind(&dir, "main", "HEAD").unwrap(), (2, 0));
+    assert_eq!(worktree::files_changed(&dir, "main", "HEAD").unwrap(), 2);
+    let base = worktree::merge_base(&dir, "main", "HEAD").unwrap();
+    assert_eq!(git(&repo.root, &["rev-parse", "main"]).trim(), base);
+    let subjects: Vec<String> = worktree::commits(&dir, &base, "HEAD").unwrap().into_iter().map(|c| c.subject).collect();
+    assert_eq!(subjects, ["parser: split >> when closing generic lists", "lexer: emit Shr as one token"]);
+    let by_file = worktree::last_commit_by_file(&dir, &base, "HEAD").unwrap();
+    assert_eq!(by_file.len(), 2);
+    assert!(by_file.contains_key("src/parser.rs") && by_file.contains_key("src/lib.rs"));
+    assert!(worktree::tree_of(&dir, &base).is_ok());
+    let head = git(&dir, &["rev-parse", "HEAD"]).trim().to_string();
+    assert!(!worktree::is_ancestor(&repo.root, &head, "main"), "not merged yet");
+    assert_ne!(head, start);
+
+    // Not merged: a plain branch delete refuses; removing without force refuses the dirty folder.
+    assert!(worktree::remove(&repo.root, &dir, false).is_err());
+    assert!(dir.exists());
+
+    // Merged into main (as typed in the main folder's terminal): main now has its commits.
+    git(&repo.root, &["merge", "-q", "--no-ff", "--no-edit", "tc/generics"]);
+    assert!(worktree::is_ancestor(&repo.root, &head, "main"));
+    assert_eq!(worktree::ahead_behind(&dir, "main", "HEAD").unwrap(), (0, 1));
+
+    // Removed with its uncommitted file, then the merged branch.
+    worktree::remove(&repo.root, &dir, true).unwrap();
+    assert!(!dir.exists());
+    worktree::delete_branch(&repo.root, "tc/generics", false).unwrap();
+    assert_eq!(worktree::branches(&repo.root), ["main"]);
+    // A folder deleted by hand is only forgotten.
+    let gone = repo.root.parent().unwrap().join("repo.worktrees").join("gone");
+    worktree::add(&repo.root, &gone, "tc/gone", "main").unwrap();
+    fs::remove_dir_all(&gone).unwrap();
+    worktree::remove(&repo.root, &gone, false).unwrap();
+    assert!(!git(&repo.root, &["worktree", "list"]).contains("gone"));
+    assert!(worktree::delete_branch(&repo.root, "-D", true).is_err(), "never an option");
+}

@@ -21,3 +21,4 @@ pub mod statusbar;
 pub mod style;
 pub mod update_ui;
 pub mod view;
+pub mod worktree_ui;

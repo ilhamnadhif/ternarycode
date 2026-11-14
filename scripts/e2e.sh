@@ -222,5 +222,14 @@ run shell-integration 60 "sleep 1000;; action add-project $P1;; sleep 2500;; key
 
 run find 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys seq 1 300\\r;; sleep 800;; action find;; sleep 400;; keys 150;; key enter;; sleep 400;; key esc;; action find-all;; sleep 400;; keys 27;; sleep 800;; key esc;; quit"
 
+# Worktrees: Run Agent → New worktree makes one beside the repository (its ignored .env copied)
+# and lists it under the project; Review shows its branch since it left main (a commit and a file
+# not committed); Merge types the merge in the project's terminal; once merged, Remove takes the
+# folder and the branch away.
+W="$WORK/wtrepo"; mkdir -p "$W"
+(cd "$W" && git init -q -b main && git config user.name t && git config user.email t@t && printf '.env\n' > .gitignore && printf 'KEY=1\n' > .env && printf 'one\n' > a.txt && git add -A && git commit -qm init)
+WT="$WORK/wtrepo.worktrees/feat"
+run worktree 90 "sleep 1000;; action add-project $W;; sleep 1500;; action worktree none feat main;; wait-project feat;; sleep 800;; expect-project feat;; expect-shown project:feat;; expect-file $WT/.env KEY=1;; expect-file $WT/a.txt one;; keys echo two >> a.txt && git commit -qam work && echo new > b.txt\\r;; sleep 1500;; action review;; sleep 1500;; wait-review Added:b.txt,Modified:a.txt;; shot e2e-worktree-review;; key esc;; sleep 400;; write-file $WT/b.txt new\\n;; rm-file $WT/b.txt;; sleep 800;; action merge-worktree;; sleep 500;; expect-dialog open;; click dialog-ok;; sleep 400;; expect-project wtrepo;; wait-screen Merge made;; wait-toast Merged tc/feat;; expect-file $W/a.txt two;; action select-name feat;; sleep 600;; action remove-worktree;; sleep 500;; expect-dialog open;; shot e2e-worktree-remove;; click dialog-ok;; sleep 2500;; expect-hidden project:feat;; expect-not-file $WT/a.txt one;; quit"
+
 echo "---- $PASS passed, $FAIL failed (logs: $WORK)"
 [ "$FAIL" -eq 0 ]

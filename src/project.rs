@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use tc_core::model::{ProjectSave, SavedDir, SavedLayout, TabSave};
+use tc_core::model::{ProjectSave, SavedDir, SavedLayout, TabSave, WorktreeSave, WorktreeSetup};
 use tc_core::{PaneId, ProjectId};
 use tc_term::layout::{Layout, SplitDir};
 
@@ -24,6 +24,20 @@ pub struct Project {
     pub git: Option<std::sync::Arc<GitInfo>>,
     /// What kind of project it is (its icon in the sidebar), found with the git summary.
     pub kind: Kind,
+    /// The project this one is a worktree of (listed under it).
+    pub parent: Option<ProjectId>,
+    /// A worktree made for an agent run: its branch and where it started.
+    pub worktree: Option<WorktreeSave>,
+    /// What a new worktree of this project gets.
+    pub worktree_setup: Option<WorktreeSetup>,
+    /// Its worktrees are folded away in the sidebar.
+    pub folded: bool,
+    /// Run Agent last chose a new worktree here.
+    pub new_worktree: bool,
+    /// Its folder is gone (deleted outside TernaryCode).
+    pub missing: bool,
+    /// Its merged branch was offered for removal already (once per run of the app).
+    pub merge_offered: bool,
 }
 
 /// The kind of a project, from the files at its top (the sidebar shows its icon).
@@ -114,6 +128,13 @@ impl Kind {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GitInfo {
     pub branch: String,
+    /// A worktree: commits on its branch that its base has not (ahead) and the other way.
+    pub ahead: usize,
+    pub behind: usize,
+    /// A worktree whose branch has commits, all of them in its base now.
+    pub merged: bool,
+    /// A worktree: files its commits changed since it left its base.
+    pub branch_files: usize,
     /// Changed files in the whole repository.
     pub changed: usize,
     /// Changed files under the project folder (absolute paths), for the file tree.
@@ -171,6 +192,33 @@ pub const COLORS: [(u8, u8, u8); 8] = [
 ];
 
 impl Project {
+    /// A project at run time from what was saved (no tabs yet).
+    pub fn from_save(saved: &ProjectSave) -> Self {
+        Project {
+            id: saved.id,
+            name: saved.name.clone(),
+            path: saved.path.clone(),
+            color: saved.color,
+            preset: saved.preset.clone(),
+            tabs: Vec::new(),
+            active_tab: 0,
+            git: None,
+            kind: Kind::default(),
+            parent: saved.parent,
+            worktree: saved.worktree.clone(),
+            worktree_setup: saved.worktree_setup.clone(),
+            folded: saved.folded,
+            new_worktree: saved.new_worktree,
+            missing: false,
+            merge_offered: false,
+        }
+    }
+
+    /// A worktree TernaryCode made (listed under its project).
+    pub fn is_worktree(&self) -> bool {
+        self.parent.is_some()
+    }
+
     pub fn color32(&self) -> eframe::egui::Color32 {
         let (r, g, b) = COLORS[self.color as usize % COLORS.len()];
         eframe::egui::Color32::from_rgb(r, g, b)
@@ -217,8 +265,34 @@ impl Project {
             active_tab: self.active_tab,
             panes,
             editor_width: 0.0,
+            parent: self.parent,
+            worktree: self.worktree.clone(),
+            worktree_setup: self.worktree_setup.clone(),
+            folded: self.folded,
+            new_worktree: self.new_worktree,
         }
     }
+}
+
+/// The order of the project list (sidebar, Grid): projects by name, each followed by its
+/// worktrees by name. Returns the projects' places in `names` in that order; a worktree whose
+/// project is gone is listed as a project.
+pub fn list_order(items: &[(ProjectId, Option<ProjectId>, &str, &Path)]) -> Vec<usize> {
+    let known: HashSet<ProjectId> = items.iter().map(|x| x.0).collect();
+    let by_name = |a: &usize, b: &usize| {
+        let (x, y) = (&items[*a], &items[*b]);
+        name_order(x.2, y.2).then_with(|| x.3.cmp(y.3))
+    };
+    let mut tops: Vec<usize> = (0..items.len()).filter(|&i| items[i].1.is_none_or(|p| !known.contains(&p))).collect();
+    tops.sort_by(by_name);
+    let mut out = Vec::with_capacity(items.len());
+    for t in tops {
+        out.push(t);
+        let mut kids: Vec<usize> = (0..items.len()).filter(|&i| items[i].1 == Some(items[t].0)).collect();
+        kids.sort_by(by_name);
+        out.extend(kids);
+    }
+    out
 }
 
 /// The order projects are listed in (sidebar, Grid, ⌘1–⌘9): by name, as people read names.
@@ -380,6 +454,21 @@ mod tests {
         // Only case apart: still one order, every time.
         assert_eq!(name_order("Api", "api"), "Api".cmp("api"));
         assert_eq!(name_order("api", "api"), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn worktrees_follow_their_project() {
+        let p = Path::new("/x");
+        let items = [
+            (1, None, "ternary-engine", p),
+            (2, Some(1), "lexer-fix", p),
+            (3, None, "api", p),
+            (4, Some(1), "generics", p),
+            (5, Some(99), "orphan", p),
+            (6, None, "web", p),
+        ];
+        let order: Vec<u64> = list_order(&items).into_iter().map(|i| items[i].0).collect();
+        assert_eq!(order, [3, 5, 1, 4, 2, 6]);
     }
 
     #[test]

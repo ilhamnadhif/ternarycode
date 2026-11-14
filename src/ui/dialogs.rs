@@ -77,7 +77,7 @@ pub fn body<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 }
 
 /// A label over a field that takes the whole width.
-fn field_label(ui: &mut Ui, text: &str) {
+pub(super) fn field_label(ui: &mut Ui, text: &str) {
     let p = style::pal(ui);
     ui.label(RichText::new(text).font(style::medium(12.0)).color(p.text_muted));
 }
@@ -305,8 +305,17 @@ impl App {
                         keep = false;
                     }
                 }
-                Dialog::RunAgent { selected, session, place } => {
-                    keep = self.run_agent_dialog(ui, selected, session, place, enter);
+                Dialog::RunAgent { selected, session, place, wt } => {
+                    keep = self.run_agent_dialog(ui, selected, session, place, wt, enter);
+                }
+                Dialog::MergeWorktree(id) => {
+                    keep = self.merge_worktree_dialog(ui, *id, enter);
+                }
+                Dialog::RemoveWorktree(id, branch) => {
+                    keep = self.remove_worktree_dialog(ui, *id, branch);
+                }
+                Dialog::WorktreeSetup { id, copy, adding, run, fresh } => {
+                    keep = self.worktree_setup_dialog(ui, *id, copy, adding, run, fresh, enter);
                 }
                 Dialog::ConfirmCloseFile(i, name) => {
                     ui.set_width(460.0);
@@ -582,10 +591,20 @@ impl App {
                 self.actions.push(Action::Integrations);
             }
         }
+        // Run Agent's "Edit…": the worktree setup opens over it, and it comes back after.
+        if let Some(id) = self.pending_setup.take() {
+            self.dialog_back = Some(dialog);
+            let setup = self.worktree_setup_of(id);
+            let fresh = self.project(id).is_some_and(|p| p.worktree_setup.is_none());
+            self.dialog = Some(Dialog::WorktreeSetup { id, copy: setup.copy, adding: None, run: setup.run, fresh });
+            return;
+        }
         // `ConfirmInstall` takes the dialog itself.
         let install_confirmed = self.actions.contains(&Action::ConfirmInstall);
         if keep || install_confirmed {
             self.dialog = Some(dialog);
+        } else if let Some(back) = self.dialog_back.take() {
+            self.dialog = Some(back);
         } else {
             self.focus_request = self.current_pane();
         }
@@ -692,7 +711,8 @@ fn install_preview(ui: &mut Ui, path: &std::path::Path, diff: &str) {
 impl App {
     /// The Run Agent dialog: which agent (with how it tells TernaryCode that it needs you),
     /// whether to continue its last session, and where it runs. Returns whether it stays open.
-    fn run_agent_dialog(&mut self, ui: &mut Ui, selected: &mut usize, session: &mut usize, place: &mut usize, enter: bool) -> bool {
+    #[allow(clippy::too_many_arguments)]
+    fn run_agent_dialog(&mut self, ui: &mut Ui, selected: &mut usize, session: &mut usize, place: &mut usize, wt: &mut crate::worktree::Form, enter: bool) -> bool {
         use crate::actions::Launch;
         use tc_core::agent::AgentKind;
         let p = style::pal(ui);
@@ -709,12 +729,23 @@ impl App {
         ) {
             keep = false;
         }
-        // Digits choose the agent.
+        // A new worktree is made of the project (of a worktree: of its project), a git one.
+        let name_id = egui::Id::new("worktree-name");
+        let naming = ui.memory(|m| m.has_focus(name_id));
+        let root = self
+            .active
+            .and_then(|id| self.root_project(id))
+            .filter(|r| r.git.is_some() && !r.missing)
+            .map(|r| (r.id, r.name.clone(), r.path.clone(), r.git.as_ref().map_or(0, |g| g.changed)));
+        if root.is_none() {
+            wt.on = false;
+        }
+        // Digits choose the agent (not while a worktree's name is typed).
         let n = presets.len();
         let before = *selected;
         ui.input(|i| {
             for (k, d) in [(Key::Num1, 0), (Key::Num2, 1), (Key::Num3, 2), (Key::Num4, 3), (Key::Num5, 4), (Key::Num6, 5), (Key::Num7, 6), (Key::Num8, 7), (Key::Num9, 8)] {
-                if d < n && i.key_pressed(k) {
+                if d < n && i.key_pressed(k) && !naming {
                     *selected = d;
                 }
             }
@@ -752,7 +783,11 @@ impl App {
         };
         // ↑ ↓ choose the session.
         let mut moved = false;
+        let sessions_shown = !wt.on;
         ui.input(|i| {
+            if !sessions_shown {
+                return;
+            }
             if i.key_pressed(Key::ArrowDown) {
                 *session = (*session + 1) % (count + 1);
                 moved = true;
@@ -764,11 +799,26 @@ impl App {
         });
         *session = (*session).min(count);
 
+        // The new worktree: what the repository has, a free name for the agent chosen, where
+        // it starts from.
+        let facts = root.as_ref().and_then(|r| self.worktree_facts(&r.2).cloned());
+        if let Some(r) = &root
+            && (!wt.typed || wt.name.is_empty())
+        {
+            let stem = chosen.as_ref().map(|x| x.agent.map_or(x.name.clone(), |a| a.slug().to_string())).unwrap_or_default();
+            wt.name = self.suggest_worktree_name(r.0, &stem);
+            wt.typed = false;
+        }
+        let base = wt.base.clone().or_else(|| facts.as_ref().and_then(|f| f.current.clone())).unwrap_or_default();
+        let problem = root.as_ref().and_then(|r| self.worktree_name_problem(r.0, &wt.name));
+        let wt_ready = facts.is_some() && problem.is_none() && !base.is_empty();
+        let mut edit_setup = false;
+
         let mut run = enter;
         body(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for (i, preset) in presets.iter().enumerate() {
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 52.0), egui::Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), if wt.on { 46.0 } else { 52.0 }), egui::Sense::click());
                 #[cfg(debug_assertions)]
                 crate::devtest::record(format!("agent:{}", preset.id), rect);
                 let on = i == *selected;
@@ -821,6 +871,51 @@ impl App {
             ui.add_space(10.0);
             ui.painter().hline(rect.x_range(), ui.cursor().top(), Stroke::new(1.0, p.border));
             ui.add_space(12.0);
+
+            // Where it works: the project's folder, or a new worktree (git projects).
+            if let Some(r) = &root {
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(t("Work in")).font(style::medium(13.0)).color(p.text));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(4.0);
+                        let options = [
+                            kit::Seg::new(t("This folder"), ""),
+                            kit::Seg::new(t("New worktree"), t("A folder and a branch of its own, so agents in this repository don’t overwrite each other")).icon(icons::GIT_FORK),
+                        ];
+                        let seg = kit::segmented(ui, &options, wt.on as usize);
+                        if let Some(i) = seg {
+                            wt.on = i == 1;
+                            if let Some(project) = self.project_mut(r.0) {
+                                project.new_worktree = wt.on;
+                            }
+                            self.mark_dirty();
+                        }
+                    });
+                });
+                ui.add_space(10.0);
+            }
+            if wt.on
+                && let Some(r) = &root
+            {
+                edit_setup = self.worktree_box(ui, r.0, &r.1, r.3, wt, &base, facts.as_ref(), problem.as_deref(), name_id);
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(icons::INFO).font(style::icon_font(12.0)).color(p.text_faint));
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(tf("A new worktree starts a new session. It opens under {} in the sidebar, in its own tab.", &[&r.1]))
+                                .size(style::SMALL)
+                                .color(p.text_faint),
+                        )
+                        .wrap(),
+                    );
+                });
+                ui.add_space(12.0);
+                self.skip_prompts_row(ui, agent);
+                return;
+            }
 
             // The session: a new one, or one to continue.
             ui.horizontal(|ui| {
@@ -914,33 +1009,7 @@ impl App {
                     });
                 });
             ui.add_space(12.0);
-            // Without permission prompts (remembered for the agent; what `yo`-style aliases do).
-            let flag = agent.and_then(tc_agent::sessions::skip_permissions_flag);
-            let mut skip = agent.is_some_and(|a| self.skips_permissions(a)) && flag.is_some();
-            ui.horizontal(|ui| {
-                ui.add_space(4.0);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(RichText::new(t("Skip permission prompts")).font(style::medium(13.0)).color(p.text));
-                    let (note, c) = match flag {
-                        Some(f) if skip => (tf("Adds {}: the agent acts without asking first.", &[f]), p.warn),
-                        Some(f) => (tf("Adds {}: the agent acts without asking first.", &[f]), p.text_faint),
-                        None => (t("This agent has no option for this.").to_string(), p.text_faint),
-                    };
-                    ui.label(RichText::new(note).size(style::SMALL).color(c));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(4.0);
-                    let r = ui.add_enabled_ui(flag.is_some(), |ui| kit::switch(ui, &mut skip)).inner;
-                    #[cfg(debug_assertions)]
-                    crate::devtest::record("skip-permissions", r.rect);
-                    if r.changed()
-                        && let Some(a) = agent
-                    {
-                        self.set_skips_permissions(a, skip);
-                    }
-                });
-            });
+            self.skip_prompts_row(ui, agent);
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 ui.add_space(4.0);
@@ -954,11 +1023,19 @@ impl App {
                 });
             });
         });
+        if edit_setup && let Some(r) = &root {
+            self.pending_setup = Some(r.0);
+        }
         let name = chosen.as_ref().map(|x| x.name.clone()).unwrap_or_default();
-        let hint = tf("1–{} agent · ↑↓ session · ↵ run · Esc cancel", &[&n.min(9).to_string()]);
-        let label = if *session > 0 { tf("Resume {}", &[&name]) } else { tf("Run {}", &[&name]) };
+        let (hint, label) = if wt.on {
+            (t("↵ create and run · Esc cancel").to_string(), t("Create Worktree and Run").to_string())
+        } else {
+            let hint = tf("1–{} agent · ↑↓ session · ↵ run · Esc cancel", &[&n.min(9).to_string()]);
+            (hint, if *session > 0 { tf("Resume {}", &[&name]) } else { tf("Run {}", &[&name]) })
+        };
+        let enabled = !wt.on || wt_ready;
         footer_with(ui, Some(&hint), |ui| {
-            let r = kit::button_keys(ui, kit::Kind::Primary, None, &label, Some("↵"), false);
+            let r = ui.add_enabled_ui(enabled, |ui| kit::button_keys(ui, kit::Kind::Primary, None, &label, Some("↵"), false)).inner;
             #[cfg(debug_assertions)]
             crate::devtest::record("dialog-ok", r.rect);
             run |= r.clicked();
@@ -966,6 +1043,13 @@ impl App {
                 keep = false;
             }
         });
+        if run && wt.on {
+            if wt_ready && let Some(preset) = &chosen {
+                self.actions.push(Action::NewWorktree { preset: preset.id.clone(), name: wt.name.trim().to_string(), base });
+                keep = false;
+            }
+            return keep;
+        }
         if run && let Some(preset) = &chosen {
             let launch = match (&rows, *session) {
                 (_, 0) => Launch::New,
@@ -996,7 +1080,7 @@ fn initials(name: &str) -> String {
 }
 
 /// How long ago, short: "just now", "5 min", "3 h", "2 d" (shown as "… ago").
-fn ago(at: std::time::SystemTime) -> String {
+pub(super) fn ago(at: std::time::SystemTime) -> String {
     let s = std::time::SystemTime::now().duration_since(at).map(|d| d.as_secs()).unwrap_or(0);
     match s {
         0..60 => t("a moment").to_string(),

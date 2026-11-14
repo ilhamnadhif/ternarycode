@@ -23,3 +23,4 @@ pub mod project;
 pub mod ui;
 pub mod update;
 pub mod watch;
+pub mod worktree;

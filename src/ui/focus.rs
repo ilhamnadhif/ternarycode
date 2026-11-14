@@ -159,6 +159,9 @@ impl App {
         let name = project.name.clone();
         let color = project.color32();
         let git = project.git.clone();
+        // A worktree: its project's name before its own, and its branch beside its base.
+        let parent = project.parent.and_then(|x| self.project(x)).map(|x| (x.id, x.name.clone()));
+        let worktree = project.worktree.clone();
         let active_tab = project.active_tab;
         // Each tab with the status its icon shows and, for its tooltip, where that came from and
         // what the program in its pane says it is doing.
@@ -200,13 +203,46 @@ impl App {
             let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
             ui.painter().circle_filled(r.center(), 4.0, color);
             ui.add_space(2.0);
-            ui.label(RichText::new(&name).font(style::semibold(14.0)).color(p.text));
-            if let Some(g) = &git {
-                let r = branch_chip(ui, &g.branch, g.changed);
+            if let (Some((parent_id, parent_name)), Some(wt)) = (&parent, &worktree) {
+                // "ternary-engine › generics": the project opens it; the worktree's name opens
+                // its menu.
+                let r = ui.add(egui::Label::new(RichText::new(parent_name).font(style::medium(14.0)).color(p.text_muted)).sense(Sense::click()));
+                if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tf("Open {}", &[parent_name])).clicked() {
+                    app.actions.push(Action::SelectProject(*parent_id));
+                }
+                ui.label(RichText::new(icons::CARET_RIGHT).font(style::icon_font(11.0)).color(p.text_faint));
+                let g = ui.painter().layout_no_wrap(name.clone(), style::semibold(14.0), p.text);
+                let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 12.0, 24.0), Sense::click());
+                let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+                if resp.hovered() || open {
+                    ui.painter().rect_filled(rect, CornerRadius::same(style::RADIUS), p.hover);
+                }
+                ui.painter().galley(pos2(rect.left() + 6.0, rect.center().y - g.size().y / 2.0), g, p.text);
                 #[cfg(debug_assertions)]
-                crate::devtest::record("branch-chip", r.rect);
-                if r.on_hover_text(kit::tip(t("Review Changes…"), Action::Review)).clicked() {
-                    app.actions.push(Action::Review);
+                crate::devtest::record("worktree-title", rect);
+                let resp = resp.on_hover_text(t("Worktree"));
+                egui::Popup::menu(&resp).align(egui::RectAlign::BOTTOM_START).show(|ui| {
+                    ui.set_min_width(250.0);
+                    ui.set_max_width(250.0);
+                    app.worktree_menu(ui, pid);
+                });
+                if let Some(g) = &git {
+                    let r = worktree_chip(ui, &wt.branch, g.ahead, &wt.base, g.changed);
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record("branch-chip", r.rect);
+                    if r.on_hover_text(kit::tip(&tf("Review Against {}", &[&wt.base]), Action::Review)).clicked() {
+                        app.actions.push(Action::Review);
+                    }
+                }
+            } else {
+                ui.label(RichText::new(&name).font(style::semibold(14.0)).color(p.text));
+                if let Some(g) = &git {
+                    let r = branch_chip(ui, &g.branch, g.changed);
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record("branch-chip", r.rect);
+                    if r.on_hover_text(kit::tip(t("Review Changes…"), Action::Review)).clicked() {
+                        app.actions.push(Action::Review);
+                    }
                 }
             }
             if !servers.is_empty() {
@@ -968,6 +1004,7 @@ impl App {
         let p = style::pal(ui);
         let full = ui.max_rect();
         let n = self.projects.len();
+        let app_worktrees = self.projects.iter().filter(|x| x.is_worktree()).count();
         let waiting = self.attention_queue().len();
         let waiting_projects = self.waiting_projects().len();
         let active = self.active_projects();
@@ -999,13 +1036,16 @@ impl App {
             |_, ui| {
                 ui.label(RichText::new(t("All Projects")).font(style::semibold(14.0)).color(p.text));
                 ui.add_space(-2.0);
+                // Worktrees are counted on their own ("7 projects · 2 worktrees · …").
+                let worktrees = app_worktrees;
+                let mut parts = vec![crate::i18n::count(n - worktrees, t("1 project"), t("{} projects"))];
+                if worktrees > 0 {
+                    parts.push(crate::i18n::count(worktrees, t("1 worktree"), t("{} worktrees")));
+                }
+                parts.push(tf("{} active", &[&active.to_string()]));
+                parts.push(tf("{} waiting", &[&waiting.to_string()]));
                 ui.label(
-                    RichText::new(format!(
-                        "{} · {} · {}",
-                        crate::i18n::count(n, t("1 project"), t("{} projects")),
-                        tf("{} active", &[&active.to_string()]),
-                        tf("{} waiting", &[&waiting.to_string()])
-                    ))
+                    RichText::new(parts.join(" · "))
                     .size(style::SMALL)
                     .color(p.text_faint),
                 );
@@ -1115,6 +1155,31 @@ fn branch_chip(ui: &mut Ui, branch: &str, changed: usize) -> egui::Response {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     ui.painter().text(pos2(rect.left() + 8.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icons::GIT_BRANCH, style::icon_font(13.0), p.text_faint);
+    ui.painter().galley(pos2(rect.left() + 8.0 + 13.0 + 5.0, rect.center().y - g.size().y / 2.0), g, p.text_muted);
+    resp
+}
+
+/// A worktree's branch in its project header: "⑂ tc/generics · ↑2 on main · 3 changed". A click
+/// reviews it against its base.
+fn worktree_chip(ui: &mut Ui, branch: &str, ahead: usize, base: &str, changed: usize) -> egui::Response {
+    let p = style::pal(ui);
+    let font = style::medium(12.0);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(branch, 0.0, egui::TextFormat::simple(font.clone(), p.text_muted));
+    job.append("·", 5.0, egui::TextFormat::simple(font.clone(), p.text_faint));
+    job.append(&tf("↑{} on {}", &[&ahead.to_string(), base]), 5.0, egui::TextFormat::simple(font.clone(), p.text_muted));
+    if changed > 0 {
+        job.append("·", 5.0, egui::TextFormat::simple(font.clone(), p.text_faint));
+        job.append(&tf("{} changed", &[&changed.to_string()]), 5.0, egui::TextFormat::simple(font, p.warn));
+    }
+    let g = ui.painter().layout_job(job);
+    let w = 8.0 + 13.0 + 5.0 + g.size().x + 8.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(style::RADIUS), p.hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().text(pos2(rect.left() + 8.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icons::GIT_FORK, style::icon_font(13.0), p.text_faint);
     ui.painter().galley(pos2(rect.left() + 8.0 + 13.0 + 5.0, rect.center().y - g.size().y / 2.0), g, p.text_muted);
     resp
 }

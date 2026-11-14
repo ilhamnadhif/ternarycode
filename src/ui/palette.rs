@@ -116,7 +116,7 @@ impl App {
                 if let Some(pal) = &self.palette {
                     for (pane, m, text) in &pal.results {
                         let Some(x) = self.panes.get(pane) else { continue };
-                        let project = self.project(x.project).map(|x| x.name.clone()).unwrap_or_default();
+                        let project = self.project_label(x.project);
                         let n = pal.results.iter().filter(|r| r.0 == *pane).count();
                         let mut it = Item::new(Lead::Icon(icons::TERMINAL, Some(p.text_faint)), text.trim_end(), Action::RevealMatch(*pane, m.clone()));
                         it.mono = true;
@@ -183,7 +183,7 @@ impl App {
         if mode == PaletteMode::All {
             for (i, e) in self.attention_queue().iter().enumerate() {
                 let Some(x) = self.panes.get(&e.pane) else { continue };
-                let project = self.project(x.project).map(|x| x.name.clone()).unwrap_or_default();
+                let project = self.project_label(x.project);
                 let mut it = Item::new(
                     Lead::Icon(status::icon(e.status), Some(status::color(e.status, &p))),
                     format!("{project} · {}", x.label()),
@@ -201,10 +201,11 @@ impl App {
             }
         }
         if matches!(mode, PaletteMode::All | PaletteMode::Projects) {
-            for (i, pr) in self.projects.iter().enumerate() {
-                let mut it = Item::new(Lead::Dot(pr.color32()), pr.name.clone(), Action::SelectProject(pr.id));
+            for pr in &self.projects {
+                // A worktree is named with its project: "ternary-engine › generics".
+                let mut it = Item::new(Lead::Dot(pr.color32()), self.project_label(pr.id), Action::SelectProject(pr.id));
                 it.detail = crate::paths::contract_tilde(&pr.path);
-                it.right = kit::keys(&Action::SelectProjectIndex(i)).unwrap_or_default().to_string();
+                it.right = self.top_index(pr.id).and_then(|i| kit::keys(&Action::SelectProjectIndex(i))).unwrap_or_default().to_string();
                 let row = self.project_row(pr, &p);
                 it.pill = row.chip;
                 it.group = t("Projects").to_string();
@@ -212,7 +213,7 @@ impl App {
             }
         }
         if matches!(mode, PaletteMode::All | PaletteMode::Presets) {
-            let project = self.active_project().map(|x| x.name.clone()).unwrap_or_default();
+            let project = self.active.map(|id| self.project_label(id)).unwrap_or_default();
             for preset in self.presets() {
                 let mut it = Item::new(Lead::Icon(icons::PLAY, None), preset.name.clone(), Action::RunPreset(preset.id.clone()));
                 it.detail = preset.command.clone();
@@ -234,6 +235,11 @@ impl App {
                 items.push(it);
             };
             add(icons::GIT_DIFF, t("Review Changes…"), Action::Review);
+            // The worktree in view: its own commands.
+            if let Some((id, base)) = self.active_project().and_then(|x| Some((x.id, x.worktree.as_ref()?.base.clone()))) {
+                add(icons::GIT_MERGE, &tf("Merge into {}…", &[&base]), Action::MergeWorktree(id));
+                add(icons::TRASH, t("Remove Worktree…"), Action::RemoveWorktree(id));
+            }
             add(icons::SQUARES_FOUR, t("Grid of All Projects"), Action::ToggleGrid);
             add(icons::TERMINAL_WINDOW, t("Focus View"), Action::SetView(tc_core::model::View::Focus));
             add(icons::BELL, t("Go to Next Waiting Agent"), Action::NextAttention);

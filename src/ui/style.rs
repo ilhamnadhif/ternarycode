@@ -101,6 +101,16 @@ impl Palette {
     pub fn faint_row(&self) -> Color32 {
         soft(self.hover, 0.6)
     }
+
+    /// The same colours, quieter: a row shown only for what is under it (a project in the
+    /// search's results for one of its worktrees).
+    pub fn dimmed(&self) -> Palette {
+        let mut d = *self;
+        for c in [&mut d.text, &mut d.text_muted, &mut d.text_faint, &mut d.ok, &mut d.warn, &mut d.err, &mut d.info, &mut d.accent_text] {
+            *c = c.gamma_multiply(0.55);
+        }
+        d
+    }
 }
 
 /// Names in the file tree: a little softer than body text, so changed files stand out.

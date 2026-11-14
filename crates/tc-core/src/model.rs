@@ -86,6 +86,37 @@ pub struct ProjectSave {
     pub panes: Vec<PaneSave>,
     /// Share of the area the editor takes beside the panes (0 = default).
     pub editor_width: f32,
+    /// The project this one is a worktree of: it is listed under it.
+    pub parent: Option<ProjectId>,
+    /// A worktree TernaryCode made for an agent run: its branch and where that started.
+    pub worktree: Option<WorktreeSave>,
+    /// What a new worktree of this project gets (files git ignores, a command).
+    pub worktree_setup: Option<WorktreeSetup>,
+    /// Its worktrees are folded away in the sidebar.
+    pub folded: bool,
+    /// Run Agent last chose to work in a new worktree here.
+    pub new_worktree: bool,
+}
+
+/// A worktree made for an agent run (Run Agent → New worktree).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorktreeSave {
+    /// Its own branch (`tc/generics`).
+    pub branch: String,
+    /// The branch it started from, which its work is reviewed against and merged into.
+    pub base: String,
+    /// The commit it started at (a branch still there is not "merged" before it has commits).
+    pub start: String,
+}
+
+/// What a new worktree of a project gets: files git ignores (they are not in a new worktree)
+/// copied from the project, and a command run in it before the agent starts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorktreeSetup {
+    pub copy: Vec<String>,
+    pub run: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -263,6 +294,36 @@ pub struct Settings {
     /// The shape of the terminal cursor.
     #[serde(default)]
     pub cursor_shape: CursorShape,
+    /// Where new worktrees go and what their branches are called.
+    #[serde(default)]
+    pub worktrees: WorktreeSettings,
+}
+
+/// Where Run Agent puts a new worktree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreePlace {
+    /// Beside the repository: `‹repo›.worktrees/‹name›`.
+    #[default]
+    Beside,
+    /// In TernaryCode's data folder.
+    DataFolder,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorktreeSettings {
+    pub place: WorktreePlace,
+    /// What a worktree's branch name starts with (`tc/`).
+    pub prefix: String,
+    /// When a worktree's branch is merged, offer to remove the worktree.
+    pub offer_remove: bool,
+}
+
+impl Default for WorktreeSettings {
+    fn default() -> Self {
+        Self { place: WorktreePlace::Beside, prefix: "tc/".into(), offer_remove: true }
+    }
 }
 
 fn yes() -> bool {
@@ -305,6 +366,7 @@ impl Default for Settings {
             auto_complete: true,
             format_on_save: false,
             cursor_shape: CursorShape::Block,
+            worktrees: WorktreeSettings::default(),
         }
     }
 }
@@ -481,6 +543,28 @@ mod tests {
         let back: Workspace = serde_json::from_str(&json).unwrap();
         assert_eq!(back, w);
         assert_eq!(back.projects[0].tabs[0].layout.panes(), [10, 11]);
+    }
+
+    #[test]
+    fn worktrees_load_from_older_files_and_round_trip() {
+        // Written before worktrees: none, and the defaults.
+        let p: ProjectSave = serde_json::from_str(r#"{"id": 3, "name": "api", "path": "/tmp/api"}"#).unwrap();
+        assert!(p.parent.is_none() && p.worktree.is_none() && !p.folded && !p.new_worktree);
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.worktrees.prefix, "tc/");
+        assert_eq!(s.worktrees.place, WorktreePlace::Beside);
+        assert!(s.worktrees.offer_remove);
+        let wt = ProjectSave {
+            id: 4,
+            name: "generics".into(),
+            path: "/tmp/api.worktrees/generics".into(),
+            parent: Some(3),
+            worktree: Some(WorktreeSave { branch: "tc/generics".into(), base: "main".into(), start: "abc".into() }),
+            worktree_setup: Some(WorktreeSetup { copy: vec![".env".into()], run: "npm install".into() }),
+            ..Default::default()
+        };
+        let back: ProjectSave = serde_json::from_str(&serde_json::to_string(&wt).unwrap()).unwrap();
+        assert_eq!(back, wt);
     }
 
     #[test]

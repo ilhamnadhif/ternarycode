@@ -2,6 +2,7 @@
 //! snapshot taken when the agent appeared, outside the user's index) or since the last commit,
 //! with the diff of the selected file.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -19,6 +20,21 @@ pub enum Base {
     Run,
     /// Since the last commit.
     Head,
+    /// A worktree: since its branch left its base (its commits and what is not committed).
+    Branch,
+}
+
+/// A worktree's branch beside its base, for Review: its commits, which of them last changed each
+/// file, and the files not committed yet.
+#[derive(Clone, Debug, Default)]
+pub struct BranchView {
+    pub branch: String,
+    pub base: String,
+    pub ahead: usize,
+    pub behind: usize,
+    pub commits: Vec<tc_git::worktree::Commit>,
+    pub by_file: HashMap<String, String>,
+    pub uncommitted: HashSet<String>,
 }
 
 pub struct Review {
@@ -26,6 +42,9 @@ pub struct Review {
     pub base: Base,
     /// Agent label and when its run started (for `Base::Run`).
     pub run: Option<(String, Instant, String)>,
+    /// A worktree's branch and base (for `Base::Branch`), and what Review found about them.
+    pub worktree: Option<(String, String)>,
+    pub branch: Option<BranchView>,
     pub loading: bool,
     pub from: Option<String>,
     pub to: Option<String>,
@@ -58,6 +77,7 @@ pub enum ReviewMsg {
         from: String,
         to: String,
         files: Result<Vec<FileChange>, String>,
+        branch: Option<Box<BranchView>>,
     },
     Diff(u64, usize, Result<FileDiff, String>),
 }
@@ -74,7 +94,16 @@ impl App {
                 .as_ref()
                 .map(|(tree, at, agent)| (agent.label().to_string(), *at, tree.clone()))
         });
-        let base = base.unwrap_or(if run.is_some() { Base::Run } else { Base::Head });
+        // A worktree is reviewed since it branched, unless asked otherwise.
+        let worktree = project.worktree.as_ref().map(|w| (w.branch.clone(), w.base.clone()));
+        let base = base.unwrap_or(if worktree.is_some() {
+            Base::Branch
+        } else if run.is_some() {
+            Base::Run
+        } else {
+            Base::Head
+        });
+        let base = if base == Base::Branch && worktree.is_none() { Base::Head } else { base };
         let load = next_work();
         self.review = Some(Review {
             load,
@@ -82,6 +111,8 @@ impl App {
             root: folder.clone(),
             base,
             run: run.clone(),
+            worktree: worktree.clone(),
+            branch: None,
             loading: true,
             from: None,
             to: None,
@@ -101,25 +132,44 @@ impl App {
             let result = (|| {
                 let root = root.as_ref().ok_or_else(|| tf("{} is not a git repository.", &[&name]))?;
                 let (head, now) = tc_git::worktree_vs_head(root)?;
+                let head_tree = match &head {
+                    Some(h) => h.clone(),
+                    None => tc_git::empty_tree(root)?,
+                };
+                let mut branch = None;
                 let from = match base {
                     Base::Run => run_tree.ok_or_else(|| crate::i18n::t("No snapshot of this run.").to_string())?,
-                    Base::Head => match head {
-                        Some(h) => h,
-                        None => tc_git::empty_tree(root)?,
-                    },
+                    Base::Head => head_tree.clone(),
+                    Base::Branch => {
+                        let (wt_branch, wt_base) = worktree.clone().unwrap_or_default();
+                        let fork = tc_git::worktree::merge_base(root, &wt_base, "HEAD")?;
+                        let (ahead, behind) = tc_git::worktree::ahead_behind(root, &wt_base, "HEAD").unwrap_or((0, 0));
+                        let uncommitted = tc_git::changes(root, &head_tree, &now).map(|f| f.into_iter().map(|c| c.path).collect()).unwrap_or_default();
+                        branch = Some(BranchView {
+                            branch: wt_branch,
+                            base: wt_base,
+                            ahead,
+                            behind,
+                            commits: tc_git::worktree::commits(root, &fork, "HEAD").unwrap_or_default(),
+                            by_file: tc_git::worktree::last_commit_by_file(root, &fork, "HEAD").unwrap_or_default(),
+                            uncommitted,
+                        });
+                        tc_git::worktree::tree_of(root, &fork)?
+                    }
                 };
                 let files = tc_git::changes(root, &from, &now);
-                Ok::<_, String>((from, now, files))
+                Ok::<_, String>((from, now, files, branch))
             })();
             let root = root.unwrap_or(folder);
             let msg = match result {
-                Ok((from, to, files)) => ReviewMsg::Loaded { load, root, from, to, files },
+                Ok((from, to, files, branch)) => ReviewMsg::Loaded { load, root, from, to, files, branch: branch.map(Box::new) },
                 Err(e) => ReviewMsg::Loaded {
                     load,
                     root,
                     from: String::new(),
                     to: String::new(),
                     files: Err(e),
+                    branch: None,
                 },
             };
             let _ = tx.send(AppMsg::Review(msg));
@@ -130,12 +180,13 @@ impl App {
     pub fn on_review_msg(&mut self, msg: ReviewMsg) {
         let Some(r) = self.review.as_mut() else { return };
         match msg {
-            ReviewMsg::Loaded { load, root, from, to, files } => {
+            ReviewMsg::Loaded { load, root, from, to, files, branch } => {
                 if load != r.load {
                     return;
                 }
                 r.loading = false;
                 r.root = root;
+                r.branch = branch.map(|b| *b);
                 match files {
                     Ok(f) => {
                         r.files = f;
@@ -199,6 +250,18 @@ impl App {
         let pane_label = self.current_pane().and_then(|id| self.panes.get(&id)).map(|x| x.label()).unwrap_or_default();
         let base = r.base;
         let has_run = r.run.is_some();
+        let has_branch = r.worktree.is_some();
+        let worktree = r.worktree.clone();
+        let branch = r.branch.clone();
+        // What it can be compared with, in the top bar's order (⇥ goes round them).
+        let mut bases = Vec::new();
+        if has_run {
+            bases.push(Base::Run);
+        }
+        if has_branch {
+            bases.push(Base::Branch);
+        }
+        bases.push(Base::Head);
         let run_age = r.run.as_ref().map(|(_, at, _)| super::status::age(*at));
         let (adds, dels): (u32, u32) = r.files.iter().fold((0, 0), |(a, d), f| (a + f.additions.unwrap_or(0), d + f.deletions.unwrap_or(0)));
         let nfiles = r.files.len();
@@ -234,26 +297,39 @@ impl App {
                 if i.consume_key(egui::Modifiers::NONE, Key::Enter) {
                     open = true;
                 }
-                if i.consume_key(egui::Modifiers::NONE, Key::Tab) && has_run {
-                    switch = Some(if base == Base::Run { Base::Head } else { Base::Run });
+                if i.consume_key(egui::Modifiers::NONE, Key::Tab) && bases.len() > 1 {
+                    let at = bases.iter().position(|b| *b == base).unwrap_or(0);
+                    switch = Some(bases[(at + 1) % bases.len()]);
                 }
             });
         }
 
         // ----- top bar ------------------------------------------------------------------------
+        // With three choices the agent's age stays out (room in the top bar).
         let since = match (&who, &run_age) {
+            (Some(agent), Some(_)) if has_branch => tf("Since {} started", &[agent]),
             (Some(agent), Some(age)) => tf("Since {} started · {}", &[agent, age]),
             _ => t("Since the agent started").to_string(),
         };
-        let mut options = vec![kit::Seg::new(t("Since last commit"), "")];
-        if has_run {
-            options.insert(0, kit::Seg::new(&since, ""));
-        }
-        let on = if has_run && base == Base::Head { 1 } else { 0 };
+        let branched = tf("Since branched from {}", &[worktree.as_ref().map_or("", |w| w.1.as_str())]);
+        let options: Vec<kit::Seg> = bases
+            .iter()
+            .map(|b| match b {
+                Base::Run => kit::Seg::new(&since, ""),
+                Base::Branch => kit::Seg::new(&branched, "").icon(icons::GIT_FORK),
+                Base::Head => kit::Seg::new(t("Since last commit"), ""),
+            })
+            .collect();
+        let on = bases.iter().position(|b| *b == base).unwrap_or(0);
         let width = kit::segmented_width(ui, &options);
+        let choices = bases.clone();
         let mut centre = |app: &mut Self, ui: &mut Ui, rect: Rect| {
+            #[cfg(debug_assertions)]
+            for (r, b) in kit::segment_rects(rect, choices.len()).into_iter().zip(&choices) {
+                crate::devtest::record(format!("review-base:{b:?}"), r);
+            }
             if let Some(i) = kit::segmented_in(ui, rect, egui::Id::new("review-base"), &options, on) {
-                app.review_switch = Some(if has_run && i == 0 { Base::Run } else { Base::Head });
+                app.review_switch = Some(choices[i]);
             }
         };
         let body = self.top_bar(
@@ -293,21 +369,72 @@ impl App {
             empty(ui, t("Nothing changed."), p.text_muted);
         }
 
+        // A worktree's branch: where it goes, ahead / behind, its commits.
+        let mut list_top = files_rect.top();
+        if base == Base::Branch
+            && let Some(b) = &branch
+        {
+            let x = files_rect.left() + 14.0;
+            let mut y = files_rect.top() + 10.0;
+            let small = egui::FontId::proportional(style::SMALL);
+            let painter = ui.painter();
+            painter.text(pos2(x + 6.0, y + 9.0), Align2::CENTER_CENTER, icons::GIT_FORK, style::icon_font(13.0), p.text_muted);
+            let mut job = egui::text::LayoutJob::default();
+            job.append(&b.branch, 0.0, egui::TextFormat::simple(egui::FontId::monospace(12.5), p.text));
+            job.append("→", 6.0, egui::TextFormat::simple(egui::FontId::proportional(12.5), p.text_faint));
+            job.append(&b.base, 6.0, egui::TextFormat::simple(egui::FontId::monospace(12.5), p.text));
+            let counts = painter.layout_no_wrap(format!("↑{} ↓{}", b.ahead, b.behind), small.clone(), p.text_faint);
+            let cw = counts.size().x;
+            job.wrap = egui::text::TextWrapping::truncate_at_width((files_rect.right() - 14.0 - cw - 8.0 - (x + 18.0)).max(20.0));
+            let g = painter.layout_job(job);
+            painter.galley(pos2(x + 18.0, y + 9.0 - g.size().y / 2.0), g, p.text);
+            painter.galley(pos2(files_rect.right() - 14.0 - cw, y + 9.0 - counts.size().y / 2.0), counts, p.text_faint);
+            y += 18.0 + 6.0;
+            const SHOWN: usize = 3;
+            for c in b.commits.iter().take(SHOWN) {
+                let hash = painter.layout_no_wrap(c.short.clone(), egui::FontId::monospace(11.5), p.text_faint);
+                let hw = hash.size().x;
+                painter.galley(pos2(x, y + 8.5 - hash.size().y / 2.0), hash, p.text_faint);
+                let mut job = egui::text::LayoutJob::simple_singleline(c.subject.clone(), small.clone(), p.text_muted);
+                job.wrap = egui::text::TextWrapping::truncate_at_width((files_rect.right() - 14.0 - (x + hw + 7.0)).max(20.0));
+                let g = painter.layout_job(job);
+                painter.galley(pos2(x + hw + 7.0, y + 8.5 - g.size().y / 2.0), g, p.text_muted);
+                y += 17.0;
+            }
+            if b.commits.len() > SHOWN {
+                painter.text(pos2(x, y + 8.5), Align2::LEFT_CENTER, tf("{} more", &[&(b.commits.len() - SHOWN).to_string()]), small.clone(), p.text_faint);
+                y += 17.0;
+            }
+            if b.commits.is_empty() {
+                painter.text(pos2(x, y + 8.5), Align2::LEFT_CENTER, t("No commits yet."), small, p.text_faint);
+                y += 17.0;
+            }
+            y += 6.0;
+            painter.hline(files_rect.x_range(), y + 0.5, Stroke::new(1.0, p.border));
+            list_top = y;
+        }
+
         // Files: a filter, the list, a note on what it is compared with.
-        let filter_rect = Rect::from_min_size(files_rect.min + vec2(8.0, 8.0), vec2(FILES_W - 16.0, 26.0));
+        let filter_rect = Rect::from_min_size(pos2(files_rect.left() + 8.0, list_top + 8.0), vec2(FILES_W - 16.0, 26.0));
         let mut filter = self.review_filter.clone();
         ui.scope_builder(egui::UiBuilder::new().max_rect(filter_rect), |ui| {
             kit::field(ui, egui::Id::new("review-filter"), &mut filter, Some(icons::FUNNEL), t("Filter changed files"), filter_rect.width(), true)
         });
         self.review_filter = filter.clone();
-        let note = match base {
-            Base::Run => tf("Snapshot taken when {} started, outside your git index.", &[who.as_deref().unwrap_or("")]),
-            Base::Head => t("Compared with the last commit.").to_string(),
+        let note_rect = if base == Base::Branch {
+            self.review_branch_actions(ui, files_rect, branch.as_ref())
+        } else {
+            let note = match base {
+                Base::Run => tf("Snapshot taken when {} started, outside your git index.", &[who.as_deref().unwrap_or("")]),
+                _ => t("Compared with the last commit.").to_string(),
+            };
+            let note_g = ui.painter().layout(note, egui::FontId::proportional(style::SMALL), p.text_faint, FILES_W - 28.0);
+            let note_rect = Rect::from_min_max(pos2(files_rect.left(), files_rect.bottom() - note_g.size().y - 20.0), files_rect.max);
+            ui.painter().hline(note_rect.x_range(), note_rect.top() + 0.5, Stroke::new(1.0, p.border));
+            ui.painter().galley(pos2(note_rect.left() + 14.0, note_rect.top() + 10.0), note_g, p.text_faint);
+            note_rect
         };
-        let note_g = ui.painter().layout(note, egui::FontId::proportional(style::SMALL), p.text_faint, FILES_W - 28.0);
-        let note_rect = Rect::from_min_max(pos2(files_rect.left(), files_rect.bottom() - note_g.size().y - 20.0), files_rect.max);
-        ui.painter().hline(note_rect.x_range(), note_rect.top() + 0.5, Stroke::new(1.0, p.border));
-        ui.painter().galley(pos2(note_rect.left() + 14.0, note_rect.top() + 10.0), note_g, p.text_faint);
+        let Some(r) = self.review.as_ref() else { return };
         let list_rect = Rect::from_min_max(pos2(files_rect.left() + 6.0, filter_rect.bottom() + 8.0), pos2(files_rect.right() - 6.0, note_rect.top()));
         let shown: Vec<usize> = r
             .files
@@ -349,10 +476,17 @@ impl App {
                         Some(old) => format!("{old} → {}", f.path),
                         None => f.path.clone(),
                     };
+                    // A worktree's file not committed yet: a dot after its name.
+                    let loose = base == Base::Branch && branch.as_ref().is_some_and(|b| b.uncommitted.contains(&f.path));
+                    let dot_w = if loose { 12.0 } else { 0.0 };
                     let mut job = egui::text::LayoutJob::simple_singleline(name, egui::FontId::proportional(12.5), p.text);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 28.0 - cw - 18.0).max(20.0));
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 28.0 - cw - 18.0 - dot_w).max(20.0));
                     let g = ui.painter().layout_job(job);
+                    let nw = g.size().x;
                     ui.painter().galley(pos2(rect.left() + 28.0, rect.center().y - g.size().y / 2.0), g, p.text);
+                    if loose {
+                        ui.painter().circle_filled(pos2(rect.left() + 28.0 + nw + 9.0, rect.center().y), 3.0, p.warn);
+                    }
                     if resp.clicked() {
                         select = Some(*i);
                     }
@@ -377,6 +511,17 @@ impl App {
             }
             if let Some(d) = f.deletions.filter(|d| *d > 0) {
                 job.append(&format!("−{d}"), 4.0, egui::TextFormat::simple(egui::FontId::proportional(style::SMALL), p.err));
+            }
+            // A worktree's file: the commit it was last changed in, else that it is not committed.
+            if base == Base::Branch
+                && let Some(b) = &branch
+            {
+                let small = egui::FontId::proportional(style::SMALL);
+                if b.uncommitted.contains(&f.path) {
+                    job.append(&format!("· {}", t("not committed")), 10.0, egui::TextFormat::simple(small, p.warn));
+                } else if let Some(c) = b.by_file.get(&f.path) {
+                    job.append(&format!("· {}", tf("committed in {}", &[c])), 10.0, egui::TextFormat::simple(small, p.text_faint));
+                }
             }
             let hunks = r.diff.as_ref().map_or(0, |d| d.hunks.len());
             let cur_hunk = self.review_hunk.min(hunks.saturating_sub(1));
@@ -455,7 +600,11 @@ impl App {
             ui.painter().rect_filled(foot, CornerRadius::ZERO, style::over(p.surface, p.chrome, 0.5));
             ui.painter().hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
             let mut hints: Vec<(&[&str], &str)> = vec![(&["j", "k"], t("file")), (&["n", "p"], t("hunk")), (&["↵"], t("open in editor"))];
-            if has_run {
+            if has_branch && has_run {
+                hints.push((&["⇥"], t("started / branched / last commit")));
+            } else if has_branch {
+                hints.push((&["⇥"], t("branched / last commit")));
+            } else if has_run {
                 hints.push((&["⇥"], t("since start / last commit")));
             }
             let esc = t("back to terminals");
@@ -486,6 +635,54 @@ impl App {
             self.review = None;
             self.focus_request = self.current_pane();
         }
+    }
+
+    /// The foot of a worktree's file list: what Merge leaves out (files not committed), Merge
+    /// into its base, Remove. Returns where it is (the list ends above it).
+    fn review_branch_actions(&mut self, ui: &mut Ui, files_rect: Rect, branch: Option<&BranchView>) -> Rect {
+        let p = style::pal(ui);
+        let loose = branch.map_or(0, |b| b.uncommitted.len());
+        let base = branch.map(|b| b.base.clone()).unwrap_or_default();
+        let width = FILES_W - 24.0;
+        let warning = (loose > 0).then(|| {
+            let files = crate::i18n::count(loose, t("1 file is not committed"), t("{} files are not committed"));
+            let text = tf("{} (●). Merge takes commits only: ask the agent to commit, or commit in the terminal.", &[&files]);
+            ui.painter().layout(text, egui::FontId::proportional(style::SMALL), p.warn, width - 20.0)
+        });
+        let warn_h = warning.as_ref().map_or(0.0, |g| g.size().y + 8.0);
+        let rect = Rect::from_min_max(pos2(files_rect.left(), files_rect.bottom() - 10.0 - warn_h - 24.0 - 12.0), files_rect.max);
+        ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
+        let mut y = rect.top() + 10.0;
+        if let Some(g) = warning {
+            ui.painter().text(pos2(rect.left() + 12.0 + 6.5, y + 8.0), Align2::CENTER_CENTER, icons::WARNING, style::icon_font(12.5), p.warn);
+            let h = g.size().y;
+            ui.painter().galley(pos2(rect.left() + 12.0 + 20.0, y), g, p.warn);
+            y += h + 8.0;
+        }
+        let row = Rect::from_min_max(pos2(rect.left() + 12.0, y), pos2(rect.right() - 12.0, y + 24.0));
+        let id = self.active;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let merge = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::GIT_MERGE), &tf("Merge into {}…", &[&base]), true);
+            #[cfg(debug_assertions)]
+            crate::devtest::record("review-merge", merge.rect);
+            if merge.clicked()
+                && let Some(id) = id
+            {
+                self.actions.push(Action::MergeWorktree(id));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let remove = kit::button_ex(ui, kit::Kind::Ghost, Some(icons::TRASH), t("Remove…"), true);
+                #[cfg(debug_assertions)]
+                crate::devtest::record("review-remove", remove.rect);
+                if remove.on_hover_text(t("Remove Worktree…")).clicked()
+                    && let Some(id) = id
+                {
+                    self.actions.push(Action::RemoveWorktree(id));
+                }
+            });
+        });
+        rect
     }
 
     /// The Review's toolbar: how much changed, Unified | Split, Close.

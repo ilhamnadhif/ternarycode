@@ -156,6 +156,11 @@ update check is the only network connection TernaryCode makes.
 - **Run an agent** in a new pane from presets (Claude Code, Codex, Gemini CLI, OpenCode, or your own
   command). Panes of agents that can continue a conversation offer **Resume** after a
   restart.
+- **A worktree per agent**, when several work in one repository: **Run Agent → New worktree**
+  makes a git worktree on a branch of its own (`tc/‹name›`, beside the repository) and starts the
+  agent there, so agents never write over each other's files. It is listed under its project, is
+  reviewed since it branched, merged by a command typed in the project's terminal, and removed
+  with its folder (and its branch once merged).
 - **A real terminal**: 24-bit colour, mouse reporting, synchronized output, IME, pixel-exact
   box drawing, and scrollback search in one pane (`⌘F`) or all of them (`⇧⌘F`).
 - **Links open with `⌘`-click or `Ctrl`-click** (Ctrl-click on Windows and Linux), from a Grid
@@ -226,7 +231,8 @@ previous match.
 `⇧⌘R` shows what changed: since the agent in this pane started (a snapshot taken outside your git
 index, so your staging area is never touched), or since the last commit. Open any file from the
 diff in the editor. When an agent finishes, **Review** on its Grid tile and in the list of what
-waits opens it straight away.
+waits opens it straight away. In a worktree, Review shows its branch since it left its base: its
+commits and what is not committed yet, with **Merge** and **Remove** at hand.
 
 ## Keyboard shortcuts
 

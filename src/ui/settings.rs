@@ -344,6 +344,46 @@ impl App {
                 kit::switch(ui, &mut self.settings.check_updates);
             });
         });
+
+        // Worktrees: where Run Agent → New worktree puts them, what their branches are called.
+        let beside = tf("Beside the repository: {}", &["‹repo›.worktrees/‹name›"]);
+        let prefix = self.settings.worktrees.prefix.clone();
+        let examples = format!("{prefix}generics, {prefix}lexer-fix…");
+        let labels = [
+            (t("Where new worktrees go"), beside.as_str()),
+            (t("Branch names start with"), examples.as_str()),
+            (t("When a branch is merged"), t("Offer to remove its worktree.")),
+        ];
+        if labels.iter().any(|(l, n)| hit(search, l, n)) {
+            group(ui, t("Worktrees"));
+        }
+        let place_note = match self.settings.worktrees.place {
+            tc_core::model::WorktreePlace::Beside => beside.clone(),
+            tc_core::model::WorktreePlace::DataFolder => tf("In TernaryCode's data folder: {}", &[&crate::paths::contract_tilde(&crate::paths::data_dir().join("worktrees"))]),
+        };
+        card(ui, search, &labels, |c| {
+            c.row(t("Where new worktrees go"), &place_note, |ui| {
+                let options = [t("Beside the repository"), t("In TernaryCode's data folder")];
+                let current = match self.settings.worktrees.place {
+                    tc_core::model::WorktreePlace::Beside => 0,
+                    tc_core::model::WorktreePlace::DataFolder => 1,
+                };
+                if let Some(i) = kit::select(ui, "worktree-place", options[current], &options, 200.0) {
+                    self.settings.worktrees.place = if i == 0 { tc_core::model::WorktreePlace::Beside } else { tc_core::model::WorktreePlace::DataFolder };
+                }
+            });
+            c.row(t("Branch names start with"), &examples, |ui| {
+                let mut text = self.settings.worktrees.prefix.clone();
+                let r = kit::field(ui, egui::Id::new("worktree-prefix"), &mut text, None, "tc/", 90.0, true);
+                // Only what a branch name can hold (empty: no prefix).
+                if r.changed() && (text.is_empty() || tc_git::worktree::valid_branch(&format!("{text}x"))) {
+                    self.settings.worktrees.prefix = text;
+                }
+            });
+            c.row(t("When a branch is merged"), t("Offer to remove its worktree."), |ui| {
+                kit::switch(ui, &mut self.settings.worktrees.offer_remove);
+            });
+        });
     }
 
     fn appearance_page(&mut self, ui: &mut Ui, search: &str) {

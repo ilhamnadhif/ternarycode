@@ -57,6 +57,14 @@ pub enum AppMsg {
     LspPath(std::ffi::OsString),
     /// An agent's earlier sessions in a project folder (Run Agent).
     Sessions(AgentKind, PathBuf, Vec<tc_agent::sessions::Session>),
+    /// What Run Agent needs to know about a repository to make a worktree of it.
+    WorktreeFacts(PathBuf, crate::worktree::Facts),
+    /// A worktree was made for an agent run (or why not).
+    WorktreeMade(Box<crate::worktree::Made>),
+    /// A worktree's folder (and maybe its branch) was removed, or why not.
+    WorktreeRemoved(String, Result<(), String>),
+    /// The files not committed in a worktree (each file, for Merge and Remove).
+    WorktreeDirty(ProjectId, Vec<String>),
 }
 
 /// A line of a confirmation's list: a program that would be stopped, or a file whose changes
@@ -72,8 +80,16 @@ pub enum Dialog {
     /// found at the folder (the path checked, and a line about it).
     AddProject { path: String, name: String, then: usize, found: Option<(String, Option<String>)> },
     /// The agent picker: the preset chosen, the session row chosen (0 a new session, then the
-    /// earlier ones, or its last), and where it runs (0 new tab, 1 split right, 2 split down).
-    RunAgent { selected: usize, session: usize, place: usize },
+    /// earlier ones, or its last), where it runs (0 new tab, 1 split right, 2 split down), and
+    /// the new worktree it may run in.
+    RunAgent { selected: usize, session: usize, place: usize, wt: crate::worktree::Form },
+    /// Merging a worktree's branch into its base (typed in a terminal of its project).
+    MergeWorktree(ProjectId),
+    /// Removing a worktree; whether its branch goes too (`None`: not chosen yet).
+    RemoveWorktree(ProjectId, Option<bool>),
+    /// What a new worktree of a project gets: files copied, a name being added, a command, and
+    /// whether the files are still the defaults to read (the repository's ignored files).
+    WorktreeSetup { id: ProjectId, copy: Vec<String>, adding: Option<String>, run: String, fresh: bool },
     /// Closing a file with unsaved edits: its index in the editor, its name.
     ConfirmCloseFile(usize, String),
     /// Taking an agent's installed hooks out of its settings.
@@ -139,6 +155,8 @@ pub enum ToastKind {
     Ok,
     Warn,
     Err,
+    /// A worktree was made.
+    Worktree,
 }
 
 pub struct Palette {
@@ -235,6 +253,14 @@ pub struct App {
     pub project_filter_sel: usize,
     /// Each agent's earlier sessions in a project folder, for Run Agent (`None` while listed).
     pub session_lists: HashMap<(AgentKind, PathBuf), Option<Vec<tc_agent::sessions::Session>>>,
+    /// Branches and ignored files of a repository, for a new worktree (`None` while read).
+    pub worktree_facts: HashMap<PathBuf, Option<crate::worktree::Facts>>,
+    /// A dialog to go back to when the one open closes (Run Agent under its worktree setup).
+    pub dialog_back: Option<Dialog>,
+    /// Run Agent asked for a project's worktree setup (opened over it).
+    pub pending_setup: Option<ProjectId>,
+    /// The files not committed in each worktree, as last listed (Merge and Remove name them).
+    pub worktree_dirty: HashMap<ProjectId, Vec<String>>,
     /// What the Settings search holds.
     pub settings_search: String,
     /// The Problems panel under the editor, and whether it lists the whole project's.
@@ -445,6 +471,10 @@ impl App {
             project_filter: String::new(),
             project_filter_sel: 0,
             session_lists: HashMap::new(),
+            worktree_facts: HashMap::new(),
+            dialog_back: None,
+            pending_setup: None,
+            worktree_dirty: HashMap::new(),
             settings_search: String::new(),
             problems_open: false,
             problems_project: false,
@@ -553,14 +583,14 @@ impl App {
         scheme::find(name, dark)
     }
 
-    fn new_id(&mut self) -> u64 {
+    pub(crate) fn new_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         id
     }
 
     /// The grid pane `pane` gets when `layout` is drawn in the Focus view.
-    fn grid_in(&self, layout: &Layout, pane: PaneId) -> tc_term::core::GridSize {
+    pub(crate) fn grid_in(&self, layout: &Layout, pane: PaneId) -> tc_term::core::GridSize {
         let body = self.last_body.unwrap_or_else(|| {
             // Before the first frame: the saved window size less the sidebar, bars and header.
             let [_, _, w, h] = self.settings.window.unwrap_or([0.0, 0.0, 1280.0, 800.0]);
@@ -648,9 +678,19 @@ impl App {
     /// they are drawn).
     /// Projects are listed by name (sidebar, Grid, ⌘1–⌘9): one order, the same every time,
     /// whatever was added or renamed last.
-    fn sort_projects(&mut self) {
-        self.projects
-            .sort_by(|a, b| crate::project::name_order(&a.name, &b.name).then_with(|| a.path.cmp(&b.path)));
+    /// Worktrees follow their project, by name.
+    pub fn sort_projects(&mut self) {
+        let order = {
+            let items: Vec<_> = self.projects.iter().map(|p| (p.id, p.parent, p.name.as_str(), p.path.as_path())).collect();
+            crate::project::list_order(&items)
+        };
+        let mut old: Vec<Option<Project>> = std::mem::take(&mut self.projects).into_iter().map(Some).collect();
+        self.projects = order.into_iter().filter_map(|i| old[i].take()).collect();
+    }
+
+    /// A project's place among the projects (worktrees aside), for ⌘1–⌘9.
+    pub fn top_index(&self, id: ProjectId) -> Option<usize> {
+        self.projects.iter().filter(|p| !p.is_worktree()).position(|p| p.id == id)
     }
 
     fn show_focus(&mut self) {
@@ -661,7 +701,7 @@ impl App {
         self.grid_focus = None;
     }
 
-    fn new_pane(&mut self, ctx: &egui::Context, project: ProjectId, cwd: PathBuf, size: tc_term::core::GridSize) -> PaneId {
+    pub(crate) fn new_pane(&mut self, ctx: &egui::Context, project: ProjectId, cwd: PathBuf, size: tc_term::core::GridSize) -> PaneId {
         let id = self.new_id();
         let pane = Pane::new(id, project, cwd, size, &self.spawn_ctx(ctx, Some(id)), true);
         self.panes.insert(id, pane);
@@ -691,17 +731,9 @@ impl App {
         }
         let presets = self.settings.presets();
         for saved in ws.projects {
-            let mut project = Project {
-                id: saved.id,
-                name: saved.name.clone(),
-                path: saved.path.clone(),
-                color: saved.color,
-                preset: saved.preset.clone(),
-                tabs: Vec::new(),
-                active_tab: 0,
-                git: None,
-                kind: Default::default(),
-            };
+            let mut project = Project::from_save(&saved);
+            // A worktree deleted outside TernaryCode says so in the sidebar.
+            project.missing = !saved.path.is_dir();
             let pane_info: HashMap<PaneId, PaneSave> =
                 saved.panes.iter().map(|p| (p.id, p.clone())).collect();
             for tab in &saved.tabs {
@@ -885,15 +917,24 @@ impl App {
             self.git_again.insert(id);
             return;
         }
-        let Some(path) = self.project(id).map(|p| p.path.clone()) else {
+        let Some((path, worktree)) = self.project(id).map(|p| (p.path.clone(), p.worktree.clone())) else {
             return;
         };
         self.git_running.insert(id);
         let tx = self.app_tx.clone();
         self.rt.spawn_blocking(move || {
             let kind = crate::project::Kind::detect(&path);
-            let _ = tx.send(AppMsg::Git(id, crate::project::git_info(&path), kind));
+            let mut info = crate::project::git_info(&path);
+            if let (Some(info), Some(wt)) = (info.as_mut(), &worktree) {
+                crate::worktree::branch_state(&path, wt, info);
+            }
+            let _ = tx.send(AppMsg::Git(id, info, kind));
         });
+        // A merge in a project moves its worktrees' bases: they are looked at again too.
+        let kids: Vec<ProjectId> = self.projects.iter().filter(|p| p.parent == Some(id)).map(|p| p.id).collect();
+        for kid in kids {
+            self.refresh_git(kid);
+        }
     }
 
     // ----- lookups ----------------------------------------------------------------------------
@@ -902,7 +943,7 @@ impl App {
         self.projects.iter().find(|p| p.id == id)
     }
 
-    fn project_mut(&mut self, id: ProjectId) -> Option<&mut Project> {
+    pub(crate) fn project_mut(&mut self, id: ProjectId) -> Option<&mut Project> {
         self.projects.iter_mut().find(|p| p.id == id)
     }
 
@@ -1062,7 +1103,7 @@ impl App {
             .iter()
             .filter_map(|(id, a)| {
                 let pane = self.panes.get(id)?;
-                let project = self.project(pane.project).map(|x| x.name.clone()).unwrap_or_default();
+                let project = self.project_label(pane.project);
                 Some(format!("{project} · {}", a.label()))
             })
             .collect();
@@ -1201,9 +1242,22 @@ impl App {
                         p.git = info.map(std::sync::Arc::new);
                         p.kind = kind;
                     }
+                    self.offer_merged_removal(id);
                     self.git_running.remove(&id);
                     if self.git_again.remove(&id) {
                         self.refresh_git(id);
+                    }
+                }
+                AppMsg::WorktreeFacts(dir, facts) => {
+                    self.worktree_facts.insert(dir, Some(facts));
+                }
+                AppMsg::WorktreeMade(made) => self.on_worktree_made(ctx, *made),
+                AppMsg::WorktreeDirty(id, files) => {
+                    self.worktree_dirty.insert(id, files);
+                }
+                AppMsg::WorktreeRemoved(name, result) => {
+                    if let Err(e) = result {
+                        self.toast_err(tf("The worktree {} was not removed: {}", &[&name, &e]));
                     }
                 }
                 AppMsg::Files(id, paths) => {
@@ -1313,15 +1367,20 @@ impl App {
                 .is_none_or(|t| now.duration_since(*t) > Duration::from_secs(120))
         {
             self.conflict_warned.insert(project, now);
-            let name = self.project(project).map(|p| p.name.clone()).unwrap_or_default();
-            self.toast_with(
-                ToastKind::Warn,
+            let name = self.project_label(project);
+            // In a git project, the way out for next time: a worktree per agent.
+            let text = if self.project(project).is_some_and(|p| p.git.is_some()) {
+                tf(
+                    "{} agents are changing files in {} at once ({}). Next time: Run Agent → New worktree.",
+                    &[&working.len().to_string(), &name, &working.join(", ")],
+                )
+            } else {
                 tf(
                     "{} agents are changing files in {} at the same time ({}). They may overwrite each other's work.",
                     &[&working.len().to_string(), &name, &working.join(", ")],
-                ),
-                Some((t("Show").to_string(), Action::SelectProject(project))),
-            );
+                )
+            };
+            self.toast_with(ToastKind::Warn, text, Some((t("Show").to_string(), Action::SelectProject(project))));
         }
     }
 
@@ -1489,7 +1548,7 @@ impl App {
         }
         for id in posts {
             let Some(pane) = self.panes.get(&id) else { continue };
-            let project = self.project(pane.project).map(|p| p.name.clone()).unwrap_or_default();
+            let project = self.project_label(pane.project);
             // The title says which project and what happened; the body who and what it says.
             let title = match pane.tracker.status {
                 Status::NeedsInput => tf("{} needs you", &[&project]),
@@ -1548,21 +1607,18 @@ impl App {
         });
         let size = self.grid_in(&Layout::Pane(0), 0);
         let pane = self.new_pane(ctx, id, path.clone(), size);
-        let project = Project {
+        let mut project = Project::from_save(&tc_core::model::ProjectSave {
             id,
             name,
             path,
             color: (self.projects.len() % crate::project::COLORS.len()) as u8,
-            preset: None,
-            tabs: vec![Tab {
-                layout: Layout::Pane(pane),
-                focused: pane,
-                title: None,
-            }],
-            active_tab: 0,
-            git: None,
-            kind: Default::default(),
-        };
+            ..Default::default()
+        });
+        project.tabs = vec![Tab {
+            layout: Layout::Pane(pane),
+            focused: pane,
+            title: None,
+        }];
         self.watchers
             .watch(project.id, project.path.clone(), self.app_tx.clone(), ctx.clone());
         self.projects.push(project);
@@ -1619,7 +1675,17 @@ impl App {
         }
     }
 
-    fn remove_project(&mut self, id: ProjectId) {
+    /// Watches a project's folder for changes (file tree, git summary, editor).
+    pub(crate) fn watch_project(&mut self, ctx: &egui::Context, project: &Project) {
+        self.watchers.watch(project.id, project.path.clone(), self.app_tx.clone(), ctx.clone());
+    }
+
+    /// Takes a project out of the workspace (its folder stays), with the worktrees listed under
+    /// it (their folders stay too).
+    pub(crate) fn remove_project(&mut self, id: ProjectId) {
+        for kid in self.worktrees_of(id) {
+            self.remove_project(kid);
+        }
         let Some(idx) = self.projects.iter().position(|p| p.id == id) else {
             return;
         };
@@ -1936,7 +2002,7 @@ impl App {
         for project in &self.projects {
             for id in project.panes() {
                 if let Some(what) = self.panes.get(&id).and_then(Pane::busy_with) {
-                    out.push(Busy { text: format!("{} · {what}", project.name), file: false });
+                    out.push(Busy { text: format!("{} · {what}", self.project_label(project.id)), file: false });
                 }
             }
         }
@@ -2032,22 +2098,26 @@ impl App {
                 }
             }
             Action::SelectProjectIndex(i) => {
-                if let Some(id) = self.projects.get(i).map(|p| p.id) {
+                if let Some(id) = self.projects.iter().filter(|p| !p.is_worktree()).nth(i).map(|p| p.id) {
                     self.dispatch(ctx, Action::SelectProject(id));
                 }
             }
             Action::RemoveProject(id) => {
-                let mut busy: Vec<Busy> = self
-                    .project(id)
-                    .map(|p| {
-                        p.panes()
-                            .iter()
-                            .filter_map(|pid| self.panes.get(pid).and_then(Pane::busy_with))
-                            .map(|text| Busy { text, file: false })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                // Its worktrees leave the list with it (their folders stay).
+                let worktrees = self.worktrees_of(id);
+                let mut busy: Vec<Busy> = std::iter::once(id)
+                    .chain(worktrees.iter().copied())
+                    .filter_map(|x| self.project(x))
+                    .flat_map(|p| p.panes())
+                    .filter_map(|pid| self.panes.get(&pid).and_then(Pane::busy_with))
+                    .map(|text| Busy { text, file: false })
+                    .collect();
                 busy.extend(self.unsaved_files(Some(id)));
+                for w in &worktrees {
+                    if let Some(name) = self.project(*w).map(|p| p.name.clone()) {
+                        busy.push(Busy { text: tf("{} · worktree, its folder stays", &[&name]), file: false });
+                    }
+                }
                 if busy.is_empty() {
                     self.remove_project(id);
                 } else {
@@ -2332,7 +2402,12 @@ impl App {
                     let selected = preferred.and_then(|id| self.presets().iter().position(|p| p.id == id)).unwrap_or(0);
                     // Listed again each time it opens (sessions change while agents run).
                     self.session_lists.clear();
-                    self.dialog = Some(Dialog::RunAgent { selected, session: 0, place: self.last_agent_place });
+                    // A new worktree, when that was chosen last in this project (a git one).
+                    self.worktree_facts.clear();
+                    let root = self.active.and_then(|id| self.root_project(id));
+                    let on = root.is_some_and(|r| r.new_worktree && r.git.is_some() && !r.missing);
+                    let wt = crate::worktree::Form { on, ..Default::default() };
+                    self.dialog = Some(Dialog::RunAgent { selected, session: 0, place: self.last_agent_place, wt });
                 }
             }
             Action::SetView(v) => {
@@ -2666,6 +2741,42 @@ impl App {
             }
             Action::FindAll => self.open_palette(PaletteMode::Search),
             Action::Review => self.open_review(None),
+            Action::NewWorktree { preset, name, base } => {
+                if let Some(root) = self.active.and_then(|id| self.root_project(id)).map(|p| p.id) {
+                    self.create_worktree(root, preset, name, base);
+                }
+            }
+            Action::ToggleWorktrees(id) => {
+                if let Some(p) = self.project_mut(id) {
+                    p.folded = !p.folded;
+                }
+                self.mark_dirty();
+            }
+            Action::RemoveWorktree(id) => {
+                if self.project(id).is_some_and(|p| p.worktree.is_some()) {
+                    self.list_worktree_dirty(id);
+                    self.dialog = Some(Dialog::RemoveWorktree(id, None));
+                }
+            }
+            Action::RemoveWorktreeNow(id, branch) => self.remove_worktree_now(id, branch),
+            Action::MergeWorktree(id) => {
+                if self.project(id).is_some_and(|p| p.worktree.is_some()) {
+                    self.list_worktree_dirty(id);
+                    self.dialog = Some(Dialog::MergeWorktree(id));
+                }
+            }
+            Action::MergeWorktreeNow(id) => self.merge_worktree_now(ctx, id),
+            Action::WorktreeSetup(id) => {
+                let setup = self.worktree_setup_of(id);
+                let fresh = self.project(id).is_some_and(|p| p.worktree_setup.is_none());
+                self.dialog = Some(Dialog::WorktreeSetup { id, copy: setup.copy, adding: None, run: setup.run, fresh });
+            }
+            Action::SetWorktreeSetup(id, setup) => {
+                if let Some(p) = self.project_mut(id) {
+                    p.worktree_setup = Some(setup);
+                }
+                self.mark_dirty();
+            }
             Action::ReviewFile(path) => {
                 self.open_review(Some(crate::ui::review::Base::Head));
                 if let Some(r) = self.review.as_mut() {

@@ -16,6 +16,8 @@ use tc_core::status::Status;
 
 /// A project: its name over a line about it.
 const PROJECT_H: f32 = 46.0;
+/// A worktree under its project: one line.
+const WORKTREE_H: f32 = 30.0;
 /// Height of the row at the top of the sidebar and of the project header beside it.
 pub const TOP_H: f32 = 40.0;
 /// Height of a section title ("PROJECTS").
@@ -82,7 +84,7 @@ impl App {
             .iter()
             .filter_map(|e| {
                 let pane = self.panes.get(&e.pane)?;
-                let project = self.project(pane.project).map(|x| x.name.clone()).unwrap_or_default();
+                let project = self.project_label(pane.project);
                 Some((e.pane, e.status, project, self.attention_detail(pane), status::short_age(e.since)))
             })
             .collect();
@@ -383,8 +385,8 @@ impl App {
         #[cfg(debug_assertions)]
         crate::devtest::record("project-filter", field);
         let typing = ui.memory(|m| m.has_focus(fid));
-        let shown = self.project_matches();
-        let n = shown.len();
+        let found: Vec<usize> = self.project_matches().into_iter().filter(|(_, dim)| !dim).map(|(i, _)| i).collect();
+        let n = found.len();
         let mut sel = self.project_filter_sel.min(n.saturating_sub(1));
         let mut reveal = false;
         let mut open = None;
@@ -406,7 +408,7 @@ impl App {
                 sel = (sel + n - 1) % n;
                 reveal = true;
             }
-            if enter && let Some(&i) = shown.get(sel) {
+            if enter && let Some(&i) = found.get(sel) {
                 open = Some(self.projects[i].id);
             }
             if esc || open.is_some() {
@@ -453,7 +455,9 @@ impl App {
         let query = self.project_filter.trim().to_string();
         let filtering = !query.is_empty();
         let typing = ui.memory(|m| m.has_focus(fid));
-        paint_count(ui, if filtering { crate::i18n::tf("{} of {}", &[&shown.len().to_string(), &total.to_string()]) } else { total.to_string() });
+        let tops = self.projects.iter().filter(|p| !p.is_worktree()).count();
+        let found_tops = shown.iter().filter(|(i, dim)| !dim && !self.projects[*i].is_worktree()).count();
+        paint_count(ui, if filtering { crate::i18n::tf("{} of {}", &[&found_tops.to_string(), &tops.to_string()]) } else { tops.to_string() });
 
         let list = Rect::from_min_max(pos2(area.left(), field.bottom() + 6.0), area.max);
         if shown.is_empty() {
@@ -466,12 +470,16 @@ impl App {
             );
             return;
         }
-        let rows: Vec<(usize, ProjectRow, Vec<bool>)> = shown
+        // Each row: its project, what it shows, the letters found, dimmed (a project shown for
+        // a worktree found under it), and for a worktree whether another one follows it.
+        let rows: Vec<(usize, ProjectRow, Vec<bool>, bool, bool)> = shown
             .iter()
-            .map(|&i| {
+            .enumerate()
+            .map(|(k, &(i, dim))| {
                 let pr = &self.projects[i];
-                let marks = if filtering { super::palette::matched(&query, &pr.name) } else { Vec::new() };
-                (i, self.project_row(pr, &p), marks)
+                let marks = if filtering && !dim { super::palette::matched(&query, &pr.name) } else { Vec::new() };
+                let more = pr.is_worktree() && shown.get(k + 1).is_some_and(|&(j, _)| self.projects[j].parent == pr.parent);
+                (i, self.project_row(pr, &p), marks, dim, more)
             })
             .collect();
         ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(vec2(6.0, 0.0))), |ui| {
@@ -482,42 +490,92 @@ impl App {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    for (k, (i, row, marks)) in rows.iter().enumerate() {
-                        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), PROJECT_H), Sense::click());
+                    let mut result = 0;
+                    for (i, row, marks, dim, more) in rows.iter() {
+                        let worktree = self.projects[*i].is_worktree();
+                        let h = if worktree { WORKTREE_H } else { PROJECT_H };
+                        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
                         #[cfg(debug_assertions)]
                         crate::devtest::record(format!("project:{}", row.name), rect);
                         let active = self.view == View::Focus && self.active == Some(row.id);
                         // The keyboard's row (while the search has it) looks hovered, with ↵.
-                        let chosen = typing && k == sel;
+                        let chosen = typing && !dim && result == sel;
+                        if !dim {
+                            result += 1;
+                        }
                         if chosen && reveal {
                             ui.scroll_to_rect(rect, None);
                         }
                         let hovered = response.hovered() || chosen;
-                        let keys = if chosen { Some("↵") } else { kit::keys(&Action::SelectProjectIndex(*i)) };
-                        paint_project_row(ui, rect, row, marks, active, hovered, keys, &p);
-                        if response.clicked() {
-                            self.actions.push(Action::SelectProject(row.id));
-                        }
                         let id = row.id;
+                        if worktree {
+                            let keys = chosen.then_some("↵");
+                            paint_worktree_row(ui, rect, row, marks, active, hovered, *more, keys, &p);
+                        } else {
+                            let keys = if chosen { Some("↵") } else { self.top_index(id).and_then(|t| kit::keys(&Action::SelectProjectIndex(t))) };
+                            let toggle = paint_project_row(ui, rect, row, marks, active, hovered, keys, *dim, &p);
+                            // "⑂ 2 ˅": folds and unfolds its worktrees.
+                            if let Some(fold) = toggle {
+                                let tr = ui.interact(fold, egui::Id::new(("fold-worktrees", id)), Sense::click());
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record(format!("fold:{}", row.name), fold);
+                                let tip = if row.folded { t("Show Worktrees") } else { t("Hide Worktrees") };
+                                if tr.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
+                                    self.actions.push(Action::ToggleWorktrees(id));
+                                    continue;
+                                }
+                            }
+                        }
+                        if response.clicked() {
+                            self.actions.push(Action::SelectProject(id));
+                        }
                         let name = row.name.clone();
-                        let index = *i;
+                        let index = self.top_index(id).unwrap_or(usize::MAX);
                         let response = response.on_hover_ui(|ui| self.project_tooltip(ui, id, index));
-                        response.context_menu(|ui| self.project_menu(ui, id, &name));
+                        if worktree {
+                            response.context_menu(|ui| self.worktree_menu(ui, id));
+                        } else {
+                            response.context_menu(|ui| self.project_menu(ui, id, &name));
+                        }
                     }
                 });
         });
     }
 
-    /// The projects the sidebar's search finds (indexes into `projects`): those whose name holds
-    /// its letters in order, best first; every project, in the user's order, while it is empty.
-    fn project_matches(&self) -> Vec<usize> {
+    /// The rows of the project list (indexes into `projects`, and whether a row is only there
+    /// for a worktree found under it, dimmed). While the search is empty: every project, each
+    /// followed by its worktrees unless they are folded away. While it holds letters: the
+    /// projects whose name (or a worktree's) holds them in order, best first, each followed by
+    /// its worktrees found.
+    fn project_matches(&self) -> Vec<(usize, bool)> {
         let query = self.project_filter.trim();
-        let mut found: Vec<(usize, i32)> =
-            self.projects.iter().enumerate().filter_map(|(i, pr)| super::palette::score(query, &pr.name).map(|s| (i, s))).collect();
-        if !query.is_empty() {
-            found.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let top = |p: &crate::project::Project| p.parent.is_none_or(|x| self.project(x).is_none());
+        if query.is_empty() {
+            return self
+                .projects
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| top(p) || !p.parent.and_then(|x| self.project(x)).is_some_and(|x| x.folded))
+                .map(|(i, _)| (i, false))
+                .collect();
         }
-        found.into_iter().map(|(i, _)| i).collect()
+        let score = |i: usize| super::palette::score(query, &self.projects[i].name);
+        let kids = |id: tc_core::ProjectId| self.projects.iter().enumerate().filter(move |(_, k)| k.parent == Some(id)).map(|(k, _)| k);
+        let mut groups: Vec<(usize, i32, bool)> = Vec::new();
+        for (i, pr) in self.projects.iter().enumerate().filter(|(_, p)| top(p)) {
+            let own = score(i);
+            let best = own.into_iter().chain(kids(pr.id).filter_map(score)).max();
+            if let Some(b) = best {
+                groups.push((i, b, own.is_some()));
+            }
+        }
+        groups.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let mut out = Vec::new();
+        for (i, _, own) in groups {
+            out.push((i, !own));
+            out.extend(kids(self.projects[i].id).filter(|k| score(*k).is_some()).map(|k| (k, false)));
+        }
+        out
     }
 
     /// A project's tooltip: where it is and what kind, its branch, and each pane's status with
@@ -670,13 +728,22 @@ pub struct ProjectRow {
     pub place: String,
     /// Under the name, at the right: what is at work or waits (icon, text, colour).
     pub chip: Option<(&'static str, String, egui::Color32)>,
+    /// How many worktrees are listed under it, and whether they are folded away.
+    pub worktrees: usize,
+    pub folded: bool,
+    /// A worktree: the commits its branch has that its base has not.
+    pub ahead: Option<usize>,
 }
 
 /// Paints a project's row: name, pane dots and badge (or the shortcut, hovered) on the first
 /// line; branch and changes, and what is at work or waits, on the second.
+///
+/// A project with worktrees has "⑂ 2 ˅" after its dots, which folds them: returns where.
 #[allow(clippy::too_many_arguments)]
-fn paint_project_row(ui: &Ui, rect: Rect, row: &ProjectRow, marks: &[bool], active: bool, hovered: bool, keys: Option<&str>, p: &style::Palette) {
+fn paint_project_row(ui: &Ui, rect: Rect, row: &ProjectRow, marks: &[bool], active: bool, hovered: bool, keys: Option<&str>, dim: bool, p: &style::Palette) -> Option<Rect> {
     let painter = ui.painter_at(rect);
+    // Shown only for a worktree found under it: quieter.
+    let p = &if dim { p.dimmed() } else { *p };
     let fill = if active {
         p.accent_soft
     } else if hovered {
@@ -740,6 +807,24 @@ fn paint_project_row(ui: &Ui, rect: Rect, row: &ProjectRow, marks: &[bool], acti
         painter.circle_filled(pos2(dx, l1 + 0.5), 2.5, *c);
         dx += 8.0;
     }
+    // Its worktrees: how many, and the caret that folds them.
+    let mut toggle = None;
+    if row.worktrees > 0 {
+        let start = if row.dots.is_empty() { x + name_w + 6.0 } else { dx - 2.5 + 3.0 };
+        let fork = painter.layout_no_wrap(icons::GIT_FORK.to_string(), style::icon_font(11.5), p.text_faint);
+        let count = painter.layout_no_wrap(row.worktrees.to_string(), style::medium(11.0), p.text_faint);
+        let caret = painter.layout_no_wrap(if row.folded { icons::CARET_RIGHT } else { icons::CARET_DOWN }.to_string(), style::icon_font(10.0), p.text_faint);
+        let w = fork.size().x + 2.0 + count.size().x + 2.0 + caret.size().x;
+        if start + w <= right {
+            let mut cx = start;
+            painter.galley(pos2(cx, l1 - fork.size().y / 2.0), fork.clone(), p.text_faint);
+            cx += fork.size().x + 2.0;
+            painter.galley(pos2(cx, l1 - count.size().y / 2.0), count.clone(), p.text_faint);
+            cx += count.size().x + 2.0;
+            painter.galley(pos2(cx, l1 - caret.size().y / 2.0 + 0.5), caret, p.text_faint);
+            toggle = Some(Rect::from_min_max(pos2(start - 3.0, l1 - 9.0), pos2(start + w + 3.0, l1 + 9.0)));
+        }
+    }
 
     // Second line: the chip at the right, the branch (or where it lives) in what is left.
     let small = egui::FontId::proportional(style::SMALL);
@@ -772,6 +857,85 @@ fn paint_project_row(ui: &Ui, rect: Rect, row: &ProjectRow, marks: &[bool], acti
         let g = painter.layout_job(job);
         painter.galley(pos2(x, l2 - g.size().y / 2.0), g, p.text_faint);
     }
+    toggle
+}
+
+/// Paints a worktree's row under its project: the tree line at the left, its name and the
+/// commits it is ahead of its base, then what is at work or waits and the count not seen yet
+/// (or ↵ while the search's keyboard is on it). `more`: another worktree follows (the line goes
+/// on down).
+#[allow(clippy::too_many_arguments)]
+fn paint_worktree_row(ui: &Ui, rect: Rect, row: &ProjectRow, marks: &[bool], active: bool, hovered: bool, more: bool, keys: Option<&str>, p: &style::Palette) {
+    let painter = ui.painter_at(rect);
+    let fill = if active {
+        p.accent_soft
+    } else if hovered {
+        p.faint_row()
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    painter.rect_filled(rect, CornerRadius::same(7), fill);
+    let (r, g, b) = COLORS[row.color as usize % COLORS.len()];
+    if active {
+        let bar = Rect::from_min_max(pos2(rect.left() + 1.0, rect.top() + 8.0), pos2(rect.left() + 4.0, rect.bottom() - 8.0));
+        painter.rect_filled(bar, CornerRadius::same(2), egui::Color32::from_rgb(r, g, b));
+    }
+    // The tree line: down from the project (on to the next worktree), then to the name.
+    let line = Stroke::new(1.0, p.border_strong);
+    let lx = rect.left() + 17.5;
+    let cy = rect.center().y;
+    painter.line_segment([pos2(lx, rect.top() - 3.0), pos2(lx, cy - 4.0)], line);
+    painter.add(egui::Shape::QuadraticBezier(egui::epaint::QuadraticBezierShape::from_points_stroke(
+        [pos2(lx, cy - 4.0), pos2(lx, cy), pos2(lx + 4.0, cy)],
+        false,
+        egui::Color32::TRANSPARENT,
+        line,
+    )));
+    painter.line_segment([pos2(lx + 4.0, cy), pos2(lx + 8.0, cy)], line);
+    if more {
+        painter.line_segment([pos2(lx, cy - 4.0), pos2(lx, rect.bottom() + 3.0)], line);
+    }
+    let x = rect.left() + 30.0;
+    let mut right = rect.right() - 10.0;
+    // At the right: what was not seen (a count), else ↵ for the search's keyboard.
+    if row.waiting > 0 {
+        let c = row.status.map_or(p.warn, |s| status::color(s, p));
+        let b = kit::paint_badge(&painter, pos2(right, cy), &row.waiting.to_string(), c, p.on_accent, 16.0);
+        right = b.left() - 6.0;
+    } else if let Some(k) = keys {
+        let g = kit::keys_galley(&painter, k, p.text_faint);
+        right -= g.size().x;
+        painter.galley(pos2(right, cy - g.size().y / 2.0), g, p.text_faint);
+        right -= 6.0;
+    }
+    // Then what is at work or waits (at most a bit more than half the row).
+    let small = egui::FontId::proportional(style::SMALL);
+    if let Some((icon, text, c)) = &row.chip {
+        let max = (right - x) * 0.58;
+        let mut job = egui::text::LayoutJob::simple_singleline(text.clone(), small.clone(), *c);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((max - 15.0).max(20.0));
+        let g = painter.layout_job(job);
+        right -= g.size().x;
+        painter.galley(pos2(right, cy - g.size().y / 2.0), g, *c);
+        right -= 4.0 + 11.0;
+        painter.text(pos2(right + 5.5, cy), Align2::CENTER_CENTER, icon, style::icon_font(11.0), *c);
+        right -= 8.0;
+    }
+    // The name (letters found in the accent) and "↑2".
+    let name_color = if active { p.text } else { p.text.gamma_multiply(0.88) };
+    let font = if active { style::semibold(12.5) } else { style::medium(12.5) };
+    let mut job = egui::text::LayoutJob::default();
+    for (ci, ch) in row.name.chars().enumerate() {
+        let hit = marks.get(ci).copied().unwrap_or(false);
+        let (f, c) = if hit { (style::semibold(12.5), p.accent_text) } else { (font.clone(), name_color) };
+        job.append(&ch.to_string(), 0.0, egui::TextFormat::simple(f, c));
+    }
+    if let Some(ahead) = row.ahead {
+        job.append(&format!("↑{ahead}"), 6.0, egui::TextFormat::simple(egui::FontId::proportional(11.0), p.text_faint));
+    }
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(10.0));
+    let g = painter.layout_job(job);
+    painter.galley(pos2(x, cy - g.size().y / 2.0), g, name_color);
 }
 
 /// Where a project lives, short: its parent folder (`~/Developments`), or its last two names
@@ -830,7 +994,14 @@ impl App {
                 (icon, text, c)
             }),
         };
-        ProjectRow {
+        // A worktree: gone, merged (when nothing else is to say), commits ahead.
+        let chip = match (pr.is_worktree(), chip) {
+            (true, _) if pr.missing => Some((icons::X_CIRCLE, t("Folder not found").to_string(), p.err)),
+            (true, None) if pr.git.as_ref().is_some_and(|g| g.merged) => Some((icons::CHECK_CIRCLE, t("Merged").to_string(), p.ok)),
+            (_, chip) => chip,
+        };
+        let worktrees: Vec<&crate::project::Project> = self.projects.iter().filter(|x| x.parent == Some(pr.id)).collect();
+        let mut row = ProjectRow {
             id: pr.id,
             name: pr.name.clone(),
             color: pr.color,
@@ -841,7 +1012,23 @@ impl App {
             branch: pr.git.as_ref().map(|g| (g.branch.clone(), g.changed)),
             place: if asleep { t("Not started").to_string() } else { folder_line(&pr.path) },
             chip,
+            worktrees: worktrees.len(),
+            folded: pr.folded,
+            ahead: pr.is_worktree().then(|| pr.git.as_ref().map_or(0, |g| g.ahead)),
+        };
+        // Folded away, its worktrees' most urgent status shows on the project.
+        if pr.folded {
+            for w in worktrees {
+                let kid = self.project_row(w, p);
+                row.waiting += kid.waiting;
+                let rank = |s: Option<Status>| s.and_then(Status::priority).unwrap_or(u8::MAX);
+                if rank(kid.status) < rank(row.status) {
+                    row.status = kid.status;
+                    row.chip = kid.chip.map(|(icon, text, c)| (icon, format!("{} · {text}", kid.name), c));
+                }
+            }
         }
+        row
     }
 }
 

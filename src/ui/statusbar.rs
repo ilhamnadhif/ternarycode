@@ -25,7 +25,7 @@ impl App {
                 Some(pane) => {
                     let s = pane.tracker.status;
                     let c = status::color(s, &p);
-                    let project = self.project(pane.project).map(|x| x.name.clone()).unwrap_or_default();
+                    let project = self.project_label(pane.project);
                     let what = super::sidebar::attention_what(pane);
                     let text = format!("{project} · {}: {what}", pane.label());
                     let more = (queue.len() > 1).then(|| tf("(+{} more)", &[&(queue.len() - 1).to_string()]));
@@ -73,7 +73,7 @@ impl App {
                 let mem = self.mem_bytes.0.map(|b| format!(" · {} MB", b / (1024 * 1024))).unwrap_or_default();
                 let counts = format!(
                     "{} · {}{mem}",
-                    crate::i18n::count(self.projects.len(), t("1 project"), t("{} projects")),
+                    crate::i18n::count(self.projects.iter().filter(|x| !x.is_worktree()).count(), t("1 project"), t("{} projects")),
                     crate::i18n::count(self.panes.len(), t("1 pane"), t("{} panes")),
                 );
                 item(ui, None, &counts, p.text_faint, None, None, 280.0, false)
@@ -214,7 +214,7 @@ impl App {
                                 let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), g.size().y + 14.0), Sense::hover());
                                 ui.painter().galley(pos2(r.left() + 10.0, r.top() + 10.0), g, p.text_faint);
                             }
-                            let project = self.project(pane.project).map(|x| x.name.clone()).unwrap_or_default();
+                            let project = self.project_label(pane.project);
                             let detail = super::sidebar::attention_what(pane);
                             let detail = match e.status {
                                 Status::Failed(_) => match &pane.program_title {
@@ -342,6 +342,7 @@ impl App {
                                 ToastKind::Ok => (icons::CHECK_CIRCLE, p.ok),
                                 ToastKind::Warn => (icons::WARNING, p.warn),
                                 ToastKind::Err => (icons::X_CIRCLE, p.err),
+                                ToastKind::Worktree => (icons::GIT_FORK, p.ok),
                             };
                             ui.label(RichText::new(icon).font(style::icon_font(15.0)).color(c));
                             ui.add(egui::Label::new(RichText::new(&toast.text).size(13.0).color(p.text)).wrap_mode(egui::TextWrapMode::Extend));

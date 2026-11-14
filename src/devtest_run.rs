@@ -177,6 +177,8 @@ impl App {
             "wait-screen" => Some(self.current_screen().contains(arg)).filter(|ok| *ok),
             // A widget drawn in the last frame, or not drawn any more.
             "wait-shown" => Some(devtest::shown(arg.trim())).filter(|ok| *ok),
+            // A project (or worktree) of this name is listed.
+            "wait-project" => Some(self.projects.iter().any(|p| p.name == arg.trim())).filter(|ok| *ok),
             "wait-hidden" => Some(!devtest::shown(arg.trim())).filter(|ok| *ok),
             "wait-status" | "hook-latency" => {
                 let want = if cmd == "hook-latency" {
@@ -493,6 +495,31 @@ impl App {
                     "confirm-install" => Some(Action::ConfirmInstall),
                     "uninstall" => AgentKind::from_slug(rest.trim()).map(Action::UninstallNow),
                     "quit" => Some(Action::Quit),
+                    // Worktrees: `worktree <preset> <name> <base>` makes one of the project in
+                    // view; the others act on the worktree in view (or its project).
+                    "worktree" => {
+                        let mut words = rest.split_whitespace();
+                        match (words.next(), words.next(), words.next()) {
+                            (Some(preset), Some(name), Some(base)) => {
+                                Some(Action::NewWorktree { preset: preset.into(), name: name.into(), base: base.into() })
+                            }
+                            _ => None,
+                        }
+                    }
+                    "merge-worktree" => self.active.map(Action::MergeWorktree),
+                    "remove-worktree" => self.active.map(Action::RemoveWorktree),
+                    "worktree-setup" => self.active.and_then(|id| self.root_project(id)).map(|p| Action::WorktreeSetup(p.id)),
+                    "fold" => self.active.and_then(|id| self.root_project(id)).map(|p| Action::ToggleWorktrees(p.id)),
+                    "select-name" => self.projects.iter().find(|p| p.name == rest.trim()).map(|p| Action::SelectProject(p.id)),
+                    // Run Agent opens on "New worktree" in the project in view.
+                    "prefer-worktree" => {
+                        if let Some(id) = self.active.and_then(|id| self.root_project(id)).map(|p| p.id)
+                            && let Some(p) = self.project_mut(id)
+                        {
+                            p.new_worktree = true;
+                        }
+                        Some(Action::PickPreset)
+                    }
                     _ => None,
                 };
                 match action {
@@ -536,7 +563,7 @@ impl App {
             "wait-screen" | "wait-status" | "wait-queue" | "wait-editor" | "wait-conflict"
             | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
-            | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" => {
+            | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" => {
                 WAIT.with(|w| {
                     *w.borrow_mut() = Some(Wait {
                         step: step.clone(),

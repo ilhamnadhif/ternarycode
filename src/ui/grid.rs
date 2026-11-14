@@ -372,6 +372,9 @@ impl App {
         let name = project.name.clone();
         let color = project.color32();
         let branch = project.git.as_ref().map(|g| g.branch.clone());
+        // A worktree: "ternary-engine ›" before its name, its branch with commits ahead.
+        let parent_name = project.parent.and_then(|x| self.project(x)).map(|x| x.name.clone());
+        let ahead = project.worktree.as_ref().map(|_| project.git.as_ref().map_or(0, |g| g.ahead));
         let pane_status = pane_id.and_then(|id| self.panes.get(&id)).map(|x| {
             (
                 x.tracker.status,
@@ -515,7 +518,13 @@ impl App {
         // Branch, how many files changed, panes (when split): only what fits.
         let mut meta: Vec<(String, egui::FontId, egui::Color32)> = Vec::new();
         if let Some(b) = &branch {
-            meta.push((b.clone(), small.clone(), p.text_faint));
+            match ahead {
+                Some(n) => {
+                    meta.push((format!("{} {b}", icons::GIT_FORK), small.clone(), p.text_faint));
+                    meta.push((format!("↑{n}"), small.clone(), p.text_faint));
+                }
+                None => meta.push((b.clone(), small.clone(), p.text_faint)),
+            }
             if changed > 0 {
                 meta.push((format!("+{changed}"), small.clone(), p.warn));
             }
@@ -548,6 +557,12 @@ impl App {
         let mut x = header.left() + 14.0;
         left.circle_filled(pos2(x + 4.0, cy), 4.0, color);
         x += 8.0 + 8.0;
+        if let Some(parent) = &parent_name {
+            let g = left.layout_no_wrap(format!("{parent} ›"), style::medium(12.0), p.text_faint);
+            let gw = g.size().x;
+            left.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+            x += gw + 5.0;
+        }
         let g = left.layout_no_wrap(name, style::semibold(13.0), p.text);
         let gw = g.size().x;
         left.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
@@ -764,8 +779,8 @@ impl App {
             return None;
         }
         let pane = self.grid_focus.and_then(|id| self.panes.get(&id))?;
-        let project = self.project(pane.project)?;
-        Some(tf("Typing into {}", &[&format!("{} · {}", project.name, pane.label())]))
+        self.project(pane.project)?;
+        Some(tf("Typing into {}", &[&format!("{} · {}", self.project_label(pane.project), pane.label())]))
     }
 }
 

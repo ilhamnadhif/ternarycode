@@ -71,6 +71,22 @@ pub enum Action {
     /// From the Run Agent dialog: the preset, which session (a new one, its last, or one chosen),
     /// where (0 new tab, 1 split right, 2 split down).
     RunAgent(String, Launch, usize),
+    /// Run Agent → New worktree: makes a worktree of the project in view (called `name`,
+    /// starting at the branch `base`) and starts the preset in it.
+    NewWorktree { preset: String, name: String, base: String },
+    /// Folds or unfolds a project's worktrees in the sidebar.
+    ToggleWorktrees(ProjectId),
+    /// Asks how to remove a worktree (and its branch).
+    RemoveWorktree(ProjectId),
+    /// Removes a worktree now: its folder, and its branch when true.
+    RemoveWorktreeNow(ProjectId, bool),
+    /// Asks before merging a worktree's branch into its base.
+    MergeWorktree(ProjectId),
+    /// Types the merge in a new tab of the worktree's project.
+    MergeWorktreeNow(ProjectId),
+    /// Opens what a new worktree of a project gets.
+    WorktreeSetup(ProjectId),
+    SetWorktreeSetup(ProjectId, tc_core::model::WorktreeSetup),
     Resume(PaneId),
     /// Forgets the session a restored pane could resume (its banner's Dismiss).
     DismissResume(PaneId),
