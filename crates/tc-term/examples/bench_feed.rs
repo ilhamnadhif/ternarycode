@@ -82,4 +82,29 @@ fn main() {
         "scanner share of feed: {:.2}% (Gate A target < 3%)",
         best_scan / best_feed * 100.0
     );
+
+    // The same feed in the ~1 KB pieces a macOS PTY read returns: what each feed costs beyond
+    // the bytes (locks, scanners, events).
+    let small = 1024;
+    let mut best_small = f64::MAX;
+    for _ in 0..3 {
+        let (shared, rx) = new_terminal(
+            term_config(10_000, Default::default(), false),
+            GridSize { cols: 120, rows: 40 },
+            (&SCHEMES[0]).into(),
+        );
+        let mut f = Feeder::new(shared, rx);
+        let t = Instant::now();
+        let mut signals = 0;
+        for chunk in data.chunks(small) {
+            signals += f.feed(chunk).signals.len();
+        }
+        best_small = best_small.min(t.elapsed().as_secs_f64());
+        std::hint::black_box(signals);
+    }
+    println!(
+        "Feeder::feed, 1 KB reads: {:>7.3} s  ({:>6.0} MB/s)",
+        best_small,
+        mb / best_small
+    );
 }

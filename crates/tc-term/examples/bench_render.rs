@@ -39,13 +39,35 @@ fn line(seed: u64, n: u64) -> String {
     }
 }
 
+/// An agent's screen (Claude Code, Codex): boxes drawn with `╭─╮│╰─╯` around most lines.
+fn boxed_line(seed: u64, n: u64, cols: usize) -> String {
+    let inner = cols - 4;
+    match n % 6 {
+        0 => format!("\x1b[38;5;{}m╭{}╮\x1b[0m\r\n", 60 + seed % 6, "─".repeat(inner + 2)),
+        5 => format!("\x1b[38;5;{}m╰{}╯\x1b[0m\r\n", 60 + seed % 6, "─".repeat(inner + 2)),
+        2 => format!("\x1b[38;5;66m│\x1b[0m \x1b[1m{:<w$}\x1b[0m \x1b[38;5;66m│\x1b[0m\r\n", format!("⏺ Update(src/module_{n}.rs) — 3 additions, 1 removal"), w = inner),
+        _ => format!("\x1b[38;5;66m│\x1b[0m {:<w$} \x1b[38;5;66m│\x1b[0m\r\n", format!("  {n:>4} + let value = compute(seed, {n}); // pane {seed}"), w = inner),
+    }
+}
+
 fn percentile(sorted: &[Duration], p: f64) -> Duration {
     let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
     sorted[idx]
 }
 
 fn run(name: &str, panes_n: usize, size: GridSize, streaming: usize, lines_per_frame: u64) {
-    run_ex(name, panes_n, size, streaming, lines_per_frame, false);
+    run_ex(name, panes_n, size, streaming, lines_per_frame, false, Kind::Focus);
+}
+
+/// Which widget draws the panes, and what they show.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    /// `widget::show`, mixed build/agent output (Focus).
+    Focus,
+    /// `widget::show_readable`, as Grid tiles are drawn.
+    Grid,
+    /// `widget::show`, an agent's boxed screen.
+    Boxes,
 }
 
 /// `flood`: a background thread pushes 100 MB into pane 0 in 1 KB reads (what a macOS PTY
@@ -57,6 +79,7 @@ fn run_ex(
     streaming: usize,
     lines_per_frame: u64,
     flood: bool,
+    kind: Kind,
 ) {
     let ctx = egui::Context::default();
     let choice = fonts::effective_choice(&FontChoice::default());
@@ -117,7 +140,8 @@ fn run_ex(
     for (i, p) in panes.iter().enumerate() {
         let mut f = p.feeder.lock();
         for n in 0..size.rows as u64 {
-            f.feed(line(i as u64, n).as_bytes());
+            let text = if kind == Kind::Boxes { boxed_line(i as u64, n, size.cols) } else { line(i as u64, n) };
+            f.feed(text.as_bytes());
         }
     }
 
@@ -155,7 +179,11 @@ fn run_ex(
             let mut chunk = String::new();
             for _ in 0..lines_per_frame {
                 counter += 1;
-                chunk.push_str(&line(i as u64, counter));
+                if kind == Kind::Boxes {
+                    chunk.push_str(&boxed_line(i as u64, counter, size.cols));
+                } else {
+                    chunk.push_str(&line(i as u64, counter));
+                }
             }
             f.feed(chunk.as_bytes());
         }
@@ -167,7 +195,11 @@ fn run_ex(
                     Pos2::new(c as f32 * pane_w, r as f32 * pane_h),
                     vec2(pane_w, pane_h),
                 );
-                let _ = widget::show(ui, rect, &mut p.view, &p.shared, &style, false, true, true);
+                if kind == Kind::Grid {
+                    let _ = widget::show_readable(ui, rect, &mut p.view, &p.shared, &style, false, true, 0.85, false);
+                } else {
+                    let _ = widget::show(ui, rect, &mut p.view, &p.shared, &style, false, true, true);
+                }
             }
         });
         let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
@@ -208,5 +240,10 @@ fn main() {
     run("9 panes, 3 streaming", 9, big, 3, 5);
     run("9 panes, idle (static content)", 9, big, 0, 0);
     run("Focus: 1 pane 200x60 streaming full screens", 1, GridSize { cols: 200, rows: 60 }, 1, 60);
-    run_ex("Gate A: 9 panes, pane 0 flooded (cat 100 MB)", 9, big, 0, 0, true);
+    run_ex("Gate A: 9 panes, pane 0 flooded (cat 100 MB)", 9, big, 0, 0, true, Kind::Focus);
+    let tile = GridSize { cols: 80, rows: 22 };
+    run_ex("Grid 4x4: 16 tiles, 1 streaming", 16, tile, 1, 5, false, Kind::Grid);
+    run_ex("Grid 4x4: 16 tiles, idle", 16, tile, 0, 0, false, Kind::Grid);
+    run_ex("Agent boxes: 4 panes, 1 streaming", 4, big, 1, 6, false, Kind::Boxes);
+    run_ex("Agent boxes: 4 panes, idle", 4, big, 0, 0, false, Kind::Boxes);
 }
