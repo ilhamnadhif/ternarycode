@@ -6,6 +6,7 @@
 #
 #   scripts/perf.sh [label]     results also in $TMPDIR/tc-perf-<label>.txt
 #   BIN=… HOOK=… scripts/perf.sh base    measures another build (e.g. an older commit's)
+#   ONLY=grid scripts/perf.sh             only the situations whose name contains "grid"
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -42,6 +43,7 @@ secs() { ps -o time= -p "$1" 2>/dev/null | awk -F: '{ if (NF==3) print $1*3600+$
 # name, script: runs the app, measures between the perf-start and perf-end marks.
 measure() {
     local name="$1" script="$2"
+    case "$name" in *"${ONLY:-}"*) ;; *) return ;; esac
     local data="$WORK/data-$name" log="$WORK/$name.log"
     mkdir -p "$data"
     printf '{"theme":"dark","window":[60,40,1440,900],"check_updates":false}\n' > "$data/settings.json"
@@ -83,6 +85,7 @@ S="sleep 1500;; $(add 2) action select-name p1;; sleep 300;; keys $HOOKS;; actio
 measure "focus-idle-hooks-40-per-s" "$S"
 
 # (d) Launch with 29 git projects, Grid view: time to the first frame and CPU of the first 8 s.
+case "launch" in *"${ONLY:-}"*) ;; *) echo "results in $OUT (logs in $WORK)"; exit 0 ;; esac
 D="$WORK/data-launch"; mkdir -p "$D"
 printf '{"theme":"dark","window":[60,40,1440,900],"check_updates":false}\n' > "$D/settings.json"
 TERNARYCODE_DATA_DIR="$D" TERNARYCODE_DEV_SCRIPT="sleep 1500;; $(add 29) action grid;; sleep 1500;; quit" \

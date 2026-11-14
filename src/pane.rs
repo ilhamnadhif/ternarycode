@@ -420,13 +420,25 @@ impl Pane {
                         ctx.request_repaint();
                     } else if output {
                         let how = Shown::from_u8(shown.load(std::sync::atomic::Ordering::Relaxed));
-                        let (delay, tick) = how.output_tick();
+                        let (mut delay, mut tick) = how.output_tick();
                         let pass = ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT);
                         let mut asked = asked.lock().unwrap_or_else(|p| p.into_inner());
-                        if *asked != (tick, pass) {
-                            *asked = (tick, pass);
-                            ctx.request_repaint_after(delay);
+                        let (asked_tick, asked_pass) = *asked;
+                        if asked_pass == pass && asked_tick >= tick {
+                            // That frame (or a later one) is asked for, and none drawn since.
+                            return;
                         }
+                        if asked_pass != pass && asked_tick == tick && how != Shown::Typing {
+                            // The frame asked for this tick is drawn already: egui starts a
+                            // frame its expected length before the time asked, so it came a
+                            // few ms early. What came after it waits for the next tick, not a
+                            // second frame right after (typing's echo is never held back).
+                            let period = how.period();
+                            tick += period.as_nanos() as u64;
+                            delay += period;
+                        }
+                        *asked = (tick, pass);
+                        ctx.request_repaint_after(delay);
                     }
                 });
                 match pty::start(spawn.rt, pty, self.feeder.clone(), on_event) {
