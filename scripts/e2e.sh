@@ -196,6 +196,13 @@ run editor 60 "sleep 1000;; action add-project $P1;; sleep 1200;; open-file $P1/
 
 # The Code drawer's Files column (v1.1, in the drawer since v0.2 of the design): click a file → the editor shows it; files an agent adds or
 # changes appear (and get their git letter) without a refresh; nothing is read per frame.
+# Review follows the project in view: picking another project while Review is open shows that
+# project's changes; picking the first again shows its own.
+FA="$WORK/follow-a"; FB="$WORK/follow-b"
+for d in "$FA" "$FB"; do mkdir -p "$d" && (cd "$d" && git init -q -b main && printf 'x\n' > keep.txt && git add -A && git -c user.name=t -c user.email=t@t commit -qm init); done
+printf 'a\n' > "$FA/only-a.txt"; printf 'b\n' > "$FB/only-b.txt"
+run review-follow 60 "sleep 1000;; action add-project $FA;; sleep 1000;; action add-project $FB;; sleep 1000;; action select-name follow-a;; sleep 600;; action review;; wait-review Added:only-a.txt;; action select-name follow-b;; wait-review Added:only-b.txt;; expect-project follow-b;; action select-name follow-a;; wait-review Added:only-a.txt;; quit"
+
 T="$WORK/tree"; mkdir -p "$T/src"
 (cd "$T" && git init -q -b main && printf 'line 1\n' > edit.txt && printf 'fn main() {}\n' > src/main.rs \
     && git add -A && git -c user.name=t -c user.email=t@t commit -qm init)

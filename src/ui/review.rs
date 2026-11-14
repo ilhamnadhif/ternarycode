@@ -13,6 +13,7 @@ use super::{icons, kit, style};
 use crate::actions::Action;
 use crate::app::{App, AppMsg};
 use crate::i18n::{t, tf};
+use tc_core::ProjectId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Base {
@@ -38,6 +39,8 @@ pub struct BranchView {
 }
 
 pub struct Review {
+    /// The project reviewed (Review follows the project in view).
+    pub project: ProjectId,
     pub root: PathBuf,
     pub base: Base,
     /// Agent label and when its run started (for `Base::Run`).
@@ -83,11 +86,27 @@ pub enum ReviewMsg {
 }
 
 impl App {
+    /// Review follows the project in view: another project chosen while it is open (the
+    /// sidebar, ⌘1–9, the palette, a jump to a pane) shows its own changes, as ⇧⌘R would there.
+    pub fn review_follow(&mut self) {
+        let Some(r) = self.review.as_ref() else { return };
+        if Some(r.project) == self.active {
+            return;
+        }
+        self.review_filter.clear();
+        self.review_hunk = 0;
+        if self.active.is_some() {
+            self.open_review(None);
+        } else {
+            self.review = None;
+        }
+    }
+
     /// Opens the review for the current pane: its agent run when there is a snapshot, else
     /// changes since the last commit.
     pub fn open_review(&mut self, base: Option<Base>) {
         let Some(project) = self.active_project() else { return };
-        let (folder, name) = (project.path.clone(), project.name.clone());
+        let (folder, name, project_id) = (project.path.clone(), project.name.clone(), project.id);
         let pane = self.current_pane();
         let run = pane.and_then(|id| self.panes.get(&id)).and_then(|p| {
             p.run_snapshot
@@ -106,6 +125,7 @@ impl App {
         let base = if base == Base::Branch && worktree.is_none() { Base::Head } else { base };
         let load = next_work();
         self.review = Some(Review {
+            project: project_id,
             load,
             diff_load: 0,
             root: folder.clone(),

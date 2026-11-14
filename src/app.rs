@@ -3154,6 +3154,7 @@ impl App {
         for action in std::mem::take(&mut self.actions) {
             self.dispatch(ctx, action);
         }
+        self.review_follow();
         self.update_attention();
         self.take_run_snapshots();
         self.lsp_tick(ctx);
