@@ -503,7 +503,10 @@ impl App {
                 ctx.request_repaint();
             }));
         }
-        let pane_env = hook_bin.pane_env(&paths::integrations_dir(), settings.browser_agents);
+        // Codex's own configuration: its hooks (then none are added per launch) and its own
+        // instructions (kept before what TernaryCode tells it).
+        let codex_config = std::fs::read_to_string(paths::home_dir().join(".codex/config.toml")).ok();
+        let pane_env = hook_bin.pane_env(&paths::integrations_dir(), settings.browser_agents, codex_config.as_deref());
         let per_launch = pane_env.is_ok();
         let mut base_env = pane_env.unwrap_or_default();
         // Shell integration (OSC 133): scripts in the data folder, activated through the
@@ -538,9 +541,7 @@ impl App {
                 base_env.push(("BROWSER".into(), script.to_string_lossy().into_owned()));
             }
         }
-        let codex_config = paths::home_dir().join(".codex/config.toml");
-        let codex_hooks = !std::fs::read_to_string(codex_config)
-            .is_ok_and(|s| integrate::codex_has_own_hooks(&s));
+        let codex_hooks = !codex_config.as_deref().is_some_and(integrate::codex_has_own_hooks);
 
         #[cfg(target_os = "macos")]
         let menu = Some((ui::menu::AppMenu::install(), ui::menu::event_channel(ctx)));

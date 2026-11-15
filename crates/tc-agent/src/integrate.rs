@@ -26,6 +26,25 @@ pub const ENV_CODEX_HOOKS: &str = "TC_CODEX_HOOKS";
 pub const ENV_CODEX_NOTIFY: &str = "TC_CODEX_NOTIFY";
 /// `-c mcp_servers.ternarycode={…}` for `codex`: the browser tools for one run.
 pub const ENV_CODEX_MCP: &str = "TC_CODEX_MCP";
+/// `-c developer_instructions=…` for `codex`: in a TernaryCode pane, its browser is the user's.
+/// Codex reads no MCP server's instructions, and takes its own browser and computer-use tools
+/// when nothing says so.
+pub const ENV_CODEX_GUIDE: &str = "TC_CODEX_GUIDE";
+
+/// What Codex is told about TernaryCode's browser (after the user's own instructions).
+const CODEX_GUIDE: &str = "You run in a terminal pane of TernaryCode, which has a browser built in, \
+beside this terminal: it is the user's browser in this session, and the user sees every page and \
+every click. Whenever the user asks to open, show, check or search something on a website or in a \
+browser (open YouTube, check it in the browser, a URL, a dev server), use the ternarycode tools, \
+browser_navigate first, not `open <url>` in a shell and not other browser or computer-use tools \
+(Computer Use, Chrome, Safari, Playwright), unless the user names that other browser or tool.";
+
+/// The `developer_instructions` a Codex `config.toml` sets at its top level (a `-c` of the key
+/// replaces them: TernaryCode's guide keeps them first).
+pub fn codex_developer_instructions(config_toml: &str) -> Option<String> {
+    let table: toml::Table = toml::from_str(config_toml).ok()?;
+    table.get("developer_instructions")?.as_str().map(str::to_string).filter(|s| !s.trim().is_empty())
+}
 
 /// The variables `ternarycode-hook mcp` needs from the pane. Codex passes only those it is told
 /// to; Gemini CLI drops any with TOKEN in its name unless the server's `env` names it.
@@ -161,7 +180,7 @@ impl Hooks {
     pub fn codex_mcp_override(&self, tools: bool) -> String {
         let env: Vec<String> = MCP_ENV.iter().map(|v| Self::toml_str(v)).collect();
         format!(
-            "mcp_servers.ternarycode={{command={},args=[\"mcp\",\"codex\"],env_vars=[{}],tool_timeout_sec={MCP_TOOL_SECS}{}}}",
+            "mcp_servers.ternarycode={{command={},args=[\"mcp\",\"codex\"],env_vars=[{}],tool_timeout_sec={MCP_TOOL_SECS},default_tools_approval_mode=\"approve\"{}}}",
             Self::toml_str(&self.bin.to_string_lossy()),
             env.join(","),
             if tools { "" } else { ",enabled=false" }
@@ -179,8 +198,37 @@ impl Hooks {
         })
     }
 
+    /// `developer_instructions="…"` for `codex -c`: the user's own (`own`, from `config.toml`),
+    /// then which browser is theirs in a TernaryCode pane. `tools` off: the browser tools'
+    /// disabled entry again, a flag that changes nothing.
+    pub fn codex_guide_override(&self, tools: bool, own: Option<&str>) -> String {
+        if !tools {
+            return self.codex_mcp_override(false);
+        }
+        let text = match own {
+            Some(own) => format!("{own}\n\n{CODEX_GUIDE}"),
+            None => CODEX_GUIDE.to_string(),
+        };
+        format!("developer_instructions={}", Self::toml_str(&text))
+    }
+
+    /// A TOML basic string.
     fn toml_str(s: &str) -> String {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
     }
 
     /// `hooks={SessionStart=[{hooks=[{type="command",command="…"}]}],…}` for `codex -c`.
@@ -208,7 +256,9 @@ impl Hooks {
     /// Writes the `--settings` and `--mcp-config` files and returns the variables every pane
     /// gets. `tools`: agents get the browser tools (Settings → Browser); written again when that
     /// changes, the variables staying the same.
-    pub fn pane_env(&self, integrations_dir: &Path, tools: bool) -> io::Result<Vec<(String, String)>> {
+    /// `codex_config`: the text of Codex's `config.toml`, whose own instructions Codex's guide
+    /// keeps.
+    pub fn pane_env(&self, integrations_dir: &Path, tools: bool, codex_config: Option<&str>) -> io::Result<Vec<(String, String)>> {
         let file = integrations_dir.join("claude-settings.json");
         let mcp = integrations_dir.join("claude-mcp.json");
         for (path, text) in [(&file, self.claude_settings()), (&mcp, self.claude_mcp(tools))] {
@@ -227,6 +277,7 @@ impl Hooks {
             (ENV_CODEX_HOOKS.into(), self.codex_hooks_override()),
             (ENV_CODEX_NOTIFY.into(), self.codex_notify_override()),
             (ENV_CODEX_MCP.into(), self.codex_mcp_override(tools)),
+            (ENV_CODEX_GUIDE.into(), self.codex_guide_override(tools, codex_config.and_then(codex_developer_instructions).as_deref())),
         ])
     }
 }
@@ -287,9 +338,10 @@ pub fn codex_has_own_hooks(config_toml: &str) -> bool {
 /// Claude Code's flags for one launch: the browser tools (on macOS, where browser panes show
 /// pages) and the hooks. `--mcp-config` takes several files, so it goes first: the word after
 /// it is a flag, never a prompt typed after the command.
-/// Codex's browser tools for one launch, on macOS (where browser panes show pages).
+/// Codex's browser tools for one launch, and that its browser is TernaryCode's, on macOS
+/// (where TernaryCode shows pages).
 fn codex_mcp_flag() -> String {
-    if cfg!(target_os = "macos") { format!(" -c {}", env_ref(ENV_CODEX_MCP)) } else { String::new() }
+    if cfg!(target_os = "macos") { format!(" -c {} -c {}", env_ref(ENV_CODEX_MCP), env_ref(ENV_CODEX_GUIDE)) } else { String::new() }
 }
 
 fn claude_flags() -> String {
@@ -309,18 +361,18 @@ pub fn launch_command(
     integration: Integration,
     codex_hooks: bool,
 ) -> String {
-    if integration != Integration::PerLaunch {
-        return command.to_string();
-    }
-    let flags = match agent {
-        Some(AgentKind::Claude) => claude_flags(),
-        Some(AgentKind::Codex) if codex_hooks => format!(
+    let flags = match (agent, integration) {
+        (Some(AgentKind::Claude), Integration::PerLaunch) => claude_flags(),
+        (Some(AgentKind::Codex), Integration::PerLaunch) if codex_hooks => format!(
             "-c {} -c {}{}",
             env_ref(ENV_CODEX_HOOKS),
             env_ref(ENV_CODEX_NOTIFY),
             codex_mcp_flag()
         ),
-        Some(AgentKind::Codex) => format!("-c {}{}", env_ref(ENV_CODEX_NOTIFY), codex_mcp_flag()),
+        (Some(AgentKind::Codex), Integration::PerLaunch) => format!("-c {}{}", env_ref(ENV_CODEX_NOTIFY), codex_mcp_flag()),
+        // Installed: hooks and browser tools are in its config.toml; that its browser is
+        // TernaryCode's is still said per launch.
+        (Some(AgentKind::Codex), Integration::Installed) if cfg!(target_os = "macos") => format!("-c {}", env_ref(ENV_CODEX_GUIDE)),
         _ => return command.to_string(),
     };
     let program = agent.map(AgentKind::slug).unwrap_or_default();
@@ -478,7 +530,7 @@ pub fn plan_codex(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
     if !text.contains("[mcp_servers.ternarycode]") && !text.contains("mcp_servers.ternarycode") {
         let env: Vec<String> = MCP_ENV.iter().map(|v| Hooks::toml_str(v)).collect();
         tail.push_str(&format!(
-            "[mcp_servers.ternarycode]\ncommand = {}\nargs = [\"mcp\", \"codex\"]\nenv_vars = [{}]\ntool_timeout_sec = {MCP_TOOL_SECS}\n",
+            "[mcp_servers.ternarycode]\ncommand = {}\nargs = [\"mcp\", \"codex\"]\nenv_vars = [{}]\ntool_timeout_sec = {MCP_TOOL_SECS}\ndefault_tools_approval_mode = \"approve\"\n",
             Hooks::toml_str(&hooks.bin.to_string_lossy()),
             env.join(", ")
         ));
@@ -891,7 +943,7 @@ mod tests {
         let claude = claude_flags();
         let mcp = codex_mcp_flag();
         #[cfg(target_os = "macos")]
-        assert_eq!(mcp, " -c \"$TC_CODEX_MCP\"");
+        assert_eq!(mcp, " -c \"$TC_CODEX_MCP\" -c \"$TC_CODEX_GUIDE\"");
         #[cfg(target_os = "macos")]
         assert_eq!(claude, format!("--mcp-config \"$TC_CLAUDE_MCP\" --settings {settings}"));
         #[cfg(not(target_os = "macos"))]
@@ -916,6 +968,16 @@ mod tests {
             launch_command("claude", Some(AgentKind::Claude), Integration::Installed, true),
             "claude"
         );
+        // Codex installed (hooks and browser tools in its config.toml): only that its browser is
+        // TernaryCode's, on macOS; nothing when off.
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            launch_command("codex", Some(AgentKind::Codex), Integration::Installed, true),
+            format!("codex -c {}", env_ref("TC_CODEX_GUIDE"))
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(launch_command("codex", Some(AgentKind::Codex), Integration::Installed, true), "codex");
+        assert_eq!(launch_command("codex", Some(AgentKind::Codex), Integration::Off, true), "codex");
         assert_eq!(launch_command("opencode", Some(AgentKind::OpenCode), pl, true), "opencode");
         // The flags follow the program, whatever its path, and come before what the line runs
         // after it.
@@ -954,8 +1016,18 @@ mod tests {
     fn codex_overrides_are_valid_toml_shapes() {
         let on = hooks().codex_mcp_override(true);
         assert!(on.starts_with("mcp_servers.ternarycode={command="));
-        assert!(on.ends_with(",args=[\"mcp\",\"codex\"],env_vars=[\"TERNARYCODE_SOCK\",\"TERNARYCODE_PANE\",\"TERNARYCODE_TOKEN\"],tool_timeout_sec=900}"));
-        assert!(hooks().codex_mcp_override(false).ends_with(",tool_timeout_sec=900,enabled=false}"));
+        // Approved for the run: Codex asks before each call of a server that is not (and fails
+        // it where it may not ask).
+        assert!(on.ends_with(",args=[\"mcp\",\"codex\"],env_vars=[\"TERNARYCODE_SOCK\",\"TERNARYCODE_PANE\",\"TERNARYCODE_TOKEN\"],tool_timeout_sec=900,default_tools_approval_mode=\"approve\"}"));
+        assert!(hooks().codex_mcp_override(false).ends_with(",default_tools_approval_mode=\"approve\",enabled=false}"));
+        // Each parses as TOML (`codex -c` takes a value that does not as a plain string).
+        let parses = |kv: &str| {
+            let (k, v) = kv.split_once('=').unwrap();
+            toml::from_str::<toml::Table>(&format!("{} = {v}", k.replace('.', "_"))).is_ok()
+        };
+        assert!(parses(&on));
+        assert!(parses(&hooks().codex_hooks_override()));
+        assert!(parses(&hooks().codex_notify_override()));
         let h = hooks().codex_hooks_override();
         #[cfg(unix)]
         assert!(h.starts_with("hooks={SessionStart=[{hooks=[{type=\"command\",command=\"'/Applications/Ternary Code.app/"));
@@ -966,6 +1038,30 @@ mod tests {
             hooks().codex_notify_override(),
             "notify=[\"/Applications/Ternary Code.app/Contents/MacOS/ternarycode-hook\",\"codex\",\"notify\"]"
         );
+    }
+
+    #[test]
+    fn codex_is_told_its_browser_after_the_users_own_instructions() {
+        let read = |kv: &str| -> String {
+            let (k, v) = kv.split_once('=').unwrap();
+            assert_eq!(k, "developer_instructions");
+            toml::from_str::<toml::Table>(&format!("x = {v}")).unwrap()["x"].as_str().unwrap().to_string()
+        };
+        let guide = read(&hooks().codex_guide_override(true, None));
+        assert!(guide.starts_with("You run in a terminal pane of TernaryCode"));
+        assert!(guide.contains("unless the user names that other browser"));
+        // The user's own, with quotes, a backslash and lines, come first, whole.
+        let own = "Answer in \"Indonesian\".\nPaths like C:\\x stay as written.\n\tIndented.";
+        let both = read(&hooks().codex_guide_override(true, Some(own)));
+        assert_eq!(both, format!("{own}\n\n{CODEX_GUIDE}"));
+        // Browser tools off: a flag that changes nothing.
+        assert_eq!(hooks().codex_guide_override(false, Some(own)), hooks().codex_mcp_override(false));
+        // Read from config.toml: top level only, any kind of string.
+        assert_eq!(codex_developer_instructions("model = \"o3\"\ndeveloper_instructions = '''\nBe brief.'''\n").as_deref(), Some("Be brief."));
+        assert_eq!(codex_developer_instructions("developer_instructions = \"Be \\\"brief\\\".\"\n[profiles.x]\n").as_deref(), Some("Be \"brief\"."));
+        assert_eq!(codex_developer_instructions("[profiles.x]\ndeveloper_instructions = \"x\"\n"), None);
+        assert_eq!(codex_developer_instructions("developer_instructions = \"  \"\n"), None);
+        assert_eq!(codex_developer_instructions("not toml ["), None);
     }
 
     #[test]

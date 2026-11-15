@@ -599,7 +599,8 @@ impl App {
         });
         if tools_changed {
             // The next agent run gets (or no longer gets) the tools.
-            let _ = self.hook_bin.pane_env(&crate::paths::integrations_dir(), self.settings.browser_agents);
+            let codex_config = std::fs::read_to_string(crate::paths::home_dir().join(".codex/config.toml")).ok();
+            let _ = self.hook_bin.pane_env(&crate::paths::integrations_dir(), self.settings.browser_agents, codex_config.as_deref());
         }
         if let Some(site) = remove_site {
             self.settings.browser_agent_sites.retain(|s| *s != site);
@@ -648,7 +649,12 @@ impl App {
         let mode = self.settings.integration(agent);
         let installed = self.installed(agent);
         let has_server = |rec: &Option<InstallRecord>| {
-            rec.as_ref().and_then(|r| std::fs::read_to_string(&r.path).ok()).is_some_and(|text| text.contains("ternarycode-hook") && (text.contains("mcp_servers.ternarycode") || text.contains("\"mcpServers\"")))
+            rec.as_ref().and_then(|r| std::fs::read_to_string(&r.path).ok()).is_some_and(|text| {
+                text.contains("ternarycode-hook")
+                    && (text.contains("\"mcpServers\"")
+                        // Codex asks before each call of a server not approved.
+                        || (text.contains("mcp_servers.ternarycode") && text.contains("default_tools_approval_mode")))
+            })
         };
         let (ok, text) = match (agent, mode) {
             (AgentKind::Claude | AgentKind::Codex, Integration::PerLaunch) => (true, t("Added to each run it starts from a preset")),

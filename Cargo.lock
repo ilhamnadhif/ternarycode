@@ -4651,6 +4651,7 @@ dependencies = [
  "tc-term",
  "tempfile",
  "tokio",
+ "toml 1.2.1+spec-1.1.0",
  "windows-sys 0.61.2",
 ]
 

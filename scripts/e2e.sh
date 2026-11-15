@@ -81,6 +81,10 @@ run run-here 40 "sleep 1000;; action add-project $P1;; sleep 1200;; wait-tabs 0:
 # starts in it ("This Tab"); with something typed on its command line, in a new tab.
 mkdir -p "$WORK/data-run-here-idle"; cp "$WORK/data-run-here/settings.json" "$WORK/data-run-here-idle/settings.json"
 run run-here-idle 40 "sleep 1000;; action add-project $P1;; sleep 1200;; wait-tabs 0:2;; keys echo used-before\\r;; wait-screen used-before;; sleep 800;; action run-agent echoer;; wait-screen agent-ran-here;; wait-tabs 0:2;; sleep 800;; keys ls;; sleep 400;; action run-agent echoer;; sleep 800;; wait-tabs 0:2 1:3;; quit"
+# A shell an earlier run started (handed over in an update) lacks the variables this run's agent
+# flags name: Run Agent starts the agent in a new tab, not there.
+mkdir -p "$WORK/data-run-here-adopted"; cp "$WORK/data-run-here/settings.json" "$WORK/data-run-here-adopted/settings.json"
+run run-here-adopted 50 "sleep 1000;; action add-project $P1;; sleep 1500;; keys echo before-update\\r;; wait-screen before-update;; restart-in-place;; sleep 2500;; wait-screen before-update;; wait-tabs 0:2;; sleep 800;; action run-agent echoer;; sleep 800;; wait-tabs 0:2 1:3;; wait-screen agent-ran-here;; quit"
 # An update restarts the app in place: the panes' programs keep running in the same shell. The
 # status and an agent's hook token carry over; a program reading its input (cat) still gets the
 # keys; the screen is as it was. Twice, so a run taken over can hand over again.

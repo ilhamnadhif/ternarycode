@@ -242,6 +242,9 @@ pub struct Pane {
     pub servers_probe_at: Option<Instant>,
     /// The hook socket and this pane's token, as given to its shell.
     pub hook_env: Option<(String, String)>,
+    /// Its shell was started by an earlier run of the app (handed over in an update): it lacks
+    /// the variables this run's agent flags name (`$TC_CODEX_GUIDE`…), so no agent starts in it.
+    pub adopted: bool,
     /// TernaryCode itself ended the shell (pane closed, app quitting): its exit is not a failure.
     closing: bool,
     /// When the current shell started.
@@ -313,6 +316,7 @@ impl Pane {
             servers_probe_at: None,
             last_agent: None,
             hook_env: None,
+            adopted: false,
             closing: false,
             started: Instant::now(),
             typed: false,
@@ -362,6 +366,7 @@ impl Pane {
         };
         let mut env: HashMap<String, String> = spawn.env.iter().cloned().collect();
         self.hook_env = spawn.hook.clone();
+        self.adopted = false;
         if let Some((sock, token)) = &spawn.hook {
             env.insert(tc_agent::ENV_SOCK.into(), sock.clone());
             env.insert(tc_agent::ENV_PANE.into(), self.id.to_string());
@@ -540,6 +545,7 @@ impl Pane {
         self.generation += 1;
         self.start_error = None;
         self.hook_env = h.hook_env;
+        self.adopted = true;
         self.pty_grid = Some(size);
         self.exit = None;
         self.closing = false;
@@ -594,9 +600,10 @@ impl Pane {
 
     /// A shell nobody has used yet (nothing typed, no program or agent run, nothing waiting to
     /// run): a project just opened. Run Agent starts the agent in it rather than in a second tab
-    /// beside it.
+    /// beside it (not in a shell an earlier run started: see `adopted`).
     pub fn is_fresh(&self) -> bool {
-        !self.typed
+        !self.adopted
+            && !self.typed
             && self.preset.is_none()
             && self.exit.is_none()
             && self.pending_command.is_none()
@@ -611,6 +618,7 @@ impl Pane {
     pub fn takes_agent(&self) -> bool {
         self.is_fresh()
             || (self.alive()
+                && !self.adopted
                 && self.pending_command.is_none()
                 && self.resume.is_none()
                 && self.tracker.agent.is_none()
