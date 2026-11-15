@@ -139,6 +139,8 @@ pub enum Action {
     /// focused pane.
     InsertPath(PathBuf),
     /// Shows a file or folder in Finder.
+    /// Opens a file (an HTML page, an SVG) in the default web browser.
+    OpenInBrowser(PathBuf),
     RevealPath(PathBuf),
     /// Starts typing the name of a new file or folder in a folder of the file tree.
     NewFileIn(PathBuf),

@@ -301,6 +301,60 @@ pub fn open_url(url: &str) {
         .spawn();
 }
 
+/// Whether a file is a page a web browser shows (HTML, SVG): its menu offers Open in Browser.
+pub fn browser_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "html" | "htm" | "xhtml" | "svg"))
+}
+
+/// Opens a local file (a static HTML page, an SVG) in the default web browser.
+pub fn open_in_browser(path: &std::path::Path) {
+    // The end-to-end tests note it instead.
+    #[cfg(debug_assertions)]
+    if let Some(file) = std::env::var_os("TERNARYCODE_E2E_OPENED") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
+            let _ = writeln!(f, "browser {}", path.display());
+        }
+        return;
+    }
+    // The app that opens web addresses: the default browser, which need not be the app set
+    // for .html files (often an editor).
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = command("/usr/bin/open");
+        if let Some(app) = default_browser() {
+            c.arg("-a").arg(app);
+        }
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = command("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let mut cmd = command("xdg-open");
+    let _ = cmd
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// The app macOS opens web addresses with (the default browser).
+#[cfg(target_os = "macos")]
+fn default_browser() -> Option<std::path::PathBuf> {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSString, NSURL};
+    let url = NSURL::URLWithString(&NSString::from_str("https://example.com"))?;
+    let app = NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&url)?;
+    app.path().map(|p| std::path::PathBuf::from(p.to_string()))
+}
+
 /// Shows a file or folder selected in the file manager (Finder, Explorer), or opens the folder
 /// holding it.
 pub fn reveal_in_folder(path: &std::path::Path) {
@@ -411,6 +465,23 @@ pub fn raise_open_files_limit() {
 
 #[cfg(test)]
 mod tests {
+
+    /// The default browser is found (Open in Browser opens pages there, not in the app set
+    /// for .html files).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finds_the_default_browser() {
+        assert!(super::default_browser().is_some_and(|app| app.extension().is_some_and(|e| e == "app")));
+    }
+
+    #[test]
+    fn browser_files() {
+        use std::path::Path;
+        assert!(super::browser_file(Path::new("site/index.HTML")));
+        assert!(super::browser_file(Path::new("logo.svg")));
+        assert!(!super::browser_file(Path::new("README.md")));
+        assert!(!super::browser_file(Path::new("html")));
+    }
     use super::*;
 
     #[cfg(target_os = "macos")]

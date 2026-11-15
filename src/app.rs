@@ -2742,6 +2742,7 @@ impl App {
                 }
             }
             Action::RevealPath(path) => platform::reveal_in_folder(&path),
+            Action::OpenInBrowser(path) => platform::open_in_browser(&path),
             Action::NewFileIn(ref dir) | Action::NewFolderIn(ref dir) => {
                 let folder = matches!(action, Action::NewFolderIn(_));
                 let dir = dir.clone();

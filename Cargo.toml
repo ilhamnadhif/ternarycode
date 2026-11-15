@@ -45,7 +45,7 @@ objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSSet", "NSFileManager", "NSURL"] }
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "bitflags", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 block2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSEvent", "NSApplication", "NSResponder", "NSWindow", "NSView", "NSGraphicsContext", "NSDockTile", "NSRunningApplication"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSEvent", "NSApplication", "NSResponder", "NSWindow", "NSView", "NSGraphicsContext", "NSDockTile", "NSRunningApplication", "NSWorkspace"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "x11", "wayland"] }

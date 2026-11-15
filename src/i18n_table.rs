@@ -811,4 +811,5 @@ const ID: &[(&str, &str)] = &[
     ("Picked here: kept until something new waits in another tab", "Dipilih di sini: ditahan sampai ada yang baru menunggu di tab lain"),
     ("Can resume", "Bisa dilanjutkan"),
     ("This Tab", "Tab Ini"),
+    ("Open in Browser", "Buka di Browser"),
 ];
