@@ -32,8 +32,9 @@ for you. TernaryCode puts every project in **one window**: each with its own ter
 split panes, a **Grid** that shows them all at once, and one question answered quickly and
 honestly: **which agent needs me now?**
 
-It is one small native binary (no Electron, no webview, no Node.js): the window is up in about
-0.2 s, it idles at 0 % CPU, and ten open panes take around 70 MB.
+It is one small native binary (no Electron, no Node.js; its browser uses the WebKit that comes
+with macOS): the window is up in about 0.2 s, it idles at 0 % CPU, and ten open panes take around
+70 MB.
 
 ## Highlights
 
@@ -50,6 +51,9 @@ It is one small native binary (no Electron, no webview, no Node.js): the window 
   something runs or waits. A project with several tabs shows the one that needs you (or where an
   agent works), never switching away from the one you type into; the tabs sit in the tile's
   header, to pick one by hand.
+- **A browser beside the terminals** (macOS). A project's pages open in its **Browser panel**,
+  and agents use it through TernaryCode's own browser tools to check their work, each on a page of
+  its own: you watch every click, and take over whenever you like.
 - **An editor beside the terminal**, with language servers you already have (rust-analyzer, gopls,
   typescript-language-server, Dart, pyright, clangd…): ⌘-click to a definition, references,
   rename across files, code actions, completion, hover and problems.
@@ -141,8 +145,9 @@ interrupt you: an **Update** item appears in the status bar instead.
 
 The `.dmg`/installer copy on macOS, the Windows setup, the AppImage and the `.tar.gz` update
 themselves; the `.deb`, `.rpm` and the portable `.zip` are updated by installing the new package.
-Turn automatic checks off in **Settings → General**, or use **Check for Updates…** any time. The
-update check is the only network connection TernaryCode makes.
+Turn automatic checks off in **Settings → General**, or use **Check for Updates…** any time. Apart
+from the pages you and your agents open in its browser, the update check is the only network
+connection TernaryCode makes.
 
 ## Features
 
@@ -155,9 +160,9 @@ update check is the only network connection TernaryCode makes.
 - **Tabs and split panes per project**, drag to rearrange, and restored when you open the app
   again. Restored shells start only when you look at them, so a workspace of twenty projects opens
   as fast as one.
-- **Run an agent** in a new pane from presets (Claude Code, Codex, Gemini CLI, OpenCode, or your own
-  command). Panes of agents that can continue a conversation offer **Resume** after a
-  restart.
+- **Run an agent** from presets (Claude Code, Codex, Gemini CLI, OpenCode, or your own command):
+  in the terminal you are in when it waits at an empty prompt, else in a new tab or a split.
+  Panes of agents that can continue a conversation offer **Resume** after a restart.
 - **A worktree per agent**, when several work in one repository: **Run Agent → New worktree**
   makes a git worktree on a branch of its own (`tc/‹name›`, beside the repository) and starts the
   agent there, so agents never write over each other's files. It is listed under its project, is
@@ -166,15 +171,16 @@ update check is the only network connection TernaryCode makes.
 - **A real terminal**: 24-bit colour, mouse reporting, synchronized output, IME, pixel-exact
   box drawing, and scrollback search in one pane (`⌘F`) or all of them (`⇧⌘F`).
 - **Links open with `⌘`-click or `Ctrl`-click** (Ctrl-click on Windows and Linux), from a Grid
-  tile too. A web address opens in the browser, even one wrapped over several rows or in
-  brackets, and even inside a program that uses the mouse. OSC 8 hyperlinks also open. A
+  tile too. A web address opens in the project's Browser panel (with `⌥`, or on Windows and
+  Linux, in your default browser), even one wrapped over several rows or in brackets, and even
+  inside a program that uses the mouse. OSC 8 hyperlinks also open. A
   `path:line` opens in the editor. Right-click a link to open or copy it.
 - **Drop a file on a terminal** and its path is typed there, so an agent can read a screenshot.
   A folder dropped on the sidebar becomes a project. **`⌘V` with an image** on the clipboard
   hands it to Claude Code, Codex, Gemini CLI or OpenCode.
 - **Local servers show up.** When a pane prints `http://localhost:5173` (Vite, Next.js, Rails,
   Django…), its address appears in the project header and on the Grid tile while the server
-  answers. Click it to open it in the browser.
+  answers. Click it to open the page in the Browser panel.
 - **Shell integration** (zsh, bash, fish and PowerShell) marks prompts and commands, so a command that fails or
   finishes after a long time is noticed, and resizing never leaves prompt fragments behind.
 
@@ -192,13 +198,46 @@ update check is the only network connection TernaryCode makes.
 
 | Agent | Per launch (no file changed) | Installed once |
 | --- | --- | --- |
-| Claude Code | `claude --settings "$TC_CLAUDE_SETTINGS"` adds hooks for that run | hooks in `~/.claude/settings.json` |
-| Codex | `codex -c "$TC_CODEX_HOOKS" -c "$TC_CODEX_NOTIFY"` | a managed block in `~/.codex/config.toml` |
-| Gemini CLI | — | hooks in `~/.gemini/settings.json` |
+| Claude Code | `claude --mcp-config "$TC_CLAUDE_MCP" --settings "$TC_CLAUDE_SETTINGS"` adds hooks and the browser tools for that run | hooks in `~/.claude/settings.json` |
+| Codex | `codex -c "$TC_CODEX_HOOKS" -c "$TC_CODEX_NOTIFY" -c "$TC_CODEX_MCP"` | a managed block in `~/.codex/config.toml`, browser tools included |
+| Gemini CLI | — | hooks and the browser tools in `~/.gemini/settings.json` |
 | OpenCode | — | the plugin `~/.config/opencode/plugins/ternarycode.js` |
 
 Installing shows the exact change first and keeps a backup; **Uninstall** restores the file byte
-for byte when you have not edited it since.
+for byte when you have not edited it since. The browser tools are on macOS (`--mcp-config` and
+`$TC_CODEX_MCP` are added there only); Settings → Browser shows which agents have them.
+
+### A browser for you and your agents
+
+On macOS each project has a **Browser panel** at the right of its terminals, where the Code drawer
+goes (the two take turns there). On Windows and Linux pages open in your default browser for now.
+
+- **Pages open there**: the globe in the top bar or `⇧⌘B` shows and hides the panel, `⌘L` types an
+  address, `⌥⇧⌘B` opens a new page, `⌘R` reloads and `⌘[` `⌘]` go back and forward. Server chips,
+  `⌘`-clicked links, **Open in Browser** on a file in Files, `ternarycode browse <url>` and
+  programs that open a browser in a pane (`$BROWSER`, `open https://…`, `vite --open`) all open
+  their page in it. Hold `⌥` for your default browser.
+- **Agents check their own work in it.** Agents started from TernaryCode get its browser tools
+  (open a page, click, type, pick an option, press keys, scroll, wait, read the page, take a
+  screenshot, read the console). Ask one to check its change in the browser and the page opens
+  beside it, framed in blue, with a bar saying what it does (“Clicking the Add to cart button”).
+  Click or type in the page to **Take Over**; **Hand Back** lets the agent carry on.
+- **A page per agent.** Two agents in one tab each get a page of their own, marked CC, Cx… on its
+  tab. The page in front follows the terminal you click; an agent working on a page behind it
+  shows a blue dot there. A link you open never takes an agent's page.
+- **Terminals are never squeezed.** Side by side and too narrow beside the panel, they show
+  stacked while it is open (**Keep Side by Side** if you prefer them squeezed); with no room even
+  so, the panel floats over them until you click a terminal. `⤢` lets a page fill the window.
+- **Agents stay on safe ground.** They open this machine's addresses (localhost and the like) and
+  the sites you allowed, for every project or one; another site waits for **Allow Once**,
+  **Always** or **Block**, asked in TernaryCode with the other questions waiting for you. Their own
+  JavaScript (`browser_evaluate`) is off until you allow it in Settings → Browser.
+- **In the Grid** a project's tile shows its panel beside its terminals, the page zoomed out so it
+  keeps the layout it has in Focus, still live; a small tile shows a picture of the page an agent
+  is using.
+- One login profile for every project, kept through restarts and updates. A page's console
+  warnings and errors show on its toolbar. Pages out of view and unused sleep after 10 minutes
+  (never while an agent uses them), and the status bar shows the memory pages take.
 
 ### Editor and language features
 
@@ -250,12 +289,14 @@ everything, with its shortcut.
 | `⌘P` | `Ctrl+Shift+P` | switch project |
 | `⇧⌘A` | `Ctrl+Shift+A` | run an agent |
 | `⌘0` | `Ctrl+Shift+0` | Grid of all projects |
-| `⌘T` · `⌘W` | `Ctrl+Shift+T` · `Ctrl+Shift+W` | new tab · close pane |
+| `⌘T` · `⌘W` | `Ctrl+Shift+T` · `Ctrl+Shift+W` | new tab · close pane (or the page that has the keyboard) |
 | `⇧⌘]` · `⇧⌘[` | `Ctrl+Shift+PageDown` · `Ctrl+Shift+PageUp` | next tab · previous tab |
 | `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | split right · split down |
 | `⌘]` · `⌘[` | `Ctrl+Shift+]` · `Ctrl+Shift+[` | next pane · previous pane |
 | `⌘O` · `⌘E` · `⌘S` | `Ctrl+Shift+O` · `Ctrl+Shift+Y` · `Ctrl+Shift+S` | open file · show editor · save |
 | `⇧⌘R` | `Ctrl+Shift+R` | review changes |
+| `⇧⌘B` · `⌥⇧⌘B` | `Ctrl+Shift+Alt+B` | Browser panel · new page (Windows, Linux: the project's server in your browser) |
+| `⌘L` · `⌘R` · `⌘[` `⌘]` | | in the Browser panel: address · reload · back, forward (while a page has the keyboard) |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | find in the pane, file or document · in all panes |
 | `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` · `Ctrl+Shift+1`–`9` | sidebar · project 1–9 |
 | `⌘=` · `⌘-` | `Ctrl+Shift+=` · `Ctrl+Shift+-` · `Ctrl+Shift+Backspace` | bigger · smaller · actual size text |
@@ -267,9 +308,12 @@ text smaller.
 
 ## Privacy
 
-No account, no telemetry. The only connection TernaryCode makes is the update check to GitHub,
-which you can turn off. Hooks talk to the app over a private local socket (a named pipe on
-Windows), and each pane has its own secret token.
+No account, no telemetry. TernaryCode itself connects only to GitHub, for the update check, which
+you can turn off; the pages you and your agents open in its browser load as in any browser. Hooks
+and the agents' browser tools talk to the app over a private local socket (a named pipe on
+Windows), and each pane has its own secret token. The browser's logins and cookies stay on your
+Mac, in one profile WebKit keeps for TernaryCode; **Settings → Browser → Logins & cookies →
+Clear…** forgets them.
 
 Settings and the workspace live in `~/Library/Application Support/ternarycode` (macOS),
 `%APPDATA%\ternarycode` (Windows) or `~/.local/share/ternarycode` (Linux).
@@ -300,11 +344,11 @@ outside a TernaryCode pane.
 | --- | --- |
 | `crates/tc-term` | terminal core (alacritty_terminal), PTY (Unix and ConPTY), OSC signals, search, the egui terminal widget |
 | `crates/tc-core` | model, agent presets and recognition, status state machine, attention queue, atomic files |
-| `crates/tc-agent` | process info, hook protocol and server, `ternarycode-hook`, agent integrations, shell integration |
+| `crates/tc-agent` | process info, hook protocol and server, `ternarycode-hook` (and its browser tools, `ternarycode-hook mcp`), agent integrations, shell integration |
 | `crates/tc-git` | snapshots and diffs through the git CLI, never touching the index |
 | `crates/tc-lsp` | language server client: transport, server registry, positions, edits |
 | `crates/tc-doc` | PDF, Word, PowerPoint, spreadsheet, CSV and image readers |
-| `src/` | the app (egui) |
+| `src/` | the app (egui), and its browser (WebKit through wry, on macOS) |
 
 ## The Ternary family
 

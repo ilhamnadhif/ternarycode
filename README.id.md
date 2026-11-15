@@ -32,8 +32,9 @@ mana yang sedang menunggu Anda. TernaryCode menaruh semua project di **satu jend
 dengan terminal, tab, dan split pane sendiri, **Grid** yang menampilkan semuanya sekaligus, dan
 satu pertanyaan yang dijawab cepat dan jujur: **agent mana yang butuh saya sekarang?**
 
-Aplikasinya satu binary native kecil (tanpa Electron, webview, atau Node.js): jendela muncul
-sekitar 0,2 detik, CPU 0 % saat diam, dan sepuluh pane terbuka memakai sekitar 70 MB.
+Aplikasinya satu binary native kecil (tanpa Electron atau Node.js; browser-nya memakai WebKit
+bawaan macOS): jendela muncul sekitar 0,2 detik, CPU 0 % saat diam, dan sepuluh pane terbuka
+memakai sekitar 70 MB.
 
 ## Sorotan
 
@@ -50,6 +51,9 @@ sekitar 0,2 detik, CPU 0 % saat diam, dan sepuluh pane terbuka memakai sekitar 7
   sedang menjalankan sesuatu atau menunggu. Project dengan beberapa tab menampilkan tab yang butuh
   Anda (atau tempat agent bekerja), tanpa pernah berpindah dari tab yang sedang Anda ketik; tab-tabnya
   ada di header tile, untuk dipilih sendiri.
+- **Browser di samping terminal** (macOS). Halaman project terbuka di **panel Browser**-nya, dan
+  agent memakainya lewat tool browser TernaryCode sendiri untuk memeriksa hasil kerjanya, masing-masing
+  di halamannya sendiri: Anda melihat setiap kliknya, dan bisa mengambil alih kapan saja.
 - **Editor di samping terminal**, dengan language server yang sudah Anda punya (rust-analyzer,
   gopls, typescript-language-server, Dart, pyright, clangd…): ⌘-klik ke definisi, referensi,
   rename lintas file, code action, autocomplete, hover, dan daftar problem.
@@ -143,8 +147,9 @@ berikutnya tidak mengganggu: muncul item **Update** di status bar.
 
 App macOS, setup Windows, AppImage, dan `.tar.gz` memperbarui dirinya sendiri; `.deb`, `.rpm`, dan
 `.zip` portabel diperbarui dengan memasang paket baru. Matikan pemeriksaan otomatis di
-**Settings → General**, atau pakai **Check for Updates…** kapan saja. Pemeriksaan pembaruan adalah
-satu-satunya koneksi jaringan yang dibuat TernaryCode.
+**Settings → General**, atau pakai **Check for Updates…** kapan saja. Selain halaman yang Anda dan
+agent Anda buka di browser-nya, pemeriksaan pembaruan adalah satu-satunya koneksi jaringan yang
+dibuat TernaryCode.
 
 ## Fitur
 
@@ -157,8 +162,9 @@ satu-satunya koneksi jaringan yang dibuat TernaryCode.
 - **Tab dan split pane per project**, bisa diseret untuk diatur ulang, dan dipulihkan saat app
   dibuka lagi. Shell yang dipulihkan baru berjalan saat Anda melihatnya, jadi workspace berisi dua
   puluh project terbuka secepat satu project.
-- **Jalankan agent** di pane baru dari preset (Claude Code, Codex, Gemini CLI, OpenCode, atau
-  perintah Anda sendiri). Pane agent yang bisa melanjutkan percakapan menawarkan **Resume** setelah
+- **Jalankan agent** dari preset (Claude Code, Codex, Gemini CLI, OpenCode, atau perintah Anda
+  sendiri): di terminal tempat Anda berada kalau ia sedang menunggu di prompt kosong, selain itu di
+  tab baru atau split. Pane agent yang bisa melanjutkan percakapan menawarkan **Resume** setelah
   restart.
 - **Satu worktree per agent**, saat beberapa agent bekerja di satu repository: **Run Agent →
   Worktree baru** membuat git worktree dengan branch sendiri (`tc/‹nama›`, di samping repository)
@@ -168,15 +174,16 @@ satu-satunya koneksi jaringan yang dibuat TernaryCode.
 - **Terminal sungguhan**: warna 24-bit, mouse reporting, synchronized output, IME, box drawing yang
   presisi, dan pencarian scrollback di satu pane (`⌘F`) atau semua pane (`⇧⌘F`).
 - **Link dibuka dengan `⌘`-klik atau `Ctrl`-klik** (Ctrl-klik di Windows dan Linux), dari tile
-  Grid juga. Alamat web terbuka di browser, termasuk yang terpotong ke beberapa baris, yang ada
-  dalam tanda kurung, dan yang ada di program yang memakai mouse. Hyperlink OSC 8 juga bisa
+  Grid juga. Alamat web terbuka di panel Browser project (dengan `⌥`, atau di Windows dan Linux,
+  di browser default Anda), termasuk yang terpotong ke beberapa baris, yang ada dalam tanda kurung,
+  dan yang ada di program yang memakai mouse. Hyperlink OSC 8 juga bisa
   dibuka. `path:baris` terbuka di editor. Klik kanan link untuk membuka atau menyalinnya.
 - **Drop file ke terminal** dan path-nya langsung terketik di sana, jadi agent bisa membaca
   screenshot. Folder yang di-drop ke sidebar menjadi project. **`⌘V` dengan gambar** di
   clipboard diteruskan ke Claude Code, Codex, Gemini CLI, atau OpenCode.
 - **Server lokal langsung kelihatan.** Kalau pane mencetak `http://localhost:5173` (Vite,
   Next.js, Rails, Django…), alamatnya muncul di header project dan tile Grid selama servernya
-  menjawab. Klik untuk membukanya di browser.
+  menjawab. Klik untuk membuka halamannya di panel Browser.
 - **Shell integration** (zsh, bash, fish, dan PowerShell) menandai prompt dan perintah, jadi perintah yang gagal
   atau selesai setelah lama tetap ketahuan, dan resize tidak pernah meninggalkan potongan prompt.
 
@@ -194,13 +201,53 @@ satu-satunya koneksi jaringan yang dibuat TernaryCode.
 
 | Agent | Per peluncuran (tanpa mengubah file) | Dipasang sekali |
 | --- | --- | --- |
-| Claude Code | `claude --settings "$TC_CLAUDE_SETTINGS"` menambah hook untuk sesi itu | hook di `~/.claude/settings.json` |
-| Codex | `codex -c "$TC_CODEX_HOOKS" -c "$TC_CODEX_NOTIFY"` | blok terkelola di `~/.codex/config.toml` |
-| Gemini CLI | — | hook di `~/.gemini/settings.json` |
+| Claude Code | `claude --mcp-config "$TC_CLAUDE_MCP" --settings "$TC_CLAUDE_SETTINGS"` menambah hook dan tool browser untuk sesi itu | hook di `~/.claude/settings.json` |
+| Codex | `codex -c "$TC_CODEX_HOOKS" -c "$TC_CODEX_NOTIFY" -c "$TC_CODEX_MCP"` | blok terkelola di `~/.codex/config.toml`, termasuk tool browser |
+| Gemini CLI | — | hook dan tool browser di `~/.gemini/settings.json` |
 | OpenCode | — | plugin `~/.config/opencode/plugins/ternarycode.js` |
 
 Pemasangan menampilkan perubahan persisnya lebih dulu dan menyimpan backup; **Uninstall**
-mengembalikan file byte demi byte kalau Anda belum mengubahnya sejak itu.
+mengembalikan file byte demi byte kalau Anda belum mengubahnya sejak itu. Tool browser ada di macOS
+(`--mcp-config` dan `$TC_CODEX_MCP` hanya ditambahkan di sana); Settings → Browser menunjukkan agent
+mana yang sudah memilikinya.
+
+### Browser untuk Anda dan agent Anda
+
+Di macOS setiap project punya **panel Browser** di kanan terminalnya, di tempat laci Code (keduanya
+bergantian di sana). Di Windows dan Linux, halaman untuk sementara terbuka di browser default Anda.
+
+- **Halaman terbuka di sana**: globe di top bar atau `⇧⌘B` menampilkan dan menyembunyikan panel,
+  `⌘L` mengetik alamat, `⌥⇧⌘B` membuka halaman baru, `⌘R` memuat ulang, dan `⌘[` `⌘]` mundur dan
+  maju. Chip server, link yang di-`⌘`-klik, **Open in Browser** pada file di Files,
+  `ternarycode browse <url>`, dan program yang membuka browser dari pane (`$BROWSER`,
+  `open https://…`, `vite --open`) semuanya membuka halamannya di sana. Tahan `⌥` untuk browser
+  default Anda.
+- **Agent memeriksa hasil kerjanya sendiri di sana.** Agent yang dijalankan dari TernaryCode
+  mendapat tool browser-nya (membuka halaman, klik, mengetik, memilih opsi, menekan tombol, scroll,
+  menunggu, membaca halaman, screenshot, membaca console). Minta agent memeriksa perubahannya di
+  browser dan halamannya terbuka di sampingnya, berbingkai biru, dengan bar yang menyebut apa yang
+  sedang ia lakukan (“Clicking the Add to cart button”). Klik atau ketik di halaman untuk
+  **Take Over**; **Hand Back** membiarkan agent melanjutkan.
+- **Satu halaman per agent.** Dua agent di satu tab masing-masing mendapat halaman sendiri,
+  bertanda CC, Cx… di tab-nya. Halaman yang di depan mengikuti terminal yang Anda klik; agent yang
+  bekerja di halaman di belakangnya memberi titik biru di sana. Link yang Anda buka tidak pernah
+  mengambil halaman agent.
+- **Terminal tidak pernah diperas.** Terminal berdampingan yang jadi terlalu sempit di samping panel
+  ditampilkan bertumpuk selama panel terbuka (**Keep Side by Side** kalau Anda lebih suka tetap
+  berdampingan); kalau tetap tidak muat, panel mengambang di atasnya sampai Anda mengklik terminal.
+  `⤢` membuat halaman memenuhi jendela.
+- **Agent tetap di jalur aman.** Agent membuka alamat mesin ini (localhost dan sejenisnya) dan situs
+  yang Anda izinkan, untuk semua project atau satu project; situs lain menunggu **Allow Once**,
+  **Always**, atau **Block**, ditanyakan di TernaryCode bersama pertanyaan lain yang menunggu Anda.
+  JavaScript milik agent sendiri (`browser_evaluate`) mati sampai Anda mengizinkannya di
+  Settings → Browser.
+- **Di Grid**, tile project menampilkan panelnya di samping terminal, halamannya diperkecil supaya
+  tata letaknya sama dengan di Focus, dan tetap hidup; tile kecil menampilkan gambar halaman yang
+  sedang dipakai agent.
+- Satu profil login untuk semua project, tetap tersimpan melewati restart dan pembaruan. Warning dan
+  error di console halaman tampil di toolbar-nya. Halaman yang tidak terlihat dan tidak dipakai
+  tidur setelah 10 menit (tidak pernah selama agent memakainya), dan status bar menampilkan memori
+  yang dipakai halaman.
 
 ### Editor dan fitur bahasa
 
@@ -252,12 +299,14 @@ semuanya, lengkap dengan shortcut-nya.
 | `⌘P` | `Ctrl+Shift+P` | pindah project |
 | `⇧⌘A` | `Ctrl+Shift+A` | jalankan agent |
 | `⌘0` | `Ctrl+Shift+0` | Grid semua project |
-| `⌘T` · `⌘W` | `Ctrl+Shift+T` · `Ctrl+Shift+W` | tab baru · tutup pane |
+| `⌘T` · `⌘W` | `Ctrl+Shift+T` · `Ctrl+Shift+W` | tab baru · tutup pane (atau halaman yang memegang keyboard) |
 | `⇧⌘]` · `⇧⌘[` | `Ctrl+Shift+PageDown` · `Ctrl+Shift+PageUp` | tab berikutnya · tab sebelumnya |
 | `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | split kanan · split bawah |
 | `⌘]` · `⌘[` | `Ctrl+Shift+]` · `Ctrl+Shift+[` | pane berikutnya · pane sebelumnya |
 | `⌘O` · `⌘E` · `⌘S` | `Ctrl+Shift+O` · `Ctrl+Shift+Y` · `Ctrl+Shift+S` | buka file · tampilkan editor · simpan |
 | `⇧⌘R` | `Ctrl+Shift+R` | review perubahan |
+| `⇧⌘B` · `⌥⇧⌘B` | `Ctrl+Shift+Alt+B` | panel Browser · halaman baru (Windows, Linux: server project di browser Anda) |
+| `⌘L` · `⌘R` · `⌘[` `⌘]` | | di panel Browser: alamat · muat ulang · mundur, maju (saat halaman memegang keyboard) |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | cari di pane, file, atau dokumen · di semua pane |
 | `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` · `Ctrl+Shift+1`–`9` | sidebar · project 1–9 |
 | `⌘=` · `⌘-` | `Ctrl+Shift+=` · `Ctrl+Shift+-` · `Ctrl+Shift+Backspace` | perbesar · perkecil · ukuran asli teks |
@@ -269,9 +318,12 @@ shortcut itu memperkecil teks.
 
 ## Privasi
 
-Tanpa akun, tanpa telemetri. Satu-satunya koneksi yang dibuat TernaryCode adalah pemeriksaan
-pembaruan ke GitHub, dan itu bisa dimatikan. Hook berbicara dengan app lewat socket lokal privat
-(named pipe di Windows), dan setiap pane punya token rahasianya sendiri.
+Tanpa akun, tanpa telemetri. TernaryCode sendiri hanya terhubung ke GitHub, untuk pemeriksaan
+pembaruan, dan itu bisa dimatikan; halaman yang Anda dan agent Anda buka di browser-nya dimuat
+seperti di browser mana pun. Hook dan tool browser agent berbicara dengan app lewat socket lokal
+privat (named pipe di Windows), dan setiap pane punya token rahasianya sendiri. Login dan cookie
+browser tetap di Mac Anda, dalam satu profil yang disimpan WebKit untuk TernaryCode;
+**Settings → Browser → Logins & cookies → Clear…** menghapusnya.
 
 Pengaturan dan workspace disimpan di `~/Library/Application Support/ternarycode` (macOS),
 `%APPDATA%\ternarycode` (Windows), atau `~/.local/share/ternarycode` (Linux).
