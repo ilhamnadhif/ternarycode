@@ -18,10 +18,17 @@ use crate::{ENV_PANE, ENV_SOCK, ENV_TOKEN};
 /// is one of these, else in the newest.
 const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-const INSTRUCTIONS: &str = "These tools drive the browser pane of this project in TernaryCode, \
-beside the terminal you run in: the user sees every page and every click. Start with \
-browser_navigate (a local dev server like localhost:5173 opens at once; other sites need the \
-user's OK the first time), then act on the refs of the snapshot each tool returns.";
+/// What the agent is told about these tools (Claude Code puts it in its system prompt): this is
+/// the browser the user means while it works in TernaryCode, before other browser tools it may
+/// have (a browser extension's, Playwright) and before `open <url>`.
+const INSTRUCTIONS: &str = "You run in a terminal pane of TernaryCode, which has a browser built \
+in, beside this terminal: it is the user's browser in this session, and the user sees every page \
+and every click. Whenever the user asks to open, show, check or search something on a website or \
+in a browser (\"open YouTube\", \"check it in the browser\", a URL, a dev server), use these \
+tools, not `open <url>` in a shell and not other browser tools (Chrome, Zen, Safari, Playwright), \
+unless the user names that other browser. Start with browser_navigate: this machine's addresses \
+open at once; another site waits the first time for the user's OK, asked in TernaryCode. Then \
+act on the refs of the snapshot each tool returns.";
 
 /// The tools, as `tools/list` gives them.
 pub fn tools() -> Value {
@@ -30,7 +37,7 @@ pub fn tools() -> Value {
     json!([
         {
             "name": "browser_navigate",
-            "description": "Open a URL in the project's browser pane in TernaryCode. Local addresses (localhost, 127.0.0.1, a port like :5173) open at once; another site asks the user the first time. Waits for the page to load; returns its title and a snapshot.",
+            "description": "Open a URL in TernaryCode's built-in browser, beside the terminal: the browser the user means in this session (any website or page they ask for, unless they name another browser). Local addresses (localhost, 127.0.0.1, a port like :5173) open at once; another site asks the user the first time. Waits for the page to load; returns its title and a snapshot.",
             "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "The address (a bare port or host:port means this machine)."}}, "required": ["url"]},
         },
         {
@@ -239,6 +246,11 @@ mod tests {
         let a = answer(&init, &pane(), &none).unwrap();
         assert_eq!(a["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(a["result"]["serverInfo"]["name"], "ternarycode");
+        // The agent is told this is the browser the user means here, unless they name another.
+        let told = a["result"]["instructions"].as_str().unwrap_or("");
+        assert!(told.contains("browser built in") && told.contains("unless the user names that other browser"), "{told}");
+        let navigate = tools().as_array().and_then(|t| t.iter().find(|x| x["name"] == "browser_navigate").cloned()).unwrap_or_default();
+        assert!(navigate["description"].as_str().unwrap_or("").contains("the browser the user means in this session"));
         let newer = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2099-01-01"}});
         assert_eq!(answer(&newer, &pane(), &none).unwrap()["result"]["protocolVersion"], VERSIONS[0]);
         // Notifications get no answer; unknown methods an error.
