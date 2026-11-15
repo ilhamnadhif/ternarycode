@@ -24,12 +24,10 @@ use tc_agent::server::Reply;
 use tc_core::PaneId;
 use tc_core::agent::AgentKind;
 use tc_core::status::{Event as StatusEvent, HookSignal};
-use tc_term::layout::{Layout, SplitDir};
 
 use crate::app::App;
-use crate::browser::{Answer, Ask, Browser, Driver};
+use crate::browser::{Answer, Ask, Driver};
 use crate::i18n::{t, tf};
-use crate::project::Tab;
 
 /// What the pages answered, by call number (filled on the main thread by WebKit's callbacks).
 pub type Done = Arc<Mutex<HashMap<u64, Result<String, String>>>>;
@@ -227,37 +225,28 @@ impl App {
         self.mark_dirty();
     }
 
-    /// The browser an agent's tools act on: its own, else one in its tab nobody uses, else
-    /// (`create`) a new one beside it when there is room, or in a tab of the project. The
-    /// keyboard and the tab in view stay as they are.
+    /// The page an agent's tools act on: its own in its project's Browser panel, else
+    /// (`create`) a new one there. It comes to the front when the agent's terminal is the one
+    /// picked (or the panel had none), and the panel opens (Settings), unless the Code drawer
+    /// is open: then the Browser button says so. The keyboard and the tab in view stay as they
+    /// are.
     fn agent_browser(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, create: bool) -> Option<PaneId> {
-        if let Some(id) = self.browsers.values().find(|b| b.owner == Some(agent_pane)).map(|b| b.id) {
-            return Some(id);
-        }
-        let tab = self.project(project)?.tab_of(agent_pane)?;
-        let in_tab = self.project(project)?.tabs[tab].layout.panes();
-        if let Some(id) = in_tab.iter().copied().find(|x| self.browsers.get(x).is_some_and(|b| b.owner.is_none())) {
-            if let Some(b) = self.browsers.get_mut(&id) {
-                b.owner = Some(agent_pane);
-            }
+        if let Some(id) = self.browsers.values().find(|b| b.owner == Some(agent_pane) && b.project == project).map(|b| b.id) {
             return Some(id);
         }
         if !create {
             return None;
         }
-        let id = self.new_id();
-        let mut b = Browser::new(id, project, "");
-        b.owner = Some(agent_pane);
-        self.browsers.insert(id, b);
-        let wide = self.last_body.is_some_and(|r| r.width() >= 900.0);
-        let beside = self.settings.browser_agent_beside;
-        let p = self.project_mut(project)?;
-        if beside && p.tabs[tab].layout.panes().len() == 1 && wide {
-            p.tabs[tab].layout.split(agent_pane, id, SplitDir::Horizontal);
-        } else {
-            p.tabs.push(Tab { layout: Layout::Pane(id), focused: id, title: None });
+        self.project(project)?;
+        let id = self.add_page(project, "", Some(agent_pane));
+        let picked = self.project(project).and_then(|p| p.current_pane()) == Some(agent_pane);
+        let open = self.settings.browser_agent_beside;
+        if let Some(panel) = self.panel_mut(project) {
+            if picked || panel.shown().is_none() {
+                panel.front = Some(id);
+            }
+            panel.open |= open;
         }
-        self.mark_dirty();
         Some(id)
     }
 
@@ -412,7 +401,7 @@ impl App {
         loop {
             let id = self.browser_jobs[i].browser;
             let Some(b) = self.browsers.get(&id) else {
-                return Some(Some("The browser pane was closed.".into()));
+                return Some(Some("The page was closed in TernaryCode.".into()));
             };
             if let Some(d) = b.driver.as_ref().filter(|d| d.paused) {
                 return Some(Some(format!("The user took the browser over from {} in TernaryCode. Wait until they hand it back, or ask them.", d.who)));

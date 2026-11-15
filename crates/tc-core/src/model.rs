@@ -102,6 +102,19 @@ pub struct ProjectSave {
     /// project's agents may (Settings).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub browser_sites: Vec<String>,
+    /// Its Browser panel (its pages are in `panes`, in the panel's order).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_panel: Option<PanelSave>,
+}
+
+/// A project's Browser panel: shown or not, its width, the page in front.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PanelSave {
+    pub open: bool,
+    /// Share of the area beside the sidebar it takes (0 = default).
+    pub width: f32,
+    pub front: Option<PaneId>,
 }
 
 /// A worktree made for an agent run (Run Agent → New worktree).
@@ -177,9 +190,13 @@ pub struct PaneSave {
     /// The agent that was running when the workspace was saved, and the preset that started it.
     pub agent: Option<AgentKind>,
     pub preset: Option<String>,
-    /// A browser pane: the address of its page.
+    /// A page of the project's Browser panel: its address (older versions: a browser pane in a
+    /// tab).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
+    /// The agent pane a page belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_owner: Option<PaneId>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,9 +336,12 @@ pub struct Settings {
     /// Agents in TernaryCode panes may use their project's browser (its tools).
     #[serde(default = "yes")]
     pub browser_agents: bool,
-    /// An agent's browser opens beside its pane when there is room (else in a tab of its own).
+    /// An agent's page shows the project's Browser panel (else only the Browser button says so).
     #[serde(default = "yes")]
     pub browser_agent_beside: bool,
+    /// Pages in Grid tiles keep the layout they have in Focus, zoomed out (else they fit the tile).
+    #[serde(default = "yes")]
+    pub browser_grid_zoom: bool,
     /// Sites any agent may open without asking (`*.local`: that domain and its subdomains).
     #[serde(default = "agent_sites")]
     pub browser_agent_sites: Vec<String>,
@@ -400,6 +420,7 @@ impl Default for Settings {
             browser_agent_beside: true,
             browser_agent_sites: agent_sites(),
             browser_agent_js: false,
+            browser_grid_zoom: true,
             skipped_version: None,
             last_update_check: None,
             window: None,

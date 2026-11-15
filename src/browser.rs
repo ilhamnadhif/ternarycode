@@ -156,6 +156,11 @@ pub struct Browser {
     pub(crate) offscreen: bool,
     /// Dimmed under a question.
     pub(crate) dimmed: bool,
+    /// The zoom its page is drawn at (1: as in Focus; smaller in a Grid tile, which keeps the
+    /// layout it has in Focus), and the zoom where it is drawn this frame.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) zoom: f32,
+    pub zoom_want: f32,
 }
 
 impl Browser {
@@ -194,6 +199,8 @@ impl Browser {
             placed: None,
             offscreen: false,
             dimmed: false,
+            zoom: 1.0,
+            zoom_want: 1.0,
         }
     }
 
@@ -364,6 +371,7 @@ impl Browser {
         self.covered_since = None;
         self.asleep = true;
         self.loading = false;
+        self.zoom = 1.0;
     }
 
     /// The page has a web view (it is not asleep).

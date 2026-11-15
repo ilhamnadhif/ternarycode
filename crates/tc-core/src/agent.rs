@@ -27,6 +27,18 @@ impl AgentKind {
         AgentKind::Custom,
     ];
 
+    /// Two letters for it (a page's tab in the Browser panel).
+    pub fn mark(self) -> &'static str {
+        match self {
+            AgentKind::Claude => "CC",
+            AgentKind::Codex => "Cx",
+            AgentKind::OpenCode => "OC",
+            AgentKind::Gemini => "Gm",
+            AgentKind::Antigravity => "AG",
+            AgentKind::Custom => "AI",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             AgentKind::Claude => "Claude Code",

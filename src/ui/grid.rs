@@ -470,7 +470,12 @@ impl App {
         let count = layout.as_ref().map_or(0, |l| l.panes().len());
         // A browser an agent uses, in another tab of the project: a picture of it in a corner of
         // the tile (a chip in its header when the tile is small).
-        let in_tile: Vec<PaneId> = layout.as_ref().map_or_else(|| pane_id.into_iter().collect(), |l| l.panes());
+        let mut in_tile: Vec<PaneId> = layout.as_ref().map_or_else(|| pane_id.into_iter().collect(), |l| l.panes());
+        // Its Browser panel, as Focus shows it, when the tile has room: its page zoomed out to
+        // keep its layout (the body is the tile less its header and a 4-pt inset).
+        let tile_page = self.tile_panel(project_id, rect.width() - 8.0, rect.height() - TILE_HEADER - 8.0);
+        in_tile.extend(tile_page.map(|(page, _)| page));
+        let panel_fits = crate::ui::browser_panel::tile_fits_panel(rect.width() - 8.0, rect.height() - TILE_HEADER - 8.0);
         let web = self.tile_web(project_id, &in_tile);
         let web_small = rect.width() < 380.0 || rect.height() < 260.0;
         // An agent that finished its turn: what it changed is one click away.
@@ -578,8 +583,23 @@ impl App {
             ui.painter().galley(pos2(r.left() + 6.0 + 13.0 + 4.0, cy - g.size().y / 2.0), g, p.info);
             let tip = format!("{} · {}\n{}", w.address, w.who, t("Click: show the browser in this tile · ⌥-click: in Focus"));
             if resp.on_hover_text(tip).clicked() {
-                self.show_tile_web(project_id, w, ui.input(|i| i.modifiers.alt));
+                self.show_tile_web(project_id, w, ui.input(|i| i.modifiers.alt) || !panel_fits);
             }
+        }
+        // Its page shown smaller than in Focus: by how much (hover says why).
+        if let Some((_, zoom)) = tile_page.filter(|(_, z)| *z < 0.995) {
+            let g = ui.painter().layout_no_wrap(format!("{} {}%", icons::MAGNIFYING_GLASS_MINUS, (zoom * 100.0).round() as i32), small.clone(), p.text_faint);
+            let wd = g.size().x + 10.0;
+            let r = Rect::from_center_size(pos2(right - wd / 2.0, cy), vec2(wd, 22.0));
+            right -= wd + 6.0;
+            let resp = ui.interact(r, egui::Id::new(("tile-zoom", project_id)), Sense::hover());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("tile-zoom:{name}"), r);
+            if resp.hovered() {
+                ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), p.hover);
+            }
+            ui.painter().galley(pos2(r.left() + 5.0, cy - g.size().y / 2.0), g, p.text_faint);
+            resp.on_hover_text(tf("Shown at {}%, laid out as in Focus. Open in Focus to see it at 100%.", &[&((zoom * 100.0).round() as i32).to_string()]));
         }
         // A local server its panes started: ":5173" opens it in the browser.
         let servers = self.project_servers(project_id);
@@ -796,9 +816,21 @@ impl App {
             ui.painter_at(rect.expand(2.0)).rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
             return;
         }
+        // The panel at the right as in Focus (its share of the width), the terminals beside it as
+        // Focus lays them (stacked when Focus stacks them).
+        let (panes_body, panel_rect) = match tile_page {
+            Some(_) => {
+                let share = self.panel_of(project_id).map_or(crate::project::PANEL_SHARE, crate::project::Panel::share);
+                let w = (body.width() * share).round();
+                (Rect::from_min_max(body.min, pos2(body.right() - w - 1.0, body.bottom())), Some(Rect::from_min_max(pos2(body.right() - w, body.top()), body.max)))
+            }
+            None => (body, None),
+        };
+        let stacked = tile_page.is_some() && self.panel_of(project_id).is_some_and(|x| x.stacked);
         let (rects, dividers) = match &layout {
-            Some(l) => l.arrange(body),
-            None => (vec![(pane_id, body)], Vec::new()),
+            Some(l) if stacked => l.stacked().arrange(panes_body),
+            Some(l) => l.arrange(panes_body),
+            None => (vec![(pane_id, panes_body)], Vec::new()),
         };
         // A pane whose agent ran there before a restart: Focus's banner at its top (it is why
         // the project counts as active), the terminal under it.
@@ -831,6 +863,10 @@ impl App {
         for (id, r) in banners {
             self.resume_banner(ui, id, r, true);
         }
+        if let (Some((page, zoom)), Some(r)) = (tile_page, panel_rect) {
+            ui.painter().vline(r.left() - 0.5, r.y_range(), Stroke::new(1.0, p.border.gamma_multiply(0.8)));
+            self.tile_browser(ui, page, r, zoom);
+        }
         if let Some(w) = web.filter(|_| !web_small) {
             self.tile_pip(ui, project_id, body, &w);
         }
@@ -841,25 +877,24 @@ impl App {
     /// A project's browser an agent uses (or used in the last 10 s), out of the tile's view
     /// (`in_tile`): what the tile's corner shows of it.
     fn tile_web(&self, project: ProjectId, in_tile: &[PaneId]) -> Option<TileWeb> {
-        let p = self.project(project)?;
         self.browsers.values().filter(|b| b.project == project && !in_tile.contains(&b.id)).find_map(|b| {
             let d = b.driver.as_ref().filter(|d| !d.paused)?;
             let working = self.browser_jobs.iter().any(|j| j.browser == b.id);
             if !working && d.last.elapsed() > std::time::Duration::from_secs(10) {
                 return None;
             }
-            let tab = p.tab_of(b.id)?;
             let (host, path) = crate::browser::split_url(&b.url);
-            Some(TileWeb { id: b.id, tab, doing: d.doing.clone(), who: d.who.clone(), address: format!("{host}{path}") })
+            Some(TileWeb { id: b.id, doing: d.doing.clone(), who: d.who.clone(), address: format!("{host}{path}") })
         })
     }
 
-    /// Shows a tile's web page: in the tile (its tab), or in Focus (⌥).
+    /// Shows a tile's web page: in the tile (its project's panel, in front), or in Focus (⌥, or
+    /// a tile with no room for the panel).
     fn show_tile_web(&mut self, project: ProjectId, web: &TileWeb, focus: bool) {
         if focus {
             self.actions.push(Action::FocusPane(web.id));
         } else {
-            self.actions.push(Action::GridShowTab(project, web.tab));
+            self.show_page(project, web.id);
         }
     }
 
@@ -904,13 +939,18 @@ impl App {
         let tip = format!("{} · {}\n{}", web.address, web.who, t("Click: show the browser in this tile · ⌥-click: in Focus"));
         if resp.on_hover_text(tip).clicked() {
             let alt = ui.input(|i| i.modifiers.alt);
-            self.show_tile_web(project, web, alt);
+            let fits = crate::ui::browser_panel::tile_fits_panel(body.width(), body.height());
+            self.show_tile_web(project, web, alt || !fits);
         }
     }
 
-    /// A browser pane in a tile: live when the whole of it is in view, else its picture.
-    fn tile_browser(&mut self, ui: &mut Ui, id: PaneId, rect: Rect) {
+    /// A page in a tile (`zoom`: drawn smaller, keeping its layout): live when the whole of it
+    /// is in view, else its picture.
+    fn tile_browser(&mut self, ui: &mut Ui, id: PaneId, rect: Rect, zoom: f32) {
         let p = style::pal(ui);
+        if let Some(b) = self.browsers.get_mut(&id) {
+            b.zoom_want = zoom;
+        }
         let Some(b) = self.browsers.get(&id) else { return };
         let driven = b.driven();
         ui.painter().rect_filled(rect, CornerRadius::ZERO, p.canvas);
@@ -963,7 +1003,7 @@ impl App {
         // A browser pane: its page, live when the whole pane is in view (a web view can't be
         // cut to the Grid's scrolling), else its picture, else what page it holds.
         if self.browsers.contains_key(&pane_id) {
-            self.tile_browser(ui, pane_id, rect);
+            self.tile_browser(ui, pane_id, rect, 1.0);
             return;
         }
         if self.panes.get(&pane_id).is_some_and(|x| x.dormant()) {
@@ -1214,8 +1254,6 @@ fn chip_dot(painter: &egui::Painter, rect: Rect, color: egui::Color32, ring: egu
 /// An agent's page a tile shows in its corner (`App::tile_web`).
 struct TileWeb {
     id: PaneId,
-    /// Its tab in the project.
-    tab: usize,
     doing: String,
     who: String,
     address: String,

@@ -18,7 +18,7 @@ use crate::i18n::{t, tf};
 pub const HEADER_H: f32 = super::sidebar::TOP_H;
 const PANE_HEADER_H: f32 = 28.0;
 /// How far either side of a divider (or the Code drawer's edge) a drag takes it.
-const DIVIDER_GRAB: f32 = 5.0;
+pub(crate) const DIVIDER_GRAB: f32 = 5.0;
 /// Space between a pane's edge and where the terminal's own padding starts (12 px to the text
 /// at the sides, as the design has it).
 const TERM_PAD: f32 = 2.0;
@@ -376,12 +376,43 @@ impl App {
             body
         };
 
+        // ----- the Browser panel beside the panes (the Code drawer closed) --------------------
+        // Terminals side by side that would get too narrow show stacked while it is open; with no
+        // room even so, it floats over them.
+        self.panel_follow(pid);
+        let cell = widget::cell_size(ui.ctx(), self.settings.font_size);
+        let place = match self.project(pid).and_then(|p| p.tab()) {
+            Some(tab) if drawer_edge.is_none() => self.focus_place(pid, &tab.layout, body, cell),
+            _ => crate::project::PanelPlace::without(body),
+        };
+        let told = self.panel_of(pid).is_some_and(|x| x.told_stacked);
+        if let Some(panel) = self.panel_mut(pid) {
+            panel.stacked = place.stacked;
+            panel.floating = place.float;
+            panel.told_stacked |= place.stacked;
+        }
+        if place.stacked && !told {
+            self.toast_with(
+                crate::app::ToastKind::Info,
+                t("Terminals stacked while the browser is open").to_string(),
+                Some((t("Keep Side by Side").to_string(), Action::PanelSideBySide(pid))),
+            );
+        }
+        let panel_full = body;
+        let body = place.panes;
+
         // ----- panes -------------------------------------------------------------------------
         let Some(tab) = self.project(pid).and_then(|p| p.tab()) else {
             return;
         };
         let focused = tab.focused;
-        let (rects, dividers) = tab.layout.arrange(body);
+        let (rects, dividers) = if place.max {
+            (Vec::new(), Vec::new())
+        } else if place.stacked {
+            tab.layout.stacked().arrange(body)
+        } else {
+            tab.layout.arrange(body)
+        };
         let single = rects.len() == 1;
         // Where panes go, for sizing new ones before they start (no resize right after).
         self.last_body = Some(body);
@@ -539,6 +570,21 @@ impl App {
             }
             let line = if dr.hovered() || dr.dragged() { p.accent } else { p.border };
             ui.painter().vline(split_x, full.y_range(), Stroke::new(1.0, line));
+        }
+        // The Browser panel, after the panes: a floating one is drawn over them, and its edge
+        // takes the drag along it.
+        if let Some(r) = place.panel {
+            self.panel_view(ui, pid, r, place.float);
+            if !place.max {
+                self.panel_edge(ui, pid, r.left(), panel_full);
+            }
+            // Floating: a click on the terminals under it puts it away.
+            if place.float
+                && !egui::Popup::is_any_open(ui.ctx())
+                && ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| place.panes.contains(pos) && !r.contains(pos)))
+            {
+                self.hide_panel(pid);
+            }
         }
         self.tab_drop(ui, &tab_rects, strip_shown, &pane_areas, active_tab);
         self.find_bar(ui);

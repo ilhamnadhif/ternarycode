@@ -783,7 +783,16 @@ impl App {
         let mut sizes = Vec::new();
         let tabs: Vec<&crate::project::Tab> = if tab_in_view { p.tab().into_iter().collect() } else { p.tabs.iter().collect() };
         for tab in tabs {
-            let (rects, _) = tab.layout.arrange(body);
+            // Beside the project's Browser panel as Focus lays them (stacked, or not shown under
+            // a panel filling the window).
+            let place = self.focus_place(project, &tab.layout, body, cell);
+            let (rects, _) = if place.max {
+                continue;
+            } else if place.stacked {
+                tab.layout.stacked().arrange(place.panes)
+            } else {
+                tab.layout.arrange(place.panes)
+            };
             let single = rects.len() == 1;
             for (id, r) in rects {
                 sizes.push((id, tc_term::widget::grid_for(ui::focus::term_rect(r, single), cell)));
@@ -897,15 +906,11 @@ impl App {
             project.missing = !saved.path.is_dir();
             let pane_info: HashMap<PaneId, PaneSave> =
                 saved.panes.iter().map(|p| (p.id, p.clone())).collect();
-            for tab in &saved.tabs {
-                let layout = crate::project::from_saved(&tab.layout);
+            // Pages older versions kept in tabs go to the Browser panel.
+            let restored = crate::project::take_out_pages(&saved.tabs, saved.active_tab, |id| pane_info.get(&id).is_some_and(|i| i.browser.is_some()));
+            for (layout, tab) in restored.tabs {
                 for id in layout.panes() {
                     let info = pane_info.get(&id).cloned().unwrap_or_default();
-                    // A browser pane: asleep until it is shown (its page loads then).
-                    if let Some(url) = &info.browser {
-                        self.browsers.insert(id, crate::browser::Browser::new(id, saved.id, url));
-                        continue;
-                    }
                     let cwd = info.cwd.clone().unwrap_or_else(|| saved.path.clone());
                     let size = self.grid_in(&layout, id);
                     // Asleep: a shell starts when the pane is first shown (or typed into).
@@ -949,7 +954,23 @@ impl App {
                     title: None,
                 });
             }
-            project.active_tab = saved.active_tab.min(project.tabs.len() - 1);
+            project.active_tab = restored.active.min(project.tabs.len() - 1);
+            // The panel's pages, asleep until shown: those saved in it (in its order), then those
+            // taken out of tabs.
+            let mut pages: Vec<PaneId> = saved.panes.iter().filter(|p| p.browser.is_some() && !restored.pages.contains(&p.id)).map(|p| p.id).collect();
+            pages.extend(restored.pages.iter().copied());
+            for id in &pages {
+                let info = pane_info.get(id).cloned().unwrap_or_default();
+                let mut b = crate::browser::Browser::new(*id, saved.id, info.browser.as_deref().unwrap_or_default());
+                b.owner = info.browser_owner;
+                self.browsers.insert(*id, b);
+            }
+            if !project.panel.front.is_some_and(|f| pages.contains(&f)) {
+                project.panel.front = restored.pages.last().or(pages.first()).copied();
+            }
+            project.panel.open |= restored.page_in_view;
+            project.panel.pages = pages;
+            project.panel.open &= !project.panel.pages.is_empty();
             if saved.editor_width > 0.0 {
                 self.editors.insert(
                     project.id,
@@ -984,22 +1005,26 @@ impl App {
                 .projects
                 .iter()
                 .map(|p| {
-                    let panes = p
+                    // Its terminals, then its Browser panel's pages (in the panel's order).
+                    let mut panes: Vec<PaneSave> = p
                         .panes()
                         .into_iter()
-                        .filter_map(|id| match (self.panes.get(&id), self.browsers.get(&id)) {
-                            (Some(pane), _) => Some(PaneSave {
-                                id: pane.id,
-                                cwd: Some(pane.cwd.clone()),
-                                title: pane.title.clone(),
-                                agent: pane.last_agent,
-                                preset: pane.preset.clone(),
-                                browser: None,
-                            }),
-                            (None, Some(b)) => Some(PaneSave { id, browser: Some(b.url.clone()), ..Default::default() }),
-                            _ => None,
+                        .filter_map(|id| self.panes.get(&id))
+                        .map(|pane| PaneSave {
+                            id: pane.id,
+                            cwd: Some(pane.cwd.clone()),
+                            title: pane.title.clone(),
+                            agent: pane.last_agent,
+                            preset: pane.preset.clone(),
+                            ..Default::default()
                         })
                         .collect();
+                    panes.extend(p.panel.pages.iter().filter_map(|id| self.browsers.get(id)).map(|b| PaneSave {
+                        id: b.id,
+                        browser: Some(b.url.clone()),
+                        browser_owner: b.owner,
+                        ..Default::default()
+                    }));
                     let mut saved = p.save(panes);
                     saved.editor_width = self.editors.get(&p.id).map_or(0.0, |e| e.width);
                     saved
@@ -1360,7 +1385,16 @@ impl App {
     // ----- focus ------------------------------------------------------------------------------
 
     pub fn focus_pane(&mut self, pane: PaneId) {
-        let Some(project) = self.panes.get(&pane).map(|p| p.project).or_else(|| self.browsers.get(&pane).map(|b| b.project)) else {
+        // A page: its project's Browser panel shows it, and it takes the keyboard.
+        if let Some(project) = self.browsers.get(&pane).map(|b| b.project) {
+            self.active = Some(project);
+            self.show_page(project, pane);
+            self.show_focus();
+            self.focus_request = Some(pane);
+            self.mark_dirty();
+            return;
+        }
+        let Some(project) = self.panes.get(&pane).map(|p| p.project) else {
             return;
         };
         if let Some(p) = self.project_mut(project)
@@ -1923,7 +1957,7 @@ impl App {
         self.git_again.remove(&id);
         self.git_waiting.retain(|x| *x != id);
         self.conflict_warned.remove(&id);
-        for pane in project.panes() {
+        for pane in project.panes().into_iter().chain(project.panel.pages.iter().copied()) {
             self.drop_pane(pane);
         }
         if self.active == Some(id) {
@@ -1936,7 +1970,7 @@ impl App {
         self.mark_dirty();
     }
 
-    fn drop_pane(&mut self, id: PaneId) {
+    pub(crate) fn drop_pane(&mut self, id: PaneId) {
         if let Some(mut pane) = self.panes.remove(&id) {
             pane.hang_up();
         }
@@ -2007,6 +2041,11 @@ impl App {
     }
 
     fn close_pane(&mut self, ctx: &egui::Context, id: PaneId) {
+        // A page of a Browser panel.
+        if self.browsers.contains_key(&id) {
+            self.close_page(id);
+            return;
+        }
         let Some(project_id) = self.panes.get(&id).map(|p| p.project).or_else(|| self.browsers.get(&id).map(|b| b.project)) else {
             return;
         };
@@ -2676,6 +2715,11 @@ impl App {
                     self.dispatch(ctx, Action::CloseFile(i));
                     return;
                 }
+                // A page with the keyboard: that page.
+                if let Some(id) = self.browser_focus.filter(|id| self.browsers.contains_key(id)) {
+                    self.close_page(id);
+                    return;
+                }
                 if let Some(id) = self.target_pane() {
                     match self.panes.get(&id).and_then(Pane::busy_with) {
                         Some(what) => self.dialog = Some(Dialog::ConfirmClosePane(id, what)),
@@ -2684,6 +2728,11 @@ impl App {
                 }
             }
             Action::ClosePaneId(id) => self.close_pane(ctx, id),
+            Action::PanelSideBySide(project) => {
+                if let Some(panel) = self.panel_mut(project) {
+                    panel.side_by_side = true;
+                }
+            }
             Action::FocusPane(id) => self.focus_pane(id),
             Action::GridShowTab(project, index) => {
                 let chosen = self.project(project).and_then(|p| {

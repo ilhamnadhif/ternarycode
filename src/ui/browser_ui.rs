@@ -7,14 +7,12 @@ use std::time::Duration;
 
 use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 use tc_core::PaneId;
-use tc_term::layout::{Layout, SplitDir};
 
 use super::{icons, kit, style};
 use crate::actions::Action;
 use crate::app::App;
 use crate::browser::{Answer, Ask, Browser, Driver, Event};
 use crate::i18n::{t, tf};
-use crate::project::Tab;
 
 /// The toolbar at the top of a browser pane (its header, also in a split).
 pub const BAR_H: f32 = 36.0;
@@ -535,7 +533,6 @@ impl App {
     fn browser_menu(&mut self, ui: &mut Ui, id: PaneId) {
         kit::menu_body(ui);
         let url = self.browsers.get(&id).map(|b| b.url.clone()).unwrap_or_default();
-        let shared = self.browsers.get(&id).and_then(|b| self.project(b.project)).and_then(|p| p.tab_of(id).map(|i| p.tabs[i].layout.panes().len() > 1)).unwrap_or(false);
         if ui.add_enabled_ui(!url.is_empty(), |ui| kit::menu_item(ui, Some(icons::COPY), t("Copy Address"), None, false)).inner.clicked() {
             ui.ctx().copy_text(url.clone());
             ui.close();
@@ -544,12 +541,8 @@ impl App {
             crate::platform::open_url(&url);
             ui.close();
         }
-        if shared && kit::menu_item(ui, Some(icons::ARROWS_OUT_SIMPLE), t("Move to New Tab"), None, false).clicked() {
-            self.actions.push(Action::PaneToTab(id));
-            ui.close();
-        }
         kit::menu_sep(ui);
-        if kit::menu_item(ui, Some(icons::X), t("Close Pane"), kit::keys(&Action::ClosePane), true).clicked() {
+        if kit::menu_item(ui, Some(icons::X), t("Close Page"), kit::keys(&Action::ClosePane), true).clicked() {
             self.actions.push(Action::ClosePaneId(id));
             ui.close();
         }
@@ -564,16 +557,15 @@ impl App {
     /// What the Browser button in the top bar says for the project in view.
     pub fn browser_button_state(&self) -> Option<WebButton> {
         let project = self.active?;
-        let p = self.project(project)?;
-        let in_view = p.tab().map(|t| t.layout.panes()).unwrap_or_default();
-        let mine: Vec<&Browser> = self.browsers.values().filter(|b| b.project == project).collect();
-        if let Some(d) = mine.iter().find_map(|b| b.driver.as_ref().filter(|d| !d.paused)) {
-            return Some(WebButton::Agent(d.who.clone()));
+        let panel = self.panel_of(project)?;
+        let shown = self.panel_page(project).is_some();
+        if let Some(d) = panel.pages.iter().filter_map(|id| self.browsers.get(id)).find_map(|b| b.driver.as_ref().filter(|d| !d.paused)) {
+            return Some(WebButton::Agent(d.who.clone(), shown));
         }
-        if mine.iter().any(|b| in_view.contains(&b.id)) {
+        if shown {
             return Some(WebButton::InView);
         }
-        if let Some(b) = mine.iter().max_by_key(|b| b.last_seen) {
+        if let Some(b) = panel.front.or(panel.pages.last().copied()).and_then(|id| self.browsers.get(&id)) {
             return Some(WebButton::Elsewhere(b.label()));
         }
         let server = self.project_servers(project).first().map(|(_, s)| crate::browser::split_url(&s.url).0);
@@ -588,13 +580,14 @@ impl App {
         let keys = kit::keys(&Action::ShowBrowser).unwrap_or_default();
         let head = format!("{}   {keys}", t("Browser"));
         let tip = match &state {
-            WebButton::None(Some(host)) => format!("{head}\n{}", tf("Opens {} beside this terminal", &[host])),
-            WebButton::None(None) => format!("{head}\n{}", t("Opens an empty browser beside this terminal")),
-            WebButton::Elsewhere(label) => format!("{head}\n{}", tf("Shows the browser (tab “{}”)", &[label])),
-            WebButton::InView => format!("{head}\n{}", t("Type another address")),
-            WebButton::Agent(who) => format!("{}\n{}", tf("{} is using the browser", &[who]), t("Click to watch it · clicking or typing in it takes it over")),
+            WebButton::None(Some(host)) => format!("{head}\n{}", tf("Opens {} beside the terminals", &[host])),
+            WebButton::None(None) => format!("{head}\n{}", t("Opens an empty page beside the terminals")),
+            WebButton::Elsewhere(label) => format!("{head}\n{}", tf("Shows the Browser panel (“{}”)", &[label])),
+            WebButton::InView => format!("{head}\n{}", t("Hides the Browser panel · ⌘L: type an address")),
+            WebButton::Agent(who, false) => format!("{}\n{}", tf("{} is using the browser", &[who]), t("Click to watch it · clicking or typing in it takes it over")),
+            WebButton::Agent(who, true) => format!("{}\n{}", tf("{} is using the browser", &[who]), t("Hides the Browser panel · the agent keeps working")),
         };
-        let tip = if self.pages_here() { format!("{tip}\n{}", t("⌥-click: a new browser tab")) } else { tip };
+        let tip = if self.pages_here() { format!("{tip}\n{}", t("⌥-click: a new page")) } else { tip };
         let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
         let resp = resp.on_hover_text(tip);
         #[cfg(debug_assertions)]
@@ -602,7 +595,7 @@ impl App {
         let painter = ui.painter();
         let radius = CornerRadius::same(style::RADIUS);
         let (fill, color) = match state {
-            WebButton::Agent(_) => (Some(style::tint(p.info, ui.visuals().dark_mode)), p.info),
+            WebButton::Agent(..) => (Some(style::tint(p.info, ui.visuals().dark_mode)), p.info),
             WebButton::InView => (Some(p.accent_soft), p.accent_text),
             _ if resp.hovered() => (Some(p.hover), p.text),
             _ => (None, p.text_muted),
@@ -611,7 +604,7 @@ impl App {
             painter.rect_filled(rect, radius, if resp.hovered() { f.gamma_multiply(1.4) } else { f });
         }
         painter.text(rect.center(), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(15.0), color);
-        if matches!(state, WebButton::Agent(_)) {
+        if matches!(state, WebButton::Agent(..)) {
             let dot = pos2(rect.right() - 6.0, rect.top() + 6.0);
             painter.circle_filled(dot, 3.5, p.chrome);
             painter.circle_filled(dot, 2.5, p.info);
@@ -622,129 +615,78 @@ impl App {
         }
     }
 
-    /// The Browser button and ⇧⌘B (`address`: ⌘L): shows the project's browser, or makes one.
-    /// In view: its address field. In another tab: that tab (the browser used last), the page
-    /// taking the keyboard (or the address field), unless an agent uses it (then only shown).
-    /// None: one beside the pane in view (a tab of its own when that is narrow), at the
-    /// project's dev server, else empty with the address field taking the keyboard.
+    /// The Browser button and ⇧⌘B: shows the project's Browser panel, or hides it when it shows;
+    /// `address` (⌘L): its page's address field (the panel shown first). With no page yet, one
+    /// at the project's dev server, else empty with its address field taking the keyboard.
     pub fn show_browser(&mut self, address: bool) {
         let Some(project) = self.command_project() else { return };
         let server = self.project_servers(project).first().map(|(_, s)| s.url.clone());
         if !cfg!(target_os = "macos") {
-            // Pages show in browser panes on macOS only: the default browser has the page.
+            // Pages show in TernaryCode on macOS only: the default browser has the page.
             match server {
                 Some(url) => crate::platform::open_url(&url),
                 None => self.toast(t("Browser panes show pages on macOS for now.").to_string()),
             }
             return;
         }
-        let in_view: Vec<PaneId> = self.project(project).and_then(|p| p.tab()).map(|t| t.layout.panes()).unwrap_or_default();
-        let shown = in_view.iter().copied().find(|id| self.browsers.contains_key(id));
-        if let Some(id) = shown {
-            self.release_page_keyboard();
-            self.browser_edit = Some(id);
-            self.show_focus();
-            return;
-        }
-        let elsewhere = self.browsers.values().filter(|b| b.project == project).max_by_key(|b| b.last_seen).map(|b| (b.id, b.driven()));
-        if let Some((id, driven)) = elsewhere {
-            if let Some(p) = self.project_mut(project)
-                && let Some(tab) = p.tab_of(id)
-            {
-                p.active_tab = tab;
-                if !driven {
-                    p.tabs[tab].focused = id;
-                }
-            }
+        let in_focus = self.view == tc_core::model::View::Focus && self.active == Some(project);
+        if let Some(front) = self.panel_page(project).filter(|_| in_focus) {
             if address {
                 self.release_page_keyboard();
-                self.browser_edit = Some(id);
-            } else if !driven {
-                self.focus_request = Some(id);
+                self.browser_edit = Some(front);
+            } else {
+                self.hide_panel(project);
             }
-            self.show_focus();
-            self.mark_dirty();
             return;
         }
-        let url = if address { String::new() } else { server.unwrap_or_default() };
-        self.browser_beside(project, &url);
-    }
-
-    /// A new browser pane of `project` at `url`, beside the pane in view when that is at least
-    /// 900 points wide, else in a tab of its own. It takes the keyboard: its page, or its address
-    /// field when it has no address.
-    fn browser_beside(&mut self, project: tc_core::ProjectId, url: &str) {
-        let id = self.new_id();
-        self.browsers.insert(id, Browser::new(id, project, url));
-        let body = self.last_body;
-        let Some(p) = self.project_mut(project) else { return };
-        let room = p
-            .tab()
-            .zip(body)
-            .and_then(|(t, body)| t.layout.arrange(body).0.into_iter().find(|(pane, _)| *pane == t.focused).map(|(_, r)| r.width()))
-            .is_some_and(|w| w >= 900.0);
-        match p.tab_mut() {
-            Some(tab) if room => {
-                let current = tab.focused;
-                tab.layout.split(current, id, SplitDir::Horizontal);
-                tab.focused = id;
-            }
-            _ => {
-                p.tabs.push(Tab { layout: Layout::Pane(id), focused: id, title: None });
-                p.active_tab = p.tabs.len() - 1;
-            }
-        }
-        self.release_page_keyboard();
-        if url.is_empty() {
-            self.browser_edit = Some(id);
-        } else {
-            self.focus_request = Some(id);
+        let page = self.panel_of(project).and_then(|p| p.front.filter(|f| p.pages.contains(f)).or(p.pages.last().copied()));
+        let page = match page {
+            Some(id) => id,
+            None => self.add_page(project, if address { "" } else { server.as_deref().unwrap_or_default() }, None),
+        };
+        self.active = Some(project);
+        self.show_page(project, page);
+        let empty = self.browsers.get(&page).is_some_and(|b| b.url.is_empty());
+        if address || empty {
+            self.release_page_keyboard();
+            self.browser_edit = Some(page);
         }
         self.show_focus();
-        self.mark_dirty();
     }
 
     /// ⌘R: the page in view loads again (the one with the keyboard first).
     pub fn reload_browser(&mut self) {
-        let in_view: Vec<PaneId> = self.active_project().and_then(|p| p.tab()).map(|t| t.layout.panes()).unwrap_or_default();
-        let focused = self.active_project().and_then(|p| p.tab()).map(|t| t.focused);
-        let id = self
-            .browser_focus
-            .filter(|id| in_view.contains(id))
-            .or(focused.filter(|id| self.browsers.contains_key(id)))
-            .or_else(|| in_view.iter().copied().find(|id| self.browsers.contains_key(id)));
+        let shown = self.active.and_then(|p| self.panel_page(p));
+        let id = self.browser_focus.filter(|id| self.browsers.contains_key(id)).or(shown);
         if let Some(b) = id.and_then(|id| self.browsers.get(&id)) {
             b.reload();
         }
     }
 
-    /// A new tab with a browser pane, at the project's local server when it has one (else its
-    /// address field takes the keyboard).
+    /// A new page of the user's in the project's panel, at its local server when it has one
+    /// (else its address field takes the keyboard).
     pub fn new_browser_tab(&mut self) {
         let Some(project) = self.command_project() else { return };
         let url = self.project_servers(project).first().map(|(_, s)| s.url.clone()).unwrap_or_default();
         self.browser_tab_at(project, &url);
     }
 
-    /// A new tab of `project` with a browser pane at `url` ("": its address field takes the
+    /// A new page of the user's in `project`'s panel at `url` ("": its address field takes the
     /// keyboard), in view.
     pub fn browser_tab_at(&mut self, project: tc_core::ProjectId, url: &str) {
-        let url = url.to_string();
-        let id = self.new_id();
-        self.browsers.insert(id, Browser::new(id, project, &url));
-        let Some(p) = self.project_mut(project) else { return };
-        p.tabs.push(Tab { layout: Layout::Pane(id), focused: id, title: None });
-        p.active_tab = p.tabs.len() - 1;
+        let id = self.add_page(project, url, None);
+        self.active = Some(project);
+        self.show_page(project, id);
         if url.is_empty() {
+            self.release_page_keyboard();
             self.browser_edit = Some(id);
         }
         self.show_focus();
-        self.mark_dirty();
     }
 
-    /// Opens `url` in the project's browser pane: the one in the tab in view, else another of
-    /// the project's; with none, a new one beside the pane in view (its tab holding one pane,
-    /// and room), else in a tab of its own. The keyboard stays where it is.
+    /// Opens `url` in the project's Browser panel: in the user's page of the same site (host
+    /// and port) when there is one, else in a new page. Agents' pages are theirs. The keyboard
+    /// stays where it is.
     pub fn open_web_here(&mut self, url: &str) {
         let Some(project) = self.command_project().or(self.active) else {
             crate::platform::open_url(url);
@@ -753,39 +695,24 @@ impl App {
         self.open_web_in(project, url, true);
     }
 
-    /// Opens `url` in `project`'s browser pane, as [`App::open_web_here`]; `show`: the project
-    /// comes into view (else its page waits there, the sidebar showing it has one).
+    /// Opens `url` in `project`'s panel, as [`App::open_web_here`]; `show`: the project comes
+    /// into view (else its page waits there, the sidebar showing it has one).
     pub fn open_web_in(&mut self, project: tc_core::ProjectId, url: &str, show: bool) {
-        let in_view: Vec<PaneId> = self.project(project).and_then(|p| p.tab()).map(|t| t.layout.panes()).unwrap_or_default();
-        let all: Vec<PaneId> = self.project(project).map(|p| p.panes()).unwrap_or_default();
-        let existing = in_view.iter().chain(all.iter()).find(|id| self.browsers.contains_key(id)).copied();
-        if let Some(id) = existing {
-            if let Some(b) = self.browsers.get_mut(&id) {
-                b.navigate(url);
-            }
-            if let Some(p) = self.project_mut(project)
-                && let Some(tab) = p.tab_of(id)
-            {
-                p.active_tab = tab;
-            }
-        } else {
-            let id = self.new_id();
-            let mut b = Browser::new(id, project, url);
-            b.address = url.to_string();
-            self.browsers.insert(id, b);
-            let wide = self.last_body.is_some_and(|r| r.width() >= 900.0);
-            let Some(p) = self.project_mut(project) else { return };
-            match p.tab_mut() {
-                Some(tab) if tab.layout.panes().len() == 1 && wide => {
-                    let current = tab.focused;
-                    tab.layout.split(current, id, SplitDir::Horizontal);
+        let site = crate::browser::split_url(&crate::browser::normalize(url)).0;
+        let pages = self.panel_of(project).map(|p| p.pages.clone()).unwrap_or_default();
+        let same = pages.iter().copied().find(|id| {
+            self.browsers.get(id).is_some_and(|b| b.owner.is_none() && !site.is_empty() && crate::browser::split_url(&b.url).0 == site)
+        });
+        let id = match same {
+            Some(id) => {
+                if let Some(b) = self.browsers.get_mut(&id) {
+                    b.navigate(url);
                 }
-                _ => {
-                    p.tabs.push(Tab { layout: Layout::Pane(id), focused: id, title: None });
-                    p.active_tab = p.tabs.len() - 1;
-                }
+                id
             }
-        }
+            None => self.add_page(project, &crate::browser::normalize(url), None),
+        };
+        self.show_page(project, id);
         if show {
             if self.active != Some(project) {
                 self.actions.push(Action::SelectProject(project));
@@ -851,8 +778,8 @@ impl App {
             for e in b.take_events() {
                 match e {
                     Event::Focused => focused = Some(b.id),
-                    // A link to a new window: a new browser tab of the project; an agent's page
-                    // keeps it (the agent follows it there).
+                    // A link to a new window: a new page of the user's in the panel; an agent's
+                    // page keeps it (the agent follows it there).
                     Event::OpenHere(url) if b.driven() => b.navigate(&url),
                     Event::OpenHere(url) => new_tabs.push((b.project, url)),
                     Event::Url(_) => moved = true,
@@ -886,12 +813,6 @@ impl App {
                     m.surrender_focus(f);
                 }
             });
-            if let Some(project) = self.browsers.get(&id).map(|b| b.project)
-                && let Some(p) = self.project_mut(project)
-                && let Some(tab) = p.tab_of(id)
-            {
-                p.tabs[tab].focused = id;
-            }
         }
         if moved {
             self.mark_dirty();
@@ -972,6 +893,7 @@ impl App {
                         b.placed = Some(*rect);
                         b.shown = b.view.is_some();
                         b.dimmed = false;
+                        b.zoom = 1.0;
                     } else if b.view.is_some() {
                         if b.placed != Some(*rect)
                             && let Some(v) = &b.view
@@ -985,6 +907,13 @@ impl App {
                             let _ = v.set_visible(true);
                             b.shown = true;
                         }
+                    }
+                    // Zoomed out in a Grid tile (the layout of Focus, smaller), as is in Focus.
+                    if (b.zoom - b.zoom_want).abs() > 0.004
+                        && let Some(v) = &b.view
+                    {
+                        let _ = v.zoom(f64::from(b.zoom_want));
+                        b.zoom = b.zoom_want;
                     }
                 }
                 _ if in_use.contains(&b.id) => {
@@ -1088,10 +1017,10 @@ impl App {
 pub enum WebButton {
     /// No browser yet: a click opens one (at this dev server, when there is one).
     None(Option<String>),
-    /// One in another tab (its label): a click shows it.
+    /// Pages, the panel hidden (the page in front's label): a click shows it.
     Elsewhere(String),
-    /// One in the tab in view: a click goes to its address field.
+    /// The panel shows: a click hides it.
     InView,
-    /// An agent uses it (who).
-    Agent(String),
+    /// An agent uses it (who; whether the panel shows).
+    Agent(String, bool),
 }

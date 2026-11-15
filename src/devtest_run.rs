@@ -199,12 +199,37 @@ impl App {
                 let text = self.active.and_then(|id| self.editors.get(&id)).and_then(|e| e.file()).map(|f| f.text.clone()).unwrap_or_default();
                 Some(text.contains(&devtest::unescape(arg))).filter(|ok| *ok)
             }
-            // `wait-browser TEXT`: a browser pane in the tab in view is at an address, or shows a
-            // title, holding TEXT.
+            // `wait-browser TEXT`: the page in front of the open project's Browser panel is at an
+            // address, or shows a title, holding TEXT.
             "wait-browser" => {
-                let in_view = self.active_project().and_then(|p| p.tab()).map(|t| t.layout.panes()).unwrap_or_default();
+                let front = self.active_project().and_then(|p| p.panel.front);
                 let at = |b: &crate::browser::Browser| b.url.contains(arg.trim()) || b.title.contains(arg.trim());
-                Some(in_view.iter().filter_map(|id| self.browsers.get(id)).any(at)).filter(|ok| *ok)
+                Some(front.and_then(|id| self.browsers.get(&id)).is_some_and(at)).filter(|ok| *ok)
+            }
+            // `wait-pages 3,4*`: the open project's panel holds these pages, in this order, the one
+            // marked * in front ("-": none).
+            "wait-pages" => {
+                let now = self.active_project().map(|p| {
+                    let v: Vec<String> = p.panel.pages.iter().map(|id| format!("{id}{}", if p.panel.front == Some(*id) { "*" } else { "" })).collect();
+                    if v.is_empty() { "-".to_string() } else { v.join(",") }
+                });
+                Some(now.as_deref() == Some(arg.trim())).filter(|ok| *ok)
+            }
+            // `wait-panel shown|hidden|stacked|float|max`: how the open project's panel shows in
+            // Focus ("stacked": shown, the terminals stacked beside it).
+            "wait-panel" => {
+                let id = self.active?;
+                let p = self.panel_of(id)?;
+                let shown = self.panel_page(id).is_some();
+                let ok = match arg.trim() {
+                    "hidden" => !shown,
+                    "shown" => shown && !p.floating && !p.max,
+                    "stacked" => shown && p.stacked,
+                    "float" => shown && p.floating,
+                    "max" => shown && p.max,
+                    _ => false,
+                };
+                Some(ok).filter(|ok| *ok)
             }
             "wait-review" => {
                 let r = self.review.as_ref();
@@ -581,7 +606,7 @@ impl App {
                 self.devtest.check(!disk.contains(&want), &format!("expect-not-file {path} lacks {want:?}"));
             }
             "wait-screen" | "wait-status" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
-            | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-find" | "wait-caret"
+            | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-panel" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
             | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" => {
                 WAIT.with(|w| {

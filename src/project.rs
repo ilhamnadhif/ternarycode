@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use tc_core::model::{ProjectSave, SavedDir, SavedLayout, TabSave, WorktreeSave, WorktreeSetup};
 use tc_core::{PaneId, ProjectId};
+use eframe::egui::Rect;
 use tc_term::layout::{Layout, SplitDir};
 
 pub struct Tab {
@@ -40,6 +41,122 @@ pub struct Project {
     pub missing: bool,
     /// Its merged branch was offered for removal already (once per run of the app).
     pub merge_offered: bool,
+    /// Its Browser panel: its pages (one per agent, and the user's), at the right of Focus.
+    pub panel: Panel,
+}
+
+/// A project's Browser panel: at the right of the terminals in Focus, like the Code drawer
+/// (one of the two shows). Each agent has a page of its own in it, and so does the user; the
+/// page in front follows the terminal the user picks.
+#[derive(Clone, Debug, Default)]
+pub struct Panel {
+    /// Its pages (browser ids), in the order of their tabs.
+    pub pages: Vec<PaneId>,
+    /// The page in front.
+    pub front: Option<PaneId>,
+    /// Shown (in Focus, and in a tile big enough).
+    pub open: bool,
+    /// Share of the area beside the sidebar it takes (0: the default).
+    pub width: f32,
+    /// It fills the area of the terminals for a while.
+    pub max: bool,
+    /// The user kept the terminals side by side, squeezed (no stacking for this project).
+    pub side_by_side: bool,
+    /// The terminals were shown stacked for it, and the user was told (once per run).
+    pub told_stacked: bool,
+    /// The terminal last seen focused (the page in front follows a change of it).
+    pub seen_focus: Option<PaneId>,
+    /// How the terminals were laid beside it the last time Focus showed it (a tile does the same),
+    /// and whether it floated over them.
+    pub stacked: bool,
+    pub floating: bool,
+    /// The width its page had the last time Focus showed it (a tile zooms its page from it).
+    pub focus_width: f32,
+}
+
+/// The share of the area a panel takes by default, and its bounds.
+pub const PANEL_SHARE: f32 = 0.45;
+/// The least width a panel gets (a page narrower than this is a phone's).
+pub const PANEL_MIN: f32 = 440.0;
+
+/// Where Focus lays out a tab's panes and its project's panel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelPlace {
+    /// Where the panes go.
+    pub panes: Rect,
+    /// Where the panel goes (none: not shown).
+    pub panel: Option<Rect>,
+    /// The panes show stacked (one above the other) while the panel is open.
+    pub stacked: bool,
+    /// The panel floats over the panes (no room beside them).
+    pub float: bool,
+    /// The panel fills the area (the panes are not shown).
+    pub max: bool,
+}
+
+impl PanelPlace {
+    pub fn without(body: Rect) -> Self {
+        Self { panes: body, panel: None, stacked: false, float: false, max: false }
+    }
+}
+
+/// Places a panel in `body` beside `layout`'s panes. `room(rects)`: the panes laid out so each
+/// gets what a terminal needs. Side by side when they have it; else stacked (when they are
+/// side by side and the user did not keep them so) if that gives it; else, the user's choice,
+/// side by side squeezed; else the panel floats over them.
+pub fn place_panel(body: Rect, panel: &Panel, layout: &Layout, room: impl Fn(&[(PaneId, Rect)]) -> bool) -> PanelPlace {
+    let none = PanelPlace::without(body);
+    if panel.shown().is_none() || body.width() < 1.0 {
+        return none;
+    }
+    if panel.max {
+        return PanelPlace { panel: Some(body), max: true, ..none };
+    }
+    let w = (body.width() * panel.share()).round().max(PANEL_MIN).min(body.width());
+    let x = body.right() - w;
+    let right = Rect::from_min_max(eframe::egui::pos2(x, body.top()), body.max);
+    let rest = Rect::from_min_max(body.min, eframe::egui::pos2(x - 1.0, body.bottom()));
+    let beside = PanelPlace { panes: rest, panel: Some(right), ..none };
+    if rest.width() >= 1.0 {
+        if room(&layout.arrange(rest).0) {
+            return beside;
+        }
+        if layout.has_columns() && !panel.side_by_side && room(&layout.stacked().arrange(rest).0) {
+            return PanelPlace { stacked: true, ..beside };
+        }
+        if panel.side_by_side && rest.width() >= PANEL_MIN / 2.0 {
+            return beside;
+        }
+    }
+    PanelPlace { panel: Some(right), float: true, ..none }
+}
+
+impl Panel {
+    /// The share of the area it takes.
+    pub fn share(&self) -> f32 {
+        if self.width > 0.0 { self.width.clamp(0.25, 0.75) } else { PANEL_SHARE }
+    }
+
+    /// Shown with a page in front.
+    pub fn shown(&self) -> Option<PaneId> {
+        self.front.filter(|f| self.open && self.pages.contains(f))
+    }
+
+    /// Takes a page away; the one beside it comes to the front if it was. Returns whether it was
+    /// there. With no page left the panel closes.
+    pub fn remove(&mut self, id: PaneId) -> bool {
+        let Some(i) = self.pages.iter().position(|p| *p == id) else { return false };
+        self.pages.remove(i);
+        if self.front == Some(id) {
+            self.front = self.pages.get(i.min(self.pages.len().saturating_sub(1))).copied();
+        }
+        if self.pages.is_empty() {
+            self.front = None;
+            self.open = false;
+            self.max = false;
+        }
+        true
+    }
 }
 
 /// The kind of a project, from the files at its top (the sidebar shows its icon).
@@ -214,6 +331,12 @@ impl Project {
             sites: saved.browser_sites.clone(),
             missing: false,
             merge_offered: false,
+            panel: saved.browser_panel.as_ref().map_or_else(Panel::default, |b| Panel {
+                open: b.open,
+                width: b.width,
+                front: b.front,
+                ..Panel::default()
+            }),
         }
     }
 
@@ -274,6 +397,11 @@ impl Project {
             folded: self.folded,
             new_worktree: self.new_worktree,
             browser_sites: self.sites.clone(),
+            browser_panel: (!self.panel.pages.is_empty() || self.panel.width > 0.0).then_some(tc_core::model::PanelSave {
+                open: self.panel.open && !self.panel.pages.is_empty(),
+                width: self.panel.width,
+                front: self.panel.front,
+            }),
         }
     }
 }
@@ -336,6 +464,45 @@ pub fn name_order(a: &str, b: &str) -> std::cmp::Ordering {
             }
         }
     }
+}
+
+/// A project's saved tabs with the browser pages older versions kept in them (`is_page`) taken
+/// out: they are its Browser panel's pages now.
+pub struct Restored<'a> {
+    /// The tabs left (a tab that held only pages goes), each with what was saved of it.
+    pub tabs: Vec<(Layout, &'a TabSave)>,
+    /// The pages taken out, in the order found.
+    pub pages: Vec<PaneId>,
+    /// The tab in view among those left (the one before it when it went).
+    pub active: usize,
+    /// A page was in the tab in view: the panel shows.
+    pub page_in_view: bool,
+}
+
+pub fn take_out_pages(tabs: &[TabSave], active: usize, is_page: impl Fn(PaneId) -> bool) -> Restored<'_> {
+    let mut out = Restored { tabs: Vec::new(), pages: Vec::new(), active: 0, page_in_view: false };
+    for (i, tab) in tabs.iter().enumerate() {
+        let mut layout = from_saved(&tab.layout);
+        let mut empty = false;
+        for id in layout.panes() {
+            if !is_page(id) {
+                continue;
+            }
+            out.pages.push(id);
+            out.page_in_view |= i == active;
+            if !layout.remove(id) {
+                empty = true;
+            }
+        }
+        if empty {
+            continue;
+        }
+        if i <= active {
+            out.active = out.tabs.len();
+        }
+        out.tabs.push((layout, tab));
+    }
+    out
 }
 
 pub fn to_saved(l: &Layout) -> SavedLayout {
@@ -461,6 +628,88 @@ fn bytes_path(b: &[u8]) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pages_in_tabs_move_out_of_them() {
+        let tab = |layout: SavedLayout, focused: PaneId| TabSave { layout, focused, title: None };
+        let split = |a: PaneId, b: PaneId| SavedLayout::Split { dir: SavedDir::Horizontal, ratio: 0.5, a: Box::new(SavedLayout::Pane(a)), b: Box::new(SavedLayout::Pane(b)) };
+        // Tab 0: a terminal beside a page; tab 1: a page alone; tab 2: a terminal.
+        let tabs = [tab(split(1, 2), 2), tab(SavedLayout::Pane(3), 3), tab(SavedLayout::Pane(4), 4)];
+        let page = |id: PaneId| id == 2 || id == 3;
+        let r = take_out_pages(&tabs, 2, page);
+        assert_eq!(r.pages, [2, 3]);
+        assert_eq!(r.tabs.iter().map(|(l, _)| l.panes()).collect::<Vec<_>>(), [vec![1], vec![4]]);
+        assert_eq!(r.active, 1, "the tab in view keeps its place among those left");
+        assert!(!r.page_in_view);
+        // The page's own tab was in view: the tab before it is, and the panel shows.
+        let r = take_out_pages(&tabs, 1, page);
+        assert_eq!(r.active, 0);
+        assert!(r.page_in_view);
+        // Nothing but pages: no tab left (the caller makes a terminal).
+        let r = take_out_pages(&tabs[1..2], 0, page);
+        assert!(r.tabs.is_empty());
+        assert_eq!(r.pages, [3]);
+        // No pages: all as saved.
+        let r = take_out_pages(&tabs, 2, |_| false);
+        assert_eq!(r.tabs.len(), 3);
+        assert_eq!(r.active, 2);
+        assert!(r.pages.is_empty());
+    }
+
+    #[test]
+    fn a_panel_closes_with_its_last_page() {
+        let mut p = Panel { pages: vec![5, 6, 7], front: Some(6), open: true, ..Panel::default() };
+        assert_eq!(p.shown(), Some(6));
+        assert!(p.remove(6));
+        assert_eq!(p.front, Some(7), "the page after it comes to the front");
+        assert!(p.remove(7));
+        assert_eq!(p.front, Some(5));
+        assert!(!p.remove(9));
+        assert!(p.remove(5));
+        assert_eq!((p.front, p.open, p.shown()), (None, false, None));
+        assert!((Panel::default().share() - PANEL_SHARE).abs() < f32::EPSILON);
+        assert!((Panel { width: 0.9, ..Panel::default() }.share() - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_panel_is_placed_without_squeezing_the_terminals() {
+        use eframe::egui::{pos2, vec2};
+        let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(1040.0, 700.0));
+        let shown = Panel { pages: vec![9], front: Some(9), open: true, ..Panel::default() };
+        // A terminal needs 470 wide and 300 high here.
+        let room = |rects: &[(PaneId, Rect)]| rects.iter().all(|(_, r)| r.width() >= 470.0 && r.height() >= 300.0);
+        let one = Layout::Pane(1);
+        let mut two = Layout::Pane(1);
+        two.split(1, 2, SplitDir::Horizontal);
+        let mut four = two.clone();
+        four.split(1, 3, SplitDir::Vertical);
+        four.split(2, 4, SplitDir::Vertical);
+
+        // Hidden, or no page: the panes have it all.
+        assert_eq!(place_panel(body, &Panel::default(), &one, room), PanelPlace::without(body));
+        // One terminal: beside it, 45%.
+        let p = place_panel(body, &shown, &one, room);
+        assert_eq!(p.panel.map(|r| r.width()), Some(468.0));
+        assert!(!p.stacked && !p.float && p.panes.right() < p.panel.unwrap().left());
+        // Two side by side: they don't fit beside it, stacked they do.
+        let p = place_panel(body, &shown, &two, room);
+        assert!(p.stacked && !p.float);
+        // Kept side by side by the user: squeezed, as asked.
+        let kept = Panel { side_by_side: true, ..shown.clone() };
+        let p = place_panel(body, &kept, &two, room);
+        assert!(!p.stacked && !p.float && p.panel.is_some());
+        // Four (2 × 2): stacked they would be too low; the panel floats over them.
+        let p = place_panel(body, &shown, &four, room);
+        assert!(p.float && p.panes == body);
+        // Too narrow for anything beside it: it floats, at its least width.
+        let narrow = Rect::from_min_size(pos2(0.0, 0.0), vec2(700.0, 700.0));
+        let p = place_panel(narrow, &shown, &one, room);
+        assert!(p.float);
+        assert_eq!(p.panel.map(|r| r.width()), Some(PANEL_MIN));
+        // Filling the window.
+        let p = place_panel(body, &Panel { max: true, ..shown.clone() }, &two, room);
+        assert!(p.max && p.panel == Some(body));
+    }
 
     #[test]
     fn projects_sort_by_name_as_read() {

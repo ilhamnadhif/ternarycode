@@ -161,6 +161,28 @@ impl Layout {
         }
     }
 
+    /// The same panes stacked: every side-by-side split laid one above the other (same tree, so
+    /// its dividers address the same splits). Shown while a page beside the panes needs room.
+    pub fn stacked(&self) -> Layout {
+        match self {
+            Layout::Pane(id) => Layout::Pane(*id),
+            Layout::Split { ratio, a, b, .. } => Layout::Split {
+                dir: SplitDir::Vertical,
+                ratio: *ratio,
+                a: Box::new(a.stacked()),
+                b: Box::new(b.stacked()),
+            },
+        }
+    }
+
+    /// Has panes side by side.
+    pub fn has_columns(&self) -> bool {
+        match self {
+            Layout::Pane(_) => false,
+            Layout::Split { dir, a, b, .. } => *dir == SplitDir::Horizontal || a.has_columns() || b.has_columns(),
+        }
+    }
+
     /// The pane after (or before) `current` in reading order, wrapping around.
     pub fn neighbor(&self, current: PaneId, forward: bool) -> PaneId {
         let panes = self.panes();
@@ -249,5 +271,25 @@ mod tests {
         assert!(l.remove(1));
         assert_eq!(l, Layout::Pane(3));
         assert!(!l.remove(3), "last pane is not removed");
+    }
+
+    #[test]
+    fn stacked_lays_columns_as_rows_with_the_same_dividers() {
+        let mut l = Layout::Pane(1);
+        l.split(1, 2, SplitDir::Horizontal);
+        l.split(2, 3, SplitDir::Vertical);
+        assert!(l.has_columns());
+        let s = l.stacked();
+        assert!(!s.has_columns());
+        assert_eq!(s.panes(), [1, 2, 3]);
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 100.0));
+        let (panes, dividers) = s.arrange(area);
+        // One column, top to bottom, each the whole width.
+        assert!(panes.iter().all(|(_, r)| r.width() == 100.0));
+        assert!(panes[0].1.bottom() <= panes[1].1.top() && panes[1].1.bottom() <= panes[2].1.top());
+        // Its dividers address the same splits as the side-by-side layout's.
+        let (_, original) = l.arrange(area);
+        assert_eq!(dividers.iter().map(|d| d.path.clone()).collect::<Vec<_>>(), original.iter().map(|d| d.path.clone()).collect::<Vec<_>>());
+        assert!(!Layout::Pane(4).has_columns());
     }
 }

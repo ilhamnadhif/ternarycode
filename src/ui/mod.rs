@@ -14,6 +14,7 @@ pub mod kit;
 pub mod menu;
 pub mod palette;
 pub mod browser_ui;
+pub mod browser_panel;
 pub mod review;
 pub mod settings;
 pub mod sidebar;

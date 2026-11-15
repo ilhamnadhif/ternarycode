@@ -41,7 +41,7 @@ fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str
         (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically", "Group active projects at the top"]),
         (SettingsPage::Appearance, icons::PAINT_BRUSH, "Appearance", &["Theme", "Language", "With the dark theme", "With the light theme", "Font", "Size", "Cursor", "Blinking cursor"]),
         (SettingsPage::Terminal, icons::TERMINAL, "Terminal", &["Scrollback per pane", "Scrollback memory for all panes", "Option key as Meta", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]),
-        (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "When an agent opens the browser", "Put browsers to sleep after", "Logins & cookies", "Agents can use the browser", "Sites agents may open without asking", "Agents may run JavaScript in pages"]),
+        (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "When an agent opens a page", "Put browsers to sleep after", "Pages in Grid tiles", "Logins & cookies", "Agents can use the browser", "Sites agents may open without asking", "Agents may run JavaScript in pages"]),
         (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks"]),
         (SettingsPage::Editor, icons::CODE, "Editor", &["Language features", "Start servers only when needed", "Completion while typing", "Format on save"]),
         (SettingsPage::Notifications, icons::BELL, "Notifications", &["An agent needs input", "A process failed", "An agent finished its turn", "A long command finished", "Badge on the Dock icon"]),
@@ -509,16 +509,17 @@ impl App {
         page_head(ui, t("Browser"), t("Web pages beside your terminals, for you and your agents."));
         let labels = [
             (t("Open web pages in TernaryCode"), ""),
-            (t("When an agent opens the browser"), ""),
+            (t("When an agent opens a page"), ""),
             (t("Put browsers to sleep after"), ""),
+            (t("Pages in Grid tiles"), ""),
             (t("Logins & cookies"), ""),
         ];
         card(ui, search, &labels, |c| {
             c.row(t("Open web pages in TernaryCode"), t("Server chips, ⌘-clicked links, HTML files and programs that open a browser. Hold ⌥ for your default browser."), |ui| {
                 kit::switch(ui, &mut self.settings.browser_here);
             });
-            c.row(t("When an agent opens the browser"), t("Beside its pane when there is room, otherwise in a new tab. The keyboard never moves."), |ui| {
-                let options = [t("Beside its pane"), t("In a new tab")];
+            c.row(t("When an agent opens a page"), t("Its page goes in the project's Browser panel, at the right of the terminals. The keyboard never moves."), |ui| {
+                let options = [t("Show the panel"), t("Light the Browser button")];
                 let current = options[usize::from(!self.settings.browser_agent_beside)];
                 if let Some(i) = kit::select(ui, "browser-agent-place", current, &options, 150.0) {
                     self.settings.browser_agent_beside = i == 0;
@@ -532,6 +533,13 @@ impl App {
                     -1 => self.settings.browser_sleep_minutes = STEPS[at.saturating_sub(1)],
                     1 => self.settings.browser_sleep_minutes = STEPS[(at + 1).min(STEPS.len() - 1)],
                     _ => {}
+                }
+            });
+            c.row(t("Pages in Grid tiles"), t("Smaller, a page keeps the layout it has in Focus. Fitting the tile, a site may switch to its phone layout."), |ui| {
+                let options = [t("Keep their layout, smaller"), t("Fit the tile")];
+                let current = options[usize::from(!self.settings.browser_grid_zoom)];
+                if let Some(i) = kit::select(ui, "browser-grid-zoom", current, &options, 190.0) {
+                    self.settings.browser_grid_zoom = i == 0;
                 }
             });
             c.row(t("Logins & cookies"), t("One profile for every project: log in once and stay logged in, through restarts and updates."), |ui| {

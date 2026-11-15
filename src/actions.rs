@@ -161,11 +161,14 @@ pub enum Action {
     /// Review of what an agent's finished run changed (its Review button, the waiting list):
     /// that run's changes when it made some, else those since the last commit.
     ReviewAgent,
-    /// A new tab holding a browser pane (at the project's local server, when it has one).
+    /// A new page of the user's in the project's Browser panel (at the project's local server,
+    /// when it has one).
     NewBrowserTab,
-    /// The Browser button and ⇧⌘B: shows the project's browser, or makes one beside the pane
-    /// in view (`App::show_browser`).
+    /// The Browser button and ⇧⌘B: shows or hides the project's Browser panel (a page made in
+    /// it when it has none: `App::show_browser`).
     ShowBrowser,
+    /// The terminals beside a project's Browser panel stay side by side (not stacked).
+    PanelSideBySide(tc_core::ProjectId),
     /// ⌘L: the address field of the project's browser (shown, or made, first).
     BrowserAddress,
     /// ⌘R: the page in view loads again.

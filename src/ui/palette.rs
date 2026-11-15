@@ -263,7 +263,7 @@ impl App {
             add(icons::SIDEBAR_SIMPLE, t("Show/Hide Files"), Action::ToggleFiles);
             add(icons::PLUS, t("New Tab"), Action::NewTab);
             add(icons::GLOBE, t("Browser"), Action::ShowBrowser);
-            add(icons::GLOBE, t("New Browser Tab"), Action::NewBrowserTab);
+            add(icons::GLOBE, t("New Browser Page"), Action::NewBrowserTab);
             add(icons::SQUARE_SPLIT_HORIZONTAL, t("Split Right"), Action::SplitRight);
             add(icons::SQUARE_SPLIT_VERTICAL, t("Split Down"), Action::SplitDown);
             add(icons::X, t("Close Pane"), Action::ClosePane);
