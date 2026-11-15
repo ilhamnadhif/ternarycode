@@ -36,6 +36,7 @@ pub fn key_labels(action: &crate::actions::Action) -> Option<(&'static str, &'st
         A::SplitRight => ("⌘D", "Ctrl+Shift+D"),
         A::SplitDown => ("⇧⌘D", "Ctrl+Shift+E"),
         A::NewTab => ("⌘T", "Ctrl+Shift+T"),
+        A::NewBrowserTab => ("⇧⌘B", "Ctrl+Shift+Alt+B"),
         A::ClosePane => ("⌘W", "Ctrl+Shift+W"),
         A::Review => ("⇧⌘R", "Ctrl+Shift+R"),
         A::Palette => ("⌘K", "Ctrl+Shift+K"),

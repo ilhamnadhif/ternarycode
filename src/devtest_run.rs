@@ -199,6 +199,13 @@ impl App {
                 let text = self.active.and_then(|id| self.editors.get(&id)).and_then(|e| e.file()).map(|f| f.text.clone()).unwrap_or_default();
                 Some(text.contains(&devtest::unescape(arg))).filter(|ok| *ok)
             }
+            // `wait-browser TEXT`: a browser pane in the tab in view is at an address, or shows a
+            // title, holding TEXT.
+            "wait-browser" => {
+                let in_view = self.active_project().and_then(|p| p.tab()).map(|t| t.layout.panes()).unwrap_or_default();
+                let at = |b: &crate::browser::Browser| b.url.contains(arg.trim()) || b.title.contains(arg.trim());
+                Some(in_view.iter().filter_map(|id| self.browsers.get(id)).any(at)).filter(|ok| *ok)
+            }
             "wait-review" => {
                 let r = self.review.as_ref();
                 let kinds: String = r
@@ -483,6 +490,8 @@ impl App {
                     "find-all" => Some(Action::FindAll),
                     "review" => Some(Action::Review),
                     "review-agent" => Some(Action::ReviewAgent),
+                    "new-browser-tab" => Some(Action::NewBrowserTab),
+                    "open-web" => Some(Action::OpenWeb(rest.trim().to_string())),
                     "force-save" => Some(Action::ForceSave),
                     "reload" => Some(Action::ReloadFile),
                     "editor" => Some(Action::ToggleEditor),
@@ -562,7 +571,7 @@ impl App {
                 let want = devtest::unescape(content);
                 self.devtest.check(!disk.contains(&want), &format!("expect-not-file {path} lacks {want:?}"));
             }
-            "wait-screen" | "wait-status" | "wait-queue" | "wait-editor" | "wait-conflict"
+            "wait-screen" | "wait-status" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
             | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
             | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" => {
@@ -794,6 +803,47 @@ impl App {
             "free-editor" => self.free_editor_memory(),
             // Drawn (or not) in the last frame.
             "expect-shown" => self.devtest.check(devtest::shown(arg.trim()), &format!("expect-shown {arg}")),
+            // `web-shot NAME`: the open project's browser page as it shows (its own picture:
+            // web views are not in egui's screenshot), into the shot folder.
+            #[cfg(target_os = "macos")]
+            "web-shot" => {
+                let dir = std::env::var("TERNARYCODE_SHOT_DIR").unwrap_or_else(|_| ".".into());
+                let path = format!("{dir}/{}.png", arg.trim());
+                let pid = self.active;
+                match self.browsers.values().filter(|b| Some(b.project) == pid).find_map(|b| b.view.as_ref()) {
+                    Some(v) => {
+                        crate::browser::snapshot(v, move |png| {
+                            let ok = png.is_some_and(|d| std::fs::write(&path, d).is_ok());
+                            eprintln!("DEVTEST {}: web-shot {path}", if ok { "PASS" } else { "FAIL" });
+                        });
+                    }
+                    None => self.devtest.check(false, "web-shot: no page"),
+                }
+            }
+            // `expect-web-placed`: each shown page's web view sits where its pane's page was
+            // drawn (WebKit's frame against egui's rectangle, in points), and is visible.
+            #[cfg(target_os = "macos")]
+            "expect-web-placed" => {
+                let zoom = ctx.zoom_factor();
+                let mut ok = false;
+                for b in self.browsers.values().filter(|b| b.shown) {
+                    let (Some(v), Some(r)) = (b.view.as_ref(), b.placed) else { continue };
+                    let Ok(got) = v.bounds() else { continue };
+                    let pos = got.position.to_logical::<f64>(1.0);
+                    let size = got.size.to_logical::<f64>(1.0);
+                    let near = |a: f64, b: f32| (a - f64::from(b * zoom)).abs() < 1.5;
+                    // AppKit counts y from the bottom of the window's content.
+                    let flipped = ctx.content_rect().height() - r.bottom();
+                    ok = near(pos.x, r.left()) && (near(pos.y, r.top()) || near(pos.y, flipped)) && near(size.width, r.width()) && near(size.height, r.height());
+                    eprintln!("DEVTEST LOG: web view {:?} {:?}, page {:?}", pos, size, r);
+                }
+                self.devtest.check(ok, "expect-web-placed");
+            }
+            // `expect-web-hidden`: no web view shows (something is drawn over the pages).
+            "expect-web-hidden" => {
+                let ok = !self.browsers.values().any(|b| b.shown);
+                self.devtest.check(ok, "expect-web-hidden");
+            }
             // `expect-above A B`: widget A is drawn higher up than widget B.
             "expect-above" => {
                 let (a, b) = arg.trim().split_once(' ').unwrap_or((arg.trim(), ""));

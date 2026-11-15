@@ -540,6 +540,7 @@ fn tree_menu(ui: &mut Ui, entry: &Entry, root: &Path, out: &mut Vec<Action>) {
         item(ui, t("Open in Editor"), Action::OpenFile(entry.path.clone(), None));
         if crate::platform::browser_file(&entry.path) {
             item(ui, t("Open in Browser"), Action::OpenInBrowser(entry.path.clone()));
+            item(ui, t("Open in Default Browser"), Action::OpenInDefaultBrowser(entry.path.clone()));
         }
         item(ui, t("New File…"), Action::NewFileIn(dir.clone()));
         item(ui, t("New Folder…"), Action::NewFolderIn(dir));

@@ -884,6 +884,9 @@ pub struct ProjectRow {
     pub folded: bool,
     /// A worktree: the commits its branch has that its base has not.
     pub ahead: Option<usize>,
+    /// It has a browser with its page open: whether an agent uses it (a globe after the dots,
+    /// in the info colour then).
+    pub web: Option<bool>,
 }
 
 /// A group's line: ˅ or ›, its name and how many projects, and (Active) how many run, wait,
@@ -953,7 +956,7 @@ fn paint_project_row(ui: &Ui, rect: Rect, row: &ProjectRow, marks: &[bool], acti
         right -= 6.0;
     }
     // The pane dots after the name.
-    let dots_w = if row.dots.is_empty() { 0.0 } else { row.dots.len() as f32 * 8.0 - 3.0 + 6.0 };
+    let dots_w = if row.dots.is_empty() { 0.0 } else { row.dots.len() as f32 * 8.0 - 3.0 + 6.0 } + if row.web.is_some() { 16.0 } else { 0.0 };
     let name_color = if row.asleep {
         p.text_muted
     } else if active || attention {
@@ -983,10 +986,16 @@ fn paint_project_row(ui: &Ui, rect: Rect, row: &ProjectRow, marks: &[bool], acti
         painter.circle_filled(pos2(dx, l1 + 0.5), 2.5, *c);
         dx += 8.0;
     }
+    // Its browser: a globe, in the info colour while an agent uses it.
+    if let Some(driven) = row.web {
+        let gx = if row.dots.is_empty() { x + name_w + 6.0 } else { dx - 2.5 + 2.0 };
+        painter.text(pos2(gx + 6.0, l1 + 0.5), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(11.5), if driven { p.info } else { p.text_faint });
+        dx = gx + 14.0 + 2.5;
+    }
     // Its worktrees: how many, and the caret that folds them.
     let mut toggle = None;
     if row.worktrees > 0 {
-        let start = if row.dots.is_empty() { x + name_w + 6.0 } else { dx - 2.5 + 3.0 };
+        let start = if row.dots.is_empty() && row.web.is_none() { x + name_w + 6.0 } else { dx - 2.5 + 3.0 };
         let fork = painter.layout_no_wrap(icons::GIT_FORK.to_string(), style::icon_font(11.5), p.text_faint);
         let count = painter.layout_no_wrap(row.worktrees.to_string(), style::medium(11.0), p.text_faint);
         let caret = painter.layout_no_wrap(if row.folded { icons::CARET_RIGHT } else { icons::CARET_DOWN }.to_string(), style::icon_font(10.0), p.text_faint);
@@ -1191,6 +1200,7 @@ impl App {
             worktrees: worktrees.len(),
             folded: pr.folded,
             ahead: pr.is_worktree().then(|| pr.git.as_ref().map_or(0, |g| g.ahead)),
+            web: self.browsers.values().filter(|b| b.project == pr.id && b.live()).map(|b| b.driven).max(),
         };
         // Folded away, its worktrees' most urgent status shows on the project.
         if pr.folded {

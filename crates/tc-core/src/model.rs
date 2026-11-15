@@ -173,6 +173,9 @@ pub struct PaneSave {
     /// The agent that was running when the workspace was saved, and the preset that started it.
     pub agent: Option<AgentKind>,
     pub preset: Option<String>,
+    /// A browser pane: the address of its page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,6 +305,13 @@ pub struct Settings {
     /// The sidebar lists projects where something runs or waits first, under "Active".
     #[serde(default = "yes")]
     pub group_active: bool,
+    /// Web pages (server chips, links clicked in terminals, HTML files) open in a browser pane
+    /// beside the terminals, not in the default browser.
+    #[serde(default = "yes")]
+    pub browser_here: bool,
+    /// Minutes a browser pane out of view and unused keeps its page before letting it go.
+    #[serde(default = "ten")]
+    pub browser_sleep_minutes: u32,
 }
 
 /// Where Run Agent puts a new worktree.
@@ -329,6 +339,10 @@ impl Default for WorktreeSettings {
     fn default() -> Self {
         Self { place: WorktreePlace::Beside, prefix: "tc/".into(), offer_remove: true }
     }
+}
+
+fn ten() -> u32 {
+    10
 }
 
 fn yes() -> bool {
@@ -359,6 +373,8 @@ impl Default for Settings {
             shell_integration: true,
             check_updates: true,
             group_active: true,
+            browser_here: true,
+            browser_sleep_minutes: 10,
             skipped_version: None,
             last_update_check: None,
             window: None,

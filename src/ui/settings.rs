@@ -17,6 +17,8 @@ pub enum SettingsPage {
     General,
     Appearance,
     Terminal,
+    /// Browser panes: where web pages open, sleeping, logins.
+    Browser,
     /// Presets and how each agent reports to TernaryCode (its hooks).
     Agents,
     Editor,
@@ -33,11 +35,12 @@ const NAV_W: f32 = 200.0;
 const HEAD_H: f32 = 52.0;
 
 /// The pages, their icons, and the rows on each (for the search).
-fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 8] {
+fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 9] {
     [
         (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically", "Group active projects at the top"]),
         (SettingsPage::Appearance, icons::PAINT_BRUSH, "Appearance", &["Theme", "Language", "With the dark theme", "With the light theme", "Font", "Size", "Cursor", "Blinking cursor"]),
         (SettingsPage::Terminal, icons::TERMINAL, "Terminal", &["Scrollback per pane", "Scrollback memory for all panes", "Option key as Meta", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]),
+        (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "Put browsers to sleep after", "Logins & cookies"]),
         (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks"]),
         (SettingsPage::Editor, icons::CODE, "Editor", &["Language features", "Start servers only when needed", "Completion while typing", "Format on save"]),
         (SettingsPage::Notifications, icons::BELL, "Notifications", &["An agent needs input", "A process failed", "An agent finished its turn", "A long command finished", "Badge on the Dock icon"]),
@@ -260,6 +263,7 @@ impl App {
                         SettingsPage::General => self.general_page(ui, &search),
                         SettingsPage::Appearance => self.appearance_page(ui, &search),
                         SettingsPage::Terminal => self.terminal_page(ui, &search),
+                        SettingsPage::Browser => self.browser_page(ui, &search),
                         SettingsPage::Agents | SettingsPage::Integrations => self.agents_page(ui, &search),
                         SettingsPage::Editor => self.editor_page(ui, &search),
                         SettingsPage::Notifications => self.notifications_page(ui, &search),
@@ -481,6 +485,31 @@ impl App {
             });
             c.row(t("Blinking cursor"), "", |ui| {
                 kit::switch(ui, &mut self.settings.cursor_blink);
+            });
+        });
+    }
+
+    fn browser_page(&mut self, ui: &mut Ui, search: &str) {
+        page_head(ui, t("Browser"), t("Web pages beside your terminals, for you and your agents."));
+        let labels = [(t("Open web pages in TernaryCode"), ""), (t("Put browsers to sleep after"), ""), (t("Logins & cookies"), "")];
+        card(ui, search, &labels, |c| {
+            c.row(t("Open web pages in TernaryCode"), t("Server chips, ⌘-clicked links and HTML files open beside the terminal. Hold ⌥ for your default browser."), |ui| {
+                kit::switch(ui, &mut self.settings.browser_here);
+            });
+            c.row(t("Put browsers to sleep after"), t("Out of view and unused, a page is let go and loads again when shown."), |ui| {
+                const STEPS: [u32; 7] = [1, 5, 10, 15, 30, 60, 120];
+                let n = self.settings.browser_sleep_minutes;
+                let at = STEPS.iter().position(|s| *s >= n).unwrap_or(STEPS.len() - 1);
+                match kit::stepper(ui, &tf("{} min", &[&n.to_string()])) {
+                    -1 => self.settings.browser_sleep_minutes = STEPS[at.saturating_sub(1)],
+                    1 => self.settings.browser_sleep_minutes = STEPS[(at + 1).min(STEPS.len() - 1)],
+                    _ => {}
+                }
+            });
+            c.row(t("Logins & cookies"), t("One profile for every project: log in once, and stay logged in through restarts and updates."), |ui| {
+                if kit::button_ex(ui, kit::Kind::Secondary, None, t("Clear"), true).clicked() {
+                    self.clear_browsing_data();
+                }
             });
         });
     }

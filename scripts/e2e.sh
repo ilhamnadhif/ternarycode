@@ -88,7 +88,10 @@ run run-agent-sessions 40 "sleep 1000;; action add-project $P1;; sleep 1200;; ac
 run project-search 40 "sleep 1000;; action add-project $P1;; sleep 1000;; action add-project $P2;; sleep 1200;; expect-project beta;; click project-filter;; sleep 300;; keys alp;; sleep 400;; expect-shown project:alpha;; expect-hidden project:beta;; shot e2e-project-search;; key enter;; sleep 400;; expect-project alpha;; expect-shown project:beta;; click project-filter;; sleep 300;; key down;; key enter;; sleep 400;; expect-project beta;; click project-filter;; sleep 300;; keys zzz;; sleep 400;; expect-hidden project:alpha;; expect-hidden project:beta;; key esc;; sleep 400;; expect-shown project:alpha;; expect-shown project:beta;; quit"
 
 # ⌘-click on a web address opens it, without the brackets and the full stop around it, also in
-# a program that takes the mouse (mouse reporting on): the click is not reported to it.
+# a program that takes the mouse (mouse reporting on): the click is not reported to it. (Web
+# pages open in the default browser here: Settings → Browser's switch off; `browser` below has
+# them open in TernaryCode.)
+for name in term-link local-server; do mkdir -p "$WORK/data-$name"; printf '{"browser_here":false}\n' > "$WORK/data-$name/settings.json"; done
 URL_A="https://example.com/opened-from-the-terminal-by-cmd-click"
 URL_B="https://example.com/opened-while-the-program-takes-the-mouse"
 run term-link 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys clear; for i in 1 2 3 4 5 6; do echo '($URL_A).'; done\\r;; wait-screen opened-from;; sleep 300;; mouse cmd-move pane:2@0.2,0.06;; sleep 300;; mouse cmd-down pane:2@0.2,0.06;; mouse cmd-up pane:2@0.2,0.06;; sleep 500;; expect-file $OPENED $URL_A\\n;; keys clear; for i in 1 2 3 4 5 6; do echo '($URL_B).'; done; printf '\\033[?1000h'; sleep 30\\r;; wait-screen opened-while;; sleep 300;; mouse cmd-move pane:2@0.2,0.06;; sleep 300;; mouse cmd-down pane:2@0.2,0.06;; mouse cmd-up pane:2@0.2,0.06;; sleep 500;; expect-file $OPENED $URL_B\\n;; key ctrl+c;; keys printf '\\033[?1000l'\\r;; quit"
@@ -100,6 +103,23 @@ run drop-path 40 "sleep 1000;; action add-project $P1;; sleep 1200;; drop pane:2
 # A dev server that says where it listens: its address shows in the project header while it
 # answers, opens on a click, and goes when the server stops.
 run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WORK/bin/serve 47613\\r;; wait-shown server-chip;; shot e2e-local-server;; click server-chip;; sleep 400;; expect-file $OPENED http://localhost:47613/;; key ctrl+c;; wait-hidden server-chip;; quit"
+
+# Web pages in TernaryCode (macOS): a dev server announced in the terminal (the page served by
+# a local web server); its chip opens the page beside the terminal, where the web view sits
+# exactly on the pane; an address typed goes there; ⇧⌘B opens the project's server in a tab of
+# its own. After a restart both pages come back where they were.
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser" == *"$ONLY"* ]]; }; then
+    SITE="$WORK/site"; mkdir -p "$SITE"
+    printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
+    printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
+    WEBPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+    python3 -m http.server "$WEBPORT" --bind 127.0.0.1 --directory "$SITE" >/dev/null 2>&1 & WEB_PID=$!; disown
+    printf '#!/bin/sh\nprintf "  Local:   http://localhost:%%s/\\n" "$1"\nexec sleep 600\n' > "$WORK/bin/announce"; chmod +x "$WORK/bin/announce"
+    run browser-1 60 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WORK/bin/announce $WEBPORT\\r;; wait-shown server-chip;; click server-chip;; wait-browser TC Test Page;; wait-tabs 0:2,3;; sleep 500;; expect-web-placed;; web-shot e2e-browser-page;; shot e2e-browser;; click browser-address:3;; sleep 200;; key cmd+a;; keys localhost:$WEBPORT/second.html\\r;; wait-browser Second;; action new-browser-tab;; wait-tabs 0:2,3 1:4;; wait-browser TC Test Page;; sleep 500;; expect-web-placed;; action palette;; sleep 500;; expect-web-hidden;; key esc;; sleep 500;; expect-web-placed;; click browser-more:4;; sleep 400;; expect-web-hidden;; shot e2e-browser-menu;; key esc;; sleep 500;; expect-web-placed;; quit"
+    mkdir -p "$WORK/data-browser-2"; cp "$WORK/data-browser-1/workspace.json" "$WORK/data-browser-2/" 2>/dev/null
+    run browser-2 50 "sleep 2000;; expect-project alpha;; wait-tabs 0:2,3 1:4;; wait-browser TC Test Page;; sleep 500;; expect-web-placed;; action select-tab 0;; wait-browser Second;; sleep 500;; expect-web-placed;; quit"
+    kill "$WEB_PID" 2>/dev/null
+fi
 
 run foreground 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 1000;; focus-pane 0;; sleep 500;; keys sleep 30\\r;; wait-status running;; key ctrl+c;; sleep 500;; wait-status idle;; quit"
 

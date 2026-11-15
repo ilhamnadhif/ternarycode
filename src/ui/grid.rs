@@ -96,7 +96,10 @@ impl App {
     /// tile's strip: the header never speaks of a pane not in view.
     pub fn tile_pane(&self, project: ProjectId, tab: usize) -> Option<PaneId> {
         let tab = self.project(project)?.tabs.get(tab)?;
-        self.telling_pane(&tab.layout.panes()).or(Some(tab.focused))
+        let panes = tab.layout.panes();
+        // A browser focused: the tab's terminal tells (the page is not in the tile).
+        let terminal = || Some(tab.focused).filter(|id| self.panes.contains_key(id)).or_else(|| panes.iter().copied().find(|id| self.panes.contains_key(id)));
+        self.telling_pane(&panes).or_else(terminal).or(Some(tab.focused))
     }
 
     /// How much a tab asks to be seen in a Grid tile, lower first: something waits (by its
@@ -433,7 +436,7 @@ impl App {
                 .iter()
                 .map(|tab| {
                     let panes = tab.layout.panes();
-                    let label = tab.title.clone().unwrap_or_else(|| self.panes.get(&tab.focused).map(|x| x.label()).unwrap_or_default());
+                    let label = tab.title.clone().unwrap_or_else(|| self.leaf_label(tab.focused));
                     let teller = self.telling_pane(&panes).or(Some(tab.focused)).and_then(|id| self.panes.get(&id));
                     let status = teller.map(|x| x.tracker.status).filter(|s| !matches!(s, Status::Idle | Status::Unknown));
                     let waits = panes.iter().filter_map(|id| self.panes.get(id)).any(|x| x.tracker.wants_attention());
@@ -574,7 +577,7 @@ impl App {
             ui.painter().galley(pos2(r.left() + 6.0 + 6.0 + 5.0, cy - g.size().y / 2.0), g, p.text_muted);
             let tip = servers.iter().map(|(_, s)| tf("Open {} in the browser", &[&s.url])).collect::<Vec<_>>().join("\n");
             if resp.on_hover_text(tip).clicked() {
-                crate::platform::open_url(&first.url);
+                self.actions.push(Action::OpenWeb(first.url.clone()));
             }
         }
         // Branch, how many files changed, panes (when split): only what fits.
@@ -822,6 +825,17 @@ impl App {
         input_enabled: bool,
         wheel: bool,
     ) {
+        // A browser pane: what page it holds (its web view is shown in Focus).
+        if let Some(b) = self.browsers.get(&pane_id) {
+            let p = style::pal(ui);
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, p.canvas);
+            let (host, _) = crate::browser::split_url(&b.url);
+            let c = rect.center();
+            ui.painter().text(c - vec2(0.0, 16.0), Align2::CENTER_CENTER, super::icons::GLOBE, style::icon_font(22.0), p.text_faint);
+            ui.painter().text(c + vec2(0.0, 8.0), Align2::CENTER_CENTER, b.label(), egui::FontId::proportional(12.5), p.text_muted);
+            ui.painter().text(c + vec2(0.0, 26.0), Align2::CENTER_CENTER, host, egui::FontId::proportional(style::SMALL), p.text_faint);
+            return;
+        }
         if self.panes.get(&pane_id).is_some_and(|x| x.dormant()) {
             self.actions.push(Action::WakePane(pane_id));
             ui.ctx().request_repaint();

@@ -174,9 +174,7 @@ impl App {
             .iter()
             .enumerate()
             .map(|(i, tab)| {
-                let label = tab.title.clone().unwrap_or_else(|| {
-                    self.panes.get(&tab.focused).map(|pane| pane.label()).unwrap_or_default()
-                });
+                let label = tab.title.clone().unwrap_or_else(|| self.leaf_label(tab.focused));
                 let waiting = tab
                     .layout
                     .panes()
@@ -192,7 +190,8 @@ impl App {
                     .map(|pane| (pane.tracker.status, status::described(&pane.tracker)));
                 let doing = self.panes.get(&tab.focused).and_then(|pane| pane.program_title.clone());
                 let progress = tab.layout.panes().iter().filter_map(|id| self.panes.get(id)).find_map(|pane| pane.progress);
-                (i, label, waiting, doing, tab.focused, progress)
+                let web = self.browsers.contains_key(&tab.focused);
+                (i, label, waiting, doing, tab.focused, progress, web)
             })
             .collect();
         let servers: Vec<(String, String)> = self
@@ -249,8 +248,10 @@ impl App {
                     }
                 }
             }
-            if !servers.is_empty() {
-                server_chip(ui, &servers);
+            if !servers.is_empty()
+                && let Some(url) = server_chip(ui, &servers)
+            {
+                app.actions.push(Action::OpenWeb(url));
             }
             kit::vdivider(ui, 18.0);
             // More tabs than fit scroll sideways (wheel or trackpad), a fade at the edge that
@@ -279,11 +280,11 @@ impl App {
                         .show(ui, |ui| {
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 ui.spacing_mut().item_spacing.x = 2.0;
-                                for (i, label, waiting, doing, focused, progress) in &tabs {
+                                for (i, label, waiting, doing, focused, progress, web) in &tabs {
                                     let dragging = app.tab_drag == Some(*i);
                                     let on = *i == active_tab;
                                     let (r, close) =
-                                        terminal_tab(ui, label, waiting.as_ref().map(|w| w.0), on, dragging, tabs.len() > 1, *progress);
+                                        terminal_tab(ui, label, waiting.as_ref().map(|w| w.0), on, dragging, tabs.len() > 1, *progress, *web);
                                     if close {
                                         app.actions.push(Action::CloseTab(*i));
                                     }
@@ -427,6 +428,11 @@ impl App {
         let now = Instant::now();
         for (pane_id, rect) in rects {
             let is_focused = pane_id == focused;
+            // A browser pane: its toolbar is its header, its page the rest.
+            if self.browsers.contains_key(&pane_id) {
+                self.browser_pane(ui, pane_id, rect, is_focused, single);
+                continue;
+            }
             // One pane: the tab above says what it is; several: each gets a header.
             let header_h = if single { 0.0 } else { PANE_HEADER_H };
             let header = Rect::from_min_size(rect.min, vec2(rect.width(), header_h));
@@ -715,7 +721,7 @@ impl App {
     fn tab_label(&self, i: usize) -> String {
         self.active_project()
             .and_then(|pr| pr.tabs.get(i))
-            .map(|tab| tab.title.clone().unwrap_or_else(|| self.panes.get(&tab.focused).map(|x| x.label()).unwrap_or_default()))
+            .map(|tab| tab.title.clone().unwrap_or_else(|| self.leaf_label(tab.focused)))
             .unwrap_or_default()
     }
 
@@ -1230,9 +1236,9 @@ impl App {
 /// a line (`src/app.rs:120`), gives the action that opens it in the editor (a folder is shown in
 /// the file manager). Other schemes are ignored: a program must not start apps through them.
 pub(super) fn term_link(target: &str, cwd: &std::path::Path) -> Option<Action> {
+    // A web address: the project's browser pane (⌥ or the setting: the default browser).
     if crate::platform::openable_url(target) {
-        crate::platform::open_url(target);
-        return None;
+        return Some(Action::OpenWeb(target.to_string()));
     }
     if let Some(path) = file_url_path(target) {
         if path.is_dir() {
@@ -1329,10 +1335,11 @@ pub(super) fn server_label(url: &str) -> &str {
 
 /// The local servers a project's panes started (that answer), in the project header: the
 /// first one's address with a green dot, "+N" for the others. A click opens it in the browser;
-/// with several, a menu lists them all with the pane each runs in.
-fn server_chip(ui: &mut Ui, servers: &[(String, String)]) {
+/// with several, a menu lists them all with the pane each runs in. Returns the address
+/// clicked (it opens in the project's browser pane; with ⌥, in the default browser).
+fn server_chip(ui: &mut Ui, servers: &[(String, String)]) -> Option<String> {
     let p = style::pal(ui);
-    let Some((url, pane)) = servers.first() else { return };
+    let (url, pane) = servers.first()?;
     let font = style::medium(12.0);
     let mut job = egui::text::LayoutJob::default();
     job.append(server_label(url), 0.0, egui::TextFormat::simple(font.clone(), p.text_muted));
@@ -1355,12 +1362,10 @@ fn server_chip(ui: &mut Ui, servers: &[(String, String)]) {
     ui.painter().text(pos2(x + g.size().x + 6.0 + 6.0, cy), Align2::CENTER_CENTER, icons::ARROW_SQUARE_OUT, style::icon_font(12.0), p.text_faint);
     if servers.len() == 1 {
         let resp = resp.on_hover_text(format!("{}\n{pane}", tf("Open {} in the browser", &[url])));
-        if resp.clicked() {
-            crate::platform::open_url(url);
-        }
-        return;
+        return resp.clicked().then(|| url.clone());
     }
     let resp = resp.on_hover_text(t("Local servers"));
+    let mut chosen = None;
     egui::Popup::menu(&resp).align(egui::RectAlign::BOTTOM_START).show(|ui| {
         kit::menu_body(ui);
         ui.set_min_width(220.0);
@@ -1368,16 +1373,18 @@ fn server_chip(ui: &mut Ui, servers: &[(String, String)]) {
         for (url, pane) in servers {
             let r = kit::menu_item(ui, Some(icons::ARROW_SQUARE_OUT), server_label(url), Some(pane), false);
             if r.on_hover_text(tf("Open {} in the browser", &[url])).clicked() {
-                crate::platform::open_url(url);
+                chosen = Some(url.clone());
                 ui.close();
             }
         }
     });
+    chosen
 }
 
 /// A terminal tab in the project header: its status icon (the terminal's when nothing runs or
 /// waits), its label, a close button when there are several tabs, and a thin progress line
 /// when a program in it reports one. Returns the tab's response and whether close was clicked.
+#[allow(clippy::too_many_arguments)]
 fn terminal_tab(
     ui: &mut Ui,
     label: &str,
@@ -1386,6 +1393,7 @@ fn terminal_tab(
     dragging: bool,
     closable: bool,
     progress: Option<(u8, Option<u8>)>,
+    web: bool,
 ) -> (egui::Response, bool) {
     let p = style::pal(ui);
     let font = style::medium(12.5);
@@ -1418,7 +1426,7 @@ fn terminal_tab(
     }
     let (icon, color) = match waiting {
         Some(s) => (status::icon(s), status::color(s, &p)),
-        None => (icons::TERMINAL, if on { p.accent_text } else { p.text_faint }),
+        None => (if web { icons::GLOBE } else { icons::TERMINAL }, if on { p.accent_text } else { p.text_faint }),
     };
     painter.text(pos2(rect.left() + 9.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), color);
     let text_color = if on { p.text } else { p.text_muted };

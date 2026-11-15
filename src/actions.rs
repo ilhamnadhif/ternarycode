@@ -161,6 +161,13 @@ pub enum Action {
     /// Review of what an agent's finished run changed (its Review button, the waiting list):
     /// that run's changes when it made some, else those since the last commit.
     ReviewAgent,
+    /// A new tab holding a browser pane (at the project's local server, when it has one).
+    NewBrowserTab,
+    /// Opens a web address: in the project's browser pane (made beside the terminal or in a
+    /// tab when it has none), or with ⌥ held (or the setting off) in the default browser.
+    OpenWeb(String),
+    /// Opens a file (an HTML page, an SVG) in the default web browser.
+    OpenInDefaultBrowser(PathBuf),
     FindAll,
     RevealMatch(PaneId, tc_term::alacritty_terminal::term::search::Match),
     Copy,

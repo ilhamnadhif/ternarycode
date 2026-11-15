@@ -305,6 +305,16 @@ pub struct App {
     pub sidebar_order: Vec<ProjectId>,
     /// The sidebar's groups folded away ("active", "idle").
     pub sidebar_folded: HashSet<String>,
+    /// Browser panes (their ids are pane ids: they sit in tabs and splits like terminals).
+    pub browsers: HashMap<PaneId, crate::browser::Browser>,
+    /// Where each browser pane's page was drawn this frame (its web view goes there).
+    pub browser_pages: HashMap<PaneId, egui::Rect>,
+    /// The browser pane whose page has the keyboard.
+    pub browser_focus: Option<PaneId>,
+    /// A browser pane whose page is to take the keyboard (it was focused).
+    pub browser_focus_request: Option<PaneId>,
+    /// A browser pane whose address field is to take the keyboard (a new, empty one).
+    pub browser_edit: Option<PaneId>,
     /// Pane being dragged by its header.
     pub pane_drag: Option<PaneId>,
     /// The editor (its text or find field) had the keyboard in the last frame: ⌘F searches the
@@ -569,6 +579,11 @@ impl App {
             sidebar_hold: None,
             sidebar_order: Vec::new(),
             sidebar_folded: HashSet::new(),
+            browsers: HashMap::new(),
+            browser_pages: HashMap::new(),
+            browser_focus: None,
+            browser_focus_request: None,
+            browser_edit: None,
             pane_drag: None,
             editor_keyboard: false,
             editor_seen: false,
@@ -803,7 +818,7 @@ impl App {
         }
     }
 
-    fn show_focus(&mut self) {
+    pub(crate) fn show_focus(&mut self) {
         if std::mem::replace(&mut self.view, View::Focus) == View::Grid {
             let ctx = self.ctx.clone();
             self.fit_all_to_focus(&ctx);
@@ -853,6 +868,11 @@ impl App {
                 let layout = crate::project::from_saved(&tab.layout);
                 for id in layout.panes() {
                     let info = pane_info.get(&id).cloned().unwrap_or_default();
+                    // A browser pane: asleep until it is shown (its page loads then).
+                    if let Some(url) = &info.browser {
+                        self.browsers.insert(id, crate::browser::Browser::new(id, saved.id, url));
+                        continue;
+                    }
                     let cwd = info.cwd.clone().unwrap_or_else(|| saved.path.clone());
                     let size = self.grid_in(&layout, id);
                     // Asleep: a shell starts when the pane is first shown (or typed into).
@@ -934,13 +954,17 @@ impl App {
                     let panes = p
                         .panes()
                         .into_iter()
-                        .filter_map(|id| self.panes.get(&id))
-                        .map(|pane| PaneSave {
-                            id: pane.id,
-                            cwd: Some(pane.cwd.clone()),
-                            title: pane.title.clone(),
-                            agent: pane.last_agent,
-                            preset: pane.preset.clone(),
+                        .filter_map(|id| match (self.panes.get(&id), self.browsers.get(&id)) {
+                            (Some(pane), _) => Some(PaneSave {
+                                id: pane.id,
+                                cwd: Some(pane.cwd.clone()),
+                                title: pane.title.clone(),
+                                agent: pane.last_agent,
+                                preset: pane.preset.clone(),
+                                browser: None,
+                            }),
+                            (None, Some(b)) => Some(PaneSave { id, browser: Some(b.url.clone()), ..Default::default() }),
+                            _ => None,
                         })
                         .collect();
                     let mut saved = p.save(panes);
@@ -1106,7 +1130,7 @@ impl App {
 
     /// The project "this project" commands act on (new tab, agents): the command pane's (a
     /// Grid tile's project is not made the open one).
-    fn command_project(&self) -> Option<ProjectId> {
+    pub(crate) fn command_project(&self) -> Option<ProjectId> {
         self.command_pane().and_then(|id| self.panes.get(&id)).map(|p| p.project).or(self.active)
     }
 
@@ -1298,7 +1322,7 @@ impl App {
     // ----- focus ------------------------------------------------------------------------------
 
     pub fn focus_pane(&mut self, pane: PaneId) {
-        let Some(project) = self.panes.get(&pane).map(|p| p.project) else {
+        let Some(project) = self.panes.get(&pane).map(|p| p.project).or_else(|| self.browsers.get(&pane).map(|b| b.project)) else {
             return;
         };
         if let Some(p) = self.project_mut(project)
@@ -1873,6 +1897,11 @@ impl App {
         if let Some(mut pane) = self.panes.remove(&id) {
             pane.hang_up();
         }
+        // A browser's page goes with its pane (its web view leaves the window).
+        self.browsers.remove(&id);
+        if self.browser_focus == Some(id) {
+            self.browser_focus = None;
+        }
         if let Some(h) = &self.hooks {
             h.unregister(id);
         }
@@ -1886,7 +1915,14 @@ impl App {
     fn split(&mut self, ctx: &egui::Context, dir: SplitDir) -> Option<PaneId> {
         // In the Grid, the tile typed into (its project need not be the open one).
         let current = self.command_pane()?;
-        let (project, cwd) = self.panes.get(&current).map(|p| (p.project, p.cwd.clone()))?;
+        let (project, cwd) = match self.panes.get(&current) {
+            Some(p) => (p.project, p.cwd.clone()),
+            // Beside a browser pane: a shell in the project's folder.
+            None => {
+                let project = self.browsers.get(&current)?.project;
+                (project, self.project(project)?.path.clone())
+            }
+        };
         let tab_ix = self.project(project)?.tab_of(current)?;
         // The new pane's size in the split layout, before its shell starts.
         const PLACEHOLDER: PaneId = PaneId::MAX;
@@ -1928,7 +1964,7 @@ impl App {
     }
 
     fn close_pane(&mut self, ctx: &egui::Context, id: PaneId) {
-        let Some(project_id) = self.panes.get(&id).map(|p| p.project) else {
+        let Some(project_id) = self.panes.get(&id).map(|p| p.project).or_else(|| self.browsers.get(&id).map(|b| b.project)) else {
             return;
         };
         let Some(p) = self.project_mut(project_id) else {
@@ -2557,6 +2593,7 @@ impl App {
                     .panes
                     .get(&pane)
                     .map(|x| x.project)
+                    .or_else(|| self.browsers.get(&pane).map(|b| b.project))
                     .and_then(|id| self.projects.iter_mut().find(|p| p.id == id))
                     && let Some(i) = p.tab_of(pane)
                     && p.tabs[i].layout.remove(pane)
@@ -2934,7 +2971,13 @@ impl App {
                 }
             }
             Action::RevealPath(path) => platform::reveal_in_folder(&path),
-            Action::OpenInBrowser(path) => platform::open_in_browser(&path),
+            Action::OpenInBrowser(path) => {
+                if self.settings.browser_here {
+                    self.open_web_here(&crate::browser::file_url(&path));
+                } else {
+                    platform::open_in_browser(&path);
+                }
+            }
             Action::NewFileIn(ref dir) | Action::NewFolderIn(ref dir) => {
                 let folder = matches!(action, Action::NewFolderIn(_));
                 let dir = dir.clone();
@@ -3041,6 +3084,17 @@ impl App {
                 _ => self.open_review(None),
             },
             Action::ReviewAgent => self.open_review_with(None, true),
+            Action::NewBrowserTab => self.new_browser_tab(),
+            Action::OpenWeb(url) => {
+                // ⌥ held, or the setting off (or not a web page: mail): the default browser.
+                let web = ["http://", "https://", "file://"].iter().any(|s| url.to_ascii_lowercase().starts_with(s));
+                if web && self.settings.browser_here && !ctx.input(|i| i.modifiers.alt) {
+                    self.open_web_here(&url);
+                } else {
+                    platform::open_url(&url);
+                }
+            }
+            Action::OpenInDefaultBrowser(path) => platform::open_in_browser(&path),
             Action::NewWorktree { preset, name, base } => {
                 if let Some(root) = self.active.and_then(|id| self.root_project(id)).map(|p| p.id) {
                     self.create_worktree(root, preset, name, base);
@@ -3083,6 +3137,9 @@ impl App {
                     tc_term::search::reveal(&p.shared, &m);
                 }
             }
+            Action::Copy if self.page_has_keys("copy") => {}
+            Action::Paste if self.page_has_keys("paste") => {}
+            Action::SelectAll if self.page_has_keys("selectAll") => {}
             Action::Copy => {
                 // The menu takes ⌘C before any widget: a text field (the editor, a dialog, the
                 // palette) or text selected in a document gets it as egui's own copy; else the
@@ -3668,6 +3725,7 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
     let mut keys = vec![
         (cmd | Modifiers::ALT, Key::J, Action::ToggleAttention),
         (cmd | Modifiers::ALT, Key::K, Action::ClearScrollback),
+        (cmd | Modifiers::ALT, Key::B, Action::NewBrowserTab),
     ];
     let map = [
         (Key::J, Action::NextAttention),
@@ -3789,6 +3847,10 @@ impl eframe::App for App {
         } else {
             self.ui_panics = 0;
         }
+        // Browser panes: what their pages said, and their web views laid where they are drawn.
+        self.browser_events(ui.ctx());
+        #[cfg(target_os = "macos")]
+        self.sync_browsers(ui.ctx(), frame);
         #[cfg(target_os = "macos")]
         self.sync_option_as_alt(ui.ctx(), frame);
         #[cfg(not(target_os = "macos"))]

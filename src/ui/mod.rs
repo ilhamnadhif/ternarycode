@@ -13,6 +13,7 @@ pub mod kit;
 #[cfg(target_os = "macos")]
 pub mod menu;
 pub mod palette;
+pub mod browser_ui;
 pub mod review;
 pub mod settings;
 pub mod sidebar;
