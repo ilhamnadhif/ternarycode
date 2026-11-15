@@ -108,7 +108,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # a local web server); its chip opens the page beside the terminal, where the web view sits
 # exactly on the pane; an address typed goes there; ⇧⌘B opens the project's server in a tab of
 # its own. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-grid browser-button" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-grid browser-button split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -169,6 +169,12 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     # browser's tab back; ⌘R reloads the page; ⌘L in a project with no browser opens one, its
     # address field taking the keyboard.
     run browser-button 60 "sleep 1000;; action add-project $P1;; sleep 1500;; expect-shown browser-button;; keys $WORK/bin/announce $WEBPORT\\r;; wait-shown server-chip;; click browser-button;; wait-tabs 0:2,3;; wait-browser TC Test Page;; sleep 500;; expect-web-placed;; shot e2e-browser-button;; click browser-button;; sleep 300;; keys localhost:$WEBPORT/second.html\\r;; wait-browser Second;; action browser-reload;; sleep 800;; wait-browser Second;; action new-tab;; sleep 800;; wait-tabs 0:2,3 1:4;; click browser-button;; sleep 500;; expect-tab 0;; wait-browser Second;; action add-project $P2;; sleep 1500;; action browser-address;; sleep 500;; keys localhost:$WEBPORT\\r;; wait-browser TC Test Page;; quit"
+    # Splits are resized by their dividers, a page beside one too: the divider takes the drag
+    # along both its sides (the terminal's and the page's), also when the pointer then crosses
+    # the page; the Code drawer's edge the same. The web view follows each time.
+    D_DRAG='mouse down divider:0@0.5,0.5;; sleep 100;; mouse drag divider:0@'
+    D_UP=',0.5;; sleep 150;; mouse up divider:0@0.5,0.5;; sleep 600'
+    run split-resize 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action split-right;; sleep 1000;; wait-tabs 0:2,3;; ${D_DRAG}-20${D_UP};; expect-width pane:3 650 760;; action close-pane;; sleep 800;; action open-web http://localhost:$WEBPORT/;; wait-browser TC Test Page;; wait-tabs 0:2,4;; sleep 800;; expect-width browser:4 500 530;; ${D_DRAG}-30${D_UP};; expect-width browser:4 800 840;; expect-web-placed;; ${D_DRAG}40${D_UP};; expect-width browser:4 405 445;; expect-web-placed;; action editor;; sleep 800;; mouse down editor-divider@0.5,0.5;; sleep 100;; mouse drag editor-divider@-10,0.5;; sleep 150;; mouse up editor-divider@0.5,0.5;; sleep 600;; expect-width browser:4 110 175;; expect-web-placed;; shot e2e-split-resize;; quit"
     kill "$WEB_PID" 2>/dev/null
 fi
 

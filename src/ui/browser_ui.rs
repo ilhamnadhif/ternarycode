@@ -18,6 +18,8 @@ use crate::project::Tab;
 
 /// The toolbar at the top of a browser pane (its header, also in a split).
 pub const BAR_H: f32 = 36.0;
+/// How far a page's web view keeps from its pane's sides and foot (see `browser_pane`).
+const WEB_INSET: f32 = 3.0;
 /// The bar under it while an agent uses the page.
 const AGENT_H: f32 = 34.0;
 /// The question about a site an agent's step would open.
@@ -62,12 +64,19 @@ impl App {
         let url = b.url.clone();
         let loading = b.loading;
 
-        // Right side first: what is left goes to the address.
+        // Right side first: what is left goes to the address. In a narrow pane the address keeps
+        // its room: the terminal serving the page, the console's chip and ↗ (also in ⋯) go first.
         let inner = bar.shrink2(vec2(6.0, 0.0));
+        const MIN_FIELD: f32 = 90.0;
+        let field_left = inner.left() + 3.0 * 24.0 + 4.0;
+        let fits = |right: f32, w: f32| right - w - 4.0 - field_left >= MIN_FIELD;
         let mut right = inner.right();
         let more = Rect::from_center_size(pos2(right - 11.0, inner.center().y), vec2(22.0, 22.0));
-        let ext = Rect::from_center_size(pos2(more.left() - 13.0, inner.center().y), vec2(22.0, 22.0));
-        right = ext.left() - 4.0;
+        right = more.left() - 4.0;
+        let ext = fits(right, 22.0).then(|| Rect::from_center_size(pos2(more.left() - 13.0, inner.center().y), vec2(22.0, 22.0)));
+        if let Some(e) = ext {
+            right = e.left() - 4.0;
+        }
         // The console's warnings and errors, when there are any (a click opens its drawer).
         let (errors, warnings) = self.browsers.get(&id).map_or((0, 0), |b| {
             (b.console.iter().filter(|l| l.is_error()).count(), b.console.iter().filter(|l| l.is_warning()).count())
@@ -77,16 +86,20 @@ impl App {
             let n = if errors + warnings > 0 { (errors + warnings).to_string() } else { String::new() };
             let g = ui.painter().layout_no_wrap(n, egui::FontId::proportional(style::SMALL), p.text);
             let w = if g.size().x > 0.0 { g.size().x + 30.0 } else { 26.0 };
-            let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
-            right = r.left() - 4.0;
-            r
-        });
-        let from_rect = from.as_ref().map(|(_, label)| {
+            fits(right, w).then(|| {
+                let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
+                right = r.left() - 4.0;
+                r
+            })
+        }).flatten();
+        let from_rect = from.as_ref().and_then(|(_, label)| {
             let g = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(style::SMALL), p.text_muted);
             let w = (g.size().x + 26.0).min(160.0);
-            let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
-            right = r.left() - 4.0;
-            r
+            fits(right, w).then(|| {
+                let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
+                right = r.left() - 4.0;
+                r
+            })
         });
         let mut x = inner.left();
         let mut nav = |icon: &str, tip: &str| {
@@ -153,10 +166,11 @@ impl App {
                 self.actions.push(Action::FocusPane(pane));
             }
         }
-        let open_ext = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(ext), |ui| kit::icon_button_ex(ui, icons::ARROW_SQUARE_OUT, t("Open in Default Browser"), false, 22.0))
-            .inner
-            .clicked();
+        let open_ext = ext.is_some_and(|ext| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(ext), |ui| kit::icon_button_ex(ui, icons::ARROW_SQUARE_OUT, t("Open in Default Browser"), false, 22.0))
+                .inner
+                .clicked()
+        });
         let more = ui.scope_builder(egui::UiBuilder::new().max_rect(more), |ui| kit::icon_button_ex(ui, icons::DOTS_THREE, t("More"), false, 22.0)).inner;
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser-more:{id}"), more.rect);
@@ -267,7 +281,11 @@ impl App {
         }
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser:{id}"), page);
-        self.browser_pages.insert(id, page);
+        // The web view keeps clear of the pane's sides and foot: a divider (or the Code drawer's
+        // edge, the sidebar's) is dragged by a strip either side of it, and the page, always
+        // drawn over the app, would take its half.
+        let web = Rect::from_min_max(pos2(page.left() + WEB_INSET, page.top()), pos2(page.right() - WEB_INSET, page.bottom() - WEB_INSET));
+        self.browser_pages.insert(id, web);
         if self.focus_request == Some(id) {
             self.focus_request = None;
             self.browser_focus_request = Some(id);

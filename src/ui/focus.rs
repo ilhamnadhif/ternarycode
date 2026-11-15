@@ -17,6 +17,8 @@ use crate::i18n::{t, tf};
 
 pub const HEADER_H: f32 = super::sidebar::TOP_H;
 const PANE_HEADER_H: f32 = 28.0;
+/// How far either side of a divider (or the Code drawer's edge) a drag takes it.
+const DIVIDER_GRAB: f32 = 5.0;
 /// Space between a pane's edge and where the terminal's own padding starts (12 px to the text
 /// at the sides, as the design has it).
 const TERM_PAD: f32 = 2.0;
@@ -353,24 +355,9 @@ impl App {
 
         // ----- editor beside the panes ------------------------------------------------------------
         self.last_full_body = Some(body);
+        let mut drawer_edge = None;
         let body = if let Some(split_x) = self.editor_split(pid, body) {
             let editor_rect = Rect::from_min_max(pos2(split_x + 1.0, body.top()), body.max);
-            let divider = Rect::from_min_max(pos2(split_x - 3.0, body.top()), pos2(split_x + 3.0, body.bottom()));
-            let dr = ui.interact(divider, egui::Id::new(("editor-divider", pid)), Sense::drag());
-            if dr.hovered() || dr.dragged() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-            }
-            if dr.dragged()
-                && let Some(pos) = dr.interact_pointer_pos()
-                && let Some(e) = self.editors.get_mut(&pid)
-            {
-                e.width = ((body.right() - pos.x) / body.width()).clamp(0.2, 0.8);
-            }
-            if dr.drag_stopped() {
-                self.mark_dirty();
-            }
-            let line = if dr.hovered() || dr.dragged() { p.accent } else { p.border };
-            ui.painter().vline(split_x, body.y_range(), Stroke::new(1.0, line));
             let root = self.project(pid).map(|x| x.path.clone()).unwrap_or_default();
             // Review of this project, unless full screen, takes the drawer.
             let review_here = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
@@ -382,6 +369,8 @@ impl App {
                     self.code_drawer(ui, pid, root);
                 }
             });
+            // Its edge is dragged to size it (after the panes are drawn, below).
+            drawer_edge = Some((split_x, body));
             Rect::from_min_max(body.min, pos2(split_x, body.bottom()))
         } else {
             body
@@ -398,27 +387,8 @@ impl App {
         self.last_body = Some(body);
         let pane_areas = rects.clone();
 
-        // Dividers.
+        // Dividers (dragged after the panes are drawn, below).
         for d in &dividers {
-            let id = egui::Id::new(("divider", pid, active_tab, d.path.clone()));
-            let r = ui.interact(d.rect.expand(2.0), id, Sense::drag());
-            if r.hovered() || r.dragged() {
-                ui.ctx().set_cursor_icon(match d.dir {
-                    tc_term::layout::SplitDir::Horizontal => egui::CursorIcon::ResizeHorizontal,
-                    tc_term::layout::SplitDir::Vertical => egui::CursorIcon::ResizeVertical,
-                });
-            }
-            if r.dragged()
-                && let Some(pos) = r.interact_pointer_pos()
-            {
-                let ratio = tc_term::layout::ratio_at(d, pos);
-                if let Some(tab) = self.projects.iter_mut().find(|x| x.id == pid).and_then(|x| x.tab_mut()) {
-                    tab.layout.set_ratio(&d.path, ratio);
-                }
-            }
-            if r.drag_stopped() {
-                self.mark_dirty();
-            }
             ui.painter().rect_filled(d.rect, CornerRadius::ZERO, p.border);
         }
 
@@ -519,6 +489,56 @@ impl App {
         }
         if self.focus_request.is_some_and(|f| !self.panes.contains_key(&f)) {
             self.focus_request = None;
+        }
+        // The dividers take the drag after the panes are drawn, so that a terminal beside one
+        // does not take the strip along its edge (a page's web view keeps clear of it).
+        for (i, d) in dividers.iter().enumerate() {
+            let id = egui::Id::new(("divider", pid, active_tab, d.path.clone()));
+            let grab = d.rect.expand(DIVIDER_GRAB - tc_term::layout::DIVIDER / 2.0);
+            let r = ui.interact(grab, id, Sense::drag());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("divider:{i}"), grab);
+            let _ = i;
+            if r.hovered() || r.dragged() {
+                ui.ctx().set_cursor_icon(match d.dir {
+                    tc_term::layout::SplitDir::Horizontal => egui::CursorIcon::ResizeHorizontal,
+                    tc_term::layout::SplitDir::Vertical => egui::CursorIcon::ResizeVertical,
+                });
+                ui.painter().rect_filled(d.rect, CornerRadius::ZERO, p.accent);
+            }
+            if r.dragged()
+                && let Some(pos) = r.interact_pointer_pos()
+            {
+                let ratio = tc_term::layout::ratio_at(d, pos);
+                if let Some(tab) = self.projects.iter_mut().find(|x| x.id == pid).and_then(|x| x.tab_mut()) {
+                    tab.layout.set_ratio(&d.path, ratio);
+                }
+            }
+            if r.drag_stopped() {
+                self.mark_dirty();
+            }
+        }
+        // The Code drawer's edge, dragged to size it: after the panes and the drawer, so that
+        // neither takes the strip along it.
+        if let Some((split_x, full)) = drawer_edge {
+            let divider = Rect::from_min_max(pos2(split_x - DIVIDER_GRAB, full.top()), pos2(split_x + DIVIDER_GRAB, full.bottom()));
+            let dr = ui.interact(divider, egui::Id::new(("editor-divider", pid)), Sense::drag());
+            #[cfg(debug_assertions)]
+            crate::devtest::record("editor-divider", divider);
+            if dr.hovered() || dr.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            if dr.dragged()
+                && let Some(pos) = dr.interact_pointer_pos()
+                && let Some(e) = self.editors.get_mut(&pid)
+            {
+                e.width = ((full.right() - pos.x) / full.width()).clamp(0.2, 0.8);
+            }
+            if dr.drag_stopped() {
+                self.mark_dirty();
+            }
+            let line = if dr.hovered() || dr.dragged() { p.accent } else { p.border };
+            ui.painter().vline(split_x, full.y_range(), Stroke::new(1.0, line));
         }
         self.tab_drop(ui, &tab_rects, strip_shown, &pane_areas, active_tab);
         self.find_bar(ui);
