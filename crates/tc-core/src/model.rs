@@ -40,6 +40,8 @@ pub struct Workspace {
     /// `grid_active_only`.
     pub grid_filter: Option<GridFilter>,
     pub next_id: u64,
+    /// The sidebar's groups folded away ("active", "idle").
+    pub sidebar_folded: Vec<String>,
 }
 
 /// Which projects the Grid shows.
@@ -297,6 +299,9 @@ pub struct Settings {
     /// Where new worktrees go and what their branches are called.
     #[serde(default)]
     pub worktrees: WorktreeSettings,
+    /// The sidebar lists projects where something runs or waits first, under "Active".
+    #[serde(default = "yes")]
+    pub group_active: bool,
 }
 
 /// Where Run Agent puts a new worktree.
@@ -353,6 +358,7 @@ impl Default for Settings {
             skip_permissions: Vec::new(),
             shell_integration: true,
             check_updates: true,
+            group_active: true,
             skipped_version: None,
             last_update_check: None,
             window: None,

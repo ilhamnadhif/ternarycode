@@ -288,6 +288,23 @@ pub struct App {
     pub first_frame: bool,
     /// Terminal tab being dragged (index in the active project).
     pub tab_drag: Option<usize>,
+    /// The tab in view before a dragged tab made another one show (to drop beside it): shown
+    /// again if the drag ends anywhere but on a pane.
+    pub tab_drag_home: Option<usize>,
+    /// The tab a dragged tab is held over in the strip, and since when: shown after a moment.
+    pub tab_spring: Option<(usize, Instant)>,
+    /// Per project, the tab in view and the one in view before it (each by its first pane):
+    /// where a dragged open tab goes beside.
+    pub tab_history: HashMap<ProjectId, (PaneId, Option<PaneId>)>,
+    /// The sidebar's Active group: until when each project stays in it (something ran or
+    /// waited there a moment ago).
+    pub sidebar_active_until: HashMap<ProjectId, Instant>,
+    /// The group as it was when the pointer came over the list: no row moves under it.
+    pub sidebar_hold: Option<HashSet<ProjectId>>,
+    /// The projects (worktrees aside) in the order the sidebar shows them, for ⌘1–⌘9.
+    pub sidebar_order: Vec<ProjectId>,
+    /// The sidebar's groups folded away ("active", "idle").
+    pub sidebar_folded: HashSet<String>,
     /// Pane being dragged by its header.
     pub pane_drag: Option<PaneId>,
     /// The editor (its text or find field) had the keyboard in the last frame: ⌘F searches the
@@ -545,6 +562,13 @@ impl App {
             mem_bytes: (None, None),
             first_frame: true,
             tab_drag: None,
+            tab_drag_home: None,
+            tab_spring: None,
+            tab_history: HashMap::new(),
+            sidebar_active_until: HashMap::new(),
+            sidebar_hold: None,
+            sidebar_order: Vec::new(),
+            sidebar_folded: HashSet::new(),
             pane_drag: None,
             editor_keyboard: false,
             editor_seen: false,
@@ -763,9 +787,20 @@ impl App {
         self.projects = order.into_iter().filter_map(|i| old[i].take()).collect();
     }
 
-    /// A project's place among the projects (worktrees aside), for ⌘1–⌘9.
+    /// A project's place among the projects (worktrees aside), for ⌘1–⌘9: as the sidebar shows
+    /// them (Active first), or in the list's order while the sidebar is hidden.
     pub fn top_index(&self, id: ProjectId) -> Option<usize> {
-        self.projects.iter().filter(|p| !p.is_worktree()).position(|p| p.id == id)
+        self.top_order().iter().position(|p| *p == id)
+    }
+
+    /// The projects (worktrees aside) in ⌘1–⌘9's order.
+    pub fn top_order(&self) -> Vec<ProjectId> {
+        let listed: Vec<ProjectId> = self.projects.iter().filter(|p| !p.is_worktree()).map(|p| p.id).collect();
+        if !self.settings.sidebar_hidden && self.sidebar_order.len() == listed.len() && listed.iter().all(|id| self.sidebar_order.contains(id)) {
+            self.sidebar_order.clone()
+        } else {
+            listed
+        }
     }
 
     fn show_focus(&mut self) {
@@ -800,6 +835,7 @@ impl App {
         self.view = ws.view;
         self.grid_columns = ws.grid_columns;
         self.grid_filter = ws.filter();
+        self.sidebar_folded = ws.sidebar_folded.iter().cloned().collect();
         for p in &ws.projects {
             self.next_id = self.next_id.max(p.id + 1);
             for pane in &p.panes {
@@ -918,6 +954,11 @@ impl App {
             grid_active_only: self.grid_filter == tc_core::model::GridFilter::Active,
             grid_filter: Some(self.grid_filter),
             next_id: self.next_id,
+            sidebar_folded: {
+                let mut v: Vec<String> = self.sidebar_folded.iter().cloned().collect();
+                v.sort();
+                v
+            },
         }
     }
 
@@ -1088,7 +1129,7 @@ impl App {
     /// The pane the user is looking at: the focused pane of the visible project, while the
     /// window is active and no dialog covers it.
     fn looking_at(&self) -> Option<PaneId> {
-        if !self.window_focused || self.dialog.is_some() || self.review.is_some() {
+        if !self.window_focused || self.dialog.is_some() || self.review_full() {
             return None;
         }
         match self.view {
@@ -2328,7 +2369,7 @@ impl App {
                 }
             }
             Action::SelectProjectIndex(i) => {
-                if let Some(id) = self.projects.iter().filter(|p| !p.is_worktree()).nth(i).map(|p| p.id) {
+                if let Some(id) = self.top_order().get(i).copied() {
                     self.dispatch(ctx, Action::SelectProject(id));
                 }
             }
@@ -2841,6 +2882,12 @@ impl App {
                 if let Some(e) = self.editor_mut() {
                     e.visible = !e.visible;
                 }
+                // Review in the drawer goes with it.
+                if !self.editors.get(&self.active.unwrap_or_default()).is_some_and(|e| e.visible)
+                    && self.review.as_ref().is_some_and(|r| !r.expanded)
+                {
+                    self.review = None;
+                }
                 self.show_focus();
                 if !self.editors.get(&self.active.unwrap_or_default()).is_some_and(|e| e.visible) {
                     self.focus_request = self.current_pane();
@@ -2988,7 +3035,12 @@ impl App {
                 }
             }
             Action::FindAll => self.open_palette(PaletteMode::Search),
-            Action::Review => self.open_review(None),
+            // Again while Review is in the drawer: full screen, and back.
+            Action::Review => match self.review.as_mut().filter(|r| Some(r.project) == self.active) {
+                Some(r) if self.view == View::Focus => r.expanded = !r.expanded,
+                _ => self.open_review(None),
+            },
+            Action::ReviewAgent => self.open_review_with(None, true),
             Action::NewWorktree { preset, name, base } => {
                 if let Some(root) = self.active.and_then(|id| self.root_project(id)).map(|p| p.id) {
                     self.create_worktree(root, preset, name, base);
@@ -3024,12 +3076,6 @@ impl App {
                     p.worktree_setup = Some(setup);
                 }
                 self.mark_dirty();
-            }
-            Action::ReviewFile(path) => {
-                self.open_review(Some(crate::ui::review::Base::Head));
-                if let Some(r) = self.review.as_mut() {
-                    r.want = Some(path);
-                }
             }
             Action::RevealMatch(pane, m) => {
                 self.focus_pane(pane);
@@ -3575,6 +3621,8 @@ impl App {
         if !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
             self.tab_drag = None;
             self.pane_drag = None;
+            self.tab_spring = None;
+            self.end_tab_drag_view();
         }
         self.draw(ui);
         self.drop_overlay(&ctx);

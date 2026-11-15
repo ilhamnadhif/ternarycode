@@ -63,6 +63,21 @@ pub struct Review {
     /// Which load and which diff the answers must belong to (an older, slower one is dropped).
     load: u64,
     diff_load: u64,
+    /// Drawn over the panes (full screen) instead of in the Code drawer.
+    pub expanded: bool,
+    /// Opened from an agent's finished run (its Review button, the waiting list): shows what
+    /// that run changed, when it changed something.
+    pub from_agent: bool,
+    /// How many files each base has, shown beside its name.
+    pub counts: Vec<(Base, usize)>,
+    /// Opened for the agent's run, which changed nothing: the changes since the last commit are
+    /// shown instead.
+    pub fell_back: bool,
+    /// Folders new as a whole (git status lists them as one line), with how many files each
+    /// has; each file's folder among them; the folders folded away.
+    pub new_dirs: Vec<(String, usize)>,
+    pub dir_of: Vec<Option<usize>>,
+    pub folded: HashSet<usize>,
 }
 
 /// Numbers review work, so late answers of earlier work are told apart.
@@ -81,6 +96,10 @@ pub enum ReviewMsg {
         to: String,
         files: Result<Vec<FileChange>, String>,
         branch: Option<Box<BranchView>>,
+        /// The base shown (the agent's run may have fallen back to the last commit).
+        base: Base,
+        counts: Vec<(Base, usize)>,
+        fell_back: bool,
     },
     Diff(u64, usize, Result<FileDiff, String>),
 }
@@ -104,7 +123,16 @@ impl App {
 
     /// Opens the review for the current pane: its agent run when there is a snapshot, else
     /// changes since the last commit.
+    /// Review of the active project, in the Code drawer (over the panes from the Grid).
+    /// `base`: what to compare with; `None` chooses: a worktree since it branched, else since
+    /// the last commit (the count "N changed" shows).
     pub fn open_review(&mut self, base: Option<Base>) {
+        self.open_review_with(base, false);
+    }
+
+    /// As [`App::open_review`]; `from_agent`: opened from an agent's finished run, whose changes
+    /// are shown when it made some (else the changes since the last commit, with a note).
+    pub fn open_review_with(&mut self, base: Option<Base>, from_agent: bool) {
         let Some(project) = self.active_project() else { return };
         let (folder, name, project_id) = (project.path.clone(), project.name.clone(), project.id);
         let pane = self.current_pane();
@@ -113,23 +141,21 @@ impl App {
                 .as_ref()
                 .map(|(tree, at, agent)| (agent.label().to_string(), *at, tree.clone()))
         });
-        // A worktree is reviewed since it branched, unless asked otherwise.
         let worktree = project.worktree.as_ref().map(|w| (w.branch.clone(), w.base.clone()));
-        let base = base.unwrap_or(if worktree.is_some() {
-            Base::Branch
-        } else if run.is_some() {
-            Base::Run
-        } else {
-            Base::Head
-        });
-        let base = if base == Base::Branch && worktree.is_none() { Base::Head } else { base };
+        // Full screen stays full screen; the Grid has no drawer to show it in.
+        let expanded = self.view == tc_core::model::View::Grid
+            || self.review.as_ref().is_some_and(|r| r.project == project_id && r.expanded);
+        if !expanded {
+            // The drawer opens as ⌘E opens it (a first time at its usual width).
+            self.editors.entry(project_id).or_insert_with(|| crate::editor::Editor { width: 0.54, ..Default::default() }).visible = true;
+        }
         let load = next_work();
         self.review = Some(Review {
             project: project_id,
             load,
             diff_load: 0,
             root: folder.clone(),
-            base,
+            base: base.unwrap_or(Base::Head),
             run: run.clone(),
             worktree: worktree.clone(),
             branch: None,
@@ -142,6 +168,13 @@ impl App {
             error: None,
             diff_error: None,
             want: None,
+            expanded,
+            from_agent,
+            counts: Vec::new(),
+            fell_back: false,
+            new_dirs: Vec::new(),
+            dir_of: Vec::new(),
+            folded: HashSet::new(),
         });
         let tx = self.app_tx.clone();
         let run_tree = run.map(|(_, _, tree)| tree);
@@ -156,33 +189,73 @@ impl App {
                     Some(h) => h.clone(),
                     None => tc_git::empty_tree(root)?,
                 };
-                let mut branch = None;
-                let from = match base {
-                    Base::Run => run_tree.ok_or_else(|| crate::i18n::t("No snapshot of this run.").to_string())?,
-                    Base::Head => head_tree.clone(),
-                    Base::Branch => {
-                        let (wt_branch, wt_base) = worktree.clone().unwrap_or_default();
-                        let fork = tc_git::worktree::merge_base(root, &wt_base, "HEAD")?;
-                        let (ahead, behind) = tc_git::worktree::ahead_behind(root, &wt_base, "HEAD").unwrap_or((0, 0));
-                        let uncommitted = tc_git::changes(root, &head_tree, &now).map(|f| f.into_iter().map(|c| c.path).collect()).unwrap_or_default();
-                        branch = Some(BranchView {
-                            branch: wt_branch,
-                            base: wt_base,
-                            ahead,
-                            behind,
-                            commits: tc_git::worktree::commits(root, &fork, "HEAD").unwrap_or_default(),
-                            by_file: tc_git::worktree::last_commit_by_file(root, &fork, "HEAD").unwrap_or_default(),
-                            uncommitted,
-                        });
-                        tc_git::worktree::tree_of(root, &fork)?
-                    }
+                // Every base it can be compared with, counted: each is shown with its number.
+                let head_files = tc_git::changes(root, &head_tree, &now)?;
+                let run_files = match &run_tree {
+                    Some(tree) => Some(tc_git::changes(root, tree, &now)?),
+                    None => None,
                 };
-                let files = tc_git::changes(root, &from, &now);
-                Ok::<_, String>((from, now, files, branch))
+                let mut branch = None;
+                let mut fork = None;
+                if let Some((wt_branch, wt_base)) = worktree.clone() {
+                    let fork_commit = tc_git::worktree::merge_base(root, &wt_base, "HEAD")?;
+                    let (ahead, behind) = tc_git::worktree::ahead_behind(root, &wt_base, "HEAD").unwrap_or((0, 0));
+                    branch = Some(BranchView {
+                        branch: wt_branch,
+                        base: wt_base.clone(),
+                        ahead,
+                        behind,
+                        commits: tc_git::worktree::commits(root, &fork_commit, "HEAD").unwrap_or_default(),
+                        by_file: tc_git::worktree::last_commit_by_file(root, &fork_commit, "HEAD").unwrap_or_default(),
+                        uncommitted: head_files.iter().map(|c| c.path.clone()).collect(),
+                    });
+                    let tree = tc_git::worktree::tree_of(root, &fork_commit)?;
+                    let files = tc_git::changes(root, &tree, &now)?;
+                    fork = Some((tree, files));
+                }
+                let mut counts = Vec::new();
+                if let Some(f) = &run_files {
+                    counts.push((Base::Run, f.len()));
+                }
+                if let Some((_, f)) = &fork {
+                    counts.push((Base::Branch, f.len()));
+                }
+                counts.push((Base::Head, head_files.len()));
+                // What is shown: what was asked; else a worktree since it branched; an agent's
+                // run when it changed something; else since the last commit.
+                let mut fell_back = false;
+                let chosen = match base {
+                    Some(b) => b,
+                    None if fork.is_some() => Base::Branch,
+                    None if from_agent && run_files.is_some() => {
+                        if run_files.as_ref().is_some_and(|f| f.is_empty()) && !head_files.is_empty() {
+                            fell_back = true;
+                            Base::Head
+                        } else {
+                            Base::Run
+                        }
+                    }
+                    None => Base::Head,
+                };
+                let (from, files) = match chosen {
+                    Base::Run => match (run_tree, run_files) {
+                        (Some(tree), Some(files)) => (tree, files),
+                        _ => return Err(crate::i18n::t("No snapshot of this run.").to_string()),
+                    },
+                    Base::Branch => match fork {
+                        Some(f) => f,
+                        None => (head_tree.clone(), head_files),
+                    },
+                    Base::Head => (head_tree.clone(), head_files),
+                };
+                let chosen = if chosen == Base::Branch && branch.is_none() { Base::Head } else { chosen };
+                Ok::<_, String>((from, now, files, branch, chosen, counts, fell_back))
             })();
             let root = root.unwrap_or(folder);
             let msg = match result {
-                Ok((from, to, files, branch)) => ReviewMsg::Loaded { load, root, from, to, files, branch: branch.map(Box::new) },
+                Ok((from, to, files, branch, base, counts, fell_back)) => {
+                    ReviewMsg::Loaded { load, root, from, to, files: Ok(files), branch: branch.map(Box::new), base, counts, fell_back }
+                }
                 Err(e) => ReviewMsg::Loaded {
                     load,
                     root,
@@ -190,6 +263,9 @@ impl App {
                     to: String::new(),
                     files: Err(e),
                     branch: None,
+                    base: base.unwrap_or(Base::Head),
+                    counts: Vec::new(),
+                    fell_back: false,
                 },
             };
             let _ = tx.send(AppMsg::Review(msg));
@@ -197,16 +273,32 @@ impl App {
         });
     }
 
+    /// Review covers the panes (full screen): the panes are not what the user looks at.
+    pub fn review_full(&self) -> bool {
+        self.review.as_ref().is_some_and(|r| r.expanded)
+    }
+
     pub fn on_review_msg(&mut self, msg: ReviewMsg) {
+        // Folders git status lists as new as a whole: their files are folded under them.
+        let new_folders: Vec<PathBuf> = self
+            .review
+            .as_ref()
+            .and_then(|r| self.project(r.project))
+            .and_then(|p| p.git.clone())
+            .map(|g| g.changes.iter().filter(|(path, c)| **c == crate::project::Change::Untracked && path.is_dir()).map(|(path, _)| path.clone()).collect())
+            .unwrap_or_default();
         let Some(r) = self.review.as_mut() else { return };
         match msg {
-            ReviewMsg::Loaded { load, root, from, to, files, branch } => {
+            ReviewMsg::Loaded { load, root, from, to, files, branch, base, counts, fell_back } => {
                 if load != r.load {
                     return;
                 }
                 r.loading = false;
                 r.root = root;
                 r.branch = branch.map(|b| *b);
+                r.base = base;
+                r.counts = counts;
+                r.fell_back = fell_back;
                 match files {
                     Ok(f) => {
                         r.files = f;
@@ -218,6 +310,7 @@ impl App {
                         r.selected = want
                             .and_then(|w| r.files.iter().position(|f| root.join(&f.path) == w || std::path::Path::new(&f.path) == w))
                             .unwrap_or(0);
+                        group_new_folders(r, &new_folders);
                         let first = r.selected;
                         if !r.files.is_empty() {
                             self.load_review_diff(first);
@@ -257,48 +350,129 @@ impl App {
         });
     }
 
-    /// Review, in place of the panes (the sidebar stays in view): what changed since the agent
-    /// started or since the last commit, a file list at the left and the selected file's diff.
-    /// j / k change file, n / p hunk, ↵ opens it in the editor, ⇥ switches the base, Esc goes
-    /// back to the terminals.
+    /// The bases Review can show, in order (⇥ goes round them): long and short names, count.
+    fn review_bases(&self) -> Vec<(Base, String, String, Option<usize>)> {
+        let Some(r) = self.review.as_ref() else { return Vec::new() };
+        let count = |b: Base| r.counts.iter().find(|(x, _)| *x == b).map(|(_, n)| *n);
+        // Since the last commit counts as "N changed" does (git status: a new folder is one).
+        let head = self.project(r.project).and_then(|p| p.git.as_ref()).map(|g| g.changes.len()).or(count(Base::Head));
+        let mut out = vec![(Base::Head, t("Since last commit").to_string(), t("Last commit").to_string(), head)];
+        if let Some((_, base)) = &r.worktree {
+            out.push((Base::Branch, tf("Since branched from {}", &[base]), base.clone(), count(Base::Branch)));
+        }
+        if let Some((agent, at, _)) = &r.run {
+            let long = if r.worktree.is_some() {
+                tf("Since {} started", &[agent])
+            } else {
+                tf("Since {} started · {}", &[agent, &super::status::age(*at)])
+            };
+            out.push((Base::Run, long, agent.clone(), count(Base::Run)));
+        }
+        out
+    }
+
+    /// Review over the panes (full screen; the sidebar stays): the bases in the top bar, the
+    /// file list and the selected file's diff. Esc goes back to the Code drawer.
     pub fn review_view(&mut self, ui: &mut Ui) {
         let Some(r) = self.review.as_ref() else { return };
         let p = style::pal(ui);
         let full = ui.max_rect();
         let project = self.active_project().map(|x| x.name.clone()).unwrap_or_default();
-        let who = r.run.as_ref().map(|(agent, _, _)| agent.clone());
         let pane_label = self.current_pane().and_then(|id| self.panes.get(&id)).map(|x| x.label()).unwrap_or_default();
+        let base = r.base;
+        let bases = self.review_bases();
+        let options: Vec<kit::Seg> = bases
+            .iter()
+            .map(|(b, long, _, n)| {
+                let s = kit::Seg::new(long, "");
+                let s = if *b == Base::Branch { s.icon(icons::GIT_FORK) } else { s };
+                match n {
+                    Some(n) => s.count(n, if *n > 0 { p.warn } else { p.text_faint }),
+                    None => s,
+                }
+            })
+            .collect();
+        let on = bases.iter().position(|(b, ..)| *b == base).unwrap_or(0);
+        let width = kit::segmented_width(ui, &options);
+        let choices: Vec<Base> = bases.iter().map(|(b, ..)| *b).collect();
+        let mut centre = |app: &mut Self, ui: &mut Ui, rect: Rect| {
+            #[cfg(debug_assertions)]
+            for (r, b) in kit::segment_rects(rect, choices.len()).into_iter().zip(&choices) {
+                crate::devtest::record(format!("review-base:{b:?}"), r);
+            }
+            if let Some(i) = kit::segmented_in(ui, rect, egui::Id::new("review-base"), &options, on) {
+                app.review_switch = Some(choices[i]);
+            }
+        };
+        let back = if self.view == tc_core::model::View::Focus { t("Back to the Code drawer") } else { t("Back") };
+        let body = self.top_bar(
+            ui,
+            full,
+            |app, ui| {
+                if kit::icon_button_ex(ui, icons::ARROW_LEFT, &format!("{back}   Esc"), false, 26.0).clicked() {
+                    app.review_close = true;
+                }
+                ui.label(RichText::new(t("Review")).font(style::semibold(14.0)).color(p.text));
+                ui.label(RichText::new(format!("{project} · {pane_label}")).size(12.5).color(p.text_faint));
+            },
+            Some((width, &mut centre)),
+        );
+        self.review_body(ui, body, false);
+    }
+
+    /// Review in the Code drawer, beside the terminals: Files | Changes and the bases above the
+    /// file list, the selected file's diff at its right. Its keys work once it is clicked.
+    pub fn review_drawer(&mut self, ui: &mut Ui) {
+        let area = ui.max_rect();
+        self.review_body(ui, area, true);
+    }
+
+    /// The file list and the diff, in `body`: full screen (`drawer` false) or in the drawer.
+    /// j / k change file, n / p hunk, ↵ opens it in the editor, ⇥ switches the base, Esc goes
+    /// back (to the drawer from full screen, to the terminal from the drawer).
+    fn review_body(&mut self, ui: &mut Ui, body: Rect, drawer: bool) {
+        let Some(r) = self.review.as_ref() else { return };
+        let p = style::pal(ui);
+        let who = r.run.as_ref().map(|(agent, _, _)| agent.clone());
+        let run_age = r.run.as_ref().map(|(_, at, _)| super::status::age(*at));
         let base = r.base;
         let has_run = r.run.is_some();
         let has_branch = r.worktree.is_some();
-        let worktree = r.worktree.clone();
         let branch = r.branch.clone();
-        // What it can be compared with, in the top bar's order (⇥ goes round them).
-        let mut bases = Vec::new();
-        if has_run {
-            bases.push(Base::Run);
-        }
-        if has_branch {
-            bases.push(Base::Branch);
-        }
-        bases.push(Base::Head);
-        let run_age = r.run.as_ref().map(|(_, at, _)| super::status::age(*at));
-        let (adds, dels): (u32, u32) = r.files.iter().fold((0, 0), |(a, d), f| (a + f.additions.unwrap_or(0), d + f.deletions.unwrap_or(0)));
+        let bases = self.review_bases();
         let nfiles = r.files.len();
+        let head_count = bases.iter().find(|(b, ..)| *b == Base::Head).and_then(|(.., n)| *n).unwrap_or(0);
         let mut switch = None;
+        let files_w = if drawer { (body.width() * 0.42).clamp(200.0, 290.0) } else { FILES_W };
 
-        // ----- keys ---------------------------------------------------------------------------
-        let free = self.dialog.is_none() && self.palette.is_none() && !ui.ctx().memory(|m| m.focused().is_some_and(|f| f == egui::Id::new("review-filter")));
+        // ----- keys: full screen always; in the drawer once it was clicked ----------------------
+        let keys_id = egui::Id::new("review-keys");
+        if drawer {
+            let resp = ui.interact(body, keys_id, Sense::click());
+            let filter_area = Rect::from_min_max(body.min, pos2(body.left() + files_w, body.top() + DRAWER_HEAD_H + DRAWER_SCOPE_H + 44.0));
+            let pressed_here = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| body.contains(pos) && !filter_area.contains(pos)));
+            if resp.clicked() || pressed_here {
+                ui.memory_mut(|m| m.request_focus(keys_id));
+            }
+        }
+        let has_keys = !drawer || ui.memory(|m| m.has_focus(keys_id));
+        let filter_focused = ui.ctx().memory(|m| m.focused().is_some_and(|f| f == egui::Id::new("review-filter")));
         let mut close = false;
+        let mut expand = false;
+        let mut to_terminal = false;
         let mut select: Option<usize> = None;
         let mut hunk_step: i32 = 0;
         let mut open = false;
-        if self.dialog.is_none() && self.palette.is_none() {
+        if self.dialog.is_none() && self.palette.is_none() && has_keys {
             ui.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::NONE, Key::Escape) {
-                    close = true;
+                    if drawer {
+                        to_terminal = true;
+                    } else {
+                        close = true;
+                    }
                 }
-                if !free {
+                if filter_focused {
                     return;
                 }
                 let sel = r.selected;
@@ -318,52 +492,11 @@ impl App {
                     open = true;
                 }
                 if i.consume_key(egui::Modifiers::NONE, Key::Tab) && bases.len() > 1 {
-                    let at = bases.iter().position(|b| *b == base).unwrap_or(0);
-                    switch = Some(bases[(at + 1) % bases.len()]);
+                    let at = bases.iter().position(|(b, ..)| *b == base).unwrap_or(0);
+                    switch = Some(bases[(at + 1) % bases.len()].0);
                 }
             });
         }
-
-        // ----- top bar ------------------------------------------------------------------------
-        // With three choices the agent's age stays out (room in the top bar).
-        let since = match (&who, &run_age) {
-            (Some(agent), Some(_)) if has_branch => tf("Since {} started", &[agent]),
-            (Some(agent), Some(age)) => tf("Since {} started · {}", &[agent, age]),
-            _ => t("Since the agent started").to_string(),
-        };
-        let branched = tf("Since branched from {}", &[worktree.as_ref().map_or("", |w| w.1.as_str())]);
-        let options: Vec<kit::Seg> = bases
-            .iter()
-            .map(|b| match b {
-                Base::Run => kit::Seg::new(&since, ""),
-                Base::Branch => kit::Seg::new(&branched, "").icon(icons::GIT_FORK),
-                Base::Head => kit::Seg::new(t("Since last commit"), ""),
-            })
-            .collect();
-        let on = bases.iter().position(|b| *b == base).unwrap_or(0);
-        let width = kit::segmented_width(ui, &options);
-        let choices = bases.clone();
-        let mut centre = |app: &mut Self, ui: &mut Ui, rect: Rect| {
-            #[cfg(debug_assertions)]
-            for (r, b) in kit::segment_rects(rect, choices.len()).into_iter().zip(&choices) {
-                crate::devtest::record(format!("review-base:{b:?}"), r);
-            }
-            if let Some(i) = kit::segmented_in(ui, rect, egui::Id::new("review-base"), &options, on) {
-                app.review_switch = Some(choices[i]);
-            }
-        };
-        let body = self.top_bar(
-            ui,
-            full,
-            |app, ui| {
-                if kit::icon_button_ex(ui, icons::ARROW_LEFT, &tf("Back   {}", &["Esc"]), false, 26.0).clicked() {
-                    app.review_close = true;
-                }
-                ui.label(RichText::new(t("Review")).font(style::semibold(14.0)).color(p.text));
-                ui.label(RichText::new(format!("{project} · {pane_label}")).size(12.5).color(p.text_faint));
-            },
-            Some((width, &mut centre)),
-        );
         if std::mem::take(&mut self.review_close) {
             close = true;
         }
@@ -373,29 +506,98 @@ impl App {
 
         // ----- body ---------------------------------------------------------------------------
         let Some(r) = self.review.as_ref() else { return };
-        let files_rect = Rect::from_min_max(body.min, pos2(body.left() + FILES_W, body.bottom()));
+        let files_rect = Rect::from_min_max(body.min, pos2(body.left() + files_w, body.bottom()));
         let diff_rect = Rect::from_min_max(pos2(files_rect.right(), body.top()), body.max);
         ui.painter().rect_filled(files_rect, CornerRadius::ZERO, p.chrome);
         ui.painter().vline(files_rect.right() - 0.5, files_rect.y_range(), Stroke::new(1.0, p.border));
         ui.painter().rect_filled(diff_rect, CornerRadius::ZERO, p.canvas);
-        let empty = |ui: &mut Ui, text: &str, color: Color32| {
-            ui.painter().text(diff_rect.center(), Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), color);
-        };
+        let mut list_top = files_rect.top();
+
+        // In the drawer: Files | Changes (Files leaves Review), then the bases with their counts.
+        if drawer {
+            let head = Rect::from_min_size(files_rect.min, vec2(files_w, DRAWER_HEAD_H));
+            ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
+            let seg = Rect::from_min_max(pos2(head.left() + 8.0, head.center().y - kit::SEGMENTED_H / 2.0), pos2(head.right() - 7.0, head.center().y + kit::SEGMENTED_H / 2.0));
+            let mut options = vec![kit::Seg::new(t("Files"), ""), kit::Seg::new(t("Changes"), "")];
+            if head_count > 0 {
+                options[1] = options[1].clone().count(head_count, p.warn);
+            }
+            #[cfg(debug_assertions)]
+            for (r, name) in kit::segment_rects(seg, 2).into_iter().zip(["files:files", "files:changes"]) {
+                crate::devtest::record(name, r);
+            }
+            if kit::segmented_in(ui, seg, egui::Id::new("review-files-mode"), &options, 1) == Some(0) {
+                close = true;
+            }
+            let scope = Rect::from_min_size(pos2(files_rect.left(), head.bottom()), vec2(files_w, DRAWER_SCOPE_H));
+            if bases.len() > 1 {
+                let label = t("Since");
+                let g = ui.painter().layout_no_wrap(label.to_uppercase(), style::semibold(10.5), p.text_faint);
+                let lw = g.size().x;
+                ui.painter().galley(pos2(scope.left() + 10.0, scope.center().y - g.size().y / 2.0), g, p.text_faint);
+                let seg = Rect::from_min_max(pos2(scope.left() + 10.0 + lw + 8.0, scope.center().y - kit::SEGMENTED_H / 2.0), pos2(scope.right() - 7.0, scope.center().y + kit::SEGMENTED_H / 2.0));
+                let tips: Vec<String> = bases.iter().map(|(_, long, ..)| long.clone()).collect();
+                let options: Vec<kit::Seg> = bases
+                    .iter()
+                    .zip(&tips)
+                    .map(|((_, _, short, n), tip)| {
+                        let s = kit::Seg::new(short, tip);
+                        match n {
+                            Some(n) => s.count(n, if *n > 0 { p.warn } else { p.text_faint }),
+                            None => s,
+                        }
+                    })
+                    .collect();
+                let on = bases.iter().position(|(b, ..)| *b == base).unwrap_or(0);
+                #[cfg(debug_assertions)]
+                for (r, (b, ..)) in kit::segment_rects(seg, bases.len()).into_iter().zip(&bases) {
+                    crate::devtest::record(format!("review-base:{b:?}"), r);
+                }
+                if let Some(i) = kit::segmented_in(ui, seg, egui::Id::new("review-base-drawer"), &options, on)
+                    && bases[i].0 != base
+                {
+                    switch = Some(bases[i].0);
+                }
+                list_top = scope.bottom();
+            } else {
+                list_top = head.bottom();
+            }
+        }
+
+        // The diff side when there is nothing to show: why.
+        let mut show_head = false;
         if r.loading {
-            empty(ui, t("Looking at the working tree…"), p.text_muted);
+            centered(ui, diff_rect, t("Looking at the working tree…"), p.text_muted);
         } else if let Some(e) = &r.error {
-            empty(ui, e, p.err);
+            centered(ui, diff_rect, e, p.err);
         } else if r.files.is_empty() {
-            empty(ui, t("Nothing changed."), p.text_muted);
+            match base {
+                Base::Run => {
+                    let title = tf("{} hasn’t changed any files since it started, {} ago.", &[who.as_deref().unwrap_or(""), run_age.as_deref().unwrap_or("")]);
+                    let sub = if head_count > 0 {
+                        tf("Its work so far is in the terminal. {} changed since the last commit.", &[&crate::i18n::count(head_count, t("1 file"), t("{} files"))])
+                    } else {
+                        t("Its work so far is in the terminal.").to_string()
+                    };
+                    let button = (head_count > 0).then(|| crate::i18n::count(head_count, t("Show the Change"), t("Show the {} Changes")));
+                    show_head = empty_state(ui, diff_rect, icons::CHECK_CIRCLE, &title, &sub, button.as_deref(), &p);
+                }
+                Base::Head => {
+                    empty_state(ui, diff_rect, icons::CHECK_CIRCLE, t("No changes since the last commit."), "", None, &p);
+                }
+                Base::Branch => centered(ui, diff_rect, t("Nothing changed."), p.text_muted),
+            }
+        }
+        if show_head {
+            switch = Some(Base::Head);
         }
 
         // A worktree's branch: where it goes, ahead / behind, its commits.
-        let mut list_top = files_rect.top();
         if base == Base::Branch
             && let Some(b) = &branch
         {
             let x = files_rect.left() + 14.0;
-            let mut y = files_rect.top() + 10.0;
+            let mut y = list_top + 10.0;
             let small = egui::FontId::proportional(style::SMALL);
             let painter = ui.painter();
             painter.text(pos2(x + 6.0, y + 9.0), Align2::CENTER_CENTER, icons::GIT_FORK, style::icon_font(13.0), p.text_muted);
@@ -435,7 +637,7 @@ impl App {
         }
 
         // Files: a filter, the list, a note on what it is compared with.
-        let filter_rect = Rect::from_min_size(pos2(files_rect.left() + 8.0, list_top + 8.0), vec2(FILES_W - 16.0, 26.0));
+        let filter_rect = Rect::from_min_size(pos2(files_rect.left() + 8.0, list_top + 8.0), vec2(files_w - 16.0, 26.0));
         let mut filter = self.review_filter.clone();
         ui.scope_builder(egui::UiBuilder::new().max_rect(filter_rect), |ui| {
             kit::field(ui, egui::Id::new("review-filter"), &mut filter, Some(icons::FUNNEL), t("Filter changed files"), filter_rect.width(), true)
@@ -445,10 +647,13 @@ impl App {
             self.review_branch_actions(ui, files_rect, branch.as_ref())
         } else {
             let note = match base {
-                Base::Run => tf("Snapshot taken when {} started, outside your git index.", &[who.as_deref().unwrap_or("")]),
+                Base::Run => tf("Snapshot taken when {} started, {} ago.", &[who.as_deref().unwrap_or(""), run_age.as_deref().unwrap_or("")]),
+                _ if self.review.as_ref().is_some_and(|r| r.fell_back) => {
+                    tf("{} changed nothing since it started: these are the changes since the last commit.", &[who.as_deref().unwrap_or("")])
+                }
                 _ => t("Compared with the last commit.").to_string(),
             };
-            let note_g = ui.painter().layout(note, egui::FontId::proportional(style::SMALL), p.text_faint, FILES_W - 28.0);
+            let note_g = ui.painter().layout(note, egui::FontId::proportional(style::SMALL), p.text_faint, files_w - 28.0);
             let note_rect = Rect::from_min_max(pos2(files_rect.left(), files_rect.bottom() - note_g.size().y - 20.0), files_rect.max);
             ui.painter().hline(note_rect.x_range(), note_rect.top() + 0.5, Stroke::new(1.0, p.border));
             ui.painter().galley(pos2(note_rect.left() + 14.0, note_rect.top() + 10.0), note_g, p.text_faint);
@@ -456,19 +661,51 @@ impl App {
         };
         let Some(r) = self.review.as_ref() else { return };
         let list_rect = Rect::from_min_max(pos2(files_rect.left() + 6.0, filter_rect.bottom() + 8.0), pos2(files_rect.right() - 6.0, note_rect.top()));
+        let filtering = !filter.trim().is_empty();
         let shown: Vec<usize> = r
             .files
             .iter()
             .enumerate()
-            .filter(|(_, f)| filter.trim().is_empty() || f.path.to_lowercase().contains(&filter.trim().to_lowercase()))
+            .filter(|(_, f)| !filtering || f.path.to_lowercase().contains(&filter.trim().to_lowercase()))
             .map(|(i, _)| i)
             .collect();
+        let mut fold: Option<usize> = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(list_rect), |ui| {
             ui.set_clip_rect(list_rect);
             egui::ScrollArea::vertical().id_salt("review-files").auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
+                let mut last_dir: Option<usize> = None;
                 for i in &shown {
                     let f = &r.files[*i];
+                    // A folder new as a whole: one line for it (folded or not), its files under.
+                    let dir = if filtering { None } else { r.dir_of.get(*i).copied().flatten() };
+                    let indent = if dir.is_some() { 16.0 } else { 0.0 };
+                    if let Some(d) = dir
+                        && last_dir != Some(d)
+                    {
+                        let (name, count) = &r.new_dirs[d];
+                        let folded = r.folded.contains(&d);
+                        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(rect, CornerRadius::same(5), p.faint_row());
+                        }
+                        ui.painter().text(pos2(rect.left() + 10.0, rect.center().y), Align2::CENTER_CENTER, if folded { icons::CARET_RIGHT } else { icons::CARET_DOWN }, style::icon_font(10.0), p.text_faint);
+                        ui.painter().text(pos2(rect.left() + 26.0, rect.center().y), Align2::CENTER_CENTER, if folded { icons::FOLDER } else { icons::FOLDER_OPEN }, style::icon_font(14.0), p.folder);
+                        let g = ui.painter().layout_no_wrap(format!("{name}/"), egui::FontId::proportional(12.5), p.text);
+                        let nw = g.size().x.min(rect.width() - 80.0);
+                        ui.painter().galley(pos2(rect.left() + 38.0, rect.center().y - g.size().y / 2.0), g, p.text);
+                        ui.painter().text(pos2(rect.left() + 38.0 + nw + 6.0, rect.center().y), Align2::LEFT_CENTER, count.to_string(), egui::FontId::proportional(11.0), p.text_faint);
+                        ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, "U", style::semibold(11.0), p.ok);
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record(format!("review-dir:{name}"), rect);
+                        if resp.clicked() {
+                            fold = Some(d);
+                        }
+                    }
+                    last_dir = dir;
+                    if dir.is_some_and(|d| r.folded.contains(&d)) {
+                        continue;
+                    }
                     let (letter, color) = change_letter(f.kind, &p);
                     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
                     #[cfg(debug_assertions)]
@@ -476,7 +713,7 @@ impl App {
                     if *i == r.selected || resp.hovered() {
                         ui.painter().rect_filled(rect, CornerRadius::same(5), if *i == r.selected { p.accent_soft } else { p.faint_row() });
                     }
-                    ui.painter().text(pos2(rect.left() + 10.0 + 5.0, rect.center().y), Align2::CENTER_CENTER, letter, style::semibold(11.0), color);
+                    ui.painter().text(pos2(rect.left() + indent + 10.0 + 5.0, rect.center().y), Align2::CENTER_CENTER, letter, style::semibold(11.0), color);
                     // The counts at the right, the path cut before them.
                     let mut job = egui::text::LayoutJob::default();
                     if f.binary {
@@ -492,20 +729,22 @@ impl App {
                     let counts = ui.painter().layout_job(job);
                     let cw = counts.size().x;
                     ui.painter().galley(pos2(rect.right() - 10.0 - cw, rect.center().y - counts.size().y / 2.0), counts, p.text_faint);
-                    let name = match &f.old_path {
-                        Some(old) => format!("{old} → {}", f.path),
-                        None => f.path.clone(),
+                    // Under a new folder the name alone (the folder is the line above).
+                    let name = match (&f.old_path, dir) {
+                        (Some(old), _) => format!("{old} → {}", f.path),
+                        (None, Some(d)) => f.path.strip_prefix(&format!("{}/", r.new_dirs[d].0)).unwrap_or(&f.path).to_string(),
+                        (None, None) => f.path.clone(),
                     };
                     // A worktree's file not committed yet: a dot after its name.
                     let loose = base == Base::Branch && branch.as_ref().is_some_and(|b| b.uncommitted.contains(&f.path));
                     let dot_w = if loose { 12.0 } else { 0.0 };
                     let mut job = egui::text::LayoutJob::simple_singleline(name, egui::FontId::proportional(12.5), p.text);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 28.0 - cw - 18.0 - dot_w).max(20.0));
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - indent - 28.0 - cw - 18.0 - dot_w).max(20.0));
                     let g = ui.painter().layout_job(job);
                     let nw = g.size().x;
-                    ui.painter().galley(pos2(rect.left() + 28.0, rect.center().y - g.size().y / 2.0), g, p.text);
+                    ui.painter().galley(pos2(rect.left() + indent + 28.0, rect.center().y - g.size().y / 2.0), g, p.text);
                     if loose {
-                        ui.painter().circle_filled(pos2(rect.left() + 28.0 + nw + 9.0, rect.center().y), 3.0, p.warn);
+                        ui.painter().circle_filled(pos2(rect.left() + indent + 28.0 + nw + 9.0, rect.center().y), 3.0, p.warn);
                     }
                     if resp.clicked() {
                         select = Some(*i);
@@ -516,16 +755,19 @@ impl App {
 
         // The diff: the file's header (hunks, Open in Editor), the lines, the keys.
         if let Some(f) = r.files.get(r.selected).filter(|_| !r.loading && r.error.is_none()) {
-            let head = Rect::from_min_size(diff_rect.min, vec2(diff_rect.width(), 40.0));
+            let head = Rect::from_min_size(diff_rect.min, vec2(diff_rect.width(), if drawer { DRAWER_HEAD_H } else { 40.0 }));
             let foot = Rect::from_min_max(pos2(diff_rect.left(), diff_rect.bottom() - 32.0), diff_rect.max);
             let lines_rect = Rect::from_min_max(pos2(diff_rect.left(), head.bottom()), pos2(diff_rect.right(), foot.top()));
+            if drawer {
+                ui.painter().rect_filled(head, CornerRadius::ZERO, p.chrome);
+            }
             ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
             let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
             let (icon, icolor) = icons::file_icon(&name, false, false, &p);
             let cy = head.center().y;
             ui.painter().text(pos2(head.left() + 14.0 + 7.5, cy), Align2::CENTER_CENTER, icon, style::icon_font(15.0), icolor);
             let mut job = egui::text::LayoutJob::default();
-            job.append(&f.path, 0.0, egui::TextFormat::simple(style::medium(13.5), p.text));
+            job.append(if drawer { &name } else { &f.path }, 0.0, egui::TextFormat::simple(style::medium(if drawer { 12.5 } else { 13.5 }), p.text));
             if let Some(a) = f.additions.filter(|a| *a > 0) {
                 job.append(&format!("+{a}"), 10.0, egui::TextFormat::simple(egui::FontId::proportional(style::SMALL), p.ok));
             }
@@ -545,21 +787,38 @@ impl App {
             }
             let hunks = r.diff.as_ref().map_or(0, |d| d.hunks.len());
             let cur_hunk = self.review_hunk.min(hunks.saturating_sub(1));
-            // Right: hunk navigation and Open in Editor.
-            let inner = Rect::from_min_max(pos2(head.left() + 14.0, head.top()), pos2(head.right() - 10.0, head.bottom()));
+            // Right: hunk navigation and Open in Editor (in the drawer also full screen, close).
+            let inner = Rect::from_min_max(pos2(head.left() + 14.0, head.top()), pos2(head.right() - if drawer { 6.0 } else { 10.0 }, head.bottom()));
             let deleted = f.kind == ChangeKind::Deleted;
             let left_end = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
+                    if drawer {
+                        if kit::icon_button_ex(ui, icons::X, &kit::tip(t("Close Review"), Action::ToggleEditor), false, 22.0).clicked() {
+                            close = true;
+                        }
+                        let e = kit::icon_button_ex(ui, icons::ARROWS_OUT_SIMPLE, &kit::tip(t("Full-Screen Review"), Action::Review), false, 22.0);
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record("review-expand", e.rect);
+                        if e.clicked() {
+                            expand = true;
+                        }
+                    }
                     if !deleted {
-                        let o = kit::button_keys(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Open in Editor"), Some("↵"), true);
+                        let o = if drawer {
+                            kit::button_keys(ui, kit::Kind::Ghost, Some(icons::PENCIL_SIMPLE), t("Open"), Some("↵"), true)
+                        } else {
+                            kit::button_keys(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Open in Editor"), Some("↵"), true)
+                        };
                         if o.clicked() {
                             open = true;
                         }
                         kit::vdivider(ui, 18.0);
                     }
                     if hunks > 0 {
-                        ui.label(RichText::new(tf("hunk {} of {}", &[&(cur_hunk + 1).to_string(), &hunks.to_string()])).size(style::SMALL).color(p.text_faint));
+                        if !drawer {
+                            ui.label(RichText::new(tf("hunk {} of {}", &[&(cur_hunk + 1).to_string(), &hunks.to_string()])).size(style::SMALL).color(p.text_faint));
+                        }
                         if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::CARET_DOWN), "", true).on_hover_text(t("Next hunk   n")).clicked() {
                             hunk_step = 1;
                         }
@@ -576,7 +835,8 @@ impl App {
 
             let syntax = crate::editor::syntax_for(std::path::Path::new(&f.path));
             let dark = ui.visuals().dark_mode;
-            let split = self.review_split;
+            // Two columns need room: the drawer shows them only when it is wide.
+            let split = self.review_split && (!drawer || diff_rect.width() >= 900.0);
             match (&r.diff, &r.diff_error) {
                 (_, Some(e)) => {
                     ui.painter().text(lines_rect.center(), Align2::CENTER_CENTER, e, egui::FontId::proportional(13.0), p.err);
@@ -620,17 +880,37 @@ impl App {
             ui.painter().rect_filled(foot, CornerRadius::ZERO, style::over(p.surface, p.chrome, 0.5));
             ui.painter().hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
             let mut hints: Vec<(&[&str], &str)> = vec![(&["j", "k"], t("file")), (&["n", "p"], t("hunk")), (&["↵"], t("open in editor"))];
-            if has_branch && has_run {
+            if drawer {
+                // As many as the drawer has room for.
+                let w = diff_rect.width();
+                hints = vec![(&["j", "k"], t("file"))];
+                if w >= 480.0 {
+                    hints.push((&["n", "p"], t("hunk")));
+                }
+                if w >= 600.0 {
+                    hints.push((&["↵"], t("open")));
+                }
+                if w >= 700.0 && bases.len() > 1 {
+                    hints.push((&["⇥"], t("since")));
+                }
+            } else if has_branch && has_run {
                 hints.push((&["⇥"], t("started / branched / last commit")));
             } else if has_branch {
                 hints.push((&["⇥"], t("branched / last commit")));
             } else if has_run {
                 hints.push((&["⇥"], t("since start / last commit")));
             }
-            let esc = t("back to terminals");
-            super::statusbar::paint_key_hints(ui, Rect::from_min_max(pos2(foot.left() + 14.0, foot.top()), pos2(foot.right() - 14.0 - style::text_width(ui, esc) - 6.0, foot.bottom())), &hints, Some("esc"));
-            ui.painter().text(pos2(foot.right() - 14.0, foot.center().y), Align2::RIGHT_CENTER, esc, egui::FontId::proportional(style::SMALL), p.text_faint);
-            let _ = hunks;
+            let (right_key, right_text) = if drawer {
+                (kit::keys(&Action::Review).unwrap_or_default(), t("full screen"))
+            } else if self.view == tc_core::model::View::Focus {
+                ("esc", t("back to the drawer"))
+            } else {
+                ("esc", t("back to terminals"))
+            };
+            let rw = style::text_width(ui, right_text) + style::text_width(ui, right_key) + 12.0;
+            super::statusbar::paint_key_hints(ui, Rect::from_min_max(pos2(foot.left() + 14.0, foot.top()), pos2(foot.right() - 14.0 - rw, foot.bottom())), &hints, None);
+            ui.painter().text(pos2(foot.right() - 14.0, foot.center().y), Align2::RIGHT_CENTER, right_text, egui::FontId::proportional(style::SMALL), p.text_faint);
+            ui.painter().text(pos2(foot.right() - 14.0 - style::text_width(ui, right_text) - 6.0, foot.center().y), Align2::RIGHT_CENTER, right_key, style::medium(style::SMALL), p.text_faint);
             if hunk_step != 0 && hunks > 0 {
                 self.review_hunk = (cur_hunk as i32 + hunk_step).clamp(0, hunks as i32 - 1) as usize;
                 self.review_scroll = true;
@@ -643,17 +923,42 @@ impl App {
                 return;
             }
         }
-        let _ = (adds, dels);
+        if expand && let Some(r) = self.review.as_mut() {
+            r.expanded = true;
+        }
+        if let Some(d) = fold
+            && let Some(r) = self.review.as_mut()
+            && !r.folded.remove(&d)
+        {
+            r.folded.insert(d);
+        }
         if let Some(i) = select {
+            // A file chosen with j / k inside a folded folder: the folder opens.
+            if let Some(r) = self.review.as_mut()
+                && let Some(d) = r.dir_of.get(i).copied().flatten()
+            {
+                r.folded.remove(&d);
+            }
             self.review_hunk = 0;
             self.load_review_diff(i);
         }
         if let Some(b) = switch {
             self.open_review(Some(b));
         }
-        if close {
-            self.review = None;
+        if to_terminal {
+            ui.memory_mut(|m| m.surrender_focus(keys_id));
             self.focus_request = self.current_pane();
+        }
+        if close {
+            // Full screen opened from the Focus view goes back to the drawer; else Review ends.
+            let back_to_drawer = !drawer && self.view == tc_core::model::View::Focus;
+            match self.review.as_mut() {
+                Some(r) if back_to_drawer => r.expanded = false,
+                _ => {
+                    self.review = None;
+                    self.focus_request = self.current_pane();
+                }
+            }
         }
     }
 
@@ -733,6 +1038,71 @@ impl App {
 
 /// Width of the Review's file list.
 const FILES_W: f32 = 300.0;
+/// In the drawer: the Files | Changes header (as the Files column's) and the bases under it.
+const DRAWER_HEAD_H: f32 = 36.0;
+const DRAWER_SCOPE_H: f32 = 34.0;
+
+/// A line of text in the middle of `rect`.
+fn centered(ui: &Ui, rect: Rect, text: &str, color: Color32) {
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), color);
+}
+
+/// Why there is nothing to show: an icon, a sentence, a line under it and maybe a button.
+/// Returns whether the button was clicked.
+fn empty_state(ui: &mut Ui, rect: Rect, icon: &str, title: &str, sub: &str, button: Option<&str>, p: &style::Palette) -> bool {
+    let w = (rect.width() - 48.0).clamp(160.0, 420.0);
+    let col = Rect::from_center_size(rect.center(), vec2(w, rect.height()));
+    let mut clicked = false;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(col).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
+        let title_g = ui.painter().layout(title.to_string(), style::semibold(14.0), p.text, w);
+        let sub_g = (!sub.is_empty()).then(|| ui.painter().layout(sub.to_string(), egui::FontId::proportional(12.5), p.text_muted, w));
+        let h = 28.0 + 10.0 + title_g.size().y + sub_g.as_ref().map_or(0.0, |g| g.size().y + 8.0) + if button.is_some() { 40.0 } else { 0.0 };
+        ui.add_space(((rect.height() - h) / 2.0).max(12.0));
+        ui.label(RichText::new(icon).font(style::icon_font(28.0)).color(p.text_faint));
+        ui.add_space(10.0);
+        ui.label(RichText::new(title).font(style::semibold(14.0)).color(p.text));
+        if !sub.is_empty() {
+            ui.add_space(8.0);
+            ui.label(RichText::new(sub).size(12.5).color(p.text_muted));
+        }
+        if let Some(b) = button {
+            ui.add_space(14.0);
+            let r = kit::button_keys(ui, kit::Kind::Primary, None, b, Some("⇥"), true);
+            #[cfg(debug_assertions)]
+            crate::devtest::record("review-show-head", r.rect);
+            clicked = r.clicked();
+        }
+    });
+    clicked
+}
+
+/// Files under folders new as a whole are listed under one line per folder, folded away except
+/// the one holding the selected file.
+fn group_new_folders(r: &mut Review, folders: &[PathBuf]) {
+    r.new_dirs.clear();
+    r.dir_of = vec![None; r.files.len()];
+    r.folded.clear();
+    for (i, f) in r.files.iter().enumerate() {
+        if f.kind != ChangeKind::Added {
+            continue;
+        }
+        let full = r.root.join(&f.path);
+        let Some(dir) = folders.iter().filter(|d| full.starts_with(d)).max_by_key(|d| d.as_os_str().len()) else { continue };
+        let Ok(rel) = dir.strip_prefix(&r.root) else { continue };
+        let name = rel.to_string_lossy().replace('\\', "/");
+        let at = match r.new_dirs.iter().position(|(n, _)| *n == name) {
+            Some(at) => at,
+            None => {
+                r.new_dirs.push((name, 0));
+                r.new_dirs.len() - 1
+            }
+        };
+        r.new_dirs[at].1 += 1;
+        r.dir_of[i] = Some(at);
+    }
+    let open = r.dir_of.get(r.selected).copied().flatten();
+    r.folded = (0..r.new_dirs.len()).filter(|d| Some(*d) != open).collect();
+}
 
 fn change_letter(kind: ChangeKind, p: &style::Palette) -> (&'static str, Color32) {
     match kind {

@@ -578,7 +578,7 @@ impl crate::app::App {
     /// Runs every frame after the dialogs: the updater's checks, its toasts and its dialog.
     pub fn updates(&mut self, ctx: &egui::Context) {
         let before = (self.settings.skipped_version.clone(), self.settings.last_update_check);
-        let can_popup = self.dialog.is_none() && self.review.is_none() && self.palette.is_none();
+        let can_popup = self.dialog.is_none() && !self.review_full() && self.palette.is_none();
         if let Some(text) = self.updater.tick(ctx, &mut self.settings, can_popup) {
             self.toast(text);
         }

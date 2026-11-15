@@ -57,7 +57,6 @@ impl App {
         let head = Rect::from_min_size(area.min, vec2(area.width(), HEAD_H));
         ui.painter().hline(head.x_range(), head.bottom() - 0.5, egui::Stroke::new(1.0, p.border));
         let seg = Rect::from_min_max(pos2(head.left() + 8.0, head.center().y - kit::SEGMENTED_H / 2.0), pos2(head.right() - 7.0, head.center().y + kit::SEGMENTED_H / 2.0));
-        let changes_mode = self.explorers.get(&pid).is_some_and(|e| e.changes_mode);
         let mut options = vec![kit::Seg::new(t("Files"), ""), kit::Seg::new(t("Changes"), "")];
         if changed > 0 {
             options[1] = options[1].clone().count(changed, p.warn);
@@ -66,10 +65,9 @@ impl App {
         for (r, name) in kit::segment_rects(seg, 2).into_iter().zip(["files:files", "files:changes"]) {
             crate::devtest::record(name, r);
         }
-        if let Some(i) = kit::segmented_in(ui, seg, egui::Id::new(("files-mode", pid)), &options, changes_mode as usize)
-            && let Some(ex) = self.explorer_mut(pid)
-        {
-            ex.changes_mode = i == 1;
+        // Changes is Review, in this drawer: what changed since the last commit, with the diff.
+        if kit::segmented_in(ui, seg, egui::Id::new(("files-mode", pid)), &options, 0) == Some(1) {
+            self.open_review(Some(super::review::Base::Head));
         }
 
         // Footer: new file, new folder; collapse all, refresh.
@@ -120,13 +118,6 @@ impl App {
         }
 
         let body = Rect::from_min_max(pos2(area.left(), head.bottom()), pos2(area.right(), foot.top()));
-        if changes_mode {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
-                ui.set_clip_rect(body);
-                self.changes_list(ui, pid, &root, body);
-            });
-            return;
-        }
         // The filter.
         let frow = Rect::from_min_size(body.min, vec2(body.width(), 38.0));
         let field = Rect::from_min_size(pos2(frow.left() + 8.0, frow.top() + 6.0), vec2(frow.width() - 16.0, 26.0));
@@ -164,48 +155,6 @@ impl App {
             return;
         }
         self.tree_rows(ui, pid, &root, tree, git);
-    }
-
-    /// What git says changed in the project, one file a row: a click shows its changes.
-    fn changes_list(&mut self, ui: &mut Ui, pid: tc_core::ProjectId, root: &Path, area: Rect) {
-        let p = style::pal(ui);
-        let mut changes: Vec<(PathBuf, Change)> = self
-            .project(pid)
-            .and_then(|pr| pr.git.as_ref())
-            .map(|g| g.changes.iter().map(|(k, v)| (k.clone(), *v)).collect())
-            .unwrap_or_default();
-        changes.sort_by(|a, b| a.0.cmp(&b.0));
-        if changes.is_empty() {
-            ui.painter().text(
-                pos2(area.left() + 14.0, area.top() + 18.0),
-                Align2::LEFT_CENTER,
-                t("Nothing changed."),
-                egui::FontId::proportional(style::SMALL),
-                p.text_faint,
-            );
-            return;
-        }
-        ui.scope_builder(egui::UiBuilder::new().max_rect(area.shrink2(vec2(4.0, 0.0)).with_min_y(area.top() + 6.0)), |ui| {
-            let area = egui::ScrollArea::vertical().id_salt(("changes", pid)).auto_shrink([false, false]);
-            kit::show_rows(area, ui, ROW_H, changes.len(), |ui, range| {
-                for (path, c) in &changes[range] {
-                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(4), p.faint_row());
-                    }
-                    let color = change_color(*c, &p);
-                    ui.painter().text(pos2(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, c.letter(), style::medium(11.0), color);
-                    let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().into_owned();
-                    let mut job = egui::text::LayoutJob::simple_singleline(rel.clone(), egui::FontId::proportional(12.5), style::tree_text(&p));
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 30.0).max(10.0));
-                    let g = ui.painter().layout_job(job);
-                    ui.painter().galley(pos2(rect.left() + 24.0, rect.center().y - g.size().y / 2.0), g, p.text);
-                    if resp.on_hover_text(kit::tip(t("Review Changes…"), Action::Review)).clicked() {
-                        self.actions.push(Action::ReviewFile(path.clone()));
-                    }
-                }
-            });
-        });
     }
 
     /// The project's files whose path matches the filter, best first.

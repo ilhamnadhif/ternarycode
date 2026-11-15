@@ -68,8 +68,6 @@ pub struct Explorer {
     pub reads: u64,
     /// What the Files column's filter holds (files whose path matches, instead of the tree).
     pub filter: String,
-    /// The column lists what git says changed instead of the tree.
-    pub changes_mode: bool,
 }
 
 impl Explorer {
@@ -83,7 +81,6 @@ impl Explorer {
             edit: None,
             reads: 0,
             filter: String::new(),
-            changes_mode: false,
         }
     }
 

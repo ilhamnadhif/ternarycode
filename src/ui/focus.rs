@@ -28,6 +28,9 @@ const FOOT_H: f32 = 38.0;
 /// What draws a part of the top bar in the rect it is given.
 pub type BarPart<'a> = dyn FnMut(&mut App, &mut Ui, Rect) + 'a;
 
+/// How long a dragged tab is held over another tab before that one shows.
+const TAB_SPRING: std::time::Duration = std::time::Duration::from_millis(400);
+
 impl App {
     /// The bar at the top of the content: the window drag area, what is shown on the left
     /// (drawn by `left`), an optional control in the middle (`centre`: its width, and what draws
@@ -113,7 +116,7 @@ impl App {
 
     /// Right side of the top bar (added right to left): what acts on the active project.
     fn toolbar(&mut self, ui: &mut Ui) {
-        if self.review.is_some() {
+        if self.review_full() {
             self.review_toolbar(ui);
             return;
         }
@@ -148,6 +151,7 @@ impl App {
     }
 
     pub fn focus_view(&mut self, ui: &mut Ui) {
+        self.note_tab_seen();
         let p = style::pal(ui);
         let Some(project) = self.active_project() else {
             return;
@@ -303,10 +307,16 @@ impl App {
                                     if r.drag_started() && tabs.len() > 1 {
                                         app.tab_drag = Some(*i);
                                     }
-                                    let hint = t("Drag to reorder, or onto a pane to split it");
+                                    // One tab has nothing to go beside: Split Right says how
+                                    // to get a second terminal there.
+                                    let hint = if tabs.len() > 1 {
+                                        t("Drag to reorder, or onto a pane to split it").to_string()
+                                    } else {
+                                        kit::tip(t("Split Right"), Action::SplitRight)
+                                    };
                                     let mut tip = match waiting {
                                         Some((_, said)) => format!("{said}\n{hint}"),
-                                        None => hint.to_string(),
+                                        None => hint,
                                     };
                                     if let Some(doing) = doing {
                                         tip = format!("{doing}\n{tip}");
@@ -359,9 +369,15 @@ impl App {
             let line = if dr.hovered() || dr.dragged() { p.accent } else { p.border };
             ui.painter().vline(split_x, body.y_range(), Stroke::new(1.0, line));
             let root = self.project(pid).map(|x| x.path.clone()).unwrap_or_default();
+            // Review of this project, unless full screen, takes the drawer.
+            let review_here = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
             ui.scope_builder(egui::UiBuilder::new().max_rect(editor_rect), |ui| {
                 ui.set_clip_rect(editor_rect);
-                self.code_drawer(ui, pid, root);
+                if review_here {
+                    self.review_drawer(ui);
+                } else {
+                    self.code_drawer(ui, pid, root);
+                }
             });
             Rect::from_min_max(body.min, pos2(split_x, body.bottom()))
         } else {
@@ -551,10 +567,14 @@ impl App {
         };
         let p = style::pal(ui);
         let released = ui.input(|i| i.pointer.any_released());
-        let Some(pos) = ui.ctx().pointer_interact_pos() else {
-            if released {
+        // Esc ends the drag where it began.
+        let cancel = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let Some(pos) = ui.ctx().pointer_interact_pos().filter(|_| !cancel) else {
+            if released || cancel {
                 self.tab_drag = None;
                 self.pane_drag = None;
+                self.tab_spring = None;
+                self.end_tab_drag_view();
             }
             return;
         };
@@ -568,9 +588,29 @@ impl App {
             .map(|r| strip_shown.map_or(r, |s| r.intersect(s)).expand2(vec2(40.0, 8.0)));
         let over_pane = panes.iter().find(|(_, r)| r.contains(pos)).copied();
         let mut drop: Option<Action> = None;
-        if strip.is_some_and(|r| r.contains(pos)) {
+        let in_strip = strip.is_some_and(|r| r.contains(pos));
+        if !in_strip {
+            self.tab_spring = None;
+        }
+        if in_strip {
             match source {
                 Source::Tab(from) => {
+                    // Held over another tab: after a moment that tab shows, to drop beside it.
+                    let over = tab_rects.iter().position(|r| r.contains(pos)).filter(|h| *h != from && *h != active_tab);
+                    match (over, self.tab_spring) {
+                        (Some(h), Some((s, since))) if s == h => {
+                            let f = (since.elapsed().as_secs_f32() / TAB_SPRING.as_secs_f32()).min(1.0);
+                            if f >= 1.0 {
+                                self.tab_spring = None;
+                                self.show_tab_while_dragging(h);
+                            } else if let Some(r) = tab_rects.get(h) {
+                                let x0 = r.left() + 8.0;
+                                fg.hline(x0..=x0 + (r.width() - 16.0) * f, r.bottom() - 2.0, Stroke::new(2.0, p.accent));
+                            }
+                        }
+                        (Some(h), _) => self.tab_spring = Some((h, std::time::Instant::now())),
+                        (None, _) => self.tab_spring = None,
+                    }
                     // Reorder: before the first tab whose middle is right of the pointer.
                     let to = tab_rects.iter().position(|r| pos.x < r.center().x).unwrap_or(tab_rects.len());
                     if to != from && to != from + 1 {
@@ -593,6 +633,14 @@ impl App {
                 }
             }
         } else if let Some((target, r)) = over_pane {
+            // The open tab dragged onto its own panes: the tab looked at before it shows instead
+            // (from the next frame), to drop it beside.
+            if let Source::Tab(from) = source
+                && from == active_tab
+                && let Some(partner) = self.drag_partner(from)
+            {
+                self.show_tab_while_dragging(partner);
+            }
             let allowed = match source {
                 Source::Tab(from) => from != active_tab,
                 Source::Pane(pane) => pane != target,
@@ -620,19 +668,22 @@ impl App {
                     Source::Tab(from) => Action::MergeTab { tab: from, target, dir, before },
                     Source::Pane(pane) => Action::MovePane { pane, target, dir, before },
                 });
+                // A tab shown for the drop: says which tab goes beside which.
+                if let Source::Tab(from) = source
+                    && self.tab_drag_home.is_some()
+                {
+                    let area = panes.iter().map(|(_, r)| *r).reduce(|a, b| a.union(b)).unwrap_or(r);
+                    let text = tf("Drop {} beside {}", &[&self.tab_label(from), &self.tab_label(active_tab)]);
+                    let g = fg.layout_no_wrap(text, egui::FontId::proportional(12.0), p.text);
+                    let pill = Rect::from_center_size(pos2(area.center().x, area.top() + 22.0), g.size() + vec2(24.0, 12.0));
+                    fg.rect(pill, CornerRadius::same((pill.height() / 2.0) as u8), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+                    fg.galley(pill.min + vec2(12.0, 6.0), g, p.text);
+                }
             }
         }
         // What is dragged follows the pointer.
         let label = match source {
-            Source::Tab(from) => self
-                .active_project()
-                .and_then(|pr| pr.tabs.get(from))
-                .map(|tab| {
-                    tab.title
-                        .clone()
-                        .unwrap_or_else(|| self.panes.get(&tab.focused).map(|x| x.label()).unwrap_or_default())
-                })
-                .unwrap_or_default(),
+            Source::Tab(from) => self.tab_label(from),
             Source::Pane(pane) => self.panes.get(&pane).map(|x| x.label()).unwrap_or_default(),
         };
         let g = fg.layout_no_wrap(label, style::medium(12.5), p.text);
@@ -643,9 +694,78 @@ impl App {
         if released {
             self.tab_drag = None;
             self.pane_drag = None;
-            if let Some(a) = drop {
-                self.actions.push(a);
+            self.tab_spring = None;
+            match drop {
+                // Merged into the tab shown: it stays in view.
+                Some(a @ Action::MergeTab { .. }) => {
+                    self.tab_drag_home = None;
+                    self.actions.push(a);
+                }
+                other => {
+                    self.end_tab_drag_view();
+                    if let Some(a) = other {
+                        self.actions.push(a);
+                    }
+                }
             }
+        }
+    }
+
+    /// A tab's name in the strip: its title, else its focused pane's.
+    fn tab_label(&self, i: usize) -> String {
+        self.active_project()
+            .and_then(|pr| pr.tabs.get(i))
+            .map(|tab| tab.title.clone().unwrap_or_else(|| self.panes.get(&tab.focused).map(|x| x.label()).unwrap_or_default()))
+            .unwrap_or_default()
+    }
+
+    /// Notes the tab in view of the active project (by its first pane), and the one before it.
+    fn note_tab_seen(&mut self) {
+        if self.tab_drag.is_some() {
+            return;
+        }
+        let Some(p) = self.active_project() else { return };
+        let Some(first) = p.tab().and_then(|t| t.layout.panes().first().copied()) else { return };
+        let id = p.id;
+        let seen = self.tab_history.entry(id).or_insert((first, None));
+        if seen.0 != first {
+            *seen = (first, Some(seen.0));
+        }
+    }
+
+    /// The tab a dragged open tab goes beside: the one looked at before it, else its neighbour.
+    fn drag_partner(&self, from: usize) -> Option<usize> {
+        let p = self.active_project()?;
+        if p.tabs.len() < 2 {
+            return None;
+        }
+        let before = self.tab_history.get(&p.id).and_then(|(_, b)| *b);
+        before
+            .and_then(|pane| p.tabs.iter().position(|t| t.layout.contains(pane)))
+            .filter(|i| *i != from)
+            .or(Some(if from > 0 { from - 1 } else { from + 1 }))
+    }
+
+    /// Shows tab `i` while a tab is dragged (no keyboard move, nothing saved); the tab in view
+    /// before is remembered, to show again if the drag ends without a drop on a pane.
+    fn show_tab_while_dragging(&mut self, i: usize) {
+        let Some(home) = self.active_project().filter(|p| i < p.tabs.len() && i != p.active_tab).map(|p| p.active_tab) else {
+            return;
+        };
+        if let Some(p) = self.active.and_then(|id| self.project_mut(id)) {
+            p.active_tab = i;
+        }
+        self.tab_drag_home.get_or_insert(home);
+        self.ctx.request_repaint();
+    }
+
+    /// Shows again the tab in view before a drag showed another one.
+    pub(crate) fn end_tab_drag_view(&mut self) {
+        let Some(home) = self.tab_drag_home.take() else { return };
+        if let Some(p) = self.active.and_then(|id| self.project_mut(id))
+            && home < p.tabs.len()
+        {
+            p.active_tab = home;
         }
     }
 

@@ -90,7 +90,7 @@ impl App {
     /// the Review or the attention list. The panes are drawn first, so they would read an Esc
     /// meant for those (and send it to the agent) before it closes them.
     pub fn terminals_take_keys(&self) -> bool {
-        self.dialog.is_none() && self.palette.is_none() && self.review.is_none() && !self.attention_open
+        self.dialog.is_none() && self.palette.is_none() && !self.review_full() && !self.attention_open
     }
 
     fn central(&mut self, ui: &mut Ui) {
@@ -111,8 +111,9 @@ impl App {
             ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| self.welcome(ui));
             return;
         }
-        // Review takes the place of the panes (the sidebar stays).
-        if self.review.is_some() {
+        // Review full screen takes the place of the panes (the sidebar stays); else it is in the
+        // Code drawer.
+        if self.review_full() {
             self.review_view(ui);
             return;
         }

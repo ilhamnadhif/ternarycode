@@ -35,7 +35,7 @@ const HEAD_H: f32 = 52.0;
 /// The pages, their icons, and the rows on each (for the search).
 fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 8] {
     [
-        (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically"]),
+        (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically", "Group active projects at the top"]),
         (SettingsPage::Appearance, icons::PAINT_BRUSH, "Appearance", &["Theme", "Language", "With the dark theme", "With the light theme", "Font", "Size", "Cursor", "Blinking cursor"]),
         (SettingsPage::Terminal, icons::TERMINAL, "Terminal", &["Scrollback per pane", "Scrollback memory for all panes", "Option key as Meta", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]),
         (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks"]),
@@ -308,7 +308,7 @@ impl App {
     fn general_page(&mut self, ui: &mut Ui, search: &str) {
         let p = style::pal(ui);
         page_head(ui, t("General"), t("The app itself."));
-        let labels = [(t("Command line"), ""), (t("Data folder"), ""), (t("Version"), ""), (t("Check for updates automatically"), "")];
+        let labels = [(t("Command line"), ""), (t("Data folder"), ""), (t("Version"), ""), (t("Check for updates automatically"), ""), (t("Group active projects at the top"), "")];
         card(ui, search, &labels, |c| {
             let cli_note = tf("{} in any terminal opens that folder here.", &["ternarycode ."]);
             c.row(t("Command line"), &cli_note, |ui| match crate::cli::installed() {
@@ -342,6 +342,9 @@ impl App {
             });
             c.row(t("Check for updates automatically"), t("The only network connection TernaryCode makes."), |ui| {
                 kit::switch(ui, &mut self.settings.check_updates);
+            });
+            c.row(t("Group active projects at the top"), t("In the sidebar, projects where something runs or waits come first, under Active."), |ui| {
+                kit::switch(ui, &mut self.settings.group_active);
             });
         });
 

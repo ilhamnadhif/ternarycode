@@ -158,8 +158,9 @@ pub enum Action {
     QuickOpen,
     Find,
     Review,
-    /// Shows what changed in one file since the last commit (the Files column's Changes).
-    ReviewFile(PathBuf),
+    /// Review of what an agent's finished run changed (its Review button, the waiting list):
+    /// that run's changes when it made some, else those since the last commit.
+    ReviewAgent,
     FindAll,
     RevealMatch(PaneId, tc_term::alacritty_terminal::term::search::Match),
     Copy,

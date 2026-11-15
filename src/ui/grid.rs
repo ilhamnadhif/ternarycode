@@ -537,7 +537,7 @@ impl App {
             crate::devtest::record(format!("tile-review:{id}"), b.rect);
             if b.on_hover_text(kit::tip(t("Review what the agent changed"), Action::Review)).clicked() {
                 self.actions.push(Action::FocusPane(id));
-                self.actions.push(Action::Review);
+                self.actions.push(Action::ReviewAgent);
             }
         }
         if let Some(agent) = unconnected {

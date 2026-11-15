@@ -25,6 +25,25 @@ pub const SECTION_H: f32 = 28.0;
 /// The row at the bottom (Settings).
 const FOOT_H: f32 = 40.0;
 const PAD: f32 = 8.0;
+/// A group's line in the project list (Active, Idle).
+const GROUP_H: f32 = 26.0;
+
+/// How long a project stays under Active after it went quiet (it does not leave just as you
+/// reach for it). The end-to-end checks make it shorter.
+fn active_linger() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("TERNARYCODE_ACTIVE_LINGER_MS").ok().and_then(|v| v.parse().ok()) {
+        return std::time::Duration::from_millis(ms);
+    }
+    std::time::Duration::from_secs(30)
+}
+
+/// A line of the project list: a group's header (Active or not), or a project's row (its index,
+/// the letters found, dimmed, another worktree after it).
+enum Line {
+    Group(bool),
+    Row((usize, Vec<bool>, bool, bool)),
+}
 /// At most this many waiting panes are listed in the inbox (the rest: "N more…").
 const INBOX_MAX: usize = 3;
 
@@ -483,6 +502,38 @@ impl App {
                 (i, marks, dim, more)
             })
             .collect();
+        // Projects where something runs or waits first, under Active (the Grid's rule), each
+        // with its worktrees. While the pointer is over the list nothing moves.
+        let hold = ui.rect_contains_pointer(list) || typing;
+        let active = if self.settings.group_active { self.sidebar_active(hold) } else { std::collections::HashSet::new() };
+        let top_of = |i: usize| {
+            let pr = &self.projects[i];
+            pr.parent.filter(|x| self.project(*x).is_some()).unwrap_or(pr.id)
+        };
+        let grouped = !active.is_empty();
+        let (first, second): (Vec<_>, Vec<_>) = rows.into_iter().partition(|(i, ..)| grouped && active.contains(&top_of(*i)));
+        if !filtering {
+            self.sidebar_order = first.iter().chain(second.iter()).filter(|(i, ..)| !self.projects[*i].is_worktree()).map(|(i, ..)| self.projects[*i].id).collect();
+        }
+        let tops = |v: &[(usize, Vec<bool>, bool, bool)]| v.iter().filter(|(i, _, dim, _)| !dim && !self.projects[*i].is_worktree()).count();
+        let counts = (tops(&first), tops(&second));
+        let summary = if grouped { self.group_summary(&active) } else { [0; 4] };
+        let mut lines: Vec<Line> = Vec::new();
+        if grouped && !first.is_empty() {
+            lines.push(Line::Group(true));
+            if !self.sidebar_folded.contains("active") {
+                lines.extend(first.into_iter().map(Line::Row));
+            }
+        }
+        if grouped && !second.is_empty() {
+            lines.push(Line::Group(false));
+            if !self.sidebar_folded.contains("idle") {
+                lines.extend(second.into_iter().map(Line::Row));
+            }
+        } else if !grouped {
+            lines.extend(second.into_iter().map(Line::Row));
+        }
+        let mut toggle_group: Option<&str> = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(vec2(6.0, 0.0))), |ui| {
             ui.set_clip_rect(list);
             // The search's results scroll on their own: the whole list keeps its place.
@@ -492,7 +543,35 @@ impl App {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     let mut result = 0;
-                    for (i, marks, dim, more) in rows.iter() {
+                    let mut groups_seen = 0;
+                    for line in lines.iter() {
+                        let (i, marks, dim, more) = match line {
+                            Line::Group(is_active) => {
+                                // Space before the second group's line.
+                                if groups_seen > 0 {
+                                    ui.add_space(8.0);
+                                }
+                                groups_seen += 1;
+                                let key = if *is_active { "active" } else { "idle" };
+                                let folded = self.sidebar_folded.contains(key);
+                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), GROUP_H), Sense::click());
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record(format!("sidebar-group:{key}"), rect);
+                                let (label, count) = if *is_active { (t("Active"), counts.0) } else { (t("Idle"), counts.1) };
+                                let summary: &[(&str, egui::Color32, usize)] = if *is_active {
+                                    &[(icons::CIRCLE_NOTCH, p.info, summary[0]), (icons::BELL, p.warn, summary[3]), (icons::X_CIRCLE, p.err, summary[2]), (icons::CHECK_CIRCLE, p.ok, summary[1])]
+                                } else {
+                                    &[]
+                                };
+                                paint_group_head(ui, rect, label, count, folded, resp.hovered(), summary, &p);
+                                let resp = if *is_active { resp.on_hover_text(t("Only projects where something runs or waits, or an agent can be resumed")) } else { resp };
+                                if resp.clicked() {
+                                    toggle_group = Some(key);
+                                }
+                                continue;
+                            }
+                            Line::Row(row) => (&row.0, &row.1, &row.2, &row.3),
+                        };
                         let worktree = self.projects[*i].is_worktree();
                         let h = if worktree { WORKTREE_H } else { PROJECT_H };
                         let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
@@ -546,6 +625,72 @@ impl App {
                     }
                 });
         });
+        if let Some(key) = toggle_group {
+            if !self.sidebar_folded.remove(key) {
+                self.sidebar_folded.insert(key.to_string());
+            }
+            self.mark_dirty();
+        }
+    }
+
+    /// The projects (worktrees aside) under the sidebar's Active: something runs or waits in
+    /// them or their worktrees now (the Grid's rule), or did less than `active_linger` ago.
+    /// While `hold` (the pointer over the list, the search typed into) it stays as it was.
+    fn sidebar_active(&mut self, hold: bool) -> std::collections::HashSet<tc_core::ProjectId> {
+        use super::grid::Activity;
+        let now = std::time::Instant::now();
+        let linger = active_linger();
+        let mut wake: Option<std::time::Duration> = None;
+        // One pass: a worktree's activity counts for the project it belongs to.
+        for k in 0..self.projects.len() {
+            let pr = &self.projects[k];
+            let top = pr.parent.filter(|x| self.project(*x).is_some()).unwrap_or(pr.id);
+            match self.project_activity(pr.id, now) {
+                Activity::Active => {
+                    self.sidebar_active_until.insert(top, now + linger);
+                }
+                Activity::Soon(d) => wake = Some(wake.map_or(d, |w| w.min(d))),
+                Activity::Idle => {}
+            }
+        }
+        let projects = &self.projects;
+        self.sidebar_active_until.retain(|id, until| *until > now && projects.iter().any(|p| p.id == *id && !p.is_worktree()));
+        // Drawn again when a program has run long enough, or a quiet project leaves.
+        if let Some(d) = self.sidebar_active_until.values().map(|u| *u - now).min() {
+            wake = Some(wake.map_or(d, |w| w.min(d)));
+        }
+        if let Some(d) = wake {
+            self.ctx.request_repaint_after(d);
+        }
+        let live: std::collections::HashSet<tc_core::ProjectId> = self.sidebar_active_until.keys().copied().collect();
+        if hold {
+            self.sidebar_hold.get_or_insert(live).clone()
+        } else {
+            self.sidebar_hold = None;
+            live
+        }
+    }
+
+    /// How many of these projects are, at their most pressing: running, done, failed, waiting
+    /// for the user (in that order).
+    fn group_summary(&self, ids: &std::collections::HashSet<tc_core::ProjectId>) -> [usize; 4] {
+        let mut out = [0; 4];
+        for &id in ids {
+            let mut rank = 0;
+            for pid in std::iter::once(id).chain(self.worktrees_of(id)) {
+                let Some(pr) = self.project(pid) else { continue };
+                for pane in pr.panes().iter().filter_map(|x| self.panes.get(x)).filter(|x| x.tracker.wants_attention()) {
+                    rank = rank.max(match pane.tracker.status {
+                        Status::NeedsInput => 3,
+                        Status::Failed(_) => 2,
+                        Status::Done | Status::CommandDone => 1,
+                        _ => 0,
+                    });
+                }
+            }
+            out[rank] += 1;
+        }
+        out
     }
 
     /// The rows of the project list (indexes into `projects`, and whether a row is only there
@@ -739,6 +884,31 @@ pub struct ProjectRow {
     pub folded: bool,
     /// A worktree: the commits its branch has that its base has not.
     pub ahead: Option<usize>,
+}
+
+/// A group's line: ˅ or ›, its name and how many projects, and (Active) how many run, wait,
+/// failed or are done.
+#[allow(clippy::too_many_arguments)]
+fn paint_group_head(ui: &Ui, rect: Rect, label: &str, count: usize, folded: bool, hovered: bool, summary: &[(&str, egui::Color32, usize)], p: &style::Palette) {
+    let painter = ui.painter();
+    if hovered {
+        painter.rect_filled(rect, CornerRadius::same(6), p.faint_row());
+    }
+    let cy = rect.center().y;
+    painter.text(pos2(rect.left() + 13.0, cy), Align2::CENTER_CENTER, if folded { icons::CARET_RIGHT } else { icons::CARET_DOWN }, style::icon_font(10.0), p.text_faint);
+    let g = kit::section_galley(painter, label, p.text_muted);
+    let gw = g.size().x;
+    painter.galley(pos2(rect.left() + 24.0, cy - g.size().y / 2.0), g, p.text_muted);
+    painter.text(pos2(rect.left() + 24.0 + gw + 6.0, cy), Align2::LEFT_CENTER, count.to_string(), style::medium(10.5), p.text_faint);
+    let mut x = rect.right() - 8.0;
+    for (icon, color, n) in summary.iter().rev().filter(|s| s.2 > 0) {
+        let num = painter.layout_no_wrap(n.to_string(), style::medium(11.0), *color);
+        x -= num.size().x;
+        painter.galley(pos2(x, cy - num.size().y / 2.0), num, *color);
+        x -= 3.0 + 6.0;
+        painter.text(pos2(x, cy), Align2::CENTER_CENTER, *icon, style::icon_font(11.5), *color);
+        x -= 6.0 + 8.0;
+    }
 }
 
 /// Paints a project's row: name, pane dots and badge (or the shortcut, hovered) on the first

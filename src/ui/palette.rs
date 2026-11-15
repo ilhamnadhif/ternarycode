@@ -568,7 +568,7 @@ impl App {
                             right -= w + 6.0;
                             if ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| kit::button_ex(ui, kit::Kind::Secondary, None, t("Review"), true)).inner.clicked() {
                                 self.actions.push(Action::FocusPane(pane));
-                                self.actions.push(Action::Review);
+                                self.actions.push(Action::ReviewAgent);
                                 reviewed = true;
                             }
                         }

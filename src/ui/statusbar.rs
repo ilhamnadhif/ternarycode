@@ -107,7 +107,7 @@ impl App {
         let queue = self.attention_queue();
         let mut close = false;
         let screen = ctx.content_rect();
-        let on_top = self.dialog.is_none() && self.palette.is_none() && self.review.is_none();
+        let on_top = self.dialog.is_none() && self.palette.is_none() && !self.review_full();
         let in_sidebar = inbox.is_some();
         // The keyboard: ↑↓ choose, ↵ jump, R review, ⌫ mark as seen, Esc close.
         let n = queue.len();
@@ -380,7 +380,7 @@ impl App {
             }
             Choice::Review => {
                 self.actions.push(Action::FocusPane(e.pane));
-                self.actions.push(Action::Review);
+                self.actions.push(Action::ReviewAgent);
                 *close = true;
             }
             Choice::Seen => self.actions.push(Action::MarkSeen(e.pane)),

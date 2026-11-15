@@ -482,6 +482,7 @@ impl App {
                     "find" => Some(Action::Find),
                     "find-all" => Some(Action::FindAll),
                     "review" => Some(Action::Review),
+                    "review-agent" => Some(Action::ReviewAgent),
                     "force-save" => Some(Action::ForceSave),
                     "reload" => Some(Action::ReloadFile),
                     "editor" => Some(Action::ToggleEditor),
@@ -793,6 +794,12 @@ impl App {
             "free-editor" => self.free_editor_memory(),
             // Drawn (or not) in the last frame.
             "expect-shown" => self.devtest.check(devtest::shown(arg.trim()), &format!("expect-shown {arg}")),
+            // `expect-above A B`: widget A is drawn higher up than widget B.
+            "expect-above" => {
+                let (a, b) = arg.trim().split_once(' ').unwrap_or((arg.trim(), ""));
+                let ok = matches!((devtest::rect_of(a), devtest::rect_of(b.trim())), (Some(ra), Some(rb)) if ra.top() < rb.top());
+                self.devtest.check(ok, &format!("expect-above {arg}"));
+            }
             "expect-hidden" => self.devtest.check(!devtest::shown(arg.trim()), &format!("expect-hidden {arg}")),
             // How many panes have started their shell (the others sleep until shown).
             "expect-started" => {
@@ -807,6 +814,11 @@ impl App {
                     let v: Vec<String> = r.files.iter().map(|f| format!("{:?}:{}", f.kind, f.path)).collect();
                     eprintln!("DEVTEST REVIEW {:?} loading={} files={v:?} error={:?}", r.base, r.loading, r.error);
                 }
+            }
+            // `expect-review BASE drawer|full`: what Review compares with, and where it is.
+            "expect-review" => {
+                let got = self.review.as_ref().map(|r| format!("{:?} {}", r.base, if r.expanded { "full" } else { "drawer" })).unwrap_or_else(|| "closed".into());
+                self.devtest.check(got == arg.trim(), &format!("expect-review {arg} (got {got})"));
             }
             "expect-dialog" => {
                 let open = self.dialog.is_some();

@@ -62,7 +62,8 @@ printf 'png' > "$WORK/drop me.png"
 
 run smoke 40 "sleep 1200;; action add-project $P1;; sleep 1500;; keys echo hello-tc\\r;; wait-screen hello-tc;; wait-status idle;; expect-project alpha;; hook-latency claude PermissionRequest needs-input;; hook-latency claude Stop idle|done;; quit"
 
-run jump 40 "sleep 1000;; action add-project $P2;; sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude Notification permission_prompt;; sleep 400;; wait-queue 1;; action next-attention;; sleep 400;; expect-project beta;; wait-queue 1;; key enter;; sleep 400;; wait-queue 0;; action back-attention;; sleep 400;; expect-project alpha;; action select 1;; sleep 400;; expect-project beta;; quit"
+# ⌘J jumps to the waiting agent and back; ⌘1 is beta, listed first while it is under Active.
+run jump 40 "sleep 1000;; action add-project $P2;; sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude Notification permission_prompt;; sleep 400;; wait-queue 1;; action next-attention;; sleep 400;; expect-project beta;; wait-queue 1;; key enter;; sleep 400;; wait-queue 0;; action back-attention;; sleep 400;; expect-project alpha;; action select 0;; sleep 400;; expect-project beta;; quit"
 
 # A question asked in the pane being looked at still waits for the user until it is answered.
 run focused-question 40 "sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude PermissionRequest;; sleep 400;; wait-queue 1;; expect-shown attention-summary;; key enter;; sleep 400;; wait-queue 0;; quit"
@@ -166,6 +167,13 @@ run docs 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOC
 # both pages, then Enter to the second; a sheet's cell (selected); a Word file's words.
 run doc-find 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOCS/report.pdf;; wait-doc kind=pdf state=ready pages=2;; click doc-body;; sleep 200;; action find;; sleep 300;; keys quarterly;; wait-doc matches=2 current=1;; key enter;; wait-doc current=2;; shot e2e-doc-find-pdf;; key esc;; sleep 300;; expect-hidden doc-find;; open-file $DOCS/data.csv;; wait-doc kind=csv state=ready;; click doc-body;; action find;; sleep 300;; keys beta;; wait-doc matches=1 cell=2,0;; key esc;; open-file $DOCS/notes.docx;; wait-doc kind=word state=ready;; click doc-body;; action find;; sleep 300;; keys docs;; wait-doc matches=1 current=1;; shot e2e-doc-find-word;; quit"
 
+# The sidebar's Active group: nothing running, no groups; a program running in beta for 2 s
+# moves it under Active, above alpha, and ⌘1 follows; Idle folds; while the pointer is over the
+# list nothing moves, once it leaves beta goes back (Active lingers 0.6 s here, 30 s normally).
+export TERNARYCODE_ACTIVE_LINGER_MS=600
+run sidebar-active 60 "sleep 1000;; action add-project $P1;; sleep 1000;; action add-project $P2;; sleep 1200;; mouse move pane:4@0.5,0.5;; sleep 300;; expect-hidden sidebar-group:active;; expect-above project:alpha project:beta;; keys sleep 5\\r;; sleep 3000;; expect-shown sidebar-group:active;; expect-shown sidebar-group:idle;; expect-above project:beta project:alpha;; action select 0;; sleep 400;; expect-project beta;; click sidebar-group:idle;; sleep 300;; expect-hidden project:alpha;; click sidebar-group:idle;; sleep 300;; expect-shown project:alpha;; shot e2e-sidebar-active;; mouse move project:alpha@0.5,0.5;; sleep 3500;; expect-shown sidebar-group:active;; mouse move pane:4@0.5,0.5;; sleep 1200;; expect-hidden sidebar-group:active;; expect-above project:alpha project:beta;; quit"
+unset TERNARYCODE_ACTIVE_LINGER_MS
+
 # The sidebar keeps the width it is dragged to (it used to shrink back to its narrowest).
 run sidebar-resize 40 "sleep 1000;; action add-project $P1;; sleep 1200;; expect-width sidebar 240 256;; mouse down sidebar@1.0,0.5;; sleep 100;; mouse drag sidebar@1.4,0.5;; sleep 150;; mouse up sidebar@1.0,0.5;; sleep 1500;; expect-width sidebar 335 360;; sleep 1500;; expect-width sidebar 335 360;; quit"
 run grid-fit 50 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 1500;; wait-tabs 0:2,3;; action grid;; sleep 1000;; expect-fill 2;; expect-fill 3;; mouse down tile:alpha@0.75,0.5;; mouse up tile:alpha@0.75,0.5;; sleep 300;; key ctrl+d;; wait-tabs 0:2;; sleep 800;; expect-fill 2;; shot e2e-grid-fit;; action focus;; sleep 1000;; expect-fill 2;; quit"
@@ -221,6 +229,11 @@ run explorer 60 "sleep 1000;; action add-project $T;; sleep 1500;; action files;
 # make it a split of the tab in view. Ctrl+D in a shell closes its pane.
 run tabs 60 "sleep 1000;; action add-project $P2;; sleep 1200;; action new-tab;; sleep 800;; action new-tab;; sleep 800;; wait-tabs 0:2 1:3 2:4;; mouse down tab:2;; sleep 120;; mouse drag tab:2@0.3,0.5;; sleep 120;; mouse drag tab:1@0.5,0.5;; sleep 120;; mouse drag tab:0@0.2,0.5;; sleep 150;; mouse up tab:0@0.2,0.5;; sleep 400;; wait-tabs 0:4 1:2 2:3;; mouse down tab:1;; sleep 120;; mouse drag tab:1@0.5,0.9;; sleep 120;; mouse drag pane:4@0.7,0.5;; sleep 120;; mouse drag pane:4@0.92,0.5;; sleep 150;; shot e2e-tab-drop;; mouse up pane:4@0.92,0.5;; sleep 500;; wait-tabs 0:4,2 1:3;; quit"
 
+# The open tab dragged onto its own pane: the tab looked at before it shows, and the open tab is
+# dropped beside it. Then the merged tab, held over the first tab in the strip, makes that one
+# show (spring-loaded), and is dropped beside its pane.
+run tab-open-split 60 "sleep 1000;; action add-project $P2;; sleep 1200;; action new-tab;; sleep 800;; action new-tab;; sleep 800;; wait-tabs 0:2 1:3 2:4;; mouse down tab:2;; sleep 120;; mouse drag tab:2@0.5,0.9;; sleep 120;; mouse drag pane:4@0.5,0.5;; sleep 300;; mouse drag pane:3@0.7,0.5;; sleep 120;; mouse drag pane:3@0.92,0.5;; sleep 150;; shot e2e-tab-open-split;; mouse up pane:3@0.92,0.5;; sleep 500;; wait-tabs 0:2 1:3,4;; mouse down tab:1;; sleep 120;; mouse drag tab:1@0.6,0.5;; sleep 120;; mouse drag tab:0@0.5,0.5;; sleep 700;; mouse drag tab:0@0.5,0.9;; sleep 120;; mouse drag pane:2@0.7,0.5;; sleep 120;; mouse drag pane:2@0.92,0.5;; sleep 150;; mouse up pane:2@0.92,0.5;; sleep 500;; wait-tabs 0:2,3,4;; quit"
+
 # ⌘F with the keyboard in the editor searches the file (all matches found, Enter steps); `:N`
 # goes to line N. ⌘F in a terminal still searches the pane (scenario `find`).
 run editor-find 50 "sleep 1000;; action add-project $P1;; sleep 1200;; write-file $P1/find.txt one two one\\nthree\\nfour one\\n;; open-file $P1/find.txt;; sleep 800;; click editor-text;; sleep 300;; key cmd+f;; sleep 300;; keys one;; wait-find 3;; key enter;; sleep 200;; key cmd+f;; sleep 300;; keys :3\\r;; wait-caret 3;; sleep 300;; wait-editor one two one\\nthree\\nfour one\\n;; quit"
@@ -235,10 +248,17 @@ F="$WORK/files"; mkdir -p "$F"; printf 'x\n' > "$F/a.txt"
 run explorer-filter-esc 40 "sleep 1000;; action add-project $T;; sleep 1500;; action files;; sleep 800;; wait-tree edit.txt;; click files-filter;; sleep 300;; keys zzz;; sleep 500;; expect-hidden tree:edit.txt;; key esc;; sleep 500;; expect-shown tree:edit.txt;; quit"
 run files-actions 50 "sleep 1000;; action add-project $F;; sleep 1500;; action files;; sleep 800;; wait-tree a.txt;; sleep 300;; click files-button:0;; sleep 400;; keys hello.txt\\r;; wait-open hello.txt;; wait-tree hello.txt;; action rename hello.txt;; sleep 400;; keys renamed\\r;; wait-tree renamed.txt;; wait-open renamed.txt;; click files-button:1;; sleep 400;; keys docs/api\\r;; wait-tree docs;; shot e2e-files;; quit"
 run ctrl-d 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 2600;; wait-tabs 0:2,3;; key ctrl+d;; wait-tabs 0:2;; sleep 300;; key ctrl+d;; wait-tabs 0:4;; sleep 600;; key ctrl+d;; wait-tabs 0:5;; quit"
+# Review opened from "N changed" shows those N, since the last commit, in the Code drawer (not a
+# page of its own). A new folder made before the agent started: the agent's own run has nothing,
+# so Review from the agent falls back to the last commit; asked for the run, it says why it is
+# empty and offers the changes since the last commit. Full screen and back with Esc.
+RS="$WORK/scope"; mkdir -p "$RS" && (cd "$RS" && git init -q -b main && printf 'one\n' > a.txt && git add -A && git -c user.name=t -c user.email=t@t commit -qm init && mkdir -p notes && printf 'x\n' > notes/n1.md && printf 'y\n' > notes/n2.md)
+run review-scope 70 "sleep 1000;; action add-project $RS;; sleep 1500;; hook 2 claude SessionStart;; sleep 300;; wait-snapshot;; action review;; wait-review Added:notes/n1.md,Added:notes/n2.md;; expect-review Head drawer;; expect-shown review-dir:notes;; action review-agent;; wait-review Added:notes/n1.md,Added:notes/n2.md;; expect-review Head drawer;; click review-base:Run;; sleep 800;; wait-review ;; expect-review Run drawer;; expect-shown review-show-head;; shot e2e-review-scope-empty;; click review-show-head;; wait-review Added:notes/n1.md,Added:notes/n2.md;; expect-review Head drawer;; click review-expand;; sleep 400;; expect-review Head full;; key esc;; sleep 400;; expect-review Head drawer;; shot e2e-review-drawer;; quit"
+
 run review 60 "sleep 1000;; action add-project $R;; sleep 1200;; hook 2 claude SessionStart;; sleep 300;; wait-snapshot;; write-file $R/edit.txt line 1\\nline 2 changed\\nline 3\\n;; write-file $R/new.txt brand new\\n;; rm-file $R/gone.txt;; sleep 300;; action review;; sleep 1500;; wait-review Added:new.txt,Deleted:gone.txt,Modified:edit.txt;; quit"
 # An agent that finished while another project was open: Review in the list of what waits, and
 # on its Grid tile, opens what it changed.
-run review-done 70 "sleep 1000;; action add-project $R;; sleep 1200;; hook 2 claude SessionStart;; sleep 300;; wait-snapshot;; write-file $R/done.txt finished\\n;; action add-project $P1;; sleep 1200;; hook 2 claude Stop;; sleep 600;; action attention;; sleep 600;; click att-review:2;; sleep 1500;; wait-review Added:done.txt;; expect-project repo;; key esc;; sleep 600;; action select 0;; sleep 800;; hook 2 claude Stop;; sleep 600;; action grid;; sleep 1200;; click tile-review:2;; sleep 1500;; wait-review Added:done.txt;; expect-project repo;; shot e2e-review-done;; quit"
+run review-done 70 "sleep 1000;; action add-project $R;; sleep 1200;; hook 2 claude SessionStart;; sleep 300;; wait-snapshot;; write-file $R/done.txt finished\\n;; action add-project $P1;; sleep 1200;; hook 2 claude Stop;; sleep 600;; action attention;; sleep 600;; click att-review:2;; sleep 1500;; wait-review Added:done.txt;; expect-project repo;; key esc;; sleep 600;; action select-name alpha;; sleep 800;; hook 2 claude Stop;; sleep 600;; action grid;; sleep 1200;; click tile-review:2;; sleep 1500;; wait-review Added:done.txt;; expect-project repo;; shot e2e-review-done;; quit"
 
 # Shell integration (OSC 133) with the user's own shell configuration: a quick failure stays
 # quiet; a long one is reported as failed with its exit code.
