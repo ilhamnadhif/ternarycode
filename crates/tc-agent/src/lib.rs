@@ -5,6 +5,7 @@
 
 pub mod client;
 pub mod integrate;
+pub mod mcp;
 pub mod proc;
 pub mod protocol;
 pub mod server;

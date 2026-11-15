@@ -132,8 +132,12 @@ pub(crate) fn send(_sock: &str, _msg: &HookMsg) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Entry point of `ternarycode-hook`; returns the exit code (always 0).
+/// Entry point of `ternarycode-hook`; returns the exit code (always 0). `ternarycode-hook mcp`
+/// is the agents' browser tools instead (`crate::mcp`).
 pub fn run(args: &[String]) -> i32 {
+    if args.first().is_some_and(|a| a == "mcp") {
+        return crate::mcp::run(&args[1..]);
+    }
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     match message(args, env, read_stdin) {
         Some((sock, msg)) => {

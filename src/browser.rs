@@ -25,6 +25,39 @@ pub enum Event {
     OpenHere(String),
 }
 
+/// An agent using a page (its browser tools, `browser_agent`).
+#[derive(Clone, Debug)]
+pub struct Driver {
+    /// The agent's pane.
+    pub pane: PaneId,
+    /// Its name ("Claude Code").
+    pub who: String,
+    /// What it does now ("Clicking “Add to cart” button").
+    pub doing: String,
+    /// When its last tool call began or ended.
+    pub last: Instant,
+    /// The user took the browser over: the agent's calls are answered "the user has it".
+    pub paused: bool,
+}
+
+/// A site an agent's step would open, not on the project's list: the user is asked.
+#[derive(Clone, Debug)]
+pub struct Ask {
+    pub url: String,
+    pub host: String,
+    /// A click leads there (else the agent asked to open it).
+    pub click: bool,
+    pub answer: Option<Answer>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    Once,
+    /// And from now on, for the project.
+    Always,
+    Block,
+}
+
 /// Where a page's callbacks put what they report, and wake the window.
 #[derive(Clone)]
 pub struct Sink {
@@ -52,8 +85,14 @@ pub struct Browser {
     pub last_seen: Instant,
     /// The page was let go to save memory (loaded again when shown).
     pub asleep: bool,
-    /// An agent uses the page now (its tools act on it).
-    pub driven: bool,
+    /// The agent pane this browser was opened for or taken by: its tools act here.
+    pub owner: Option<PaneId>,
+    /// An agent using the page now.
+    pub driver: Option<Driver>,
+    /// A site waiting for the user's OK.
+    pub ask: Option<Ask>,
+    /// A host the user let the agent open once: its next load is not stopped.
+    pub pass: Option<String>,
     events: Arc<Mutex<Vec<Event>>>,
     #[cfg(target_os = "macos")]
     pub(crate) view: Option<wry::WebView>,
@@ -61,6 +100,11 @@ pub struct Browser {
     pub(crate) shown: bool,
     /// Where its web view was last laid (moved only when that changes).
     pub(crate) placed: Option<eframe::egui::Rect>,
+    /// Laid outside the window: out of view while an agent uses it (it keeps drawing, so its
+    /// screenshots and timers work).
+    pub(crate) offscreen: bool,
+    /// Dimmed under a question.
+    pub(crate) dimmed: bool,
 }
 
 impl Browser {
@@ -75,13 +119,23 @@ impl Browser {
             address: url.to_string(),
             last_seen: Instant::now(),
             asleep: true,
-            driven: false,
+            owner: None,
+            driver: None,
+            ask: None,
+            pass: None,
             events: Arc::default(),
             #[cfg(target_os = "macos")]
             view: None,
             shown: false,
             placed: None,
+            offscreen: false,
+            dimmed: false,
         }
+    }
+
+    /// An agent uses it now (the user has not taken it over).
+    pub fn driven(&self) -> bool {
+        self.driver.as_ref().is_some_and(|d| !d.paused)
     }
 
     pub fn sink(&self, ctx: &eframe::egui::Context) -> Sink {
@@ -157,6 +211,8 @@ impl Browser {
         }
         self.placed = None;
         self.shown = false;
+        self.offscreen = false;
+        self.dimmed = false;
         self.asleep = true;
         self.loading = false;
     }
@@ -188,8 +244,35 @@ pub fn split_url(url: &str) -> (String, String) {
     }
 }
 
+/// The host of an address, without its port ("" for none).
+pub fn host_of(url: &str) -> String {
+    let (host, _) = split_url(url);
+    let host = host.rsplit_once('@').map_or(host.as_str(), |(_, h)| h).to_string();
+    match host.strip_prefix('[') {
+        Some(v6) => format!("[{}]", v6.split(']').next().unwrap_or("")),
+        None => host.split(':').next().unwrap_or("").to_ascii_lowercase(),
+    }
+}
+
+/// Whether an agent may open `url` without asking: this machine's addresses, local files and
+/// blank pages, the project's own sites (`sites`, each with its subdomains), and `pass` (a
+/// host the user let it open once).
+pub fn agent_may_open(url: &str, sites: &[String], pass: Option<&str>) -> bool {
+    let scheme = url.split_once(':').map_or("", |(s, _)| s).to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https") {
+        return matches!(scheme.as_str(), "about" | "file" | "data" | "blob");
+    }
+    let host = host_of(url);
+    local_host(&host)
+        || pass == Some(host.as_str())
+        || sites.iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
+}
+
 /// Whether an address is on this machine (a dev server): http, not https, when typed bare.
 fn local_host(host: &str) -> bool {
+    if let Some(v6) = host.strip_prefix('[') {
+        return v6.starts_with("::1]");
+    }
     let host = host.split(':').next().unwrap_or(host);
     matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]") || host.ends_with(".local") || host.ends_with(".localhost")
 }
@@ -239,10 +322,14 @@ pub fn file_url(path: &std::path::Path) -> String {
     format!("file://{encoded}")
 }
 
-/// Reports a click in the page (it takes the keyboard): the app then lets go of its own
-/// keyboard focus.
+/// Reports the user's click in the page (it takes the keyboard): the app then lets go of its
+/// own keyboard focus. An agent's clicks are not the user's (they are not trusted events).
 #[cfg(target_os = "macos")]
-const FOCUS_SCRIPT: &str = "window.addEventListener('pointerdown', function () { try { window.ipc.postMessage('focus'); } catch (e) {} }, true);";
+const FOCUS_SCRIPT: &str = "window.addEventListener('pointerdown', function (e) { if (!e.isTrusted) return; try { window.ipc.postMessage('focus'); } catch (x) {} }, true);";
+
+/// The agents' helper in the page (`browser_agent.js`), from the start of every page so that
+/// it hears the console from the first line.
+pub const AGENT_JS: &str = include_str!("browser_agent.js");
 
 /// Safari's own name: some sites refuse a web view that does not say it is Safari.
 #[cfg(target_os = "macos")]
@@ -267,6 +354,7 @@ pub fn build_view(
         .with_accept_first_mouse(true)
         .with_back_forward_navigation_gestures(true)
         .with_initialization_script(FOCUS_SCRIPT)
+        .with_initialization_script(AGENT_JS)
         .with_document_title_changed_handler(move |t| s1.push(Event::Title(t)))
         .with_on_page_load_handler(move |e, u| {
             s2.push(Event::Url(u));
@@ -341,6 +429,88 @@ pub fn snapshot(view: &wry::WebView, done: impl FnOnce(Option<Vec<u8>>) + 'stati
     unsafe { wk.takeSnapshotWithConfiguration_completionHandler(None, &block) };
 }
 
+/// Runs `body` (the body of an async function) in the page and hands what it returns, as a
+/// string, to `done` (on the main thread, once). An error: the script failed to run, or the
+/// page went away meanwhile (it navigated).
+#[cfg(target_os = "macos")]
+pub fn run_js(view: &wry::WebView, body: &str, done: impl FnOnce(Result<String, String>) + 'static) {
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSError, NSString};
+    use objc2_web_kit::WKContentWorld;
+    use wry::WebViewExtMacOS;
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return done(Err("not on the main thread".into()));
+    };
+    let done = std::cell::RefCell::new(Some(done));
+    let block = block2::RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
+        // SAFETY: WebKit hands a valid object (or null) for each, for the length of the call.
+        let out = match unsafe { error.as_ref() } {
+            Some(e) => Err(e.localizedDescription().to_string()),
+            None => unsafe { result.as_ref() }
+                .and_then(|r| r.downcast_ref::<NSString>())
+                .map(|s| s.to_string())
+                .ok_or_else(|| "the page returned nothing".to_string()),
+        };
+        if let Some(f) = done.borrow_mut().take() {
+            f(out);
+        }
+    });
+    let wk = view.webview();
+    // SAFETY: on the main thread; the page's own world (where the helper lives), the main frame,
+    // no arguments; the block lives as long as WebKit keeps it.
+    unsafe {
+        let world = WKContentWorld::pageWorld(mtm);
+        wk.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(&NSString::from_str(body), None, None, &world, Some(&block));
+    }
+}
+
+/// Whether the page is loading: from the request on (wry reports a load only once it commits,
+/// and a load that fails not at all).
+#[cfg(target_os = "macos")]
+pub fn is_loading(view: &wry::WebView) -> bool {
+    use wry::WebViewExtMacOS;
+    // SAFETY: a plain WKWebView getter on the main thread.
+    unsafe { view.webview().isLoading() }
+}
+
+/// Takes the page back from a site an agent may not open yet. wry tells of a load once it has
+/// committed (the new page is in), so it is stopped and the page goes back to the last one.
+#[cfg(target_os = "macos")]
+pub fn turn_back(view: &wry::WebView) {
+    use wry::WebViewExtMacOS;
+    // SAFETY: plain WKWebView methods on the main thread.
+    unsafe {
+        let wk = view.webview();
+        wk.stopLoading();
+        if wk.canGoBack() {
+            wk.goBack();
+        }
+    }
+}
+
+/// Whether the page has the keyboard (its web view, or a view in it, is the window's first
+/// responder).
+#[cfg(target_os = "macos")]
+pub fn has_keyboard(view: &wry::WebView) -> bool {
+    use objc2_app_kit::NSView;
+    use wry::WebViewExtMacOS;
+    let wk = view.webview();
+    let Some(window) = wk.window() else { return false };
+    let Some(first) = window.firstResponder() else { return false };
+    first.downcast_ref::<NSView>().is_some_and(|v| v.isDescendantOf(&wk))
+}
+
+/// Dims the page (a question is asked over it) or shows it fully again.
+#[cfg(target_os = "macos")]
+pub fn dim(view: &wry::WebView, dimmed: bool) {
+    use wry::WebViewExtMacOS;
+    let alpha: f64 = if dimmed { 0.55 } else { 1.0 };
+    // SAFETY: NSView's alphaValue setter, on the main thread.
+    unsafe {
+        let _: () = objc2::msg_send![&*view.webview(), setAlphaValue: alpha];
+    }
+}
+
 /// Forgets the pages' cookies, logins, cache and storage: WebKit's default store, the one
 /// profile every browser pane shares (live or asleep). Main thread only.
 #[cfg(target_os = "macos")]
@@ -374,5 +544,19 @@ mod tests {
         assert_eq!(normalize("  "), "");
         assert_eq!(split_url("http://localhost:4321/guides/install"), ("localhost:4321".into(), "/guides/install".into()));
         assert_eq!(file_url(std::path::Path::new("/tmp/a b.html")), "file:///tmp/a%20b.html");
+    }
+
+    #[test]
+    fn agents_open_this_machine_and_the_project_sites() {
+        assert_eq!(host_of("https://User@Checkout.Stripe.com:443/c/pay"), "checkout.stripe.com");
+        assert_eq!(host_of("http://[::1]:3000/"), "[::1]");
+        let sites = vec!["stripe.com".to_string()];
+        for ok in ["http://localhost:5173/cart", "http://127.0.0.1:8080", "http://app.local/", "http://[::1]:3000", "about:blank", "file:///tmp/a.html", "https://checkout.stripe.com/x", "https://stripe.com"] {
+            assert!(agent_may_open(ok, &sites, None), "{ok}");
+        }
+        for asks in ["https://github.com/", "https://notstripe.com/", "https://stripe.com.evil.io/", "javascript:alert(1)", "ftp://x.org/"] {
+            assert!(!agent_may_open(asks, &sites, None), "{asks}");
+        }
+        assert!(agent_may_open("https://github.com/x", &[], Some("github.com")));
     }
 }

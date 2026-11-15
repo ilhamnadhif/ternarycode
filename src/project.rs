@@ -34,6 +34,8 @@ pub struct Project {
     pub folded: bool,
     /// Run Agent last chose a new worktree here.
     pub new_worktree: bool,
+    /// Sites its agents may open in its browser without asking.
+    pub sites: Vec<String>,
     /// Its folder is gone (deleted outside TernaryCode).
     pub missing: bool,
     /// Its merged branch was offered for removal already (once per run of the app).
@@ -209,6 +211,7 @@ impl Project {
             worktree_setup: saved.worktree_setup.clone(),
             folded: saved.folded,
             new_worktree: saved.new_worktree,
+            sites: saved.sites.clone(),
             missing: false,
             merge_offered: false,
         }
@@ -270,6 +273,7 @@ impl Project {
             worktree_setup: self.worktree_setup.clone(),
             folded: self.folded,
             new_worktree: self.new_worktree,
+            sites: self.sites.clone(),
         }
     }
 }

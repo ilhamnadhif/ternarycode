@@ -1,0 +1,262 @@
+//! `ternarycode-hook mcp <agent>`: the MCP server (JSON-RPC over stdio, one message per line) an
+//! agent in a TernaryCode pane starts, giving it tools for its project's browser pane. Each tool
+//! call goes to the app over the pane's hook socket and waits for the answer there (see
+//! `server::OnCall`); the page itself is the app's.
+//!
+//! Outside a TernaryCode pane (no `TERNARYCODE_*` variables), or where browser panes don't run
+//! (only macOS for now), it lists no tools.
+
+use std::io::{BufRead, Write};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+use serde_json::{Value, json};
+
+use crate::{ENV_PANE, ENV_SOCK, ENV_TOKEN};
+
+/// Protocol versions this server speaks (the newest first): it answers in the client's when it
+/// is one of these, else in the newest.
+const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+const INSTRUCTIONS: &str = "These tools drive the browser pane of this project in TernaryCode, \
+beside the terminal you run in: the user sees every page and every click. Start with \
+browser_navigate (a local dev server like localhost:5173 opens at once; other sites need the \
+user's OK the first time), then act on the refs of the snapshot each tool returns.";
+
+/// The tools, as `tools/list` gives them.
+pub fn tools() -> Value {
+    let r#ref = json!({"type": "string", "description": "The element's ref from the last snapshot (e.g. e12)."});
+    let element = json!({"type": "string", "description": "What the element is, in a few words (shown to the user, e.g. “Add to cart” button)."});
+    json!([
+        {
+            "name": "browser_navigate",
+            "description": "Open a URL in the project's browser pane in TernaryCode. Local addresses (localhost, 127.0.0.1, a port like :5173) open at once; another site asks the user the first time. Waits for the page to load; returns its title and a snapshot.",
+            "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "The address (a bare port or host:port means this machine)."}}, "required": ["url"]},
+        },
+        {
+            "name": "browser_navigate_back",
+            "description": "Go back to the previous page; returns a snapshot.",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "browser_snapshot",
+            "description": "A text outline of the page: headings, text, links, buttons and fields, each element you can act on with a ref (e.g. [ref=e12]). Better than a screenshot for acting on the page.",
+            "inputSchema": {"type": "object", "properties": {}},
+            "annotations": {"readOnlyHint": true},
+        },
+        {
+            "name": "browser_click",
+            "description": "Click an element of the page; returns a snapshot after it (and after the page it leads to has loaded).",
+            "inputSchema": {"type": "object", "properties": {"ref": r#ref, "element": element}, "required": ["ref", "element"]},
+        },
+        {
+            "name": "browser_type",
+            "description": "Put text into a field (replacing what it holds); submit presses Enter after it. Returns a snapshot.",
+            "inputSchema": {"type": "object", "properties": {"ref": r#ref, "element": element, "text": {"type": "string"}, "submit": {"type": "boolean", "description": "Press Enter after typing."}}, "required": ["ref", "element", "text"]},
+        },
+        {
+            "name": "browser_select_option",
+            "description": "Choose options of a select element (by value or by label). Returns a snapshot.",
+            "inputSchema": {"type": "object", "properties": {"ref": r#ref, "element": element, "values": {"type": "array", "items": {"type": "string"}}}, "required": ["ref", "element", "values"]},
+        },
+        {
+            "name": "browser_press_key",
+            "description": "Press a key in the page, where the focus is: Enter, Escape, Tab, ArrowDown, a letter… Returns a snapshot.",
+            "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]},
+        },
+        {
+            "name": "browser_wait_for",
+            "description": "Wait until a text shows on the page, until a text is gone, or for some seconds (at most 60).",
+            "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "textGone": {"type": "string"}, "time": {"type": "number", "description": "Seconds."}}},
+            "annotations": {"readOnlyHint": true},
+        },
+        {
+            "name": "browser_take_screenshot",
+            "description": "A picture of the page as it shows in the pane (PNG). Use it to check how something looks; use the snapshot to act.",
+            "inputSchema": {"type": "object", "properties": {}},
+            "annotations": {"readOnlyHint": true},
+        },
+        {
+            "name": "browser_console_messages",
+            "description": "What the page logged to its console, with its errors, since it loaded.",
+            "inputSchema": {"type": "object", "properties": {}},
+            "annotations": {"readOnlyHint": true},
+        },
+        {
+            "name": "browser_evaluate",
+            "description": "Run a JavaScript function in the page and return its result as JSON, e.g. \"() => document.title\" (it may be async).",
+            "inputSchema": {"type": "object", "properties": {"function": {"type": "string"}}, "required": ["function"]},
+        },
+    ])
+}
+
+/// The answer to one JSON-RPC message (`None` for a notification or a response).
+fn answer(msg: &Value, env: &Option<Pane>, call: &dyn Fn(&Pane, &str, &Value) -> Value) -> Option<Value> {
+    let id = msg.get("id").cloned()?;
+    let method = msg["method"].as_str()?;
+    let result = match method {
+        "initialize" => {
+            let asked = msg["params"]["protocolVersion"].as_str().unwrap_or("");
+            let version = VERSIONS.iter().find(|v| **v == asked).unwrap_or(&VERSIONS[0]);
+            json!({
+                "protocolVersion": version,
+                "capabilities": {"tools": {"listChanged": false}},
+                "serverInfo": {"name": "ternarycode", "title": "TernaryCode browser", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": INSTRUCTIONS,
+            })
+        }
+        "ping" => json!({}),
+        "tools/list" => {
+            let available = env.is_some() && cfg!(target_os = "macos");
+            json!({"tools": if available { tools() } else { json!([]) }})
+        }
+        "tools/call" => {
+            let name = msg["params"]["name"].as_str().unwrap_or("");
+            let args = msg["params"].get("arguments").cloned().unwrap_or(json!({}));
+            let known = tools().as_array().is_some_and(|t| t.iter().any(|x| x["name"] == name));
+            match env {
+                Some(pane) if known => tool_result(&call(pane, name, &args)),
+                _ => return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": format!("Unknown tool: {name}")}})),
+            }
+        }
+        _ => return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("Method not found: {method}")}})),
+    };
+    Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+/// The app's answer (`{"text"}`, `{"image"}` in base64 PNG, or `{"error"}`) as a tool result.
+fn tool_result(reply: &Value) -> Value {
+    if let Some(e) = reply["error"].as_str() {
+        return json!({"content": [{"type": "text", "text": e}], "isError": true});
+    }
+    let mut content = Vec::new();
+    if let Some(t) = reply["text"].as_str() {
+        content.push(json!({"type": "text", "text": t}));
+    }
+    if let Some(png) = reply["image"].as_str() {
+        content.push(json!({"type": "image", "data": png, "mimeType": "image/png"}));
+    }
+    json!({"content": content, "isError": false})
+}
+
+/// The pane this server's agent runs in.
+#[derive(Clone)]
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) struct Pane {
+    pub(crate) sock: String,
+    pub(crate) pane: u64,
+    pub(crate) token: String,
+    pub(crate) agent: Option<String>,
+}
+
+/// Sends a tool call to the app and waits for its answer.
+#[cfg(unix)]
+pub(crate) fn call_app(p: &Pane, name: &str, args: &Value) -> Value {
+    use std::io::Read;
+    let msg = crate::protocol::CallMsg { pane: p.pane, token: p.token.clone(), agent: p.agent.clone(), call: name.to_string(), args: args.clone() };
+    let result = (|| -> std::io::Result<Value> {
+        let mut stream = std::os::unix::net::UnixStream::connect(&p.sock)?;
+        let mut line = serde_json::to_vec(&msg)?;
+        line.push(b'\n');
+        stream.write_all(&line)?;
+        let mut answer = Vec::new();
+        stream.read_to_end(&mut answer)?;
+        Ok(serde_json::from_slice(&answer)?)
+    })();
+    result.unwrap_or_else(|_| json!({"error": "TernaryCode did not answer: is it still running?"}))
+}
+
+#[cfg(not(unix))]
+fn call_app(_p: &Pane, _name: &str, _args: &Value) -> Value {
+    json!({"error": "The browser tools run on macOS only for now."})
+}
+
+/// Entry point of `ternarycode-hook mcp [agent]`; returns the exit code.
+pub fn run(args: &[String]) -> i32 {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let env = match (var(ENV_SOCK), var(ENV_PANE).and_then(|p| p.parse().ok()), var(ENV_TOKEN)) {
+        (Some(sock), Some(pane), Some(token)) => Some(Pane { sock, pane, token, agent: args.first().cloned() }),
+        _ => None,
+    };
+    let out = Arc::new(Mutex::new(std::io::stdout()));
+    let write = |out: &Mutex<std::io::Stdout>, v: &Value| {
+        let mut o = out.lock();
+        let _ = writeln!(o, "{v}");
+        let _ = o.flush();
+    };
+    let mut calls = Vec::new();
+    for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else { break };
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+            if !line.trim().is_empty() {
+                write(&out, &json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}}));
+            }
+            continue;
+        };
+        // A tool call can wait long (a page loading, the user asked): each runs on its own
+        // thread, so pings and other calls are answered meanwhile.
+        if msg["method"] == "tools/call" {
+            let (out, env) = (out.clone(), env.clone());
+            calls.push(std::thread::spawn(move || {
+                if let Some(a) = answer(&msg, &env, &call_app) {
+                    write(&out, &a);
+                }
+            }));
+            calls.retain(|c| !c.is_finished());
+        } else if let Some(a) = answer(&msg, &env, &call_app) {
+            write(&out, &a);
+        }
+    }
+    // The input ended: the calls still running are answered before it exits.
+    for c in calls {
+        let _ = c.join();
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pane() -> Option<Pane> {
+        Some(Pane { sock: "/tmp/x".into(), pane: 3, token: "t".into(), agent: Some("claude".into()) })
+    }
+
+    #[test]
+    fn speaks_mcp() {
+        let none = |_: &Pane, _: &str, _: &Value| json!({});
+        let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}});
+        let a = answer(&init, &pane(), &none).unwrap();
+        assert_eq!(a["result"]["protocolVersion"], "2025-06-18");
+        assert_eq!(a["result"]["serverInfo"]["name"], "ternarycode");
+        let newer = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2099-01-01"}});
+        assert_eq!(answer(&newer, &pane(), &none).unwrap()["result"]["protocolVersion"], VERSIONS[0]);
+        // Notifications get no answer; unknown methods an error.
+        assert!(answer(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}), &pane(), &none).is_none());
+        let bad = answer(&json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list"}), &pane(), &none).unwrap();
+        assert_eq!(bad["error"]["code"], -32601);
+        // Outside a pane, no tools.
+        let list = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"});
+        assert_eq!(answer(&list, &None, &none).unwrap()["result"]["tools"], json!([]));
+        let n = answer(&list, &pane(), &none).unwrap()["result"]["tools"].as_array().map(Vec::len).unwrap_or(0);
+        assert_eq!(n, if cfg!(target_os = "macos") { 11 } else { 0 });
+    }
+
+    #[test]
+    fn calls_go_to_the_app_and_come_back_as_content() {
+        let app = |p: &Pane, name: &str, args: &Value| -> Value {
+            assert_eq!((p.pane, name, args["url"].as_str()), (3, "browser_navigate", Some("localhost:3000")));
+            json!({"text": "Page: Home", "image": "iVBO"})
+        };
+        let call = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "browser_navigate", "arguments": {"url": "localhost:3000"}}});
+        let r = answer(&call, &pane(), &app).unwrap();
+        assert_eq!(r["result"]["content"][0]["text"], "Page: Home");
+        assert_eq!(r["result"]["content"][1]["mimeType"], "image/png");
+        assert_eq!(r["result"]["isError"], false);
+        let failing = |_: &Pane, _: &str, _: &Value| json!({"error": "No page"});
+        let r = answer(&call, &pane(), &failing).unwrap();
+        assert_eq!(r["result"]["isError"], true);
+        let unknown = json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "rm_rf"}});
+        assert_eq!(answer(&unknown, &pane(), &app).unwrap()["error"]["code"], -32602);
+    }
+}

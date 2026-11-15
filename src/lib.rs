@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod app;
 pub mod browser;
+pub mod browser_agent;
 pub mod cli;
 #[cfg(debug_assertions)]
 pub mod devtest;

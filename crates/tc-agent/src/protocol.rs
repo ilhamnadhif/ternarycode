@@ -28,6 +28,21 @@ pub struct HookMsg {
     pub cwd: Option<String>,
 }
 
+/// A tool call from `ternarycode-hook mcp` (an agent using the browser of its project), sent
+/// like a hook message; the app's answer comes back on the same connection, as one line.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CallMsg {
+    pub pane: u64,
+    pub token: String,
+    /// The agent making the call (`claude`, …), when known.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The tool (`browser_navigate`, …).
+    pub call: String,
+    #[serde(default)]
+    pub args: Value,
+}
+
 /// Claude Code tools that stop and ask the user: the plan's approval ("Ready to code?") and a
 /// question with choices.
 pub const ASKING_TOOLS: &[&str] = &["ExitPlanMode", "AskUserQuestion"];

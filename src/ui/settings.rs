@@ -40,7 +40,7 @@ fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str
         (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically", "Group active projects at the top"]),
         (SettingsPage::Appearance, icons::PAINT_BRUSH, "Appearance", &["Theme", "Language", "With the dark theme", "With the light theme", "Font", "Size", "Cursor", "Blinking cursor"]),
         (SettingsPage::Terminal, icons::TERMINAL, "Terminal", &["Scrollback per pane", "Scrollback memory for all panes", "Option key as Meta", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]),
-        (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "Put browsers to sleep after", "Logins & cookies"]),
+        (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "Put browsers to sleep after", "Logins & cookies", "Sites agents may open"]),
         (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks"]),
         (SettingsPage::Editor, icons::CODE, "Editor", &["Language features", "Start servers only when needed", "Completion while typing", "Format on save"]),
         (SettingsPage::Notifications, icons::BELL, "Notifications", &["An agent needs input", "A process failed", "An agent finished its turn", "A long command finished", "Badge on the Dock icon"]),
@@ -512,6 +512,32 @@ impl App {
                 }
             });
         });
+        // The sites each project's agents may open without asking (Always for … adds them).
+        let sites: Vec<(tc_core::ProjectId, String, String)> =
+            self.projects.iter().flat_map(|p| p.sites.iter().map(|s| (p.id, p.name.clone(), s.clone()))).collect();
+        let labels = [(t("Sites agents may open"), t("Agents open this machine's addresses (localhost, 127.0.0.1, *.local) without asking. Another site asks you first; Always for a project adds it here."))];
+        let mut remove = None;
+        if hit(search, labels[0].0, labels[0].1) {
+            group(ui, t("Sites agents may open"));
+        }
+        card(ui, search, &labels, |c| {
+            if sites.is_empty() {
+                c.row(t("Only this machine"), labels[0].1, |_| {});
+            }
+            for (id, project, site) in &sites {
+                c.row(site, project, |ui| {
+                    if kit::button_ex(ui, kit::Kind::Ghost, None, t("Remove"), true).clicked() {
+                        remove = Some((*id, site.clone()));
+                    }
+                });
+            }
+        });
+        if let Some((id, site)) = remove
+            && let Some(p) = self.projects.iter_mut().find(|p| p.id == id)
+        {
+            p.sites.retain(|s| *s != site);
+            self.mark_dirty();
+        }
     }
 
     fn terminal_page(&mut self, ui: &mut Ui, search: &str) {
@@ -1010,7 +1036,7 @@ impl Hooks {
 /// What each agent's hooks report, and how they are added.
 fn hooks_note(agent: AgentKind) -> &'static str {
     match agent {
-        AgentKind::Claude => t("Per launch adds TernaryCode's hooks to each run (--settings) without changing your files. Installed writes them into ~/.claude/settings.json, with a backup. Hooks report permission requests, questions and finished turns. Checked with Claude Code 2.1.319."),
+        AgentKind::Claude => t("Per launch adds TernaryCode's hooks (--settings) and, on macOS, its browser tools (--mcp-config) to each run, without changing your files. Installed writes the hooks into ~/.claude/settings.json, with a backup. Hooks report permission requests, questions and finished turns. Checked with Claude Code 2.1.319."),
         AgentKind::Codex => t("Hooks and notify. Codex asks you once to trust TernaryCode's hooks (its own security check). Checked with Codex 0.162.1."),
         AgentKind::Gemini => t("Install adds hooks to ~/.gemini/settings.json (tool permissions, finished turns). Gemini CLI has no per-launch option. Checked with Gemini CLI 0.43.0."),
         _ => t("Install adds a small plugin file to OpenCode's plugins folder (permission requests, finished turns). OpenCode has no per-launch option. Checked with OpenCode 1.19.5."),

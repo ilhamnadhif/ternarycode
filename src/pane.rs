@@ -26,6 +26,8 @@ pub enum UiMsg {
     /// ([`Pane::generation`]).
     Pane(PaneId, u64, SessionEvent),
     Hook(HookMsg),
+    /// An agent's browser tool call, answered through the reply (`browser_agent`).
+    Call(tc_agent::protocol::CallMsg, tc_agent::server::Reply),
 }
 
 /// What a pane needs to start its shell.

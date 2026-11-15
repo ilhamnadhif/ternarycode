@@ -1,4 +1,5 @@
-//! `ternarycode-hook <agent> <event> [json]` — see `tc_agent::client`.
+//! `ternarycode-hook <agent> <event> [json]` — see `tc_agent::client`; `ternarycode-hook mcp
+//! <agent>` — see `tc_agent::mcp`.
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

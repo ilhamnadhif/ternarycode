@@ -1200,7 +1200,7 @@ impl App {
             worktrees: worktrees.len(),
             folded: pr.folded,
             ahead: pr.is_worktree().then(|| pr.git.as_ref().map_or(0, |g| g.ahead)),
-            web: self.browsers.values().filter(|b| b.project == pr.id && b.live()).map(|b| b.driven).max(),
+            web: self.browsers.values().filter(|b| b.project == pr.id && b.live()).map(|b| b.driven()).max(),
         };
         // Folded away, its worktrees' most urgent status shows on the project.
         if pr.folded {

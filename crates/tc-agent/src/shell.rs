@@ -129,8 +129,8 @@ pub fn windows_shell_args(shell: &str, integrated: bool) -> Vec<String> {
     args
 }
 
-/// Standard base64 (what `-EncodedCommand` takes, over UTF-16LE text).
-fn base64(data: &[u8]) -> String {
+/// Standard base64 (what `-EncodedCommand` takes, over UTF-16LE text; a screenshot for an agent).
+pub fn base64(data: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {

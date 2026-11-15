@@ -108,7 +108,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # a local web server); its chip opens the page beside the terminal, where the web view sits
 # exactly on the pane; an address typed goes there; ⇧⌘B opens the project's server in a tab of
 # its own. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -118,6 +118,34 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser" == *"$ONLY"* ]]; 
     run browser-1 60 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WORK/bin/announce $WEBPORT\\r;; wait-shown server-chip;; click server-chip;; wait-browser TC Test Page;; wait-tabs 0:2,3;; sleep 500;; expect-web-placed;; web-shot e2e-browser-page;; shot e2e-browser;; click browser-address:3;; sleep 200;; key cmd+a;; keys localhost:$WEBPORT/second.html\\r;; wait-browser Second;; action new-browser-tab;; wait-tabs 0:2,3 1:4;; wait-browser TC Test Page;; sleep 500;; expect-web-placed;; action palette;; sleep 500;; expect-web-hidden;; key esc;; sleep 500;; expect-web-placed;; click browser-more:4;; sleep 400;; expect-web-hidden;; shot e2e-browser-menu;; key esc;; sleep 500;; expect-web-placed;; quit"
     mkdir -p "$WORK/data-browser-2"; cp "$WORK/data-browser-1/workspace.json" "$WORK/data-browser-2/" 2>/dev/null
     run browser-2 50 "sleep 2000;; expect-project alpha;; wait-tabs 0:2,3 1:4;; wait-browser TC Test Page;; sleep 500;; expect-web-placed;; action select-tab 0;; wait-browser Second;; sleep 500;; expect-web-placed;; quit"
+
+    # An agent using the browser through its tools: the MCP server (`ternarycode-hook mcp`) runs
+    # in the pane as an agent starts it, with each tool call piped in (`m NAME` sends
+    # NAME.json and writes NAME.out). The first call opens the page beside the pane; the agent
+    # clicks, types, reads the console, runs a script, takes a picture, follows a link and
+    # comes back. A link to another site asks first (Block); an address elsewhere asked and
+    # allowed for the project opens without asking the next time. Take Over answers the call
+    # waiting, and the next one, "the user has the browser"; Hand Back lets them through.
+    printf '<!doctype html><title>Agent Page</title><h1>Shop</h1><p id="count">Count: 0</p><script>let n = 0; function add() { n++; document.getElementById("count").textContent = "Count: " + n; console.log("clicked", n); }</script><button onclick="add()">Add one</button><input placeholder="Search"><a href="/second.html">Second page</a> <a href="https://example.com/">Elsewhere</a>\n' > "$SITE/agent.html"
+    MCP="$WORK/mcp"; mkdir -p "$MCP"
+    call() { printf '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"%s","arguments":%s}}\n' "$2" "$3" > "$MCP/$1.json"; }
+    call nav browser_navigate "{\"url\":\"localhost:$WEBPORT/agent.html\"}"
+    call add browser_click '{"ref":"e1","element":"Add one button"}'
+    call typ browser_type '{"ref":"e2","element":"Search field","text":"linen"}'
+    call con browser_console_messages '{}'
+    call js browser_evaluate '{"function":"() => document.title + \" / \" + n"}'
+    call pic browser_take_screenshot '{}'
+    call sec browser_click '{"ref":"e3","element":"Second page link"}'
+    call bak browser_navigate_back '{}'
+    call away browser_click '{"ref":"e4","element":"Elsewhere link"}'
+    call inv browser_navigate '{"url":"http://tc-e2e.invalid/"}'
+    call inv2 browser_navigate '{"url":"http://tc-e2e.invalid/two"}'
+    call hold browser_wait_for '{"text":"never shows","time":20}'
+    call snap browser_snapshot '{}'
+    HOOK="$ROOT/target/debug/ternarycode-hook"
+    run browser-agent 120 "sleep 1000;; action add-project $P1;; sleep 1500;; keys m() { $HOOK mcp claude < $MCP/\$1.json > $MCP/\$1.out; echo ok-\$1; }; clear\\r;; sleep 300;; keys m nav\\r;; wait-screen ok-nav;; wait-tabs 0:2,3;; expect-file $MCP/nav.out Page: Agent Page;; expect-file $MCP/nav.out [ref=e1];; wait-browser Agent Page;; keys m add\\r;; wait-screen ok-add;; expect-file $MCP/add.out Clicked Add one button.;; expect-file $MCP/add.out Count: 1;; keys m typ\\r;; wait-screen ok-typ;; expect-file $MCP/typ.out linen;; keys m con\\r;; wait-screen ok-con;; expect-file $MCP/con.out [log] clicked 1;; keys m js\\r;; wait-screen ok-js;; expect-file $MCP/js.out Agent Page / 1;; keys m pic\\r;; wait-screen ok-pic;; expect-file $MCP/pic.out image/png;; keys m sec\\r;; wait-screen ok-sec;; expect-file $MCP/sec.out Page: Second;; keys m bak\\r;; wait-screen ok-bak;; expect-file $MCP/bak.out Page: Agent Page;; hook 2 claude SessionStart;; keys m away &\\r;; wait-shown browser-ask:3;; wait-status needs-input;; expect-web-placed;; shot e2e-browser-ask;; click browser-block:3;; wait-screen ok-away;; wait-status running;; expect-file $MCP/away.out Blocked by the user: example.com;; wait-browser Agent Page;; keys m inv &\\r;; wait-shown browser-ask:3;; click browser-always:3;; wait-screen ok-inv;; expect-file $MCP/inv.out Opened http://tc-e2e.invalid/;; keys m inv2\\r;; wait-screen ok-inv2;; expect-file $MCP/inv2.out Opened http://tc-e2e.invalid/two;; expect-hidden browser-ask:3;; keys clear; m nav\\r;; wait-screen ok-nav;; keys m hold &\\r;; sleep 1000;; wait-shown browser-take-over:3;; shot e2e-browser-agent;; click browser-take-over:3;; sleep 400;; expect-shown browser-take-over:3;; focus-pane 0;; wait-screen ok-hold;; expect-file $MCP/hold.out took the browser over from Claude Code;; keys m snap\\r;; wait-screen ok-snap;; expect-file $MCP/snap.out has the browser now;; click browser-take-over:3;; sleep 300;; keys clear; m snap\\r;; wait-screen ok-snap;; expect-file $MCP/snap.out Page: Agent Page;; quit"
+    expect_saved() { grep -q "$2" "$WORK/data-$1/workspace.json" && echo "ok    $1 saved $2" || { echo "FAIL  $1 did not save $2"; FAIL=$((FAIL + 1)); }; }
+    [ -z "$ONLY" ] || [[ "browser-agent" == *"$ONLY"* ]] && expect_saved browser-agent tc-e2e.invalid
     kill "$WEB_PID" 2>/dev/null
 fi
 

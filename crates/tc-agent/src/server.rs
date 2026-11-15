@@ -8,14 +8,23 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
-use crate::protocol::HookMsg;
+use crate::protocol::{CallMsg, HookMsg};
 
 /// Largest amount read from one connection.
 const MAX_CONNECTION: u64 = 64 * 1024;
 /// Longest time one connection is read.
 const CONNECTION_TIME: std::time::Duration = std::time::Duration::from_secs(5);
+/// Longest time a tool call waits for the app's answer (a page that loads slowly, or the user
+/// asked whether the agent may open a site).
+const CALL_TIME: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Where the app's answer to a tool call goes: one JSON value, written back as a line.
+pub type Reply = tokio::sync::oneshot::Sender<serde_json::Value>;
+/// Takes a tool call (with a valid token) and answers it through the `Reply`, at once or later.
+pub type OnCall = Arc<dyn Fn(CallMsg, Reply) + Send + Sync>;
+type Calls = Arc<Mutex<Option<OnCall>>>;
 
 fn hash_of(data_dir: &Path) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -111,6 +120,8 @@ fn same(a: &str, b: &str) -> bool {
 pub struct HookServer {
     path: PathBuf,
     tokens: Arc<Mutex<HashMap<u64, String>>>,
+    /// Who answers tool calls (none: a call's connection is closed with no answer).
+    calls: Calls,
     /// The socket's (device, inode): the path may be another instance's socket by the end.
     #[cfg(unix)]
     socket: (u64, u64),
@@ -131,28 +142,46 @@ pub struct Handoff {
 
 /// Reads one connection: a message per line, each taken only with its pane's token. A hook
 /// writes its line and closes at once; a connection kept open longer than `CONNECTION_TIME` is
-/// closed, so idle clients can't pile up.
+/// closed, so idle clients can't pile up. A tool call ends the reading: its answer is written
+/// back (once the app gives it, within `CALL_TIME`), and the connection closes.
 async fn serve_connection(
-    stream: impl AsyncRead + Unpin,
+    stream: impl AsyncRead + AsyncWrite + Unpin,
     known: Arc<Mutex<HashMap<u64, String>>>,
     on_msg: Arc<dyn Fn(HookMsg) + Send + Sync>,
+    calls: Calls,
 ) {
-    let mut lines = BufReader::new(stream.take(MAX_CONNECTION)).lines();
-    let _ = tokio::time::timeout(CONNECTION_TIME, async {
+    let (read, mut write) = tokio::io::split(stream);
+    let mut lines = BufReader::new(read.take(MAX_CONNECTION)).lines();
+    let valid = |pane: u64, token: &str| known.lock().get(&pane).is_some_and(|t| same(t, token));
+    let call = tokio::time::timeout(CONNECTION_TIME, async {
         while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(call) = serde_json::from_str::<CallMsg>(&line) {
+                return Some(call);
+            }
             let Ok(msg) = serde_json::from_str::<HookMsg>(&line) else {
                 continue;
             };
-            let valid = known
-                .lock()
-                .get(&msg.pane)
-                .is_some_and(|t| same(t, &msg.token));
-            if valid {
+            if valid(msg.pane, &msg.token) {
                 on_msg(msg);
             }
         }
+        None
     })
-    .await;
+    .await
+    .ok()
+    .flatten();
+    let Some(call) = call.filter(|c| valid(c.pane, &c.token)) else { return };
+    let Some(answer) = calls.lock().clone() else { return };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    answer(call, tx);
+    let reply = match tokio::time::timeout(CALL_TIME, rx).await {
+        Ok(Ok(v)) => v,
+        _ => serde_json::json!({ "error": "TernaryCode did not answer in time." }),
+    };
+    let mut line = serde_json::to_vec(&reply).unwrap_or_default();
+    line.push(b'\n');
+    let _ = write.write_all(&line).await;
+    let _ = write.shutdown().await;
 }
 
 impl HookServer {
@@ -201,6 +230,8 @@ impl HookServer {
         let fd = listener.as_raw_fd();
         let tokens = Arc::new(Mutex::new(tokens));
         let known = tokens.clone();
+        let calls: Calls = Arc::default();
+        let answer = calls.clone();
         let accept = rt.spawn(async move {
             let Ok(listener) = tokio::net::UnixListener::from_std(listener) else {
                 return;
@@ -211,10 +242,10 @@ impl HookServer {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     continue;
                 };
-                tokio::spawn(serve_connection(stream, known.clone(), on_msg.clone()));
+                tokio::spawn(serve_connection(stream, known.clone(), on_msg.clone(), answer.clone()));
             }
         });
-        Self { path, tokens, socket, listener: (fd, accept.abort_handle()) }
+        Self { path, tokens, calls, socket, listener: (fd, accept.abort_handle()) }
     }
 
     /// Stops serving and hands the socket over to the app's next run (see [`Handoff`]): a hook
@@ -297,6 +328,8 @@ impl HookServer {
         };
         let tokens: Arc<Mutex<HashMap<u64, String>>> = Arc::default();
         let known = tokens.clone();
+        // The pipe takes no answers back (inbound only): calls are not served on Windows.
+        let calls: Calls = Arc::default();
         rt.spawn(async move {
             let mut server = first;
             loop {
@@ -310,11 +343,16 @@ impl HookServer {
                 };
                 let done = std::mem::replace(&mut server, next);
                 if connected.is_ok() {
-                    tokio::spawn(serve_connection(done, known.clone(), on_msg.clone()));
+                    tokio::spawn(serve_connection(done, known.clone(), on_msg.clone(), Arc::default()));
                 }
             }
         });
-        Ok(Self { path, tokens })
+        Ok(Self { path, tokens, calls })
+    }
+
+    /// From now on tool calls go to `on_call` (the agents' browser tools).
+    pub fn answer_calls(&self, on_call: OnCall) {
+        *self.calls.lock() = Some(on_call);
     }
 
     pub fn path(&self) -> &Path {
@@ -424,6 +462,34 @@ mod tests {
         send(7, &token, "Stop");
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
         assert_eq!(server.register(9).len(), 32);
+    }
+
+    /// A browser tool call waits on its connection for the app's answer; one with a wrong
+    /// token is never handed to the app.
+    #[cfg(unix)]
+    #[test]
+    fn tool_calls_are_answered_on_their_connection() {
+        let rt = runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run/hook.sock");
+        let server = HookServer::start(rt.handle(), path.clone(), Arc::new(|_| {})).unwrap();
+        let token = server.register(4);
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        server.answer_calls(Arc::new(move |call: CallMsg, reply: Reply| {
+            seen.lock().push(call.call.clone());
+            // Answered later, from another thread (as the app does after a page loads).
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                let _ = reply.send(serde_json::json!({"text": format!("{} {}", call.call, call.args["url"].as_str().unwrap_or(""))}));
+            });
+        }));
+        let pane = |token: &str| crate::mcp::Pane { sock: path.to_string_lossy().into_owned(), pane: 4, token: token.into(), agent: Some("claude".into()) };
+        let got = crate::mcp::call_app(&pane(&token), "browser_navigate", &serde_json::json!({"url": "localhost:3000"}));
+        assert_eq!(got["text"], "browser_navigate localhost:3000");
+        let refused = crate::mcp::call_app(&pane("wrong"), "browser_snapshot", &serde_json::json!({}));
+        assert!(refused["error"].is_string());
+        assert_eq!(*asked.lock(), vec!["browser_navigate".to_string()]);
     }
 
     #[cfg(unix)]

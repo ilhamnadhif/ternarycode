@@ -1,0 +1,649 @@
+//! Agents using the browser of their project: the tools of `ternarycode-hook mcp`. A tool call
+//! comes in from the hook socket ([`App::browser_call`]) and becomes a job: a few steps carried
+//! out in the page, one after another, a frame at a time (open a page and wait for it, act in
+//! it through the helper `browser_agent.js`, wait for what that loads, read the page), then the
+//! answer goes back on the call's connection.
+//!
+//! The user sees it all: the pane says which agent uses it and what it does, a ring shows each
+//! element acted on, and Take Over (or a click in the page) gives the browser back to the
+//! user, after which the agent's calls are told so. Each agent pane has its own browser: beside
+//! it when there is room, else in a tab of the project. Sites other than this machine's ask the
+//! user first (Allow Once, Always for the project, Block), as a question in the pane that also
+//! goes into the usual queue of things waiting for the user.
+
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
+use serde_json::{Value, json};
+use tc_agent::protocol::CallMsg;
+use tc_agent::server::Reply;
+use tc_core::PaneId;
+use tc_core::agent::AgentKind;
+use tc_core::status::{Event as StatusEvent, HookSignal};
+use tc_term::layout::{Layout, SplitDir};
+
+use crate::app::App;
+use crate::browser::{Answer, Ask, Browser, Driver};
+use crate::i18n::{t, tf};
+use crate::project::Tab;
+
+/// What the pages answered, by call number (filled on the main thread by WebKit's callbacks).
+pub type Done = Arc<Mutex<HashMap<u64, Result<String, String>>>>;
+
+/// After its last call, an agent is shown using the browser this long (unless its turn ends).
+const DRIVER_LINGER: Duration = Duration::from_secs(30);
+/// Longest wait for a page to finish loading.
+const LOAD_LIMIT: Duration = Duration::from_secs(30);
+/// Longest wait for the page to answer a step (`browser_wait_for` waits up to 60 s in it).
+const STEP_LIMIT: Duration = Duration::from_secs(70);
+
+/// A step of a job.
+#[derive(Clone, Debug)]
+enum Op {
+    /// Open an address: at once when the agent may, else after the user's OK.
+    Go(String),
+    Back,
+    /// A function of the helper, with its arguments, and the line the answer gets for it.
+    Act(&'static str, Value, String),
+    /// The agent's own function, run in the page.
+    Eval(String),
+    /// Wait for a load the last step started (if it started one).
+    Settle,
+    /// The page's outline, for the answer.
+    Read,
+    /// A picture of the page, for the answer.
+    Shot,
+}
+
+/// What a job waits for.
+enum Waiting {
+    /// The page's answer to a step; `at`: where the page was, and whether it was loading,
+    /// when the step began (a step whose page goes away gets no answer at all).
+    Page { seq: u64, op: Op, since: Instant, at: (String, bool) },
+    /// `quiet`: frames in a row it was seen not loading (a page replacing another, a blank
+    /// one, is briefly not loading in between).
+    Load { since: Instant, started: bool, grace: Duration, quiet: u8 },
+    Picture { seq: u64, since: Instant },
+    /// The user's answer about a site; then the page goes there (or the click is made).
+    User { then: Op },
+}
+
+pub struct Job {
+    pub browser: PaneId,
+    agent_pane: PaneId,
+    reply: Option<Reply>,
+    ops: VecDeque<Op>,
+    waiting: Option<Waiting>,
+    /// The answer so far (what was done, then the page).
+    text: String,
+    image: Option<String>,
+    /// The page was read again after it went away once.
+    reread: bool,
+    seqs: Vec<u64>,
+}
+
+/// The helper's function `name` with `args`, as the body of an async function.
+fn helper_call(name: &str, args: &Value) -> String {
+    format!("{}\nreturn JSON.stringify(await window.__tc.run({}, {}));", crate::browser::AGENT_JS, json!(name), args)
+}
+
+/// The agent's function (or expression) run in the page, its result as JSON.
+fn eval_call(src: &str) -> String {
+    let s = src.trim();
+    let function = s.starts_with("function") || s.starts_with("async") || s.contains("=>");
+    let f = if function { s.to_string() } else { format!("async () => ({s})") };
+    format!(
+        "try {{ const r = await ({f})(); let s; try {{ s = JSON.stringify(r === undefined ? null : r); }} catch (e) {{ s = JSON.stringify(String(r)); }} return JSON.stringify({{ result: s }}); }} catch (e) {{ return JSON.stringify({{ error: String(e && e.stack || e) }}); }}"
+    )
+}
+
+/// The agent's status for a site question: asking (with the question), or working again.
+fn status(agent: AgentKind, asking: bool, message: Option<String>) -> StatusEvent {
+    StatusEvent::Hook { agent, signal: if asking { HookSignal::NeedsInput } else { HookSignal::Working }, message }
+}
+
+impl App {
+    /// An agent's browser tool call: becomes a job (or is answered at once when it can't run).
+    pub fn browser_call(&mut self, call: CallMsg, reply: Reply) {
+        let fail = |reply: Reply, e: &str| {
+            let _ = reply.send(json!({ "error": e }));
+        };
+        if !cfg!(target_os = "macos") {
+            return fail(reply, "The browser tools run on macOS only for now.");
+        }
+        let agent_pane = call.pane;
+        let Some(project) = self.panes.get(&agent_pane).map(|p| p.project) else {
+            return fail(reply, "The pane this agent runs in is gone.");
+        };
+        let who = call.agent.as_deref().and_then(AgentKind::from_slug).map_or("The agent", AgentKind::label).to_string();
+        let a = &call.args;
+        let s = |k: &str| a[k].as_str().unwrap_or("").trim().to_string();
+        // What the agent says the element is (shown to the user), else its ref.
+        let element = || Some(s("element")).filter(|e| !e.is_empty()).unwrap_or_else(|| s("ref"));
+        let refs = json!({ "ref": s("ref") });
+        let (doing, ops): (String, Vec<Op>) = match call.call.as_str() {
+            "browser_navigate" => {
+                let url = crate::browser::normalize(&s("url"));
+                if url.is_empty() {
+                    return fail(reply, "No address given.");
+                }
+                (tf("Opening {}", &[&crate::browser::split_url(&url).0]), vec![Op::Go(url), Op::Read])
+            }
+            "browser_navigate_back" => (t("Going back").into(), vec![Op::Back, Op::Read]),
+            "browser_snapshot" => (t("Reading the page").into(), vec![Op::Read]),
+            "browser_click" => {
+                let e = element();
+                (tf("Clicking {}", &[&e]), vec![Op::Act("click", refs, format!("Clicked {e}.")), Op::Settle, Op::Read])
+            }
+            "browser_type" => {
+                let e = element();
+                let args = json!({ "ref": s("ref"), "text": a["text"].as_str().unwrap_or(""), "submit": a["submit"].as_bool().unwrap_or(false) });
+                (tf("Typing into {}", &[&e]), vec![Op::Act("type", args, format!("Typed into {e}.")), Op::Settle, Op::Read])
+            }
+            "browser_select_option" => {
+                let e = element();
+                let args = json!({ "ref": s("ref"), "values": a["values"].clone() });
+                (tf("Choosing in {}", &[&e]), vec![Op::Act("select", args, format!("Chose in {e}.")), Op::Settle, Op::Read])
+            }
+            "browser_press_key" => {
+                let key = s("key");
+                (tf("Pressing {}", &[&key]), vec![Op::Act("press", json!({ "key": key }), format!("Pressed {key}.")), Op::Settle, Op::Read])
+            }
+            "browser_wait_for" => {
+                let what = if !s("text").is_empty() { tf("Waiting for “{}”", &[&s("text")]) } else { t("Waiting").to_string() };
+                let args = json!({ "text": s("text"), "textGone": s("textGone"), "time": a["time"].as_f64().unwrap_or(0.0) });
+                (what, vec![Op::Act("wait", args, "Waited.".into()), Op::Read])
+            }
+            "browser_take_screenshot" => (t("Taking a screenshot").into(), vec![Op::Shot]),
+            "browser_console_messages" => (t("Reading the console").into(), vec![Op::Act("console", json!({}), String::new())]),
+            "browser_evaluate" => (t("Running a script in the page").into(), vec![Op::Eval(s("function"))]),
+            other => return fail(reply, &format!("Unknown tool {other}.")),
+        };
+        let Some(id) = self.agent_browser(agent_pane, project, call.call == "browser_navigate") else {
+            return fail(reply, "No page is open in this project's browser yet: use browser_navigate first.");
+        };
+        let Some(b) = self.browsers.get_mut(&id) else { return };
+        if b.driver.as_ref().is_some_and(|d| d.paused) {
+            return fail(reply, &format!("The user has the browser now (they took it over from {who} in TernaryCode). Wait until they hand it back, or ask them."));
+        }
+        b.driver = Some(Driver { pane: agent_pane, who, doing, last: Instant::now(), paused: false });
+        self.browser_jobs.push(Job {
+            browser: id,
+            agent_pane,
+            reply: Some(reply),
+            ops: ops.into(),
+            waiting: None,
+            text: String::new(),
+            image: None,
+            reread: false,
+            seqs: Vec::new(),
+        });
+        self.mark_dirty();
+    }
+
+    /// The browser an agent's tools act on: its own, else one in its tab nobody uses, else
+    /// (`create`) a new one beside it when there is room, or in a tab of the project. The
+    /// keyboard and the tab in view stay as they are.
+    fn agent_browser(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, create: bool) -> Option<PaneId> {
+        if let Some(id) = self.browsers.values().find(|b| b.owner == Some(agent_pane)).map(|b| b.id) {
+            return Some(id);
+        }
+        let tab = self.project(project)?.tab_of(agent_pane)?;
+        let in_tab = self.project(project)?.tabs[tab].layout.panes();
+        if let Some(id) = in_tab.iter().copied().find(|x| self.browsers.get(x).is_some_and(|b| b.owner.is_none())) {
+            if let Some(b) = self.browsers.get_mut(&id) {
+                b.owner = Some(agent_pane);
+            }
+            return Some(id);
+        }
+        if !create {
+            return None;
+        }
+        let id = self.new_id();
+        let mut b = Browser::new(id, project, "");
+        b.owner = Some(agent_pane);
+        self.browsers.insert(id, b);
+        let wide = self.last_body.is_some_and(|r| r.width() >= 900.0);
+        let p = self.project_mut(project)?;
+        if p.tabs[tab].layout.panes().len() == 1 && wide {
+            p.tabs[tab].layout.split(agent_pane, id, SplitDir::Horizontal);
+        } else {
+            p.tabs.push(Tab { layout: Layout::Pane(id), focused: id, title: None });
+        }
+        self.mark_dirty();
+        Some(id)
+    }
+
+    /// The browsers jobs are waiting on (their pages are kept up, out of view if need be).
+    pub fn browsers_in_use(&self) -> HashSet<PaneId> {
+        let mut ids: HashSet<PaneId> = self.browser_jobs.iter().map(|j| j.browser).collect();
+        ids.extend(self.browsers.values().filter(|b| b.driven() || b.ask.is_some()).map(|b| b.id));
+        ids
+    }
+
+    /// Answers job `i` and takes it away.
+    fn end_job(&mut self, i: usize, error: Option<String>) {
+        let mut job = self.browser_jobs.remove(i);
+        {
+            let mut done = self.browser_done.lock();
+            for s in &job.seqs {
+                done.remove(s);
+            }
+        }
+        // Ended with its question open (the pane was closed, the user took the browser over):
+        // the question goes, and the agent is no longer waiting for the user.
+        if matches!(job.waiting, Some(Waiting::User { .. })) {
+            if let Some(b) = self.browsers.get_mut(&job.browser) {
+                b.ask = None;
+            }
+            self.asked(job.agent_pane);
+        }
+        let answer = match error {
+            Some(e) => json!({ "error": e }),
+            None => {
+                let mut v = json!({ "text": job.text.trim() });
+                if let Some(png) = job.image.take() {
+                    v["image"] = json!(png);
+                }
+                v
+            }
+        };
+        if let Some(r) = job.reply.take() {
+            let _ = r.send(answer);
+        }
+        if let Some(b) = self.browsers.get_mut(&job.browser)
+            && let Some(d) = b.driver.as_mut()
+        {
+            d.last = Instant::now();
+        }
+    }
+
+    /// Asks the user whether the agent may open `url` (in the pane, and as the agent's
+    /// question in the queue).
+    fn ask_site(&mut self, browser: PaneId, agent_pane: PaneId, url: &str, click: bool) {
+        let host = crate::browser::host_of(url);
+        if let Some(b) = self.browsers.get_mut(&browser) {
+            b.ask = Some(Ask { url: url.to_string(), host: host.clone(), click, answer: None });
+        }
+        if let Some(p) = self.panes.get_mut(&agent_pane)
+            && let Some(agent) = p.tracker.agent.or(p.last_agent)
+        {
+            p.tracker.apply(status(agent, true, Some(tf("Open {}?", &[&host]))), Instant::now());
+        }
+    }
+
+    /// The user answered a site question: the agent's status goes back to working.
+    fn asked(&mut self, agent_pane: PaneId) {
+        if let Some(p) = self.panes.get_mut(&agent_pane)
+            && let Some(agent) = p.tracker.agent.or(p.last_agent)
+        {
+            p.tracker.apply(status(agent, false, None), Instant::now());
+        }
+    }
+
+    /// A load came into a page an agent uses from a site it may not open (a redirect, a
+    /// script, a click the page turned into a navigation): the page goes back, and the user is
+    /// asked. (A click on a link or a form to such a site is asked about before it is made.)
+    #[cfg(target_os = "macos")]
+    pub fn stop_unasked_load(&mut self, id: PaneId, url: &str, before: &str) {
+        let Some(b) = self.browsers.get_mut(&id) else { return };
+        let Some(agent_pane) = b.driver.as_ref().filter(|d| !d.paused).map(|d| d.pane) else { return };
+        let sites = self.projects.iter().find(|p| p.id == b.project).map(|p| p.sites.clone()).unwrap_or_default();
+        if b.ask.is_some() || crate::browser::agent_may_open(url, &sites, b.pass.as_deref()) {
+            if b.pass.as_deref() == Some(crate::browser::host_of(url).as_str()) {
+                b.pass = None;
+            }
+            return;
+        }
+        if let Some(v) = &b.view {
+            crate::browser::turn_back(v);
+        }
+        b.url = before.to_string();
+        b.loading = false;
+        self.ask_site(id, agent_pane, url, true);
+        // The job acting on the page waits for the answer, then goes there.
+        if let Some(job) = self.browser_jobs.iter_mut().find(|j| j.browser == id) {
+            job.waiting = Some(Waiting::User { then: Op::Go(url.to_string()) });
+        }
+    }
+
+    /// Carries the jobs on (each frame while there are any): the first job of each browser
+    /// takes its next steps; the others wait their turn.
+    #[cfg(target_os = "macos")]
+    pub fn run_browser_jobs(&mut self, ctx: &eframe::egui::Context) {
+        let now = Instant::now();
+        // Agents that stopped using their browser: the pane says so no longer.
+        let jobs: HashSet<PaneId> = self.browser_jobs.iter().map(|j| j.browser).collect();
+        for b in self.browsers.values_mut() {
+            let Some(d) = &b.driver else { continue };
+            // Taken over, it stays the user's until they hand it back (the agent's next calls are
+            // told so), or the agent's pane is gone.
+            let gone = !self.panes.contains_key(&d.pane);
+            let turn_over = self.panes.get(&d.pane).is_none_or(|p| {
+                !matches!(p.tracker.status, tc_core::status::Status::Running | tc_core::status::Status::NeedsInput)
+            });
+            let idle = !jobs.contains(&b.id) && b.ask.is_none() && (turn_over || now.duration_since(d.last) > DRIVER_LINGER);
+            if gone || (idle && !d.paused) {
+                b.driver = None;
+            }
+        }
+        if self.browser_jobs.is_empty() {
+            return;
+        }
+        let mut busy = HashSet::new();
+        let mut i = 0;
+        while i < self.browser_jobs.len() {
+            let id = self.browser_jobs[i].browser;
+            if !busy.insert(id) {
+                i += 1;
+                continue;
+            }
+            match self.step_job(i, now) {
+                Some(error) => self.end_job(i, error),
+                None => i += 1,
+            }
+        }
+        if !self.browser_jobs.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(40));
+        }
+    }
+
+    /// Takes job `i` as far as it goes this frame. `Some`: it is over (with an error, or
+    /// `None` for its answer).
+    #[cfg(target_os = "macos")]
+    fn step_job(&mut self, i: usize, now: Instant) -> Option<Option<String>> {
+        loop {
+            let id = self.browser_jobs[i].browser;
+            let Some(b) = self.browsers.get(&id) else {
+                return Some(Some("The browser pane was closed.".into()));
+            };
+            if let Some(d) = b.driver.as_ref().filter(|d| d.paused) {
+                return Some(Some(format!("The user took the browser over from {} in TernaryCode. Wait until they hand it back, or ask them.", d.who)));
+            }
+            // A page not up yet (a new browser gets its web view once it has an address) counts
+            // as loading.
+            let loading = b.view.as_ref().is_none_or(crate::browser::is_loading);
+            let sites = self.projects.iter().find(|p| p.id == b.project).map(|p| p.sites.clone()).unwrap_or_default();
+            let answer = b.ask.as_ref().and_then(|a| a.answer.map(|x| (x, a.host.clone(), a.url.clone())));
+            let here = b.url.clone();
+            let page_url = b.view.as_ref().and_then(|v| v.url().ok()).unwrap_or_default();
+            // Its page comes up out of view if need be (`sync_browsers`).
+            let view = b.view.as_ref();
+            let job = &mut self.browser_jobs[i];
+            match job.waiting.take() {
+                Some(Waiting::Page { seq, op, since, at }) => {
+                    let got = self.browser_done.lock().remove(&seq);
+                    // The page went to another address (or began loading): WebKit won't answer.
+                    let left = page_url != at.0 || (loading && !at.1);
+                    let got = match got {
+                        Some(got) => got,
+                        None if left => Err("the page went to another address".into()),
+                        None if now.duration_since(since) > STEP_LIMIT => {
+                            return Some(Some("The page did not answer in time.".into()));
+                        }
+                        None => {
+                            job.waiting = Some(Waiting::Page { seq, op, since, at });
+                            return None;
+                        }
+                    };
+                    match (op, got) {
+                        // The page went away while the step ran (it navigated): its next one.
+                        (Op::Act(name, _, line), Err(_)) => {
+                            if name == "wait" {
+                                job.text.push_str("The page changed while waiting.\n");
+                            } else {
+                                job.text.push_str(&line);
+                                job.text.push('\n');
+                            }
+                            job.ops.push_front(Op::Settle);
+                        }
+                        (Op::Read, Err(e)) => {
+                            if job.reread {
+                                return Some(Some(format!("Could not read the page: {e}")));
+                            }
+                            job.reread = true;
+                            job.ops.push_front(Op::Read);
+                            job.ops.push_front(Op::Settle);
+                        }
+                        (Op::Eval(_), Err(e)) => return Some(Some(format!("The script failed: {e}"))),
+                        (op, Ok(text)) => {
+                            let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                            if let Some(e) = v["error"].as_str() {
+                                return Some(Some(e.to_string()));
+                            }
+                            match op {
+                                Op::Act(name, args, line) => {
+                                    if let Some(url) = v["leaves"].as_str() {
+                                        // A click to a site the agent may not open: asked first.
+                                        let mut args = args;
+                                        args["force"] = json!(true);
+                                        let (url, pane) = (url.to_string(), job.agent_pane);
+                                        job.waiting = Some(Waiting::User { then: Op::Act(name, args, line) });
+                                        self.ask_site(id, pane, &url, true);
+                                        return None;
+                                    }
+                                    if name == "console" {
+                                        job.text.push_str(v["text"].as_str().unwrap_or(""));
+                                    } else {
+                                        job.text.push_str(&line);
+                                        job.text.push_str(v["note"].as_str().unwrap_or(""));
+                                        job.text.push('\n');
+                                    }
+                                }
+                                Op::Read => {
+                                    job.text.push_str(&format!(
+                                        "\nPage: {}\nURL: {}\n\n{}\n",
+                                        v["title"].as_str().unwrap_or(""),
+                                        v["url"].as_str().unwrap_or(""),
+                                        v["text"].as_str().unwrap_or("")
+                                    ));
+                                }
+                                Op::Eval(_) => {
+                                    job.text.push_str(&format!("Result: {}", v["result"].as_str().unwrap_or("null")));
+                                }
+                                _ => {}
+                            }
+                        }
+                        (_, Err(e)) => return Some(Some(e)),
+                    }
+                }
+                Some(Waiting::Load { since, started, grace, quiet }) => {
+                    let started = started || loading;
+                    let quiet = if loading { 0 } else { quiet + 1 };
+                    let waited = now.duration_since(since);
+                    if (started && quiet >= 2) || (!started && waited > grace) {
+                        // Loaded (or nothing began loading).
+                    } else if waited > LOAD_LIMIT {
+                        job.text.push_str("(The page was still loading.)\n");
+                    } else {
+                        job.waiting = Some(Waiting::Load { since, started, grace, quiet });
+                        return None;
+                    }
+                }
+                Some(Waiting::Picture { seq, since }) => {
+                    let got = self.browser_done.lock().remove(&seq);
+                    match got {
+                        Some(Ok(png)) => job.image = Some(png),
+                        Some(Err(e)) => return Some(Some(format!("Could not take a screenshot: {e}"))),
+                        None if now.duration_since(since) > STEP_LIMIT => return Some(Some("The screenshot did not come.".into())),
+                        None => {
+                            job.waiting = Some(Waiting::Picture { seq, since });
+                            return None;
+                        }
+                    }
+                }
+                Some(Waiting::User { then }) => {
+                    let Some((answer, host, url)) = answer else {
+                        job.waiting = Some(Waiting::User { then });
+                        return None;
+                    };
+                    let pane = job.agent_pane;
+                    if answer != Answer::Block {
+                        job.ops.push_front(match then {
+                            // Opened now that it may (the pass lets its load through).
+                            Op::Go(_) => Op::Go(url.clone()),
+                            other => other,
+                        });
+                    }
+                    if let Some(b) = self.browsers.get_mut(&id) {
+                        b.ask = None;
+                        b.pass = Some(host.clone());
+                    }
+                    self.asked(pane);
+                    match answer {
+                        Answer::Block => {
+                            return Some(Some(format!("Blocked by the user: {host}. The page stayed at {here}.")));
+                        }
+                        Answer::Always => {
+                            let project = self.browsers.get(&id).map(|b| b.project);
+                            if let Some(p) = project.and_then(|p| self.project_mut(p))
+                                && !p.sites.contains(&host)
+                            {
+                                p.sites.push(host);
+                            }
+                            self.mark_dirty();
+                        }
+                        Answer::Once => {}
+                    }
+                    continue;
+                }
+                None => {
+                    let Some(op) = job.ops.pop_front() else {
+                        return Some(None);
+                    };
+                    let seq = self.browser_seq;
+                    match op {
+                        Op::Go(url) => {
+                            let pass = self.browsers.get(&id).and_then(|b| b.pass.clone());
+                            if !crate::browser::agent_may_open(&url, &sites, pass.as_deref()) {
+                                let pane = job.agent_pane;
+                                job.waiting = Some(Waiting::User { then: Op::Go(url.clone()) });
+                                self.ask_site(id, pane, &url, false);
+                                return None;
+                            }
+                            job.text.push_str(&format!("Opened {url}.\n"));
+                            job.waiting = Some(Waiting::Load { since: now, started: false, grace: Duration::from_secs(3), quiet: 0 });
+                            if let Some(b) = self.browsers.get_mut(&id) {
+                                b.navigate(&url);
+                            }
+                        }
+                        Op::Settle => {
+                            job.waiting = Some(Waiting::Load { since: now, started: loading, grace: Duration::from_millis(600), quiet: 0 });
+                        }
+                        op => {
+                            // The other steps need the page up: until then, they wait.
+                            let Some(view) = view else {
+                                job.ops.push_front(op);
+                                return None;
+                            };
+                            let done = self.browser_done.clone();
+                            let page = move |r: Result<String, String>| {
+                                done.lock().insert(seq, r);
+                            };
+                            match op {
+                                Op::Back => {
+                                    let _ = view.go_back();
+                                    job.text.push_str("Went back.\n");
+                                    job.waiting = Some(Waiting::Load { since: now, started: false, grace: Duration::from_millis(1500), quiet: 0 });
+                                }
+                                Op::Act(name, mut args, line) => {
+                                    if name == "click" {
+                                        args["allowed"] = json!(sites);
+                                    }
+                                    crate::browser::run_js(view, &helper_call(name, &args), move |r| {
+                                        page(r);
+                                    });
+                                    job.waiting = Some(Waiting::Page { seq, op: Op::Act(name, args, line), since: now, at: (page_url.clone(), loading) });
+                                }
+                                Op::Eval(src) => {
+                                    crate::browser::run_js(view, &eval_call(&src), move |r| {
+                                        page(r);
+                                    });
+                                    job.waiting = Some(Waiting::Page { seq, op: Op::Eval(src), since: now, at: (page_url.clone(), loading) });
+                                }
+                                Op::Read => {
+                                    crate::browser::run_js(view, &helper_call("snapshot", &json!({})), move |r| {
+                                        page(r);
+                                    });
+                                    job.waiting = Some(Waiting::Page { seq, op: Op::Read, since: now, at: (page_url.clone(), loading) });
+                                }
+                                Op::Shot => {
+                                    crate::browser::snapshot(view, move |png| {
+                                        page(png.map(|d| tc_agent::shell::base64(&d)).ok_or_else(|| "the page gave no picture".to_string()));
+                                    });
+                                    job.waiting = Some(Waiting::Picture { seq, since: now });
+                                }
+                                Op::Go(_) | Op::Settle => {}
+                            }
+                            self.browser_seq += 1;
+                            job.seqs.push(seq);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The user's answer to a site question in a browser pane.
+    pub fn answer_site(&mut self, id: PaneId, answer: Answer) {
+        let waiting = self.browser_jobs.iter().any(|j| j.browser == id);
+        let Some(b) = self.browsers.get_mut(&id) else { return };
+        let Some(ask) = b.ask.as_mut() else { return };
+        if waiting {
+            ask.answer = Some(answer);
+            return;
+        }
+        // No call waits any more (it timed out): the answer acts by itself.
+        let (url, host) = (ask.url.clone(), ask.host.clone());
+        let pane = b.driver.as_ref().map(|d| d.pane);
+        let project = b.project;
+        b.ask = None;
+        if answer != Answer::Block {
+            b.pass = Some(host.clone());
+            b.navigate(&url);
+        }
+        if answer == Answer::Always
+            && let Some(p) = self.project_mut(project)
+            && !p.sites.contains(&host)
+        {
+            p.sites.push(host);
+        }
+        if let Some(pane) = pane {
+            self.asked(pane);
+        }
+        self.mark_dirty();
+    }
+
+    /// The user takes the browser over from its agent: the pane is theirs, and its page has
+    /// the keyboard. Handing it back sends the keyboard to the agent's pane.
+    pub fn take_over_browser(&mut self, id: PaneId, take: bool) {
+        let Some(d) = self.browsers.get_mut(&id).and_then(|b| b.driver.as_mut()) else { return };
+        d.paused = take;
+        d.last = Instant::now();
+        let agent = d.pane;
+        if take {
+            self.actions.push(crate::actions::Action::FocusPane(id));
+            self.browser_focus_request = Some(id);
+        } else {
+            self.actions.push(crate::actions::Action::FocusPane(agent));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scripts_for_the_page() {
+        let c = helper_call("click", &json!({ "ref": "e3" }));
+        assert!(c.ends_with("return JSON.stringify(await window.__tc.run(\"click\", {\"ref\":\"e3\"}));"));
+        assert!(eval_call("() => document.title").contains("await (() => document.title)()"));
+        assert!(eval_call("document.title").contains("await (async () => (document.title))()"));
+        assert!(eval_call("async function () { return 1 }").contains("await (async function () { return 1 })()"));
+    }
+}

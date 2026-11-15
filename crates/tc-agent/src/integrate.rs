@@ -20,6 +20,8 @@ use tc_core::agent::AgentKind;
 use tc_core::model::Integration;
 
 pub const ENV_CLAUDE_SETTINGS: &str = "TC_CLAUDE_SETTINGS";
+/// The file passed with `claude --mcp-config`: TernaryCode's browser tools (`crate::mcp`).
+pub const ENV_CLAUDE_MCP: &str = "TC_CLAUDE_MCP";
 pub const ENV_CODEX_HOOKS: &str = "TC_CODEX_HOOKS";
 pub const ENV_CODEX_NOTIFY: &str = "TC_CODEX_NOTIFY";
 
@@ -118,9 +120,28 @@ impl Hooks {
         Value::Object(map)
     }
 
-    /// The file passed with `claude --settings` (hooks only; the user's other settings stay).
+    /// The file passed with `claude --settings`: the hooks, and the browser tools allowed (they
+    /// act only on the project's browser pane, and TernaryCode asks before another site opens).
+    /// The user's other settings stay.
     pub fn claude_settings(&self) -> String {
-        serde_json::to_string_pretty(&json!({ "hooks": self.claude_hooks() })).unwrap_or_default()
+        serde_json::to_string_pretty(&json!({
+            "hooks": self.claude_hooks(),
+            "permissions": { "allow": ["mcp__ternarycode"] },
+        }))
+        .unwrap_or_default()
+    }
+
+    /// The file passed with `claude --mcp-config`: `ternarycode-hook mcp claude`, the browser
+    /// tools of the pane the agent runs in.
+    pub fn claude_mcp(&self) -> String {
+        serde_json::to_string_pretty(&json!({
+            "mcpServers": { "ternarycode": {
+                "type": "stdio",
+                "command": self.bin.to_string_lossy(),
+                "args": ["mcp", "claude"],
+            } }
+        }))
+        .unwrap_or_default()
     }
 
     fn toml_str(s: &str) -> String {
@@ -149,20 +170,24 @@ impl Hooks {
         )
     }
 
-    /// Writes the `--settings` file and returns the variables every pane gets.
+    /// Writes the `--settings` and `--mcp-config` files and returns the variables every pane
+    /// gets.
     pub fn pane_env(&self, integrations_dir: &Path) -> io::Result<Vec<(String, String)>> {
         let file = integrations_dir.join("claude-settings.json");
-        // Unchanged since the last launch (the usual case): not written again (each write syncs
-        // to disk).
-        let settings = self.claude_settings();
-        if std::fs::read(&file).ok().as_deref() != Some(settings.as_bytes()) {
-            tc_core::persist::write_private(&file, settings.as_bytes())?;
+        let mcp = integrations_dir.join("claude-mcp.json");
+        for (path, text) in [(&file, self.claude_settings()), (&mcp, self.claude_mcp())] {
+            // Unchanged since the last launch (the usual case): not written again (each write
+            // syncs to disk).
+            if std::fs::read(path).ok().as_deref() != Some(text.as_bytes()) {
+                tc_core::persist::write_private(path, text.as_bytes())?;
+            }
         }
         Ok(vec![
             (
                 ENV_CLAUDE_SETTINGS.into(),
                 file.to_string_lossy().into_owned(),
             ),
+            (ENV_CLAUDE_MCP.into(), mcp.to_string_lossy().into_owned()),
             (ENV_CODEX_HOOKS.into(), self.codex_hooks_override()),
             (ENV_CODEX_NOTIFY.into(), self.codex_notify_override()),
         ])
@@ -199,6 +224,18 @@ pub fn codex_has_own_hooks(config_toml: &str) -> bool {
     })
 }
 
+/// Claude Code's flags for one launch: the browser tools (on macOS, where browser panes show
+/// pages) and the hooks. `--mcp-config` takes several files, so it goes first: the word after
+/// it is a flag, never a prompt typed after the command.
+fn claude_flags() -> String {
+    let settings = format!("--settings {}", env_ref(ENV_CLAUDE_SETTINGS));
+    if cfg!(target_os = "macos") {
+        format!("--mcp-config {} {settings}", env_ref(ENV_CLAUDE_MCP))
+    } else {
+        settings
+    }
+}
+
 /// The command a preset types for this launch: the user's command with the hook flags added
 /// right after the program (or at the end when the command starts differently).
 pub fn launch_command(
@@ -211,7 +248,7 @@ pub fn launch_command(
         return command.to_string();
     }
     let flags = match agent {
-        Some(AgentKind::Claude) => format!("--settings {}", env_ref(ENV_CLAUDE_SETTINGS)),
+        Some(AgentKind::Claude) => claude_flags(),
         Some(AgentKind::Codex) if codex_hooks => format!(
             "-c {} -c {}",
             env_ref(ENV_CODEX_HOOKS),
@@ -752,13 +789,19 @@ mod tests {
         );
         #[cfg(unix)]
         assert_eq!(settings, "\"$TC_CLAUDE_SETTINGS\"");
+        // Claude Code: the browser tools first on macOS (`--mcp-config` takes several files).
+        let claude = claude_flags();
+        #[cfg(target_os = "macos")]
+        assert_eq!(claude, format!("--mcp-config \"$TC_CLAUDE_MCP\" --settings {settings}"));
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(claude, format!("--settings {settings}"));
         assert_eq!(
             launch_command("claude", Some(AgentKind::Claude), pl, true),
-            format!("claude --settings {settings}")
+            format!("claude {claude}")
         );
         assert_eq!(
             launch_command("claude --continue", Some(AgentKind::Claude), pl, true),
-            format!("claude --settings {settings} --continue")
+            format!("claude {claude} --continue")
         );
         assert_eq!(
             launch_command("codex resume --last", Some(AgentKind::Codex), pl, true),
@@ -777,15 +820,15 @@ mod tests {
         // after it.
         assert_eq!(
             launch_command(r"C:\Users\Me\.local\bin\claude.exe --continue", Some(AgentKind::Claude), pl, true),
-            format!(r"C:\Users\Me\.local\bin\claude.exe --settings {settings} --continue")
+            format!(r"C:\Users\Me\.local\bin\claude.exe {claude} --continue")
         );
         assert_eq!(
             launch_command("/opt/bin/CLAUDE.EXE", Some(AgentKind::Claude), pl, true),
-            format!("/opt/bin/CLAUDE.EXE --settings {settings}")
+            format!("/opt/bin/CLAUDE.EXE {claude}")
         );
         assert_eq!(
             launch_command("claude; echo done", Some(AgentKind::Claude), pl, true),
-            format!("claude --settings {settings}; echo done")
+            format!("claude {claude}; echo done")
         );
         assert_eq!(
             launch_command("codex&&say done", Some(AgentKind::Codex), pl, false),
@@ -798,11 +841,11 @@ mod tests {
         // Not the program first: at the end, as before.
         assert_eq!(
             launch_command("npx claude", Some(AgentKind::Claude), pl, true),
-            format!("npx claude --settings {settings}")
+            format!("npx claude {claude}")
         );
         assert_eq!(
             launch_command("claudette", Some(AgentKind::Claude), pl, true),
-            format!("claudette --settings {settings}")
+            format!("claudette {claude}")
         );
     }
 

@@ -98,6 +98,9 @@ pub struct ProjectSave {
     pub folded: bool,
     /// Run Agent last chose to work in a new worktree here.
     pub new_worktree: bool,
+    /// Sites (hosts) its agents may open in its browser without asking, besides this machine's.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<String>,
 }
 
 /// A worktree made for an agent run (Run Agent → New worktree).

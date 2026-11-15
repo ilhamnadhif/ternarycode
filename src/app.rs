@@ -315,6 +315,11 @@ pub struct App {
     pub browser_focus_request: Option<PaneId>,
     /// A browser pane whose address field is to take the keyboard (a new, empty one).
     pub browser_edit: Option<PaneId>,
+    /// Agents' browser tool calls being carried out (`browser_agent`).
+    pub browser_jobs: Vec<crate::browser_agent::Job>,
+    /// What the pages answered (by call number), taken in by the jobs.
+    pub browser_done: crate::browser_agent::Done,
+    pub browser_seq: u64,
     /// Pane being dragged by its header.
     pub pane_drag: Option<PaneId>,
     /// The editor (its text or find field) had the keyboard in the last frame: ⌘F searches the
@@ -485,6 +490,15 @@ impl App {
         };
         #[cfg(not(unix))]
         let hooks = HookServer::start(rt.handle(), sock, on_hook).ok();
+        // Agents' browser tool calls (`ternarycode-hook mcp`), answered by the browser panes.
+        if let Some(server) = &hooks {
+            let tx = tx.clone();
+            let ctx = ctx.clone();
+            server.answer_calls(std::sync::Arc::new(move |call, reply| {
+                let _ = tx.send(UiMsg::Call(call, reply));
+                ctx.request_repaint();
+            }));
+        }
         let pane_env = hook_bin.pane_env(&paths::integrations_dir());
         let per_launch = pane_env.is_ok();
         let mut base_env = pane_env.unwrap_or_default();
@@ -584,6 +598,9 @@ impl App {
             browser_focus: None,
             browser_focus_request: None,
             browser_edit: None,
+            browser_jobs: Vec::new(),
+            browser_done: Default::default(),
+            browser_seq: 0,
             pane_drag: None,
             editor_keyboard: false,
             editor_seen: false,
@@ -1370,6 +1387,7 @@ impl App {
                         }
                     }
                 }
+                UiMsg::Call(call, reply) => self.browser_call(call, reply),
                 UiMsg::Hook(msg) => {
                     if let Some(pane) = self.panes.get_mut(&msg.pane) {
                         let turn_done = matches!(msg.event.as_str(), "Stop" | "AfterAgent" | "session.idle")
