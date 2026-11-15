@@ -1024,6 +1024,11 @@ impl App {
         self.target_pane().or_else(|| self.current_pane())
     }
 
+    /// The pane commands act on, when it is a shell nobody has used yet (Run Agent uses it).
+    pub fn fresh_command_pane(&self) -> Option<PaneId> {
+        self.command_pane().filter(|id| self.panes.get(id).is_some_and(Pane::is_fresh))
+    }
+
     /// The project "this project" commands act on (new tab, agents): the command pane's (a
     /// Grid tile's project is not made the open one).
     fn command_project(&self) -> Option<ProjectId> {
@@ -1902,12 +1907,21 @@ impl App {
             .and_then(|id| self.project(id))
             .and_then(Project::tab)
             .is_some_and(|tab| tab.layout.panes().len() >= 3);
-        let pane = match place {
-            Some(0) => self.new_tab(ctx),
-            Some(2) => self.split(ctx, SplitDir::Vertical),
-            Some(_) => self.split(ctx, SplitDir::Horizontal),
-            None if crowded => self.new_tab(ctx),
-            None => self.split(ctx, SplitDir::Horizontal),
+        // A shell nobody has used yet (a project just opened): the agent starts in it, not in a
+        // tab beside it. A split asked for is still a split.
+        let fresh = self.fresh_command_pane();
+        let pane = match (place, fresh) {
+            (Some(0) | None, Some(id)) => {
+                if self.panes.get(&id).is_some_and(Pane::dormant) {
+                    self.wake(ctx, id);
+                }
+                Some(id)
+            }
+            (Some(0), None) => self.new_tab(ctx),
+            (Some(2), _) => self.split(ctx, SplitDir::Vertical),
+            (Some(_), _) => self.split(ctx, SplitDir::Horizontal),
+            (None, None) if crowded => self.new_tab(ctx),
+            (None, None) => self.split(ctx, SplitDir::Horizontal),
         };
         let Some(pane) = pane else { return };
         let base = match &launch {

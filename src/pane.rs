@@ -473,6 +473,20 @@ impl Pane {
             && (self.typed || now.duration_since(self.started) >= Duration::from_secs(2))
     }
 
+    /// A shell nobody has used yet (nothing typed, no program or agent run, nothing waiting to
+    /// run): a project just opened. Run Agent starts the agent in it rather than in a second tab
+    /// beside it.
+    pub fn is_fresh(&self) -> bool {
+        !self.typed
+            && self.preset.is_none()
+            && self.exit.is_none()
+            && self.pending_command.is_none()
+            && self.last_agent.is_none()
+            && self.resume.is_none()
+            && self.tracker.agent.is_none()
+            && !matches!(self.tracker.fg, Foreground::Program { .. })
+    }
+
     /// Keys typed or text pasted by the user.
     pub fn input(&mut self, bytes: Vec<u8>) {
         self.typed = true;
@@ -532,6 +546,8 @@ impl Pane {
 
     /// Types `command` and Enter into the shell, as the user would, once it is ready.
     pub fn type_command(&mut self, command: String) {
+        // A command typed in for the user (an agent, a resume, a merge) is the pane in use.
+        self.typed = true;
         if self.got_output {
             self.write(format!("{command}\r").into_bytes());
             self.schedule_fg_check(Instant::now() + Duration::from_millis(500));

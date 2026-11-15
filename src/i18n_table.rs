@@ -810,4 +810,5 @@ const ID: &[(&str, &str)] = &[
     ("Tabs in {}", "Tab di {}"),
     ("Picked here: kept until something new waits in another tab", "Dipilih di sini: ditahan sampai ada yang baru menunggu di tab lain"),
     ("Can resume", "Bisa dilanjutkan"),
+    ("This Tab", "Tab Ini"),
 ];

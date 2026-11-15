@@ -72,6 +72,10 @@ run focused-question 40 "sleep 1000;; action add-project $P1;; sleep 1200;; hook
 run unconnected 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WORK/bin/claude 60\\r;; sleep 7000;; expect-shown unconnected;; shot e2e-unconnected;; key ctrl+c;; sleep 800;; expect-hidden unconnected;; quit"
 
 # Run Agent lists the project's earlier Claude Code sessions.
+# Run Agent in a project just opened: the agent starts in its unused shell (no second tab); run
+# again, the shell is in use, so it gets a pane of its own. A preset that only echoes.
+mkdir -p "$WORK/data-run-here"; printf '{"presets":[{"id":"echoer","name":"Echoer","command":"echo agent-ran-here"}]}\n' > "$WORK/data-run-here/settings.json"
+run run-here 40 "sleep 1000;; action add-project $P1;; sleep 1200;; wait-tabs 0:2;; action run echoer;; wait-screen agent-ran-here;; wait-tabs 0:2;; action run echoer;; sleep 800;; wait-tabs 0:2,3;; quit"
 run run-agent-sessions 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action pick;; sleep 1000;; expect-dialog open;; expect-shown session:0;; expect-shown session:1;; expect-hidden session:2;; key down;; sleep 300;; shot e2e-run-agent-sessions;; key esc;; sleep 300;; expect-dialog closed;; quit"
 
 # The sidebar's project search: it narrows the list, Enter opens the chosen project and empties
