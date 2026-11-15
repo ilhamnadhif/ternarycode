@@ -812,4 +812,7 @@ const ID: &[(&str, &str)] = &[
     ("Can resume", "Bisa dilanjutkan"),
     ("This Tab", "Tab Ini"),
     ("Open in Browser", "Buka di Browser"),
+    ("Changes not saved are lost:", "Perubahan yang belum disimpan hilang:"),
+    ("TernaryCode restarts as the new version; programs and agents keep running.", "TernaryCode dimulai ulang sebagai versi baru; program dan agent tetap berjalan."),
+    ("Installing the update…", "Memasang pembaruan…"),
 ];

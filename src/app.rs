@@ -65,6 +65,8 @@ pub enum AppMsg {
     WorktreeRemoved(String, Result<(), String>),
     /// The files not committed in a worktree (each file, for Merge and Remove).
     WorktreeDirty(ProjectId, Vec<String>),
+    /// The update was put in place for a restart in place (the new program), or why not.
+    UpdateInstalled(Result<PathBuf, crate::update::Outcome>),
 }
 
 /// A line of a confirmation's list: a program that would be stopped, or a file whose changes
@@ -375,6 +377,10 @@ pub struct App {
     budget_checked: Instant,
     /// Clicked notifications (pane ids), when native notifications are available.
     clicked_rx: Option<Receiver<PaneId>>,
+    /// An update is being put in place; the app then restarts in place as the new version.
+    updating: bool,
+    /// The new version's program, to restart as once this frame's messages are handled.
+    pub(crate) restart_to: Option<PathBuf>,
     #[cfg(debug_assertions)]
     pub devtest: crate::devtest::Script,
 }
@@ -407,31 +413,51 @@ impl App {
         let (tx, rx) = channel();
         let (app_tx, app_rx) = channel();
 
+        // The previous run's terminals and hook socket, when this run is its restart in place
+        // (an update): taken over below.
+        #[cfg(unix)]
+        let mut handoff = crate::handoff::take();
+        #[cfg(not(unix))]
+        let handoff: Option<()> = None;
+
         // The hook socket.
         let hook_bin = hook_program();
-        let hooks = {
+        let on_hook: std::sync::Arc<dyn Fn(tc_agent::protocol::HookMsg) + Send + Sync> = {
             let tx = tx.clone();
             let ctx = ctx.clone();
-            HookServer::start(
-                rt.handle(),
-                tc_agent::server::socket_path(paths::data_dir()),
-                std::sync::Arc::new(move |m| {
-                    // What changes an agent's status or calls for the user (a question, a turn
-                    // done, a session started or ended) is drawn at once; "still working" (each
-                    // tool an agent runs, many a second) shares the next frame.
-                    let working = AgentKind::from_slug(&m.agent)
-                        .and_then(|a| tc_agent::protocol::classify(a, &m.event, m.kind.as_deref()))
-                        == Some(tc_core::status::HookSignal::Working);
-                    let _ = tx.send(UiMsg::Hook(m));
-                    if working {
-                        ctx.request_repaint_after(Duration::from_millis(33));
-                    } else {
-                        ctx.request_repaint();
-                    }
-                }),
-            )
-            .ok()
+            std::sync::Arc::new(move |m| {
+                // What changes an agent's status or calls for the user (a question, a turn
+                // done, a session started or ended) is drawn at once; "still working" (each
+                // tool an agent runs, many a second) shares the next frame.
+                let working = AgentKind::from_slug(&m.agent)
+                    .and_then(|a| tc_agent::protocol::classify(a, &m.event, m.kind.as_deref()))
+                    == Some(tc_core::status::HookSignal::Working);
+                let _ = tx.send(UiMsg::Hook(m));
+                if working {
+                    ctx.request_repaint_after(Duration::from_millis(33));
+                } else {
+                    ctx.request_repaint();
+                }
+            })
         };
+        let sock = tc_agent::server::socket_path(paths::data_dir());
+        #[cfg(unix)]
+        let hooks = match handoff.as_mut().and_then(|h| h.hooks.take()) {
+            Some(handed) => {
+                let tokens = handed.tokens.clone();
+                HookServer::adopt(rt.handle(), sock.clone(), handed, on_hook.clone()).ok().or_else(|| {
+                    // A new socket, which still takes the hooks of the agents running on.
+                    let server = HookServer::start(rt.handle(), sock, on_hook).ok()?;
+                    for (pane, token) in tokens {
+                        server.keep_token(pane, token);
+                    }
+                    Some(server)
+                })
+            }
+            None => HookServer::start(rt.handle(), sock, on_hook).ok(),
+        };
+        #[cfg(not(unix))]
+        let hooks = HookServer::start(rt.handle(), sock, on_hook).ok();
         let pane_env = hook_bin.pane_env(&paths::integrations_dir());
         let per_launch = pane_env.is_ok();
         let mut base_env = pane_env.unwrap_or_default();
@@ -569,6 +595,8 @@ impl App {
             conflict_warned: HashMap::new(),
             budget_checked: Instant::now(),
             clicked_rx: None,
+            updating: false,
+            restart_to: None,
             #[cfg(debug_assertions)]
             devtest: crate::devtest::Script::from_env(),
         };
@@ -580,6 +608,12 @@ impl App {
             }
         }
         app.restore(ctx);
+        #[cfg(unix)]
+        if let Some(handoff) = handoff {
+            app.adopt_panes(ctx, handoff.panes);
+        }
+        #[cfg(not(unix))]
+        let _ = handoff;
         app.lsp_find_path();
         for path in open {
             app.actions.push(Action::OpenTarget(path.to_string_lossy().into_owned()));
@@ -1321,6 +1355,20 @@ impl App {
                 AppMsg::WorktreeMade(made) => self.on_worktree_made(ctx, *made),
                 AppMsg::WorktreeDirty(id, files) => {
                     self.worktree_dirty.insert(id, files);
+                }
+                AppMsg::UpdateInstalled(result) => {
+                    self.updating = false;
+                    match result {
+                        Ok(exe) => self.restart_to = Some(exe),
+                        Err(crate::update::Outcome::Failed(e)) => {
+                            self.dialog = Some(Dialog::Message(
+                                t("Software Update").to_string(),
+                                tf("The update could not be installed: {}", &[&e]),
+                            ));
+                        }
+                        // The administrator password was not given: nothing changed.
+                        Err(_) => {}
+                    }
                 }
                 AppMsg::WorktreeRemoved(name, result) => {
                     if let Err(e) = result {
@@ -2100,8 +2148,23 @@ impl App {
     }
 
     /// Starts the update's installer and quits; the new version opens by itself and restores
-    /// the workspace.
+    /// the workspace. On macOS and Linux (the .tar.gz) the update is put in place while the app
+    /// runs, and the app then restarts in place: the programs in the panes keep running.
     fn install_update(&mut self, ctx: &egui::Context) {
+        #[cfg(unix)]
+        if crate::update::restarts_in_place()
+            && let Some(prepared) = self.updater.prepared()
+        {
+            if !std::mem::replace(&mut self.updating, true) {
+                self.toast(t("Installing the update…").to_string());
+                let (tx, ctx) = (self.app_tx.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    let _ = tx.send(AppMsg::UpdateInstalled(crate::update::install_for_restart(&prepared)));
+                    ctx.request_repaint();
+                });
+            }
+            return;
+        }
         match self.updater.launch_installer() {
             Ok(()) => self.quit_now(ctx),
             Err(e) => {
@@ -2126,6 +2189,88 @@ impl App {
     fn end_programs(&mut self) {
         let ptys: Vec<_> = self.panes.values_mut().filter_map(Pane::take_for_quit).collect();
         tc_term::pty::hang_up_all(&ptys, Duration::from_millis(1500));
+    }
+
+    /// Restarts as `exe` (the new version, or this one) in this same process: the panes'
+    /// programs keep running, and the new run takes them over (`crate::handoff`). Should that
+    /// fail, `exe` opens once this run has quit, as after any update.
+    #[cfg(unix)]
+    pub(crate) fn restart_in_place(&mut self, ctx: &egui::Context, exe: &Path) {
+        use std::os::unix::process::CommandExt;
+        // Nothing is lost on the way: hooks sent from now on wait in the socket, and output in
+        // the terminals, for the new run; what already arrived is taken in first.
+        let hooks = self.hooks.take().and_then(|h| h.handoff().ok());
+        for pane in self.panes.values() {
+            pane.stop_reading();
+        }
+        self.process_messages(ctx);
+        self.save_and_wait();
+        self.lsp_stop_all();
+        crate::handoff::clean();
+        let now = Instant::now();
+        let dir = crate::handoff::dir();
+        let panes = self.panes.values_mut().filter_map(|p| p.hand_over(&dir, now)).collect();
+        let handoff = crate::handoff::Handoff::new(hooks, panes);
+        let err = match handoff.write() {
+            Ok(path) => {
+                let mut cmd = std::process::Command::new(exe);
+                cmd.env(crate::handoff::ENV, path);
+                // The rest of an end-to-end script runs in the new run.
+                #[cfg(debug_assertions)]
+                cmd.env("TERNARYCODE_DEV_SCRIPT", self.devtest.rest());
+                cmd.exec()
+            }
+            Err(e) => e,
+        };
+        eprintln!("TernaryCode could not restart in place: {err}");
+        // The fds kept for the new run close with this one; the new version opens after it.
+        handoff.close();
+        crate::handoff::clean();
+        let _ = std::process::Command::new("/bin/sh")
+            .args(["-c", r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec "$2""#, "ternarycode-restart"])
+            .arg(std::process::id().to_string())
+            .arg(exe)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn();
+        self.quit_now(ctx);
+    }
+
+    /// Takes over the panes the previous run handed over: their programs go on in them. A pane
+    /// that is not in the workspace any more has its program ended.
+    #[cfg(unix)]
+    fn adopt_panes(&mut self, ctx: &egui::Context, handed: Vec<crate::handoff::Handed>) {
+        let dark = ctx.global_style().visuals.dark_mode;
+        let spawn = SpawnCtx {
+            rt: self.rt.handle(),
+            tx: &self.tx,
+            ctx,
+            env: &self.base_env,
+            hook: None,
+            scrollback: self.settings.scrollback,
+            palette: self.scheme(dark).into(),
+            cursor: cursor_style(self.settings.cursor_shape),
+            blink: self.settings.cursor_blink,
+            long_command: Duration::from_secs(self.settings.long_command_secs.max(1)),
+        };
+        for h in handed {
+            match self.panes.get_mut(&h.id) {
+                Some(pane) => {
+                    // What it asks was notified (or not) by the previous run: not again.
+                    if pane.adopt(h, &spawn) {
+                        self.notified.insert(pane.id, pane.tracker.ask);
+                    }
+                }
+                None => {
+                    let _ = std::fs::remove_file(&h.screen);
+                    // Dropped: hung up, as a closed pane's.
+                    drop(tc_term::pty::LocalPty::adopt(h.master, h.pid));
+                }
+            }
+        }
+        crate::handoff::clean();
     }
 
     fn install_record_path(agent: AgentKind) -> PathBuf {
@@ -2953,7 +3098,8 @@ impl App {
             Action::CheckForUpdates => self.updater.check_now(ctx),
             Action::ShowUpdate => self.updater.open_dialog(),
             Action::RestartToUpdate => {
-                let mut busy = self.busy_panes();
+                // Restarting in place, the programs keep running: only unsaved files are lost.
+                let mut busy = if crate::update::restarts_in_place() { Vec::new() } else { self.busy_panes() };
                 busy.extend(self.unsaved_files(None));
                 if busy.is_empty() {
                     self.install_update(ctx);
@@ -3215,6 +3361,10 @@ impl App {
         self.handle_instance();
         self.handle_notification_clicks();
         self.process_messages(ctx);
+        #[cfg(unix)]
+        if let Some(exe) = self.restart_to.take() {
+            self.restart_in_place(ctx, &exe);
+        }
         // The shells started at launch (those of the panes in view; the rest sleep).
         let started = self.panes.values().filter(|p| !p.dormant()).count();
         if !self.shells_ready_logged

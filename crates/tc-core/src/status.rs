@@ -6,9 +6,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::agent::AgentKind;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
     /// The shell waits at its prompt, or an agent waits for the next prompt.
     Idle,
@@ -43,7 +45,7 @@ impl Status {
 }
 
 /// Where a status came from (shown in the tooltip).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
     None,
     /// The foreground process or the program's exit.
@@ -58,7 +60,7 @@ pub enum Source {
     Input,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Foreground {
     /// The shell itself (at its prompt).
     Shell,
@@ -155,6 +157,36 @@ pub struct Tracker {
 /// How long Running-after-Enter waits for the agent to confirm it.
 pub const ENTER_CONFIRM: Duration = Duration::from_secs(8);
 
+/// A tracker as the app's next run takes it over, when the app restarts in place (an update)
+/// and the pane's program keeps running: its instants kept as how long ago they were (or, for
+/// a deadline, how far ahead).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TrackerSave {
+    status: Status,
+    source: Source,
+    since_ms: u64,
+    unseen: bool,
+    message: Option<String>,
+    ask: u64,
+    asked_ms: Option<u64>,
+    fg: Foreground,
+    fg_ms: u64,
+    agent: Option<AgentKind>,
+    hooks_active: bool,
+    shell_marks: bool,
+    command_ms: Option<u64>,
+    long_command_ms: u64,
+    provisional: Option<(u64, Status)>,
+}
+
+fn ago(now: Instant, t: Instant) -> u64 {
+    now.saturating_duration_since(t).as_millis() as u64
+}
+
+fn back(now: Instant, ms: u64) -> Instant {
+    now.checked_sub(Duration::from_millis(ms)).unwrap_or(now)
+}
+
 impl Tracker {
     pub fn new(now: Instant) -> Self {
         Self {
@@ -174,6 +206,50 @@ impl Tracker {
             focused: false,
             long_command: LONG_COMMAND,
             provisional: None,
+        }
+    }
+
+    pub fn save(&self, now: Instant) -> TrackerSave {
+        TrackerSave {
+            status: self.status,
+            source: self.source,
+            since_ms: ago(now, self.since),
+            unseen: self.unseen,
+            message: self.message.clone(),
+            ask: self.ask,
+            asked_ms: self.asked_at.map(|t| ago(now, t)),
+            fg: self.fg.clone(),
+            fg_ms: ago(now, self.fg_since),
+            agent: self.agent,
+            hooks_active: self.hooks_active,
+            shell_marks: self.shell_marks,
+            command_ms: self.command_started.map(|t| ago(now, t)),
+            long_command_ms: self.long_command.as_millis() as u64,
+            provisional: self.provisional.map(|(at, s)| (at.saturating_duration_since(now).as_millis() as u64, s)),
+        }
+    }
+
+    /// The tracker [`Tracker::save`] kept, in this run. Its asks stay unique: new ones are
+    /// numbered after it.
+    pub fn restore(save: TrackerSave, now: Instant) -> Self {
+        ASKS.fetch_max(save.ask, Ordering::Relaxed);
+        Self {
+            status: save.status,
+            source: save.source,
+            since: back(now, save.since_ms),
+            unseen: save.unseen,
+            message: save.message,
+            ask: save.ask,
+            asked_at: save.asked_ms.map(|ms| back(now, ms)),
+            fg: save.fg,
+            fg_since: back(now, save.fg_ms),
+            agent: save.agent,
+            hooks_active: save.hooks_active,
+            shell_marks: save.shell_marks,
+            command_started: save.command_ms.map(|ms| back(now, ms)),
+            focused: false,
+            long_command: Duration::from_millis(save.long_command_ms),
+            provisional: save.provisional.map(|(ms, s)| (now + Duration::from_millis(ms), s)),
         }
     }
 
@@ -659,5 +735,24 @@ mod tests {
         f.apply(Event::Exited(Some(2)), t0);
         assert_eq!(f.status, Status::Failed(2));
         assert!(f.wants_attention());
+    }
+
+    /// A saved tracker comes back the same, and the asks after it get new numbers.
+    #[test]
+    fn a_saved_tracker_comes_back() {
+        let t0 = Instant::now();
+        let mut t = Tracker::new(t0);
+        t.apply(Event::Foreground(Foreground::Program { name: "claude".into(), agent: Some(AgentKind::Claude) }), t0);
+        t.apply(Event::Hook { agent: AgentKind::Claude, signal: HookSignal::NeedsInput, message: Some("Allow?".into()) }, t0);
+        let json = serde_json::to_string(&t.save(t0 + Duration::from_secs(5))).unwrap();
+        let later = Instant::now() + Duration::from_secs(60);
+        let r = Tracker::restore(serde_json::from_str(&json).unwrap(), later);
+        assert_eq!((r.status, r.source, r.unseen, r.ask), (t.status, t.source, t.unseen, t.ask));
+        assert_eq!(r.message.as_deref(), Some("Allow?"));
+        assert_eq!((r.fg.clone(), r.agent), (t.fg.clone(), t.agent));
+        assert_eq!(later.duration_since(r.since), Duration::from_secs(5));
+        let mut other = Tracker::new(later);
+        other.apply(Event::Hook { agent: AgentKind::Claude, signal: HookSignal::NeedsInput, message: None }, later);
+        assert!(other.ask > r.ask);
     }
 }

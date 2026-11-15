@@ -11,6 +11,8 @@ mod devtest_run;
 pub mod docview;
 pub mod editor;
 pub mod explorer;
+#[cfg(unix)]
+pub mod handoff;
 pub mod i18n;
 pub mod instance;
 pub mod lsp;

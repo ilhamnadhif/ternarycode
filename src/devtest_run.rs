@@ -827,6 +827,15 @@ impl App {
                 eprintln!("DEVTEST EXPLORER-READS {arg}: {reads}");
             }
             "log" => eprintln!("DEVTEST LOG: {arg}"),
+            // `restart-in-place`: restarts as this same build the way an update does (the
+            // programs in the panes keep running); the steps after it run in the new run.
+            #[cfg(unix)]
+            "restart-in-place" => {
+                if let Ok(exe) = std::env::current_exe() {
+                    self.restart_to = Some(exe);
+                    ctx.request_repaint();
+                }
+            }
             "quit" => {
                 eprintln!(
                     "DEVTEST DONE passed={} failed={}",

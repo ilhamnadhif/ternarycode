@@ -76,6 +76,10 @@ run unconnected 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WOR
 # again, the shell is in use, so it gets a pane of its own. A preset that only echoes.
 mkdir -p "$WORK/data-run-here"; printf '{"presets":[{"id":"echoer","name":"Echoer","command":"echo agent-ran-here"}]}\n' > "$WORK/data-run-here/settings.json"
 run run-here 40 "sleep 1000;; action add-project $P1;; sleep 1200;; wait-tabs 0:2;; action run echoer;; wait-screen agent-ran-here;; wait-tabs 0:2;; action run echoer;; sleep 800;; wait-tabs 0:2,3;; quit"
+# An update restarts the app in place: the panes' programs keep running in the same shell. The
+# status and an agent's hook token carry over; a program reading its input (cat) still gets the
+# keys; the screen is as it was. Twice, so a run taken over can hand over again.
+run restart-in-place 60 "sleep 1000;; action add-project $P1;; sleep 1500;; keys echo marker-one\\r;; wait-screen marker-one;; hook 2 claude PermissionRequest;; wait-status needs-input;; restart-in-place;; sleep 2500;; wait-screen marker-one;; wait-status needs-input;; hook 2 claude Stop;; wait-status idle|done;; keys echo \$\$ > $WORK/pid-before; cat\\r;; sleep 500;; keys typed-before\\r;; wait-screen typed-before;; restart-in-place;; sleep 2500;; wait-screen typed-before;; keys typed-after\\r;; sleep 400;; key ctrl+d;; sleep 400;; keys [ \"\$(cat $WORK/pid-before)\" = \"\$\$\" ] && echo same-shell-\$((40+2))\\r;; wait-screen same-shell-42;; quit"
 run run-agent-sessions 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action pick;; sleep 1000;; expect-dialog open;; expect-shown session:0;; expect-shown session:1;; expect-hidden session:2;; key down;; sleep 300;; shot e2e-run-agent-sessions;; key esc;; sleep 300;; expect-dialog closed;; quit"
 
 # The sidebar's project search: it narrows the list, Enter opens the chosen project and empties

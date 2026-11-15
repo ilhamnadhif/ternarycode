@@ -374,23 +374,24 @@ impl App {
                 }
                 Dialog::ConfirmUpdate(busy) => {
                     ui.set_width(460.0);
-                    if header(
-                        ui,
-                        icons::ARROW_CIRCLE_UP,
-                        p.accent,
-                        t("Restart to update?"),
-                        Some(t("Programs still running are stopped, and changes not saved are lost:")),
-                    ) {
+                    // Restarting in place, the programs keep running: only unsaved files are
+                    // listed.
+                    let in_place = crate::update::restarts_in_place();
+                    let (lost, after) = if in_place {
+                        ("Changes not saved are lost:", "TernaryCode restarts as the new version; programs and agents keep running.")
+                    } else {
+                        (
+                            "Programs still running are stopped, and changes not saved are lost:",
+                            "TernaryCode opens again with your projects and tabs; agents that support it can be resumed.",
+                        )
+                    };
+                    if header(ui, icons::ARROW_CIRCLE_UP, p.accent, t("Restart to update?"), Some(t(lost))) {
                         keep = false;
                     }
                     body(ui, |ui| {
                         busy_list(ui, busy);
                         ui.add_space(4.0);
-                        ui.label(
-                            RichText::new(t("TernaryCode opens again with your projects and tabs; agents that support it can be resumed."))
-                                .size(style::SMALL)
-                                .color(p.text_muted),
-                        );
+                        ui.label(RichText::new(t(after)).size(style::SMALL).color(p.text_muted));
                     });
                     let (cancel, ok) = footer(ui, None, t("Restart and Update"), Confirm::Danger, true);
                     if cancel {

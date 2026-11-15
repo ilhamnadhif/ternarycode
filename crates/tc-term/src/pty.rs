@@ -8,11 +8,14 @@
 //! - the child's exit is read with `waitpid(WNOHANG)` when SIGCHLD arrives, since `Pty` only
 //!   lends out `&Child`;
 //! - dropping a `Pty` waits for the child, so it is dropped on a separate thread.
+//!
+//! A PTY can also be adopted: when the app restarts in place for an update, the new app takes
+//! over the terminals (and programs) the old one started, see [`LocalPty::adopt`].
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -52,9 +55,16 @@ pub struct SpawnOptions {
     pub cell_px: (u16, u16),
 }
 
+/// The terminal's master side: a PTY this app started, or one an earlier run of it started and
+/// handed over at an update.
+enum Master {
+    Spawned(tty::Pty),
+    Adopted(File),
+}
+
 /// A program running on a local pseudo-terminal.
 pub struct LocalPty {
-    pty: Mutex<Option<tty::Pty>>,
+    pty: Mutex<Option<Master>>,
     master: RawFd,
     pid: u32,
     exit: Mutex<Option<ExitInfo>>,
@@ -96,11 +106,54 @@ impl LocalPty {
         let master = pty.file().as_raw_fd();
         let pid = pty.child().id();
         Ok(Arc::new(Self {
-            pty: Mutex::new(Some(pty)),
+            pty: Mutex::new(Some(Master::Spawned(pty))),
             master,
             pid,
             exit: Mutex::new(None),
         }))
+    }
+
+    /// Takes over a terminal the app's previous run started: `master` is its fd, kept open
+    /// through `exec` (see [`LocalPty::prepare_handoff`]), and `pid` its program, still this
+    /// process's child (exec keeps the pid). Fails when either is not what it should be.
+    pub fn adopt(master: RawFd, pid: u32) -> io::Result<Arc<Self>> {
+        // SAFETY: fcntl and isatty on an fd number; nothing is assumed about it until checked.
+        unsafe {
+            if libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC) == -1 || libc::isatty(master) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let flags = libc::fcntl(master, libc::F_GETFL);
+            if flags != -1 && flags & libc::O_NONBLOCK == 0 {
+                libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
+        // SAFETY: the fd is open and was handed over to this run alone.
+        let file = unsafe { File::from_raw_fd(master) };
+        let me = Arc::new(Self {
+            pty: Mutex::new(Some(Master::Adopted(file))),
+            master,
+            pid,
+            exit: Mutex::new(None),
+        });
+        // Not a child of this process: the program is not the one handed over. The fd is
+        // closed, the pid left alone.
+        if me.poll_exit() == Some(ExitInfo::Unknown) {
+            drop(me.pty.lock().take());
+            return Err(io::Error::from(io::ErrorKind::NotFound));
+        }
+        Ok(me)
+    }
+
+    /// Lets the terminal's fd live through the `exec` that restarts the app, and returns it
+    /// with the program's pid, for [`LocalPty::adopt`] in the new run. `None` once the program
+    /// has ended.
+    pub fn prepare_handoff(&self) -> Option<(RawFd, u32)> {
+        if self.poll_exit().is_some() || self.pty.lock().is_none() {
+            return None;
+        }
+        // SAFETY: the fd stays open while `self.pty` holds it.
+        let ok = unsafe { libc::fcntl(self.master, libc::F_SETFD, 0) } != -1;
+        ok.then_some((self.master, self.pid))
     }
 
     /// Process id of the program started on the PTY (the shell).
@@ -110,7 +163,8 @@ impl LocalPty {
 
     fn dup_master(&self) -> io::Result<File> {
         match self.pty.lock().as_ref() {
-            Some(pty) => pty.file().try_clone(),
+            Some(Master::Spawned(pty)) => pty.file().try_clone(),
+            Some(Master::Adopted(file)) => file.try_clone(),
             None => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
         }
     }
@@ -237,9 +291,25 @@ pub fn hang_up_all(ptys: &[Arc<LocalPty>], grace: Duration) {
 
 impl Drop for LocalPty {
     fn drop(&mut self) {
-        // `Pty::drop` sends SIGHUP and then waits for the child: never on the UI thread.
-        if let Some(pty) = self.pty.lock().take() {
-            std::thread::spawn(move || drop(pty));
+        // `Pty::drop` sends SIGHUP and then waits for the child: never on the UI thread. An
+        // adopted one gets the same.
+        match self.pty.lock().take() {
+            Some(Master::Spawned(pty)) => {
+                std::thread::spawn(move || drop(pty));
+            }
+            Some(Master::Adopted(file)) => {
+                let pid = self.pid as libc::pid_t;
+                std::thread::spawn(move || {
+                    // SAFETY: kill and waitpid on this process's own child.
+                    unsafe {
+                        libc::kill(pid, libc::SIGHUP);
+                        let mut status = 0;
+                        libc::waitpid(pid, &mut status, 0);
+                    }
+                    drop(file);
+                });
+            }
+            None => {}
         }
     }
 }
@@ -291,6 +361,15 @@ pub enum SessionEvent {
 pub struct Session {
     pub pty: Arc<LocalPty>,
     input: mpsc::UnboundedSender<Vec<u8>>,
+    stop: Arc<Stop>,
+}
+
+/// Asks the reader to stop, and tells when it has.
+#[derive(Default)]
+struct Stop {
+    asked: tokio::sync::Notify,
+    done: std::sync::Mutex<bool>,
+    ended: std::sync::Condvar,
 }
 
 impl Session {
@@ -298,6 +377,20 @@ impl Session {
         if !bytes.is_empty() {
             let _ = self.input.send(bytes);
         }
+    }
+
+    /// Stops reading the terminal, leaving its program running and what it prints next in the
+    /// terminal for whoever reads it after (the app restarting in place). Waits up to `wait`
+    /// for the reader to finish what it was doing; true once it has. No `Exited` event follows.
+    pub fn stop_reading(&self, wait: Duration) -> bool {
+        self.stop.asked.notify_one();
+        let done = self.stop.done.lock().unwrap_or_else(|e| e.into_inner());
+        let (done, _) = self
+            .stop
+            .ended
+            .wait_timeout_while(done, wait, |d| !*d)
+            .unwrap_or_else(|e| e.into_inner());
+        *done
     }
 }
 
@@ -317,9 +410,11 @@ pub fn start(
     let read_file = pty.dup_master()?;
     let write_file = pty.dup_master()?;
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let stop = Arc::new(Stop::default());
     let session = Session {
         pty: pty.clone(),
         input: tx.clone(),
+        stop: stop.clone(),
     };
 
     // Writer.
@@ -396,6 +491,13 @@ pub fn start(
                 }
             };
             tokio::select! {
+                // Whatever is read before it stops is in the terminal, which is drawn for the
+                // next run only once it has stopped.
+                _ = stop.asked.notified() => {
+                    *stop.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                    stop.ended.notify_all();
+                    return;
+                }
                 ready = reader.readable() => {
                     let Ok(mut guard) = ready else { break };
                     // All the terminal holds now (a macOS read returns about 1 KB), parsed at
@@ -653,6 +755,36 @@ mod tests {
         let run = run(&rt, "trap '' HUP; sleep 3 & sleep 0.3; exit 4", GridSize { cols: 40, rows: 5 });
         assert_eq!(wait_exit(&run).0, ExitInfo::Code(4));
         assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+    }
+
+    /// A terminal handed over (as at an update) keeps its program: the new reader gets its
+    /// output and the program its input. A pid that is not this process's child is refused.
+    #[test]
+    fn an_adopted_terminal_keeps_its_program() {
+        let rt = rt();
+        let run = run(&rt, "read line; echo \"got:$line\"", GridSize { cols: 40, rows: 5 });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(run.session.stop_reading(Duration::from_secs(2)));
+        let (master, pid) = run.session.pty.prepare_handoff().unwrap();
+        // SAFETY: a second fd for the same terminal, for the adopted side to own.
+        let fd = unsafe { libc::dup(master) };
+        assert!(LocalPty::adopt(unsafe { libc::dup(master) }, 1).is_err());
+        let pty = LocalPty::adopt(fd, pid).unwrap();
+        assert!(pty.is_alive());
+        let (shared, rx) = new_terminal(term_config(1000, Default::default(), false), GridSize { cols: 40, rows: 5 }, (&SCHEMES[0]).into());
+        let feeder = Arc::new(Mutex::new(Feeder::new(shared, rx)));
+        let (etx, erx) = std_mpsc::channel();
+        let etx = Mutex::new(etx);
+        let session = start(rt.handle(), pty, feeder.clone(), Arc::new(move |e| {
+            let _ = etx.lock().send(e);
+        }))
+        .unwrap();
+        session.write(b"ping\r".to_vec());
+        let adopted = Run { feeder, events: erx, session };
+        assert_eq!(wait_exit(&adopted).0, ExitInfo::Code(0));
+        assert!(screen(&adopted.feeder).contains("got:ping"), "{}", screen(&adopted.feeder));
+        // The first side would reap the child too.
+        std::mem::forget(run);
     }
 
     /// Throughput through a real PTY: `cat` of a 100 MB file (release build:

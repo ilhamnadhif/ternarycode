@@ -357,6 +357,14 @@ impl Updater {
         self.state = State::Downloading(release);
     }
 
+    /// The downloaded update, ready to install.
+    pub fn prepared(&self) -> Option<Prepared> {
+        match &self.state {
+            State::Ready(_, prepared) => Some(prepared.clone()),
+            _ => None,
+        }
+    }
+
     /// Hands the downloaded app to the installer helper; the app must quit right after.
     pub fn launch_installer(&self) -> Result<(), String> {
         let State::Ready(_, prepared) = &self.state else {

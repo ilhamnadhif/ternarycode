@@ -390,64 +390,181 @@ impl Pane {
         self.tracker.long_command = spawn.long_command;
         self.program_title = None;
         match LocalPty::spawn(&opts) {
-            Ok(pty) => {
-                let tx = spawn.tx.clone();
-                let ctx = spawn.ctx.clone();
-                let (id, generation) = (self.id, self.generation);
-                let shown = self.shown.clone();
-                let said = std::sync::Mutex::new(Said::default());
-                // The tick (and the frame count) last asked for: reads before that tick would
-                // each ask for the same frame again, and wake the window every time. Any frame
-                // drawn after a read draws it (its bytes are in the terminal by then).
-                let asked = std::sync::Mutex::new((u64::MAX, u64::MAX));
-                let on_event: Arc<dyn Fn(SessionEvent) + Send + Sync> = Arc::new(move |e| {
-                    // What changes the pane's status or calls for the user (a notification, a
-                    // command starting or ending, the bell, the end of the session) is handled
-                    // at once. Plain output, a program starting, and a progress, directory or
-                    // server said again are drawn on the pane's output tick: reads a few ms
-                    // apart share a frame, and a pane out of view only needs its messages taken
-                    // in now and then, not the whole window redrawn for every line it prints.
-                    let (urgent, output) = match &e {
-                        SessionEvent::Output(f) => {
-                            let news = said.lock().unwrap_or_else(|p| p.into_inner()).news(f);
-                            (f.bell || news, f.repaint || !f.signals.is_empty() || !f.servers.is_empty())
-                        }
-                        SessionEvent::Foreground => (false, true),
-                        _ => (true, false),
-                    };
-                    let _ = tx.send(UiMsg::Pane(id, generation, e));
-                    if urgent {
-                        ctx.request_repaint();
-                    } else if output {
-                        let how = Shown::from_u8(shown.load(std::sync::atomic::Ordering::Relaxed));
-                        let (mut delay, mut tick) = how.output_tick();
-                        let pass = ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT);
-                        let mut asked = asked.lock().unwrap_or_else(|p| p.into_inner());
-                        let (asked_tick, asked_pass) = *asked;
-                        if asked_pass == pass && asked_tick >= tick {
-                            // That frame (or a later one) is asked for, and none drawn since.
-                            return;
-                        }
-                        if asked_pass != pass && asked_tick == tick && how != Shown::Typing {
-                            // The frame asked for this tick is drawn already: egui starts a
-                            // frame its expected length before the time asked, so it came a
-                            // few ms early. What came after it waits for the next tick, not a
-                            // second frame right after (typing's echo is never held back).
-                            let period = how.period();
-                            tick += period.as_nanos() as u64;
-                            delay += period;
-                        }
-                        *asked = (tick, pass);
-                        ctx.request_repaint_after(delay);
-                    }
-                });
-                match pty::start(spawn.rt, pty, self.feeder.clone(), on_event) {
-                    Ok(s) => self.session = Some(s),
-                    Err(e) => self.fail_to_start(&e.to_string()),
-                }
-            }
+            Ok(pty) => self.attach(pty, spawn),
             Err(e) => self.fail_to_start(&e.to_string()),
         }
+    }
+
+    /// Starts reading `pty` into this pane's terminal: its output is parsed there, its events
+    /// come to the app as `UiMsg::Pane`.
+    fn attach(&mut self, pty: Arc<LocalPty>, spawn: &SpawnCtx) {
+        let tx = spawn.tx.clone();
+        let ctx = spawn.ctx.clone();
+        let (id, generation) = (self.id, self.generation);
+        let shown = self.shown.clone();
+        let said = std::sync::Mutex::new(Said::default());
+        // The tick (and the frame count) last asked for: reads before that tick would
+        // each ask for the same frame again, and wake the window every time. Any frame
+        // drawn after a read draws it (its bytes are in the terminal by then).
+        let asked = std::sync::Mutex::new((u64::MAX, u64::MAX));
+        let on_event: Arc<dyn Fn(SessionEvent) + Send + Sync> = Arc::new(move |e| {
+            // What changes the pane's status or calls for the user (a notification, a
+            // command starting or ending, the bell, the end of the session) is handled
+            // at once. Plain output, a program starting, and a progress, directory or
+            // server said again are drawn on the pane's output tick: reads a few ms
+            // apart share a frame, and a pane out of view only needs its messages taken
+            // in now and then, not the whole window redrawn for every line it prints.
+            let (urgent, output) = match &e {
+                SessionEvent::Output(f) => {
+                    let news = said.lock().unwrap_or_else(|p| p.into_inner()).news(f);
+                    (f.bell || news, f.repaint || !f.signals.is_empty() || !f.servers.is_empty())
+                }
+                SessionEvent::Foreground => (false, true),
+                _ => (true, false),
+            };
+            let _ = tx.send(UiMsg::Pane(id, generation, e));
+            if urgent {
+                ctx.request_repaint();
+            } else if output {
+                let how = Shown::from_u8(shown.load(std::sync::atomic::Ordering::Relaxed));
+                let (mut delay, mut tick) = how.output_tick();
+                let pass = ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT);
+                let mut asked = asked.lock().unwrap_or_else(|p| p.into_inner());
+                let (asked_tick, asked_pass) = *asked;
+                if asked_pass == pass && asked_tick >= tick {
+                    // That frame (or a later one) is asked for, and none drawn since.
+                    return;
+                }
+                if asked_pass != pass && asked_tick == tick && how != Shown::Typing {
+                    // The frame asked for this tick is drawn already: egui starts a
+                    // frame its expected length before the time asked, so it came a
+                    // few ms early. What came after it waits for the next tick, not a
+                    // second frame right after (typing's echo is never held back).
+                    let period = how.period();
+                    tick += period.as_nanos() as u64;
+                    delay += period;
+                }
+                *asked = (tick, pass);
+                ctx.request_repaint_after(delay);
+            }
+        });
+        match pty::start(spawn.rt, pty, self.feeder.clone(), on_event) {
+            Ok(s) => self.session = Some(s),
+            Err(e) => self.fail_to_start(&e.to_string()),
+        }
+    }
+
+    /// Stops reading this pane's terminal, for the restart in place (`crate::handoff`): what
+    /// its program prints from now on waits in the terminal for the new run.
+    #[cfg(unix)]
+    pub fn stop_reading(&self) {
+        if let Some(session) = &self.session
+            && self.exit.is_none()
+        {
+            session.stop_reading(Duration::from_millis(500));
+        }
+    }
+
+    /// This pane as the new run takes it over: its terminal drawn into a file in `dir`, its fd
+    /// kept open through `exec`, what it knows. `None` without a running program (the pane
+    /// then comes back asleep, as after a normal launch).
+    #[cfg(unix)]
+    pub fn hand_over(&mut self, dir: &Path, now: Instant) -> Option<crate::handoff::Handed> {
+        let session = self.session.as_ref()?;
+        if self.exit.is_some() || !session.pty.is_alive() {
+            return None;
+        }
+        let (bytes, extras, cols, rows) = {
+            let mut feeder = self.feeder.lock();
+            let bytes = tc_term::snapshot::snapshot(&mut feeder);
+            let extras = tc_term::snapshot::extras(&self.shared);
+            use tc_term::alacritty_terminal::grid::Dimensions;
+            let term = self.shared.term.lock();
+            (bytes, extras, term.columns(), term.screen_lines())
+        };
+        let screen = dir.join(format!("{}.screen", self.id));
+        crate::handoff::write_screen(&screen, &bytes).ok()?;
+        let (master, pid) = session.pty.prepare_handoff()?;
+        Some(crate::handoff::Handed {
+            id: self.id,
+            master,
+            pid,
+            cols,
+            rows,
+            screen,
+            extras,
+            tracker: self.tracker.save(now),
+            hook_env: self.hook_env.clone(),
+            title: self.title.clone(),
+            program_title: self.program_title.clone(),
+            cwd: self.cwd.clone(),
+            preset: self.preset.clone(),
+            agent_session: self.agent_session.clone(),
+            last_agent: self.last_agent,
+            progress: self.progress,
+            shell_pgid: self.shell_pgid,
+            typed: self.typed,
+            run_snapshot: self.run_snapshot.as_ref().map(|(tree, at, agent)| (tree.clone(), crate::handoff::ago(now, *at), *agent)),
+            snapshot_armed: self.snapshot_armed,
+        })
+    }
+
+    /// Takes over a pane the previous run handed over: its program keeps running in this
+    /// pane, its terminal shows what it showed. False when the program is not there any more
+    /// (the pane then stays asleep).
+    #[cfg(unix)]
+    pub fn adopt(&mut self, h: crate::handoff::Handed, spawn: &SpawnCtx) -> bool {
+        let screen = std::fs::read(&h.screen);
+        let _ = std::fs::remove_file(&h.screen);
+        let Ok(pty) = LocalPty::adopt(h.master, h.pid) else {
+            return false;
+        };
+        let now = Instant::now();
+        // A terminal of the size the screen was drawn at; the layout resizes it after.
+        let size = GridSize { cols: h.cols, rows: h.rows };
+        let (shared, rx) = tcore::new_terminal(
+            tcore::term_config(spawn.scrollback, spawn.cursor, spawn.blink),
+            size,
+            spawn.palette.clone(),
+        );
+        let mut feeder = Feeder::new(shared.clone(), rx);
+        self.seen_title = h.extras.title.clone();
+        let found = match screen {
+            Ok(bytes) => tc_term::snapshot::restore(&mut feeder, &bytes, h.extras).servers,
+            Err(_) => Vec::new(),
+        };
+        self.shared = shared;
+        self.feeder = Arc::new(Mutex::new(feeder));
+        self.generation += 1;
+        self.start_error = None;
+        self.hook_env = h.hook_env;
+        self.pty_grid = Some(size);
+        self.exit = None;
+        self.closing = false;
+        self.started = now;
+        self.typed = h.typed;
+        self.got_output = true;
+        self.shell_pgid = h.shell_pgid;
+        self.last_pgid = None;
+        self.tracker = Tracker::restore(h.tracker, now);
+        self.tracker.long_command = spawn.long_command;
+        self.title = h.title;
+        self.program_title = h.program_title;
+        self.cwd = h.cwd;
+        self.preset = h.preset;
+        self.agent_session = h.agent_session;
+        self.last_agent = h.last_agent;
+        self.resume = None;
+        self.progress = h.progress;
+        self.run_snapshot = h.run_snapshot.map(|(tree, ms, agent)| (tree, crate::handoff::back(now, ms), agent));
+        self.snapshot_armed = h.snapshot_armed;
+        for f in found {
+            self.found_server(f, now);
+        }
+        self.attach(pty, spawn);
+        // What runs in the foreground now (it may have changed while the app restarted).
+        self.schedule_fg_check(now);
+        true
     }
 
     fn fail_to_start(&mut self, why: &str) {

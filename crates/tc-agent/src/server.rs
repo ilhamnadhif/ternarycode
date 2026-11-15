@@ -114,6 +114,19 @@ pub struct HookServer {
     /// The socket's (device, inode): the path may be another instance's socket by the end.
     #[cfg(unix)]
     socket: (u64, u64),
+    /// The listening socket's fd, and the task accepting on it.
+    #[cfg(unix)]
+    listener: (std::os::fd::RawFd, tokio::task::AbortHandle),
+}
+
+/// The hook server as the app's next run takes it over (the app restarting in place for an
+/// update, its agents still running): the listening socket's fd, kept open through `exec`, and
+/// the panes' tokens, which the agents' hooks still send.
+#[cfg(unix)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Handoff {
+    pub fd: i32,
+    pub tokens: HashMap<u64, String>,
 }
 
 /// Reads one connection: a message per line, each taken only with its pane's token. A hook
@@ -172,9 +185,23 @@ impl HookServer {
         }
         let bound = std::fs::symlink_metadata(&path)?;
         let socket = (bound.dev(), bound.ino());
-        let tokens: Arc<Mutex<HashMap<u64, String>>> = Arc::default();
+        Ok(Self::serve(rt, path, socket, listener, HashMap::new(), on_msg))
+    }
+
+    #[cfg(unix)]
+    fn serve(
+        rt: &tokio::runtime::Handle,
+        path: PathBuf,
+        socket: (u64, u64),
+        listener: std::os::unix::net::UnixListener,
+        tokens: HashMap<u64, String>,
+        on_msg: Arc<dyn Fn(HookMsg) + Send + Sync>,
+    ) -> Self {
+        use std::os::fd::AsRawFd;
+        let fd = listener.as_raw_fd();
+        let tokens = Arc::new(Mutex::new(tokens));
         let known = tokens.clone();
-        rt.spawn(async move {
+        let accept = rt.spawn(async move {
             let Ok(listener) = tokio::net::UnixListener::from_std(listener) else {
                 return;
             };
@@ -187,7 +214,57 @@ impl HookServer {
                 tokio::spawn(serve_connection(stream, known.clone(), on_msg.clone()));
             }
         });
-        Ok(Self { path, tokens, socket })
+        Self { path, tokens, socket, listener: (fd, accept.abort_handle()) }
+    }
+
+    /// Stops serving and hands the socket over to the app's next run (see [`Handoff`]): a hook
+    /// sent from now on waits in the socket for the new run to read it. The socket file stays.
+    #[cfg(unix)]
+    pub fn handoff(self) -> io::Result<Handoff> {
+        // A copy that lives through exec (`dup` does not set close-on-exec); the server's own
+        // fd closes with its task.
+        // SAFETY: dup of the fd the accepting task owns, which is open until it ends.
+        let fd = unsafe { libc::dup(self.listener.0) };
+        if fd == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        self.listener.1.abort();
+        let tokens = self.tokens.lock().clone();
+        // Not dropped: that removes the socket file.
+        std::mem::forget(self);
+        Ok(Handoff { fd, tokens })
+    }
+
+    /// Serves the socket the app's previous run handed over, at `path`, with its tokens. Fails
+    /// when the fd is not the socket at `path`; the caller then starts a new server.
+    #[cfg(unix)]
+    pub fn adopt(
+        rt: &tokio::runtime::Handle,
+        path: PathBuf,
+        handoff: Handoff,
+        on_msg: Arc<dyn Fn(HookMsg) + Send + Sync>,
+    ) -> io::Result<Self> {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::fs::MetadataExt;
+        let fd = handoff.fd;
+        // SAFETY: fstat on an fd number into a zeroed struct; nothing is assumed until checked.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd, &mut st) } == -1 || st.st_mode & libc::S_IFMT != libc::S_IFSOCK {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        }
+        // SAFETY: as above.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        // SAFETY: a socket fd handed over to this run alone.
+        let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd) };
+        listener.set_nonblocking(true)?;
+        // The fd is a socket; the file at `path` must be the one it is bound to.
+        let local = listener.local_addr()?;
+        let bound = std::fs::symlink_metadata(&path)?;
+        if local.as_pathname() != Some(path.as_path()) {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        }
+        let socket = (bound.dev(), bound.ino());
+        Ok(Self::serve(rt, path, socket, listener, handoff.tokens, on_msg))
     }
 
     /// Creates the named pipe and serves it on `rt`. `on_msg` runs for every accepted message.
@@ -259,6 +336,12 @@ impl HookServer {
                 String::new()
             }
         }
+    }
+
+    /// Accepts `token` for `pane` again: the token its shell was given by the app's previous
+    /// run, when that run's socket could not be taken over.
+    pub fn keep_token(&self, pane: u64, token: String) {
+        self.tokens.lock().insert(pane, token);
     }
 
     pub fn unregister(&self, pane: u64) {
@@ -397,5 +480,44 @@ mod tests {
         // The server closes it (end of file), rather than the read timing out.
         assert_eq!(idle.read(&mut [0u8; 8]).unwrap(), 0);
         assert!(t.elapsed() < CONNECTION_TIME * 2, "{:?}", t.elapsed());
+    }
+
+    /// A server handed over (as the app restarts in place) keeps its socket file and tokens: a
+    /// hook sent meanwhile, or after, reaches the new one.
+    #[cfg(unix)]
+    #[test]
+    fn a_handed_over_server_keeps_its_socket_and_tokens() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run/hook.sock");
+        let server = HookServer::start(rt.handle(), path.clone(), Arc::new(|_| panic!("old server"))).unwrap();
+        let token = server.register(7);
+        let handoff = server.handoff().unwrap();
+        assert!(path.exists());
+        let send = || {
+            let env = |k: &str| -> Option<String> {
+                match k {
+                    crate::ENV_SOCK => Some(path.to_string_lossy().into_owned()),
+                    crate::ENV_PANE => Some("7".into()),
+                    crate::ENV_TOKEN => Some(token.clone()),
+                    _ => None,
+                }
+            };
+            let args = vec!["claude".to_string(), "Stop".to_string(), "{}".to_string()];
+            let (sock, msg) = crate::client::message(&args, env, || None).unwrap();
+            crate::client::send(&sock, &msg).unwrap();
+        };
+        // Sent between the two runs: it waits in the socket.
+        std::thread::sleep(Duration::from_millis(50));
+        send();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        let _new = HookServer::adopt(rt.handle(), path.clone(), handoff, Arc::new(move |m| {
+            let _ = tx.lock().send(m);
+        }))
+        .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().pane, 7);
+        send();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().pane, 7);
     }
 }

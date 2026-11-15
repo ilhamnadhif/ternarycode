@@ -22,6 +22,12 @@ fn main() -> eframe::Result {
         _ => {}
     }
     ternarycode::app::mark_process_start();
+    // A restart in place (an update): the terminals the previous run handed over are taken over
+    // below, by this process, which must stay the one their programs belong to.
+    #[cfg(unix)]
+    let restarted = ternarycode::handoff::read_at_launch();
+    #[cfg(not(unix))]
+    let restarted = false;
     // Read before the cleanup takes it out (panes must not inherit it).
     let detached = std::env::var_os("TERNARYCODE_DETACHED").is_some();
     ternarycode::platform::clean_inherited_env();
@@ -32,7 +38,7 @@ fn main() -> eframe::Result {
     settings.sanitize();
     let targets = ternarycode::instance::targets(args);
     // From a terminal, with no TernaryCode running: start it apart from the terminal.
-    if !ternarycode::instance::is_running() && ternarycode::cli::launch_detached(&targets, detached) {
+    if !restarted && !ternarycode::instance::is_running() && ternarycode::cli::launch_detached(&targets, detached) {
         return Ok(());
     }
     let (lock, inbox) = match ternarycode::instance::acquire(&targets) {

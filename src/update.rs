@@ -359,7 +359,7 @@ pub enum Stage {
 }
 
 /// A downloaded and checked update, ready to replace the installed app.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Prepared {
     pub version: String,
     /// The download's private folder.
@@ -746,6 +746,74 @@ pub fn launch_installer(prepared: &Prepared) -> Result<(), String> {
     }
 }
 
+/// Whether this copy updates while it runs and then restarts in place (`crate::handoff`), the
+/// programs in its panes running on: macOS, and Linux from the .tar.gz. The Windows setup and an
+/// AppImage (which starts through its own runtime) quit and open the new version instead.
+pub fn restarts_in_place() -> bool {
+    match Install::current() {
+        #[cfg(target_os = "macos")]
+        Install::MacApp(_) => true,
+        #[cfg(target_os = "linux")]
+        Install::LinuxArchive(_) => true,
+        _ => false,
+    }
+}
+
+/// Puts the update in place while the app keeps running, for a restart in place: returns the
+/// new program, which the caller starts with `exec`. Blocks (macOS may ask for an administrator
+/// password): not on the UI thread. The next run reports the outcome as after any update.
+#[cfg(unix)]
+pub fn install_for_restart(prepared: &Prepared) -> Result<PathBuf, Outcome> {
+    match Install::current() {
+        #[cfg(target_os = "macos")]
+        Install::MacApp(bundle) => install_mac_now(prepared, &bundle),
+        #[cfg(target_os = "linux")]
+        Install::LinuxArchive(target) => {
+            let hook = prepared.file.with_file_name("ternarycode-hook");
+            let replaced = (|| {
+                if hook.is_file() {
+                    replace_file(&hook, &target.with_file_name("ternarycode-hook"))?;
+                }
+                replace_file(&prepared.file, &target)
+            })();
+            replaced.map_err(Outcome::Failed)?;
+            let _ = std::fs::remove_dir_all(&prepared.dir);
+            record_pending(&prepared.version).map_err(Outcome::Failed)?;
+            Ok(target)
+        }
+        _ => Err(Outcome::Failed("this copy of TernaryCode can't update itself".into())),
+    }
+}
+
+/// macOS: swaps in the new app now (the swap the helper runs after a quit, see
+/// `launch_mac_installer`) and returns its program.
+#[cfg(target_os = "macos")]
+fn install_mac_now(prepared: &Prepared, bundle: &Path) -> Result<PathBuf, Outcome> {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.file_name().map(|n| bundle.join("Contents/MacOS").join(n)))
+        .ok_or_else(|| Outcome::Failed("the app's program was not found".into()))?;
+    let mut swap = swap_command(prepared, bundle).map_err(Outcome::Failed)?;
+    let out = swap.stdin(Stdio::null()).output().map_err(|e| Outcome::Failed(e.to_string()))?;
+    let rc = out.status.code().unwrap_or(1);
+    let text = format!(
+        "{}\n{rc}\n{}{}",
+        prepared.version,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&prepared.dir);
+    match parse_outcome(&text) {
+        Some(Outcome::Installed(_)) => {
+            // Reported by the next run, as when the helper installs it.
+            let _ = crate::paths::write_private(&outcome_file(), format!("{}\n0\n", prepared.version).as_bytes());
+            Ok(exe)
+        }
+        Some(other) => Err(other),
+        None => Err(Outcome::Failed("unknown error".into())),
+    }
+}
+
 /// Windows: runs the new setup silently over the installed version, once this process has quit
 /// (the setup closes it, and opens TernaryCode again when done). An installation for all users asks
 /// for administrator rights.
@@ -843,9 +911,11 @@ fn record_pending(version: &str) -> Result<(), String> {
 
 /// Starts a helper that waits for this process to exit, swaps in the new app (asking for an
 /// administrator password when needed), and opens it. The caller then quits the app.
+/// The swap of the installed app for `prepared`'s, directly or behind the administrator
+/// password prompt when the user can't replace the app. Fails when another copy, as new, was
+/// installed meanwhile (the .pkg, the install script).
 #[cfg(target_os = "macos")]
-fn launch_mac_installer(prepared: &Prepared, bundle: &Path) -> Result<(), String> {
-    // Another copy may have been installed meanwhile (the .pkg, the install script).
+fn swap_args(prepared: &Prepared, bundle: &Path) -> Result<Vec<OsString>, String> {
     if let Some(installed) = plist_value(bundle, "CFBundleShortVersionString")
         && !is_newer(&prepared.version, &installed)
     {
@@ -853,8 +923,6 @@ fn launch_mac_installer(prepared: &Prepared, bundle: &Path) -> Result<(), String
             "TernaryCode {installed} is already installed; quit TernaryCode and open it again"
         ));
     }
-    let status = outcome_file();
-    crate::paths::ensure_private_dir(crate::paths::data_dir()).map_err(|e| e.to_string())?;
     let mut swap: Vec<OsString> = if user_can_replace(bundle) {
         ["/bin/sh", "-c", SWAP_SCRIPT, "ternarycode-update"]
             .map(OsString::from)
@@ -877,6 +945,24 @@ fn launch_mac_installer(prepared: &Prepared, bundle: &Path) -> Result<(), String
         team_id(bundle).unwrap_or_default().into(),
         BUNDLE_ID.into(),
     ]);
+    Ok(swap)
+}
+
+#[cfg(target_os = "macos")]
+fn swap_command(prepared: &Prepared, bundle: &Path) -> Result<Command, String> {
+    let args = swap_args(prepared, bundle)?;
+    let mut cmd = Command::new(&args[0]);
+    cmd.args(&args[1..]);
+    Ok(cmd)
+}
+
+/// Starts a helper that waits for this process to exit, swaps in the new app (asking for an
+/// administrator password when needed), and opens it. The caller then quits the app.
+#[cfg(target_os = "macos")]
+fn launch_mac_installer(prepared: &Prepared, bundle: &Path) -> Result<(), String> {
+    let status = outcome_file();
+    crate::paths::ensure_private_dir(crate::paths::data_dir()).map_err(|e| e.to_string())?;
+    let swap = swap_args(prepared, bundle)?;
     Command::new("/bin/sh")
         .args(["-c", HELPER_SCRIPT, "ternarycode-update"])
         .arg(std::process::id().to_string())

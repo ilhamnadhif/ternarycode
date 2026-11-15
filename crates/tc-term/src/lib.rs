@@ -20,6 +20,7 @@ pub mod pty;
 pub mod scheme;
 pub mod search;
 pub mod servers;
+pub mod snapshot;
 pub mod widget;
 
 use std::sync::OnceLock;

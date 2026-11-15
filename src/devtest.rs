@@ -40,6 +40,12 @@ impl Script {
         }
     }
 
+    /// The steps not run yet, as `TERNARYCODE_DEV_SCRIPT` says them (for the run that follows a
+    /// restart in place).
+    pub fn rest(&self) -> String {
+        self.steps.iter().cloned().collect::<Vec<_>>().join(";;")
+    }
+
     /// The next step to run now, if any.
     pub fn next(&mut self, ctx: &egui::Context) -> Option<String> {
         if self.steps.is_empty() {
