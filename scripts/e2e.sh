@@ -108,7 +108,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # a local web server); its chip opens the page beside the terminal, where the web view sits
 # exactly on the pane; an address typed goes there; ⇧⌘B opens the project's server in a tab of
 # its own. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-grid" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-grid browser-button" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -164,6 +164,11 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     mkdir -p "$WORK/data-browser-grid"; printf '{"browser_agent_beside":false}\n' > "$WORK/data-browser-grid/settings.json"
     call hold2 browser_wait_for '{"text":"never shows","time":15}'
     run browser-grid 60 "sleep 1000;; action add-project $P1;; sleep 1500;; keys $HOOK mcp claude < $MCP/nav.json > $MCP/nav2.out; $HOOK mcp claude < $MCP/hold2.json > $MCP/hold2.out &\\r;; wait-tabs 0:2 1:3;; action grid;; sleep 2000;; expect-shown tile-pip:1;; shot e2e-browser-pip;; click tile-pip:1;; sleep 1200;; expect-shown tile-browser:3;; expect-web-placed;; quit"
+    # The Browser button in the top bar: with a dev server announced, it opens the page beside the
+    # terminal; again, its address field takes what is typed; from another tab it brings the
+    # browser's tab back; ⌘R reloads the page; ⌘L in a project with no browser opens one, its
+    # address field taking the keyboard.
+    run browser-button 60 "sleep 1000;; action add-project $P1;; sleep 1500;; expect-shown browser-button;; keys $WORK/bin/announce $WEBPORT\\r;; wait-shown server-chip;; click browser-button;; wait-tabs 0:2,3;; wait-browser TC Test Page;; sleep 500;; expect-web-placed;; shot e2e-browser-button;; click browser-button;; sleep 300;; keys localhost:$WEBPORT/second.html\\r;; wait-browser Second;; action browser-reload;; sleep 800;; wait-browser Second;; action new-tab;; sleep 800;; wait-tabs 0:2,3 1:4;; click browser-button;; sleep 500;; expect-tab 0;; wait-browser Second;; action add-project $P2;; sleep 1500;; action browser-address;; sleep 500;; keys localhost:$WEBPORT\\r;; wait-browser TC Test Page;; quit"
     kill "$WEB_PID" 2>/dev/null
 fi
 

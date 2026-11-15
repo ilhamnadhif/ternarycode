@@ -100,10 +100,18 @@ impl App {
         let field = Rect::from_min_max(pos2(x + 4.0, inner.center().y - 13.0), pos2(right.max(x + 60.0), inner.center().y + 13.0));
         let fid = egui::Id::new(("browser-address", id));
         let typing = ui.memory(|m| m.has_focus(fid));
+        // Asked for (⌘L, the Browser button, a new empty browser): the address as shown, all of
+        // it selected, so that what is typed replaces it.
         if self.browser_edit == Some(id) {
             self.browser_edit = None;
+            let shown = self.browsers.get(&id).map(|b| b.url.trim_end_matches('/').trim_start_matches("http://").to_string()).unwrap_or_default();
+            kit::select_text(ui.ctx(), fid, 0, shown.chars().count());
+            if let Some(b) = self.browsers.get_mut(&id) {
+                b.address = shown;
+            }
             ui.memory_mut(|m| m.request_focus(fid));
         }
+        let typing = typing || ui.memory(|m| m.has_focus(fid));
         let mut text = match self.browsers.get(&id) {
             Some(b) if typing => b.address.clone(),
             Some(b) => b.url.trim_end_matches('/').trim_start_matches("http://").to_string(),
@@ -529,6 +537,169 @@ impl App {
         }
     }
 
+    /// Web pages open in TernaryCode (else in the default browser): browser panes show pages on
+    /// macOS, and Settings → Browser says so.
+    pub fn pages_here(&self) -> bool {
+        cfg!(target_os = "macos") && self.settings.browser_here
+    }
+
+    /// What the Browser button in the top bar says for the project in view.
+    pub fn browser_button_state(&self) -> Option<WebButton> {
+        let project = self.active?;
+        let p = self.project(project)?;
+        let in_view = p.tab().map(|t| t.layout.panes()).unwrap_or_default();
+        let mine: Vec<&Browser> = self.browsers.values().filter(|b| b.project == project).collect();
+        if let Some(d) = mine.iter().find_map(|b| b.driver.as_ref().filter(|d| !d.paused)) {
+            return Some(WebButton::Agent(d.who.clone()));
+        }
+        if mine.iter().any(|b| in_view.contains(&b.id)) {
+            return Some(WebButton::InView);
+        }
+        if let Some(b) = mine.iter().max_by_key(|b| b.last_seen) {
+            return Some(WebButton::Elsewhere(b.label()));
+        }
+        let server = self.project_servers(project).first().map(|(_, s)| crate::browser::split_url(&s.url).0);
+        Some(WebButton::None(server))
+    }
+
+    /// The Browser button (in the top bar, beside Code): shows the project's browser or makes
+    /// one; ⌥-click, always a new one.
+    pub fn browser_button(&mut self, ui: &mut Ui) {
+        let Some(state) = self.browser_button_state() else { return };
+        let p = style::pal(ui);
+        let keys = kit::keys(&Action::ShowBrowser).unwrap_or_default();
+        let head = format!("{}   {keys}", t("Browser"));
+        let tip = match &state {
+            WebButton::None(Some(host)) => format!("{head}\n{}", tf("Opens {} beside this terminal", &[host])),
+            WebButton::None(None) => format!("{head}\n{}", t("Opens an empty browser beside this terminal")),
+            WebButton::Elsewhere(label) => format!("{head}\n{}", tf("Shows the browser (tab “{}”)", &[label])),
+            WebButton::InView => format!("{head}\n{}", t("Type another address")),
+            WebButton::Agent(who) => format!("{}\n{}", tf("{} is using the browser", &[who]), t("Click to watch it · clicking or typing in it takes it over")),
+        };
+        let tip = if self.pages_here() { format!("{tip}\n{}", t("⌥-click: a new browser tab")) } else { tip };
+        let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+        let resp = resp.on_hover_text(tip);
+        #[cfg(debug_assertions)]
+        crate::devtest::record("browser-button", rect);
+        let painter = ui.painter();
+        let radius = CornerRadius::same(style::RADIUS);
+        let (fill, color) = match state {
+            WebButton::Agent(_) => (Some(style::tint(p.info, ui.visuals().dark_mode)), p.info),
+            WebButton::InView => (Some(p.accent_soft), p.accent_text),
+            _ if resp.hovered() => (Some(p.hover), p.text),
+            _ => (None, p.text_muted),
+        };
+        if let Some(f) = fill {
+            painter.rect_filled(rect, radius, if resp.hovered() { f.gamma_multiply(1.4) } else { f });
+        }
+        painter.text(rect.center(), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(15.0), color);
+        if matches!(state, WebButton::Agent(_)) {
+            let dot = pos2(rect.right() - 6.0, rect.top() + 6.0);
+            painter.circle_filled(dot, 3.5, p.chrome);
+            painter.circle_filled(dot, 2.5, p.info);
+        }
+        if resp.clicked() {
+            let alt = ui.input(|i| i.modifiers.alt);
+            self.actions.push(if alt && self.pages_here() { Action::NewBrowserTab } else { Action::ShowBrowser });
+        }
+    }
+
+    /// The Browser button and ⇧⌘B (`address`: ⌘L): shows the project's browser, or makes one.
+    /// In view: its address field. In another tab: that tab (the browser used last), the page
+    /// taking the keyboard (or the address field), unless an agent uses it (then only shown).
+    /// None: one beside the pane in view (a tab of its own when that is narrow), at the
+    /// project's dev server, else empty with the address field taking the keyboard.
+    pub fn show_browser(&mut self, address: bool) {
+        let Some(project) = self.command_project() else { return };
+        let server = self.project_servers(project).first().map(|(_, s)| s.url.clone());
+        if !cfg!(target_os = "macos") {
+            // Pages show in browser panes on macOS only: the default browser has the page.
+            match server {
+                Some(url) => crate::platform::open_url(&url),
+                None => self.toast(t("Browser panes show pages on macOS for now.").to_string()),
+            }
+            return;
+        }
+        let in_view: Vec<PaneId> = self.project(project).and_then(|p| p.tab()).map(|t| t.layout.panes()).unwrap_or_default();
+        let shown = in_view.iter().copied().find(|id| self.browsers.contains_key(id));
+        if let Some(id) = shown {
+            self.release_page_keyboard();
+            self.browser_edit = Some(id);
+            self.show_focus();
+            return;
+        }
+        let elsewhere = self.browsers.values().filter(|b| b.project == project).max_by_key(|b| b.last_seen).map(|b| (b.id, b.driven()));
+        if let Some((id, driven)) = elsewhere {
+            if let Some(p) = self.project_mut(project)
+                && let Some(tab) = p.tab_of(id)
+            {
+                p.active_tab = tab;
+                if !driven {
+                    p.tabs[tab].focused = id;
+                }
+            }
+            if address {
+                self.release_page_keyboard();
+                self.browser_edit = Some(id);
+            } else if !driven {
+                self.focus_request = Some(id);
+            }
+            self.show_focus();
+            self.mark_dirty();
+            return;
+        }
+        let url = if address { String::new() } else { server.unwrap_or_default() };
+        self.browser_beside(project, &url);
+    }
+
+    /// A new browser pane of `project` at `url`, beside the pane in view when that is at least
+    /// 900 points wide, else in a tab of its own. It takes the keyboard: its page, or its address
+    /// field when it has no address.
+    fn browser_beside(&mut self, project: tc_core::ProjectId, url: &str) {
+        let id = self.new_id();
+        self.browsers.insert(id, Browser::new(id, project, url));
+        let body = self.last_body;
+        let Some(p) = self.project_mut(project) else { return };
+        let room = p
+            .tab()
+            .zip(body)
+            .and_then(|(t, body)| t.layout.arrange(body).0.into_iter().find(|(pane, _)| *pane == t.focused).map(|(_, r)| r.width()))
+            .is_some_and(|w| w >= 900.0);
+        match p.tab_mut() {
+            Some(tab) if room => {
+                let current = tab.focused;
+                tab.layout.split(current, id, SplitDir::Horizontal);
+                tab.focused = id;
+            }
+            _ => {
+                p.tabs.push(Tab { layout: Layout::Pane(id), focused: id, title: None });
+                p.active_tab = p.tabs.len() - 1;
+            }
+        }
+        self.release_page_keyboard();
+        if url.is_empty() {
+            self.browser_edit = Some(id);
+        } else {
+            self.focus_request = Some(id);
+        }
+        self.show_focus();
+        self.mark_dirty();
+    }
+
+    /// ⌘R: the page in view loads again (the one with the keyboard first).
+    pub fn reload_browser(&mut self) {
+        let in_view: Vec<PaneId> = self.active_project().and_then(|p| p.tab()).map(|t| t.layout.panes()).unwrap_or_default();
+        let focused = self.active_project().and_then(|p| p.tab()).map(|t| t.focused);
+        let id = self
+            .browser_focus
+            .filter(|id| in_view.contains(id))
+            .or(focused.filter(|id| self.browsers.contains_key(id)))
+            .or_else(|| in_view.iter().copied().find(|id| self.browsers.contains_key(id)));
+        if let Some(b) = id.and_then(|id| self.browsers.get(&id)) {
+            b.reload();
+        }
+    }
+
     /// A new tab with a browser pane, at the project's local server when it has one (else its
     /// address field takes the keyboard).
     pub fn new_browser_tab(&mut self) {
@@ -893,4 +1064,16 @@ impl App {
             self.browser_focus = None;
         }
     }
+}
+
+/// What the Browser button in the top bar shows.
+pub enum WebButton {
+    /// No browser yet: a click opens one (at this dev server, when there is one).
+    None(Option<String>),
+    /// One in another tab (its label): a click shows it.
+    Elsewhere(String),
+    /// One in the tab in view: a click goes to its address field.
+    InView,
+    /// An agent uses it (who).
+    Agent(String),
 }

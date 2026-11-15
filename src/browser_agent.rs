@@ -125,7 +125,7 @@ impl App {
         if call.call == "open" {
             let url = call.args["url"].as_str().unwrap_or("");
             let web = url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://");
-            if !self.settings.browser_here || !web {
+            if !self.pages_here() || !web {
                 return fail(reply, "default browser");
             }
             self.open_web_in(project, url, self.active == Some(project));

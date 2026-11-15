@@ -2698,6 +2698,16 @@ impl App {
                     self.focus_pane(pane);
                 }
             }
+            // A page with the keyboard: ⌘[ ⌘] go back and forward in it.
+            Action::NextPane | Action::PrevPane if self.browser_focus.is_some_and(|id| self.browsers.contains_key(&id)) => {
+                if let Some(b) = self.browser_focus.and_then(|id| self.browsers.get(&id)) {
+                    if action == Action::NextPane {
+                        b.forward();
+                    } else {
+                        b.back();
+                    }
+                }
+            }
             Action::NextPane | Action::PrevPane => {
                 if let Some(p) = self.active.and_then(|id| self.project_mut(id))
                     && let Some(tab) = p.tab_mut()
@@ -3010,7 +3020,7 @@ impl App {
             }
             Action::RevealPath(path) => platform::reveal_in_folder(&path),
             Action::OpenInBrowser(path) => {
-                if self.settings.browser_here {
+                if self.pages_here() {
                     self.open_web_here(&crate::browser::file_url(&path));
                 } else {
                     platform::open_in_browser(&path);
@@ -3123,10 +3133,13 @@ impl App {
             },
             Action::ReviewAgent => self.open_review_with(None, true),
             Action::NewBrowserTab => self.new_browser_tab(),
+            Action::ShowBrowser => self.show_browser(false),
+            Action::BrowserAddress => self.show_browser(true),
+            Action::BrowserReload => self.reload_browser(),
             Action::OpenWeb(url) => {
                 // ⌥ held, or the setting off (or not a web page: mail): the default browser.
                 let web = ["http://", "https://", "file://"].iter().any(|s| url.to_ascii_lowercase().starts_with(s));
-                if web && self.settings.browser_here && !ctx.input(|i| i.modifiers.alt) {
+                if web && self.pages_here() && !ctx.input(|i| i.modifiers.alt) {
                     self.open_web_here(&url);
                 } else {
                     platform::open_url(&url);
@@ -3763,7 +3776,7 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
     let mut keys = vec![
         (cmd | Modifiers::ALT, Key::J, Action::ToggleAttention),
         (cmd | Modifiers::ALT, Key::K, Action::ClearScrollback),
-        (cmd | Modifiers::ALT, Key::B, Action::NewBrowserTab),
+        (cmd | Modifiers::ALT, Key::B, Action::ShowBrowser),
     ];
     let map = [
         (Key::J, Action::NextAttention),

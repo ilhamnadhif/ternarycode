@@ -163,6 +163,13 @@ pub enum Action {
     ReviewAgent,
     /// A new tab holding a browser pane (at the project's local server, when it has one).
     NewBrowserTab,
+    /// The Browser button and ⇧⌘B: shows the project's browser, or makes one beside the pane
+    /// in view (`App::show_browser`).
+    ShowBrowser,
+    /// ⌘L: the address field of the project's browser (shown, or made, first).
+    BrowserAddress,
+    /// ⌘R: the page in view loads again.
+    BrowserReload,
     /// Opens a web address: in the project's browser pane (made beside the terminal or in a
     /// tab when it has none), or with ⌥ held (or the setting off) in the default browser.
     OpenWeb(String),

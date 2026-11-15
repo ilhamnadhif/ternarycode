@@ -134,6 +134,7 @@ impl App {
         if e.clicked() {
             self.actions.push(Action::ToggleEditor);
         }
+        self.browser_button(ui);
         kit::vdivider(ui, 18.0);
         if kit::icon_button_ex(ui, icons::SQUARE_SPLIT_VERTICAL, &kit::tip(t("Split Down"), Action::SplitDown), false, 26.0).clicked() {
             self.actions.push(Action::SplitDown);

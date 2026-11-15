@@ -126,6 +126,9 @@ impl AppMenu {
         let palette = item(t("Command Palette…"), Action::Palette);
         let switch = item(t("Switch Project…"), Action::SwitchProject);
         let editor = item(t("Show/Hide Code"), Action::ToggleEditor);
+        let browser = item(t("Browser"), Action::ShowBrowser);
+        let address = item(t("Open Address"), Action::BrowserAddress);
+        let reload = item(t("Reload Page"), Action::BrowserReload);
         let files = item(t("Show/Hide Files"), Action::ToggleFiles);
         let sidebar = item(t("Show/Hide Sidebar"), Action::ToggleSidebar);
         let focus = item(t("Focus View"), Action::SetView(View::Focus));
@@ -146,6 +149,10 @@ impl AppMenu {
                 &sidebar,
                 &editor,
                 &files,
+                &PredefinedMenuItem::separator(),
+                &browser,
+                &address,
+                &reload,
                 &PredefinedMenuItem::separator(),
                 &focus,
                 &grid,
