@@ -606,6 +606,19 @@ impl Pane {
             && !matches!(self.tracker.fg, Foreground::Program { .. })
     }
 
+    /// A shell an agent can start in instead of a tab beside it: one nobody has used yet, or one
+    /// waiting at its prompt with nothing typed (what it showed before stays above).
+    pub fn takes_agent(&self) -> bool {
+        self.is_fresh()
+            || (self.alive()
+                && self.pending_command.is_none()
+                && self.resume.is_none()
+                && self.tracker.agent.is_none()
+                && self.tracker.shell_marks
+                && !matches!(self.tracker.fg, Foreground::Program { .. })
+                && tcore::command_line_empty(&self.shared))
+    }
+
     /// Keys typed or text pasted by the user.
     pub fn input(&mut self, bytes: Vec<u8>) {
         self.typed = true;

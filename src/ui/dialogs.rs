@@ -739,7 +739,7 @@ impl App {
         use tc_core::agent::AgentKind;
         let p = style::pal(ui);
         let presets = self.presets();
-        let here = self.fresh_command_pane().is_some();
+        let here = self.idle_command_pane().is_some();
         let project = self.active_project().map(|x| (x.name.clone(), crate::paths::contract_tilde(&x.path), x.path.clone()));
         ui.set_width(560.0);
         let mut keep = true;
@@ -1039,7 +1039,7 @@ impl App {
                 ui.label(RichText::new(t("Open in")).font(style::medium(13.0)).color(p.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(4.0);
-                    // A shell nobody has used yet (a project just opened) takes the agent.
+                    // A shell at its prompt with nothing typed takes the agent.
                     let first = if here { t("This Tab") } else { t("New Tab") };
                     let options = [kit::Seg::new(first, ""), kit::Seg::new(t("Split Right"), ""), kit::Seg::new(t("Split Down"), "")];
                     if let Some(i) = kit::segmented(ui, &options, *place) {

@@ -99,6 +99,8 @@ pub struct PromptState {
     /// Line (history lines + screen line) where the prompt starts, and where the input starts.
     pub start: Option<usize>,
     pub input: Option<usize>,
+    /// Column where the input starts (on the `input` line).
+    pub input_col: usize,
     /// The prompt was cleared by a resize the shell has not heard of yet, and what was there.
     cleared: Option<ClearedPrompt>,
     /// History lines the terminal keeps (its own setting is private to alacritty).
@@ -152,6 +154,20 @@ pub struct TermShared {
 }
 
 pub type SharedTerm = Arc<TermShared>;
+
+/// The shell waits at its prompt with nothing typed: the cursor is where its input starts, on a
+/// blank cell (a right-hand prompt further along the line is the shell's own). Only known with
+/// shell integration marks.
+pub fn command_line_empty(shared: &TermShared) -> bool {
+    let term = shared.term.lock();
+    let prompt = shared.prompt.lock();
+    if !prompt.at_prompt || term.mode().contains(TermMode::ALT_SCREEN) {
+        return false;
+    }
+    let cursor = term.grid().cursor.point;
+    let line = term.grid().history_size() + cursor.line.0.max(0) as usize;
+    prompt.input == Some(line) && prompt.input_col == cursor.column.0 && matches!(term.grid()[cursor].c, ' ' | '\0')
+}
 
 /// The terminal's options. The kitty keyboard protocol is always on: alacritty empties its
 /// stacks whenever the option changes, so every `Config` given to a terminal has it.
@@ -460,6 +476,7 @@ impl Feeder {
             PromptMark::CommandStart => {
                 prompt.at_prompt = true;
                 prompt.input = Some(at);
+                prompt.input_col = term.grid().cursor.point.column.0;
             }
             PromptMark::CommandExecuted | PromptMark::CommandFinished(_) => prompt.at_prompt = false,
         }
@@ -914,6 +931,27 @@ mod tests {
 
     /// zsh as its integration draws it: output, then a prompt marked A (redraw=1) … B.
     const ZSH: &[u8] = b"line one\r\nline two\r\n\x1b]133;A;redraw=1\x07user@host project % \x1b]133;B\x07ls";
+
+    #[test]
+    fn the_command_line_is_empty_until_something_is_typed() {
+        let mut f = make();
+        f.feed(b"out\r\n\x1b]133;A;redraw=1\x07user@host % \x1b]133;B\x07");
+        assert!(command_line_empty(&f.shared));
+        // A right-hand prompt drawn along the line (cursor saved and put back) is the shell's.
+        f.feed(b"\x1b7\x1b[2;40H12:00\x1b8");
+        assert!(command_line_empty(&f.shared));
+        f.feed(b"ls");
+        assert!(!command_line_empty(&f.shared));
+        // Back to the start of what was typed (^A): still typed.
+        f.feed(b"\x08\x08");
+        assert!(!command_line_empty(&f.shared));
+        // Rubbed out as zsh does.
+        f.feed(b"  \x08\x08");
+        assert!(command_line_empty(&f.shared));
+        // A command runs.
+        f.feed(b"\r\n\x1b]133;C\x07");
+        assert!(!command_line_empty(&f.shared));
+    }
 
     #[test]
     fn a_resize_clears_the_prompt_the_shell_redraws() {

@@ -23,6 +23,8 @@ pub struct Extras {
     redraw: u8,
     start: Option<usize>,
     input: Option<usize>,
+    #[serde(default)]
+    input_col: usize,
 }
 
 pub fn extras(shared: &TermShared) -> Extras {
@@ -37,6 +39,7 @@ pub fn extras(shared: &TermShared) -> Extras {
         },
         start: prompt.start,
         input: prompt.input,
+        input_col: prompt.input_col,
     }
 }
 
@@ -55,6 +58,7 @@ pub fn restore(feeder: &mut Feeder, bytes: &[u8], extras: Extras) -> Fed {
     };
     prompt.start = extras.start;
     prompt.input = extras.input;
+    prompt.input_col = extras.input_col;
     fed
 }
 

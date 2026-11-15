@@ -453,6 +453,8 @@ impl App {
                     "next-attention" => Some(Action::NextAttention),
                     "back-attention" => Some(Action::BackAttention),
                     "run" => Some(Action::RunPreset(rest.trim().to_string())),
+                    // As Run Agent's "This Tab" / "New Tab" (its first choice).
+                    "run-agent" => Some(Action::RunAgent(rest.trim().to_string(), crate::actions::Launch::New, 0)),
                     "select" => rest.trim().parse().ok().map(Action::SelectProjectIndex),
                     "palette" => Some(Action::Palette),
                     "pick" => Some(Action::PickPreset),

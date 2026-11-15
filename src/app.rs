@@ -1161,6 +1161,11 @@ impl App {
         self.command_pane().filter(|id| self.panes.get(id).is_some_and(Pane::is_fresh))
     }
 
+    /// The pane commands act on, when an agent can start in it (Run Agent's "This Tab").
+    pub fn idle_command_pane(&self) -> Option<PaneId> {
+        self.command_pane().filter(|id| self.panes.get(id).is_some_and(Pane::takes_agent))
+    }
+
     /// The project "this project" commands act on (new tab, agents): the command pane's (a
     /// Grid tile's project is not made the open one).
     pub(crate) fn command_project(&self) -> Option<ProjectId> {
@@ -2070,10 +2075,14 @@ impl App {
             .and_then(|id| self.project(id))
             .and_then(Project::tab)
             .is_some_and(|tab| tab.layout.panes().len() >= 3);
-        // A shell nobody has used yet (a project just opened): the agent starts in it, not in a
-        // tab beside it. A split asked for is still a split.
-        let fresh = self.fresh_command_pane();
-        let pane = match (place, fresh) {
+        // A shell nobody has used yet (a project just opened), or, from Run Agent, one waiting
+        // at its prompt with nothing typed: the agent starts in it, not in a tab beside it. A
+        // split asked for is still a split.
+        let here = match place {
+            Some(0) => self.idle_command_pane(),
+            _ => self.fresh_command_pane(),
+        };
+        let pane = match (place, here) {
             (Some(0) | None, Some(id)) => {
                 if self.panes.get(&id).is_some_and(Pane::dormant) {
                     self.wake(ctx, id);

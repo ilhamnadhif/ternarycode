@@ -77,6 +77,10 @@ run unconnected 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WOR
 # again, the shell is in use, so it gets a pane of its own. A preset that only echoes.
 mkdir -p "$WORK/data-run-here"; printf '{"presets":[{"id":"echoer","name":"Echoer","command":"echo agent-ran-here"}]}\n' > "$WORK/data-run-here/settings.json"
 run run-here 40 "sleep 1000;; action add-project $P1;; sleep 1200;; wait-tabs 0:2;; action run echoer;; wait-screen agent-ran-here;; wait-tabs 0:2;; action run echoer;; sleep 800;; wait-tabs 0:2,3;; quit"
+# Run Agent's first choice in a shell used before: at its prompt with nothing typed, the agent
+# starts in it ("This Tab"); with something typed on its command line, in a new tab.
+mkdir -p "$WORK/data-run-here-idle"; cp "$WORK/data-run-here/settings.json" "$WORK/data-run-here-idle/settings.json"
+run run-here-idle 40 "sleep 1000;; action add-project $P1;; sleep 1200;; wait-tabs 0:2;; keys echo used-before\\r;; wait-screen used-before;; sleep 800;; action run-agent echoer;; wait-screen agent-ran-here;; wait-tabs 0:2;; sleep 800;; keys ls;; sleep 400;; action run-agent echoer;; sleep 800;; wait-tabs 0:2 1:3;; quit"
 # An update restarts the app in place: the panes' programs keep running in the same shell. The
 # status and an agent's hook token carry over; a program reading its input (cat) still gets the
 # keys; the screen is as it was. Twice, so a run taken over can hand over again.
