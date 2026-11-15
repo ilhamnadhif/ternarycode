@@ -199,13 +199,15 @@ connection TernaryCode makes.
 | Agent | Per launch (no file changed) | Installed once |
 | --- | --- | --- |
 | Claude Code | `claude --mcp-config "$TC_CLAUDE_MCP" --settings "$TC_CLAUDE_SETTINGS"` adds hooks and the browser tools for that run | hooks in `~/.claude/settings.json` |
-| Codex | `codex -c "$TC_CODEX_HOOKS" -c "$TC_CODEX_NOTIFY" -c "$TC_CODEX_MCP"` | a managed block in `~/.codex/config.toml`, browser tools included |
+| Codex | `codex -c "$TC_CODEX_HOOKS" -c "$TC_CODEX_NOTIFY" -c "$TC_CODEX_MCP" -c "$TC_CODEX_GUIDE"` | a managed block in `~/.codex/config.toml`, browser tools included |
 | Gemini CLI | — | hooks and the browser tools in `~/.gemini/settings.json` |
-| OpenCode | — | the plugin `~/.config/opencode/plugins/ternarycode.js` |
+| OpenCode | the browser tools, through `$OPENCODE_CONFIG_CONTENT` in every pane | the plugin `~/.config/opencode/plugins/ternarycode.js` |
 
 Installing shows the exact change first and keeps a backup; **Uninstall** restores the file byte
-for byte when you have not edited it since. The browser tools are on macOS (`--mcp-config` and
-`$TC_CODEX_MCP` are added there only); Settings → Browser shows which agents have them.
+for byte when you have not edited it since. The browser tools are on macOS (`--mcp-config`,
+`$TC_CODEX_MCP` and `$OPENCODE_CONFIG_CONTENT` are added there only), with a word to Codex and
+OpenCode, which read no tool server's own, that TernaryCode's browser is yours (after your own
+instructions). Settings → Browser shows which agents have them.
 
 ### A browser for you and your agents
 

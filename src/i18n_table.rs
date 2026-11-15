@@ -934,4 +934,5 @@ const ID: &[(&str, &str)] = &[
     ("Smaller, a page keeps the layout it has in Focus. Fitting the tile, a site may switch to its phone layout.", "Diperkecil, halaman memakai tata letak yang sama dengan di Focus. Pas dengan tile, situs bisa pindah ke tata letak HP."),
     ("Keep their layout, smaller", "Tata letak tetap, diperkecil"),
     ("Fit the tile", "Pas dengan tile"),
+    ("In every TernaryCode pane, typed by hand too", "Di setiap pane TernaryCode, termasuk yang diketik sendiri"),
 ];

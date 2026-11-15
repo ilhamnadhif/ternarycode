@@ -562,7 +562,7 @@ impl App {
         let mut remove_site = None;
         let mut add_site = None;
         let mut install = None;
-        let statuses: Vec<(AgentKind, bool, String)> = [AgentKind::Claude, AgentKind::Codex, AgentKind::Gemini].into_iter().map(|a| self.browser_tools_status(a)).collect();
+        let statuses: Vec<(AgentKind, bool, String)> = [AgentKind::Claude, AgentKind::Codex, AgentKind::OpenCode, AgentKind::Gemini].into_iter().map(|a| self.browser_tools_status(a)).collect();
         card(ui, search, &labels, |c| {
             c.row(labels[0].0, labels[0].1, |ui| {
                 tools_changed = kit::switch(ui, &mut self.settings.browser_agents).changed();
@@ -659,6 +659,8 @@ impl App {
         let (ok, text) = match (agent, mode) {
             (AgentKind::Claude | AgentKind::Codex, Integration::PerLaunch) => (true, t("Added to each run it starts from a preset")),
             (AgentKind::Claude, _) => (false, t("Only with Per launch (Settings → Agents)")),
+            // In every pane (`OPENCODE_CONFIG_CONTENT`), whatever its hooks.
+            (AgentKind::OpenCode, _) => (true, t("In every TernaryCode pane, typed by hand too")),
             (_, Integration::Installed) if has_server(&installed) => (true, t("Browser tools installed")),
             (_, Integration::Installed) => (false, t("Installed before the browser tools: install again")),
             _ => (false, t("Hooks not installed")),

@@ -202,14 +202,16 @@ dibuat TernaryCode.
 | Agent | Per peluncuran (tanpa mengubah file) | Dipasang sekali |
 | --- | --- | --- |
 | Claude Code | `claude --mcp-config "$TC_CLAUDE_MCP" --settings "$TC_CLAUDE_SETTINGS"` menambah hook dan tool browser untuk sesi itu | hook di `~/.claude/settings.json` |
-| Codex | `codex -c "$TC_CODEX_HOOKS" -c "$TC_CODEX_NOTIFY" -c "$TC_CODEX_MCP"` | blok terkelola di `~/.codex/config.toml`, termasuk tool browser |
+| Codex | `codex -c "$TC_CODEX_HOOKS" -c "$TC_CODEX_NOTIFY" -c "$TC_CODEX_MCP" -c "$TC_CODEX_GUIDE"` | blok terkelola di `~/.codex/config.toml`, termasuk tool browser |
 | Gemini CLI | — | hook dan tool browser di `~/.gemini/settings.json` |
-| OpenCode | — | plugin `~/.config/opencode/plugins/ternarycode.js` |
+| OpenCode | tool browser, lewat `$OPENCODE_CONFIG_CONTENT` di setiap pane | plugin `~/.config/opencode/plugins/ternarycode.js` |
 
 Pemasangan menampilkan perubahan persisnya lebih dulu dan menyimpan backup; **Uninstall**
 mengembalikan file byte demi byte kalau Anda belum mengubahnya sejak itu. Tool browser ada di macOS
-(`--mcp-config` dan `$TC_CODEX_MCP` hanya ditambahkan di sana); Settings → Browser menunjukkan agent
-mana yang sudah memilikinya.
+(`--mcp-config`, `$TC_CODEX_MCP`, dan `$OPENCODE_CONFIG_CONTENT` hanya ditambahkan di sana), disertai
+pesan untuk Codex dan OpenCode, yang tidak membaca instruksi dari server tool, bahwa browser
+TernaryCode adalah browser Anda (setelah instruksi Anda sendiri). Settings → Browser menunjukkan
+agent mana yang sudah memilikinya.
 
 ### Browser untuk Anda dan agent Anda
 

@@ -117,7 +117,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # terminal, where the web view sits exactly on the page's place; an address typed goes there;
 # a new page (⌥⇧⌘B) opens the project's server beside it in the panel; a page tab brings its
 # page back. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-grid browser-button browser-panel browser-migrate split-resize" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -193,6 +193,9 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     # when it hides; the page in front follows the terminal picked, a page tab too; the panel
     # fills the window and Esc puts it back; four terminals leave no room: it floats over them.
     run browser-panel 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action split-right;; sleep 1000;; wait-tabs 0:2,3;; focus-pane 0;; sleep 300;; keys $HOOK mcp claude < $MCP/nav.json > $MCP/pa.out; echo ok-\$((1+1))a\\r;; wait-screen ok-2a;; wait-pages 4*;; wait-panel stacked;; wait-toast Terminals stacked;; expect-width pane:2 500 620;; expect-width pane:3 500 620;; sleep 500;; expect-web-placed;; shot e2e-browser-panel;; focus-pane 1;; sleep 300;; keys $HOOK mcp claude < $MCP/nav.json > $MCP/pb.out; echo ok-\$((1+1))b\\r;; wait-screen ok-2b;; wait-pages 4,5*;; focus-pane 0;; wait-pages 4*,5;; focus-pane 1;; wait-pages 4,5*;; click page-tab:4;; wait-pages 4*,5;; sleep 400;; expect-web-placed;; click panel-max;; wait-panel max;; sleep 400;; expect-web-placed;; key esc;; wait-panel stacked;; click panel-hide;; wait-panel hidden;; sleep 400;; expect-web-hidden;; expect-width pane:2 420 530;; action show-browser;; wait-panel stacked;; action split-down;; sleep 800;; action split-down;; sleep 800;; wait-panel float;; sleep 500;; expect-web-placed;; shot e2e-browser-float;; click page-close:4;; wait-pages 5*;; quit"
+    # OpenCode gets the browser tools in every pane: its inline config names the server and the
+    # guide file, written in the app's data folder.
+    run opencode-env 40 "sleep 1000;; action add-project $P1;; sleep 1500;; keys python3 -c 'import json,os; c=json.loads(os.environ[\"OPENCODE_CONFIG_CONTENT\"]); print(\"oc-\"+c[\"mcp\"][\"ternarycode\"][\"command\"][2]+\"-\"+str(os.path.exists(c[\"instructions\"][-1])))'\\r;; wait-screen oc-opencode-True;; quit"
     # A workspace of an older version, its pages in tabs: they move to the project's panel (the
     # page's own tab goes), shown since one was in the tab in view; saved so from then on.
     mkdir -p "$WORK/data-browser-migrate"

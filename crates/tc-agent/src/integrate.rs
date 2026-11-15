@@ -31,7 +31,13 @@ pub const ENV_CODEX_MCP: &str = "TC_CODEX_MCP";
 /// when nothing says so.
 pub const ENV_CODEX_GUIDE: &str = "TC_CODEX_GUIDE";
 
-/// What Codex is told about TernaryCode's browser (after the user's own instructions).
+/// OpenCode's inline configuration, merged over the user's own: TernaryCode's browser tools and
+/// the guide saying its browser is the user's. In every pane (on macOS), so an `opencode` typed
+/// by hand gets them too.
+pub const ENV_OPENCODE_CONFIG: &str = "OPENCODE_CONFIG_CONTENT";
+
+/// What an agent that reads no MCP server's instructions (Codex, OpenCode) is told about
+/// TernaryCode's browser (after the user's own instructions).
 const CODEX_GUIDE: &str = "You run in a terminal pane of TernaryCode, which has a browser built in, \
 beside this terminal: it is the user's browser in this session, and the user sees every page and \
 every click. Whenever the user asks to open, show, check or search something on a website or in a \
@@ -212,6 +218,31 @@ impl Hooks {
         format!("developer_instructions={}", Self::toml_str(&text))
     }
 
+    /// `OPENCODE_CONFIG_CONTENT` for the panes: the browser tools' server (unless the user has
+    /// one named so) and `guide` (a file) among the instructions, over `theirs` (the variable
+    /// from the app's own environment). None when theirs is not a JSON object: theirs stays.
+    pub fn opencode_config(&self, guide: &Path, theirs: Option<&str>) -> Option<String> {
+        let mut config: Value = match theirs.filter(|t| !t.trim().is_empty()) {
+            Some(t) => serde_json::from_str(t).ok().filter(Value::is_object)?,
+            None => json!({}),
+        };
+        let root = config.as_object_mut()?;
+        let mcp = root.entry("mcp").or_insert_with(|| json!({})).as_object_mut()?;
+        mcp.entry("ternarycode").or_insert_with(|| {
+            json!({
+                "type": "local",
+                "command": [self.bin.to_string_lossy(), "mcp", "opencode"],
+                "enabled": true,
+            })
+        });
+        let instructions = root.entry("instructions").or_insert_with(|| json!([])).as_array_mut()?;
+        let guide = Value::from(guide.to_string_lossy());
+        if !instructions.contains(&guide) {
+            instructions.push(guide);
+        }
+        serde_json::to_string(&config).ok()
+    }
+
     /// A TOML basic string.
     fn toml_str(s: &str) -> String {
         let mut out = String::with_capacity(s.len() + 2);
@@ -259,6 +290,21 @@ impl Hooks {
     /// `codex_config`: the text of Codex's `config.toml`, whose own instructions Codex's guide
     /// keeps.
     pub fn pane_env(&self, integrations_dir: &Path, tools: bool, codex_config: Option<&str>) -> io::Result<Vec<(String, String)>> {
+        let mut env = self.agent_env(integrations_dir, tools, codex_config)?;
+        // OpenCode reads no MCP server's instructions either: its guide is a file it includes.
+        if cfg!(target_os = "macos") && tools {
+            let guide = integrations_dir.join("opencode-browser.md");
+            if std::fs::read(&guide).ok().as_deref() != Some(CODEX_GUIDE.as_bytes()) {
+                tc_core::persist::write_private(&guide, CODEX_GUIDE.as_bytes())?;
+            }
+            if let Some(config) = self.opencode_config(&guide, std::env::var(ENV_OPENCODE_CONFIG).ok().as_deref()) {
+                env.push((ENV_OPENCODE_CONFIG.into(), config));
+            }
+        }
+        Ok(env)
+    }
+
+    fn agent_env(&self, integrations_dir: &Path, tools: bool, codex_config: Option<&str>) -> io::Result<Vec<(String, String)>> {
         let file = integrations_dir.join("claude-settings.json");
         let mcp = integrations_dir.join("claude-mcp.json");
         for (path, text) in [(&file, self.claude_settings()), (&mcp, self.claude_mcp(tools))] {
@@ -1062,6 +1108,30 @@ mod tests {
         assert_eq!(codex_developer_instructions("[profiles.x]\ndeveloper_instructions = \"x\"\n"), None);
         assert_eq!(codex_developer_instructions("developer_instructions = \"  \"\n"), None);
         assert_eq!(codex_developer_instructions("not toml ["), None);
+    }
+
+    #[test]
+    fn opencode_gets_the_browser_tools_over_the_users_own_config() {
+        let guide = Path::new("/data/integrations/opencode-browser.md");
+        let parse = |s: Option<String>| -> Value { serde_json::from_str(&s.unwrap()).unwrap() };
+        // None of theirs: the server, and the guide among the instructions.
+        let c = parse(hooks().opencode_config(guide, None));
+        assert_eq!(c["mcp"]["ternarycode"]["command"], json!(["/Applications/Ternary Code.app/Contents/MacOS/ternarycode-hook", "mcp", "opencode"]));
+        assert_eq!(c["mcp"]["ternarycode"]["type"], "local");
+        assert_eq!(c["instructions"], json!([guide.to_string_lossy()]));
+        assert_eq!(parse(hooks().opencode_config(guide, Some("  "))), c);
+        // Theirs: kept whole, ours added (their own server of that name wins).
+        let theirs = r#"{"model":"x/y","mcp":{"docs":{"type":"remote","url":"https://d"}},"instructions":["AGENTS.md"]}"#;
+        let c = parse(hooks().opencode_config(guide, Some(theirs)));
+        assert_eq!(c["model"], "x/y");
+        assert_eq!(c["mcp"]["docs"]["url"], "https://d");
+        assert!(c["mcp"]["ternarycode"].is_object());
+        assert_eq!(c["instructions"], json!(["AGENTS.md", guide.to_string_lossy()]));
+        let own = r#"{"mcp":{"ternarycode":{"type":"local","command":["mine"]}}}"#;
+        assert_eq!(parse(hooks().opencode_config(guide, Some(own)))["mcp"]["ternarycode"]["command"], json!(["mine"]));
+        // Not a JSON object: theirs stays as it is.
+        assert_eq!(hooks().opencode_config(guide, Some("{model: x}")), None);
+        assert_eq!(hooks().opencode_config(guide, Some("[1]")), None);
     }
 
     #[test]
