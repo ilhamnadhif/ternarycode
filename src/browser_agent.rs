@@ -119,6 +119,28 @@ impl App {
         let Some(project) = self.panes.get(&agent_pane).map(|p| p.project) else {
             return fail(reply, "The pane this agent runs in is gone.");
         };
+        // `ternarycode browse` / `$BROWSER` / `open https://…` in a pane: the user's page, in
+        // the project's browser (in view when the project is); the default browser when web
+        // pages open there (Settings), which the caller then opens.
+        if call.call == "open" {
+            let url = call.args["url"].as_str().unwrap_or("");
+            let web = url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://");
+            if !self.settings.browser_here || !web {
+                return fail(reply, "default browser");
+            }
+            self.open_web_in(project, url, self.active == Some(project));
+            let _ = reply.send(json!({ "text": "Opened in TernaryCode." }));
+            return;
+        }
+        if !self.settings.browser_agents {
+            return fail(reply, "The user turned the browser tools off in TernaryCode (Settings → Browser).");
+        }
+        if call.call == "browser_evaluate" && !self.settings.browser_agent_js {
+            return fail(
+                reply,
+                "Running your own JavaScript in pages is off. The user can turn it on in TernaryCode (Settings → Browser → Agents may run JavaScript in pages); the other tools work without it.",
+            );
+        }
         let who = call.agent.as_deref().and_then(AgentKind::from_slug).map_or("The agent", AgentKind::label).to_string();
         let a = &call.args;
         let s = |k: &str| a[k].as_str().unwrap_or("").trim().to_string();
@@ -158,6 +180,20 @@ impl App {
                 let args = json!({ "text": s("text"), "textGone": s("textGone"), "time": a["time"].as_f64().unwrap_or(0.0) });
                 (what, vec![Op::Act("wait", args, "Waited.".into()), Op::Read])
             }
+            "browser_scroll" => {
+                let dir = Some(s("direction")).filter(|d| !d.is_empty());
+                let what = match (&dir, s("ref").is_empty()) {
+                    (None, false) => tf("Scrolling to {}", &[&element()]),
+                    _ => t("Scrolling the page").to_string(),
+                };
+                let line = match &dir {
+                    Some(d) => format!("Scrolled {d}."),
+                    None if !s("ref").is_empty() => format!("Scrolled {} into view.", element()),
+                    None => "Scrolled down.".to_string(),
+                };
+                let args = json!({ "ref": s("ref"), "direction": dir, "pages": a["pages"].as_f64().unwrap_or(1.0) });
+                (what, vec![Op::Act("scroll", args, line), Op::Settle, Op::Read])
+            }
             "browser_take_screenshot" => (t("Taking a screenshot").into(), vec![Op::Shot]),
             "browser_console_messages" => (t("Reading the console").into(), vec![Op::Act("console", json!({}), String::new())]),
             "browser_evaluate" => (t("Running a script in the page").into(), vec![Op::Eval(s("function"))]),
@@ -171,13 +207,19 @@ impl App {
             return fail(reply, &format!("The user has the browser now (they took it over from {who} in TernaryCode). Wait until they hand it back, or ask them."));
         }
         b.driver = Some(Driver { pane: agent_pane, who, doing, last: Instant::now(), paused: false });
+        // The user handed the browser back: the agent hears where they left it.
+        let text = if std::mem::take(&mut b.handed_back) {
+            format!("The user had taken the browser over and handed it back. It is at {} ({}).\n", b.url, b.title)
+        } else {
+            String::new()
+        };
         self.browser_jobs.push(Job {
             browser: id,
             agent_pane,
             reply: Some(reply),
             ops: ops.into(),
             waiting: None,
-            text: String::new(),
+            text,
             image: None,
             reread: false,
             seqs: Vec::new(),
@@ -208,14 +250,24 @@ impl App {
         b.owner = Some(agent_pane);
         self.browsers.insert(id, b);
         let wide = self.last_body.is_some_and(|r| r.width() >= 900.0);
+        let beside = self.settings.browser_agent_beside;
         let p = self.project_mut(project)?;
-        if p.tabs[tab].layout.panes().len() == 1 && wide {
+        if beside && p.tabs[tab].layout.panes().len() == 1 && wide {
             p.tabs[tab].layout.split(agent_pane, id, SplitDir::Horizontal);
         } else {
             p.tabs.push(Tab { layout: Layout::Pane(id), focused: id, title: None });
         }
         self.mark_dirty();
         Some(id)
+    }
+
+    /// The sites an agent of `project` may open without asking: every project's and its own.
+    pub fn agent_sites(&self, project: tc_core::ProjectId) -> Vec<String> {
+        let mut sites = self.settings.browser_agent_sites.clone();
+        if let Some(p) = self.project(project) {
+            sites.extend(p.sites.iter().cloned());
+        }
+        sites
     }
 
     /// The browsers jobs are waiting on (their pages are kept up, out of view if need be).
@@ -290,9 +342,10 @@ impl App {
     /// asked. (A click on a link or a form to such a site is asked about before it is made.)
     #[cfg(target_os = "macos")]
     pub fn stop_unasked_load(&mut self, id: PaneId, url: &str, before: &str) {
+        let Some(project) = self.browsers.get(&id).map(|b| b.project) else { return };
+        let sites = self.agent_sites(project);
         let Some(b) = self.browsers.get_mut(&id) else { return };
         let Some(agent_pane) = b.driver.as_ref().filter(|d| !d.paused).map(|d| d.pane) else { return };
-        let sites = self.projects.iter().find(|p| p.id == b.project).map(|p| p.sites.clone()).unwrap_or_default();
         if b.ask.is_some() || crate::browser::agent_may_open(url, &sites, b.pass.as_deref()) {
             if b.pass.as_deref() == Some(crate::browser::host_of(url).as_str()) {
                 b.pass = None;
@@ -367,7 +420,7 @@ impl App {
             // A page not up yet (a new browser gets its web view once it has an address) counts
             // as loading.
             let loading = b.view.as_ref().is_none_or(crate::browser::is_loading);
-            let sites = self.projects.iter().find(|p| p.id == b.project).map(|p| p.sites.clone()).unwrap_or_default();
+            let sites = self.agent_sites(b.project);
             let answer = b.ask.as_ref().and_then(|a| a.answer.map(|x| (x, a.host.clone(), a.url.clone())));
             let here = b.url.clone();
             let page_url = b.view.as_ref().and_then(|v| v.url().ok()).unwrap_or_default();
@@ -621,10 +674,12 @@ impl App {
     /// The user takes the browser over from its agent: the pane is theirs, and its page has
     /// the keyboard. Handing it back sends the keyboard to the agent's pane.
     pub fn take_over_browser(&mut self, id: PaneId, take: bool) {
-        let Some(d) = self.browsers.get_mut(&id).and_then(|b| b.driver.as_mut()) else { return };
+        let Some(b) = self.browsers.get_mut(&id) else { return };
+        let Some(d) = b.driver.as_mut() else { return };
         d.paused = take;
         d.last = Instant::now();
         let agent = d.pane;
+        b.handed_back = !take;
         if take {
             self.actions.push(crate::actions::Action::FocusPane(id));
             self.browser_focus_request = Some(id);

@@ -69,8 +69,13 @@ impl App {
                 let now = Instant::now();
                 if self.mem_bytes.1.is_none_or(|t| now.duration_since(t) > Duration::from_secs(2)) {
                     self.mem_bytes = (tc_agent::proc::own_resident_bytes(), Some(now));
+                    self.browser_bytes = self.browsers_resident_bytes();
                 }
-                let mem = self.mem_bytes.0.map(|b| format!(" · {} MB", b / (1024 * 1024))).unwrap_or_default();
+                let mut mem = self.mem_bytes.0.map(|b| format!(" · {} MB", b / (1024 * 1024))).unwrap_or_default();
+                // The pages' own processes (WebKit's), when there are any.
+                if let Some(b) = self.browser_bytes.filter(|b| *b > 0) {
+                    mem.push_str(&tf(" · browsers {} MB", &[&(b / (1024 * 1024)).to_string()]));
+                }
                 let counts = format!(
                     "{} · {}{mem}",
                     crate::i18n::count(self.projects.iter().filter(|x| !x.is_worktree()).count(), t("1 project"), t("{} projects")),

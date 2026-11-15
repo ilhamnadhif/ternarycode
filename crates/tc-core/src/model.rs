@@ -98,9 +98,10 @@ pub struct ProjectSave {
     pub folded: bool,
     /// Run Agent last chose to work in a new worktree here.
     pub new_worktree: bool,
-    /// Sites (hosts) its agents may open in its browser without asking, besides this machine's.
+    /// Sites (hosts) its agents may open in its browser without asking, besides the ones every
+    /// project's agents may (Settings).
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub sites: Vec<String>,
+    pub browser_sites: Vec<String>,
 }
 
 /// A worktree made for an agent run (Run Agent → New worktree).
@@ -315,6 +316,23 @@ pub struct Settings {
     /// Minutes a browser pane out of view and unused keeps its page before letting it go.
     #[serde(default = "ten")]
     pub browser_sleep_minutes: u32,
+    /// Agents in TernaryCode panes may use their project's browser (its tools).
+    #[serde(default = "yes")]
+    pub browser_agents: bool,
+    /// An agent's browser opens beside its pane when there is room (else in a tab of its own).
+    #[serde(default = "yes")]
+    pub browser_agent_beside: bool,
+    /// Sites any agent may open without asking (`*.local`: that domain and its subdomains).
+    #[serde(default = "agent_sites")]
+    pub browser_agent_sites: Vec<String>,
+    /// Agents may run their own JavaScript in pages (`browser_evaluate`).
+    #[serde(default)]
+    pub browser_agent_js: bool,
+}
+
+/// The sites agents open without asking unless the user changes the list: this machine's.
+pub fn agent_sites() -> Vec<String> {
+    vec!["localhost".into(), "127.0.0.1".into(), "*.local".into()]
 }
 
 /// Where Run Agent puts a new worktree.
@@ -378,6 +396,10 @@ impl Default for Settings {
             group_active: true,
             browser_here: true,
             browser_sleep_minutes: 10,
+            browser_agents: true,
+            browser_agent_beside: true,
+            browser_agent_sites: agent_sites(),
+            browser_agent_js: false,
             skipped_version: None,
             last_update_check: None,
             window: None,

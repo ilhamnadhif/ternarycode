@@ -183,6 +183,19 @@ __tc_unboot() {
     esac
 }
 
+# `open https://…` typed here opens in TernaryCode's browser (unless the user has an `open` of
+# their own); anything else goes to macOS's `open`.
+if [[ -n ${TERNARYCODE_HOOK-} && -x /usr/bin/open ]] && ! builtin declare -F open >/dev/null &&
+    ! builtin alias open >/dev/null 2>&1; then
+    open() {
+        if [[ $# == 1 && ( $1 == http://* || $1 == https://* ) && -n ${TERNARYCODE_SOCK-} ]]; then
+            command "$TERNARYCODE_HOOK" browse "$1"
+        else
+            command open "$@"
+        fi
+    }
+fi
+
 # Install. PROMPT_COMMAND can be an array from bash 5.1 on; every entry runs then.
 if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )) &&
     [[ $(builtin declare -p PROMPT_COMMAND 2>/dev/null) == 'declare -a'* ]]; then

@@ -68,6 +68,19 @@ impl App {
         let more = Rect::from_center_size(pos2(right - 11.0, inner.center().y), vec2(22.0, 22.0));
         let ext = Rect::from_center_size(pos2(more.left() - 13.0, inner.center().y), vec2(22.0, 22.0));
         right = ext.left() - 4.0;
+        // The console's warnings and errors, when there are any (a click opens its drawer).
+        let (errors, warnings) = self.browsers.get(&id).map_or((0, 0), |b| {
+            (b.console.iter().filter(|l| l.is_error()).count(), b.console.iter().filter(|l| l.is_warning()).count())
+        });
+        let console_open = self.browsers.get(&id).is_some_and(|b| b.console_open);
+        let cons_rect = (errors + warnings > 0 || console_open).then(|| {
+            let n = if errors + warnings > 0 { (errors + warnings).to_string() } else { String::new() };
+            let g = ui.painter().layout_no_wrap(n, egui::FontId::proportional(style::SMALL), p.text);
+            let w = if g.size().x > 0.0 { g.size().x + 30.0 } else { 26.0 };
+            let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
+            right = r.left() - 4.0;
+            r
+        });
         let from_rect = from.as_ref().map(|(_, label)| {
             let g = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(style::SMALL), p.text_muted);
             let w = (g.size().x + 26.0).min(160.0);
@@ -112,6 +125,11 @@ impl App {
             let x0 = bar.left() + (t0 * 420.0) % (bar.width() + w) - w;
             ui.painter().with_clip_rect(bar).hline(x0..=x0 + w, bar.bottom() - 1.0, Stroke::new(2.0, p.accent));
             ui.ctx().request_repaint_after(Duration::from_millis(33));
+        }
+        if let Some((pane, _)) = &from
+            && let Some(b) = self.browsers.get_mut(&id)
+        {
+            b.served_by = Some(*pane);
         }
         if let Some(((pane, label), r)) = from.zip(from_rect) {
             let resp = ui.interact(r, egui::Id::new(("browser-from", id)), Sense::click());
@@ -180,7 +198,35 @@ impl App {
             self.ask_card(ui, id, r, a, &who, &name);
             top = r.bottom();
         }
-        let mut page = Rect::from_min_max(pos2(rect.left(), top.min(rect.bottom())), rect.max);
+        // The console's chip in the toolbar, and its drawer at the foot of the pane.
+        if let Some(r) = cons_rect {
+            let resp = ui.interact(r, egui::Id::new(("browser-console", id)), Sense::click());
+            let c = if errors > 0 { p.err } else if warnings > 0 { p.warn } else { p.text_muted };
+            let fill = if resp.hovered() || console_open { style::tint(c, ui.visuals().dark_mode).gamma_multiply(1.6) } else { style::tint(c, ui.visuals().dark_mode) };
+            ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), fill);
+            let icon = if errors > 0 { icons::WARNING_CIRCLE } else if warnings > 0 { icons::WARNING } else { icons::TERMINAL_WINDOW };
+            ui.painter().text(pos2(r.left() + 13.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(12.0), c);
+            if errors + warnings > 0 {
+                ui.painter().text(pos2(r.left() + 23.0, r.center().y), Align2::LEFT_CENTER, (errors + warnings).to_string(), style::medium(style::SMALL), c);
+            }
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("browser-console:{id}"), r);
+            if resp.on_hover_text(t("Console")).clicked()
+                && let Some(b) = self.browsers.get_mut(&id)
+            {
+                b.console_open = !b.console_open;
+            }
+        }
+        let mut bottom = rect.bottom();
+        if self.browsers.get(&id).is_some_and(|b| b.console_open) {
+            let h = (rect.height() * 0.32).clamp(110.0, 260.0).min((rect.bottom() - top - 60.0).max(0.0));
+            if h >= 60.0 {
+                let r = Rect::from_min_max(pos2(rect.left(), rect.bottom() - h), rect.max);
+                self.console_drawer(ui, id, r);
+                bottom = r.top();
+            }
+        }
+        let mut page = Rect::from_min_max(pos2(rect.left(), top.min(bottom)), pos2(rect.right(), bottom));
 
         // The page: the web view goes here. Until then, or without one, what it is.
         ui.painter().rect_filled(page, CornerRadius::ZERO, p.canvas);
@@ -188,6 +234,21 @@ impl App {
         if driver.as_ref().is_some_and(|d| !d.paused) {
             ui.painter().rect_stroke(page, CornerRadius::ZERO, Stroke::new(2.0, style::soft(p.info, 0.65)), egui::StrokeKind::Inside);
             page = page.shrink(2.0);
+        }
+        // Its server does not answer: which terminal served it, and Reload.
+        if self.browsers.get(&id).is_some_and(|b| b.down) {
+            self.down_card(ui, id, page, &host);
+        }
+        // Covered (the palette, a dialog, a menu): the page's picture in its place.
+        if let Some(b) = self.browsers.get(&id)
+            && b.covered_since.is_some()
+            && !b.shown
+            && let Some((tex, _)) = &b.still
+        {
+            let size = tex.size_vec2();
+            let h = page.width() * size.y / size.x.max(1.0);
+            let shown = Rect::from_min_size(page.min, vec2(page.width(), h));
+            ui.painter().with_clip_rect(page).image(tex.id(), shown, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
         }
         if !self.browsers.get(&id).is_some_and(Browser::live) {
             let label = if url.is_empty() { t("No page yet: type an address above.").to_string() } else { tf("Loading {}…", &[&host]) };
@@ -202,6 +263,134 @@ impl App {
         if self.focus_request == Some(id) {
             self.focus_request = None;
             self.browser_focus_request = Some(id);
+        }
+    }
+
+    /// The page's server (on this machine) does not answer: said in the page's place, with the
+    /// terminal that served it (Go to Pane) and Reload. The page comes back by itself.
+    fn down_card(&mut self, ui: &mut Ui, id: PaneId, page: Rect, host: &str) {
+        let p = style::pal(ui);
+        let served = self.browsers.get(&id).and_then(|b| b.served_by).filter(|pane| self.panes.contains_key(pane));
+        let why = match served.and_then(|pane| self.panes.get(&pane)) {
+            Some(pane) => match pane.tracker.status {
+                tc_core::status::Status::Failed(code) => tf("The pane that served it, {}, exited with code {}.", &[&pane.label(), &code.to_string()]),
+                _ => tf("The pane that served it, {}, is not serving it now.", &[&pane.label()]),
+            },
+            None => t("Nothing is serving it on this machine.").to_string(),
+        };
+        let c = page.center();
+        let painter = ui.painter();
+        painter.text(c - vec2(0.0, 52.0), Align2::CENTER_CENTER, icons::PLUGS, style::icon_font(30.0), p.text_faint);
+        painter.text(c - vec2(0.0, 16.0), Align2::CENTER_CENTER, tf("{} is not answering", &[host]), style::semibold(14.0), p.text);
+        let mut job = egui::text::LayoutJob::simple(format!("{why} {}", t("The page loads again once it answers.")), egui::FontId::proportional(12.5), p.text_muted, (page.width() - 48.0).clamp(120.0, 380.0));
+        job.halign = egui::Align::Center;
+        let g = painter.layout_job(job);
+        let text_h = g.size().y;
+        painter.galley(pos2(c.x, c.y + 4.0), g, p.text_muted);
+        // The buttons, centred: their row is exactly as wide as they are.
+        let go_w = if served.is_some() { kit::button_width(ui, Some(icons::TERMINAL), t("Go to Pane"), None, true) + 6.0 } else { 0.0 };
+        let w = go_w + kit::button_width(ui, None, t("Reload"), None, true);
+        let row = Rect::from_center_size(pos2(c.x, c.y + 4.0 + text_h + 24.0), vec2(w, 28.0));
+        let mut go = false;
+        let mut reload = false;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if served.is_some() {
+                go = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::TERMINAL), t("Go to Pane"), true).clicked();
+            }
+            reload = kit::button_ex(ui, kit::Kind::Ghost, None, t("Reload"), true).clicked();
+        });
+        #[cfg(debug_assertions)]
+        crate::devtest::record(format!("browser-down:{id}"), page);
+        if go && let Some(pane) = served {
+            self.actions.push(Action::FocusPane(pane));
+        }
+        if reload && let Some(b) = self.browsers.get_mut(&id) {
+            b.reload();
+        }
+    }
+
+    /// The page's console at the foot of its pane: errors first, then the rest as they came.
+    fn console_drawer(&mut self, ui: &mut Ui, id: PaneId, r: Rect) {
+        let p = style::pal(ui);
+        let Some(b) = self.browsers.get(&id) else { return };
+        let errors = b.console.iter().filter(|l| l.is_error()).count();
+        let warnings = b.console.iter().filter(|l| l.is_warning()).count();
+        let mut lines: Vec<&crate::browser::ConsoleLine> = b.console.iter().filter(|l| l.is_error()).collect();
+        lines.extend(b.console.iter().filter(|l| !l.is_error()));
+        let lines: Vec<crate::browser::ConsoleLine> = lines.into_iter().cloned().collect();
+        let painter = ui.painter_at(r);
+        painter.rect_filled(r, CornerRadius::ZERO, p.chrome);
+        painter.hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, p.border));
+        let head = Rect::from_min_size(r.min, vec2(r.width(), 28.0));
+        painter.hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
+        painter.text(pos2(head.left() + 18.0, head.center().y), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(13.0), p.text_muted);
+        let g = painter.layout_no_wrap(t("Console").to_string(), style::medium(12.0), p.text_muted);
+        let mut x = head.left() + 30.0;
+        painter.galley(pos2(x, head.center().y - g.size().y / 2.0), g.clone(), p.text_muted);
+        x += g.size().x + 8.0;
+        for (n, c) in [(errors, p.err), (warnings, p.warn)] {
+            if n > 0 {
+                let g = ui.painter().layout_no_wrap(n.to_string(), style::semibold(10.0), p.on_accent);
+                let w = (g.size().x + 10.0).max(16.0);
+                kit::paint_badge(ui.painter(), pos2(x + w, head.center().y), &n.to_string(), c, p.on_accent, 15.0);
+                x += w + 5.0;
+            }
+        }
+        // Clear and close, at the right.
+        let mut clear = false;
+        let mut close = false;
+        let close_r = Rect::from_center_size(pos2(head.right() - 17.0, head.center().y), vec2(22.0, 22.0));
+        let clear_r = Rect::from_center_size(pos2(close_r.left() - 13.0, head.center().y), vec2(22.0, 22.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(clear_r), |ui| clear = kit::icon_button_ex(ui, icons::TRASH, t("Clear"), false, 22.0).clicked());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(close_r), |ui| close = kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0).clicked());
+        #[cfg(debug_assertions)]
+        crate::devtest::record(format!("browser-console-drawer:{id}"), r);
+        // The lines.
+        let list = Rect::from_min_max(pos2(r.left(), head.bottom()), r.max);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
+            egui::ScrollArea::vertical().id_salt(("browser-console-lines", id)).auto_shrink([false, false]).show(ui, |ui| {
+                if lines.is_empty() {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui.label(egui::RichText::new(t("Nothing in the console yet.")).size(style::SMALL).color(p.text_faint));
+                    });
+                }
+                for l in &lines {
+                    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+                    let painter = ui.painter();
+                    painter.hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, p.border));
+                    let (icon, c) = match l.level.as_str() {
+                        "error" => (Some(icons::WARNING_CIRCLE), p.err),
+                        "warn" => (Some(icons::WARNING), p.warn),
+                        _ => (None, p.text_faint),
+                    };
+                    if let Some(i) = icon {
+                        painter.text(pos2(row.left() + 18.0, row.center().y), Align2::CENTER_CENTER, i, style::icon_font(12.5), c);
+                    }
+                    let src_w = if l.src.is_empty() {
+                        0.0
+                    } else {
+                        let g = painter.layout_no_wrap(l.src.clone(), egui::FontId::monospace(11.0), p.text_faint);
+                        let w = g.size().x;
+                        painter.galley(pos2(row.right() - 12.0 - w, row.center().y - g.size().y / 2.0), g, p.text_faint);
+                        w + 16.0
+                    };
+                    let mut job = egui::text::LayoutJob::simple_singleline(l.text.lines().next().unwrap_or("").to_string(), egui::FontId::monospace(11.5), p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((row.width() - 30.0 - 12.0 - src_w).max(20.0));
+                    let g = painter.layout_job(job);
+                    painter.galley(pos2(row.left() + 30.0, row.center().y - g.size().y / 2.0), g, p.text);
+                }
+            });
+        });
+        if let Some(b) = self.browsers.get_mut(&id) {
+            if clear {
+                b.console.clear();
+            }
+            if close {
+                b.console_open = false;
+            }
         }
     }
 
@@ -345,6 +534,13 @@ impl App {
     pub fn new_browser_tab(&mut self) {
         let Some(project) = self.command_project() else { return };
         let url = self.project_servers(project).first().map(|(_, s)| s.url.clone()).unwrap_or_default();
+        self.browser_tab_at(project, &url);
+    }
+
+    /// A new tab of `project` with a browser pane at `url` ("": its address field takes the
+    /// keyboard), in view.
+    pub fn browser_tab_at(&mut self, project: tc_core::ProjectId, url: &str) {
+        let url = url.to_string();
         let id = self.new_id();
         self.browsers.insert(id, Browser::new(id, project, &url));
         let Some(p) = self.project_mut(project) else { return };
@@ -365,6 +561,12 @@ impl App {
             crate::platform::open_url(url);
             return;
         };
+        self.open_web_in(project, url, true);
+    }
+
+    /// Opens `url` in `project`'s browser pane, as [`App::open_web_here`]; `show`: the project
+    /// comes into view (else its page waits there, the sidebar showing it has one).
+    pub fn open_web_in(&mut self, project: tc_core::ProjectId, url: &str, show: bool) {
         let in_view: Vec<PaneId> = self.project(project).and_then(|p| p.tab()).map(|t| t.layout.panes()).unwrap_or_default();
         let all: Vec<PaneId> = self.project(project).map(|p| p.panes()).unwrap_or_default();
         let existing = in_view.iter().chain(all.iter()).find(|id| self.browsers.contains_key(id)).copied();
@@ -395,10 +597,12 @@ impl App {
                 }
             }
         }
-        if self.active != Some(project) {
-            self.actions.push(Action::SelectProject(project));
+        if show {
+            if self.active != Some(project) {
+                self.actions.push(Action::SelectProject(project));
+            }
+            self.show_focus();
         }
-        self.show_focus();
         self.mark_dirty();
     }
 
@@ -407,6 +611,31 @@ impl App {
         #[cfg(target_os = "macos")]
         crate::browser::clear_data();
         self.toast_ok(t("Logins, cookies and history were cleared.").to_string());
+    }
+
+    /// The page that has the keyboard gives it back to the app.
+    pub fn release_page_keyboard(&mut self) {
+        if let Some(id) = self.browser_focus.take() {
+            #[cfg(target_os = "macos")]
+            if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
+                let _ = v.focus_parent();
+            }
+            let _ = id;
+        }
+    }
+
+    /// Memory the pages take: their WebKit processes (each counted once).
+    pub fn browsers_resident_bytes(&self) -> Option<u64> {
+        #[cfg(target_os = "macos")]
+        {
+            let pids: std::collections::BTreeSet<i32> = self.browsers.values().filter_map(|b| b.view.as_ref()).filter_map(crate::browser::web_pid).collect();
+            if pids.is_empty() {
+                return None;
+            }
+            Some(pids.into_iter().filter_map(tc_agent::proc::resident_bytes).sum())
+        }
+        #[cfg(not(target_os = "macos"))]
+        None
     }
 
     /// ⌘C, ⌘V, ⌘A while a page has the keyboard: sent to the page. Returns whether one has it.
@@ -427,17 +656,24 @@ impl App {
         let mut focused = None;
         // Loads that began in pages an agent uses: (page, address, the address before).
         let mut began = Vec::new();
+        let mut new_tabs = Vec::new();
         for b in self.browsers.values_mut() {
             let before = b.url.clone();
             for e in b.take_events() {
                 match e {
                     Event::Focused => focused = Some(b.id),
-                    Event::OpenHere(url) => b.navigate(&url),
+                    // A link to a new window: a new browser tab of the project; an agent's page
+                    // keeps it (the agent follows it there).
+                    Event::OpenHere(url) if b.driven() => b.navigate(&url),
+                    Event::OpenHere(url) => new_tabs.push((b.project, url)),
                     Event::Url(_) => moved = true,
                     Event::Loading(true) if b.driven() => began.push((b.id, b.url.clone(), before.clone())),
                     _ => {}
                 }
             }
+        }
+        for (project, url) in new_tabs {
+            self.browser_tab_at(project, &url);
         }
         #[cfg(target_os = "macos")]
         for (id, url, before) in began {
@@ -493,9 +729,52 @@ impl App {
         let pages = std::mem::take(&mut self.browser_pages);
         let mut wake: Option<Duration> = None;
         for b in self.browsers.values_mut() {
+            b.pick_up_picture(ctx);
             match pages.get(&b.id) {
-                Some(rect) if !covered && rect.width() >= 8.0 && rect.height() >= 8.0 => {
+                Some(rect) if rect.width() >= 8.0 && rect.height() >= 8.0 && (!covered || b.view.is_some()) => {
                     b.last_seen = now;
+                    // Its server does not answer: the pane says so (the page would be blank).
+                    if b.down {
+                        if b.shown
+                            && let Some(v) = &b.view
+                        {
+                            let _ = v.set_visible(false);
+                        }
+                        b.shown = false;
+                        continue;
+                    }
+                    if covered {
+                        // Something is drawn over the page, which the page would hide: its
+                        // picture shows in its place (once it comes, or after a moment).
+                        let since = *b.covered_since.get_or_insert(now);
+                        if b.shown {
+                            let pictured = b.still.as_ref().is_some_and(|(_, at)| *at >= since);
+                            if !pictured {
+                                b.ask_picture(ctx, None);
+                            }
+                            if pictured || now.duration_since(since) > Duration::from_millis(250) {
+                                if let Some(v) = &b.view {
+                                    if in_use.contains(&b.id) {
+                                        // An agent works in it: it keeps drawing, out of the window.
+                                        let off = crate::browser::bounds(Rect::from_min_size(pos2(-30000.0, 0.0), rect.size()), zoom);
+                                        let _ = v.set_bounds(off);
+                                        b.placed = None;
+                                        b.offscreen = true;
+                                    } else {
+                                        let _ = v.set_visible(false);
+                                    }
+                                }
+                                b.shown = false;
+                            } else {
+                                ctx.request_repaint_after(Duration::from_millis(30));
+                            }
+                        }
+                        continue;
+                    }
+                    if b.covered_since.take().is_some() {
+                        // Uncovered: the page itself again; its picture is let go.
+                        b.still = None;
+                    }
                     b.offscreen = false;
                     // A page with no address yet has no web view (the pane says so).
                     if b.view.is_none() && !b.url.is_empty() {
@@ -560,13 +839,27 @@ impl App {
         // A page under a question is dimmed; a page loading says so (from its request on). A
         // page an agent acts in takes the keyboard when the agent focuses something in it: the
         // keyboard goes back where the user had it (the agent's terminal).
-        let typing_in = self.browser_focus;
+        let mut typing_in = self.browser_focus;
         for b in self.browsers.values_mut() {
+            // A page out of sight that has the keyboard gives it back (else keys go nowhere).
+            if !b.shown
+                && let Some(v) = &b.view
+                && crate::browser::has_keyboard(v)
+            {
+                let _ = v.focus_parent();
+                if typing_in == Some(b.id) {
+                    typing_in = None;
+                }
+            }
             if let Some(v) = &b.view {
                 b.loading = crate::browser::is_loading(v);
                 if b.driven() && typing_in != Some(b.id) && crate::browser::has_keyboard(v) {
                     let _ = v.focus_parent();
                 }
+            }
+            if b.view.is_some() {
+                let loading = b.loading;
+                b.watch_server(loading, ctx);
             }
             let dim = b.ask.is_some();
             if dim != b.dimmed
@@ -575,6 +868,9 @@ impl App {
                 crate::browser::dim(v, dim);
                 b.dimmed = dim;
             }
+        }
+        if typing_in != self.browser_focus {
+            self.browser_focus = typing_in;
         }
         if let Some(d) = wake {
             ctx.request_repaint_after(d);

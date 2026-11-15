@@ -135,8 +135,10 @@ pub(crate) fn send(_sock: &str, _msg: &HookMsg) -> std::io::Result<()> {
 /// Entry point of `ternarycode-hook`; returns the exit code (always 0). `ternarycode-hook mcp`
 /// is the agents' browser tools instead (`crate::mcp`).
 pub fn run(args: &[String]) -> i32 {
-    if args.first().is_some_and(|a| a == "mcp") {
-        return crate::mcp::run(&args[1..]);
+    match args.first().map(String::as_str) {
+        Some("mcp") => return crate::mcp::run(&args[1..]),
+        Some("browse") => return browse(&args[1..]),
+        _ => {}
     }
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     match message(args, env, read_stdin) {
@@ -149,6 +151,42 @@ pub fn run(args: &[String]) -> i32 {
         }
     }
     0
+}
+
+/// `ternarycode-hook browse <address>` (and `ternarycode browse`, and `$BROWSER` in panes):
+/// the page opens in TernaryCode, in the browser of the project the terminal belongs to. Outside
+/// a TernaryCode pane, or when TernaryCode leaves web pages to the default browser (or does not
+/// answer), the default browser opens it. Returns the exit code.
+pub fn browse(args: &[String]) -> i32 {
+    let Some(url) = args.iter().find(|a| !a.starts_with('-')) else {
+        eprintln!("usage: ternarycode browse <address>");
+        return 2;
+    };
+    #[cfg(unix)]
+    if let Some(pane) = crate::mcp::pane_from_env(None) {
+        let reply = crate::mcp::call_app(&pane, "open", &serde_json::json!({ "url": url }));
+        if reply["text"].is_string() {
+            return 0;
+        }
+    }
+    open_default(url)
+}
+
+/// Opens `url` in the system's default browser.
+fn open_default(url: &str) -> i32 {
+    let mut cmd = if cfg!(target_os = "macos") {
+        std::process::Command::new("/usr/bin/open")
+    } else if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    match cmd.arg(url).status() {
+        Ok(s) if s.success() => 0,
+        _ => 1,
+    }
 }
 
 #[cfg(test)]

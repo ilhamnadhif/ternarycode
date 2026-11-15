@@ -441,7 +441,8 @@ impl App {
                     let status = teller.map(|x| x.tracker.status).filter(|s| !matches!(s, Status::Idle | Status::Unknown));
                     let waits = panes.iter().filter_map(|id| self.panes.get(id)).any(|x| x.tracker.wants_attention());
                     let resume = panes.iter().filter_map(|id| self.panes.get(id)).find_map(|x| x.resume.as_ref().map(|(a, _)| a.label().to_string()));
-                    StripTab { label, status, waits, resume }
+                    let web = self.browsers.get(&tab.focused).map(|b| b.asleep && !b.url.is_empty());
+                    StripTab { label, status, waits, resume, web }
                 })
                 .collect()
         } else {
@@ -467,6 +468,11 @@ impl App {
         // The tab shown, with all its panes (a split project shows its split).
         let layout = project.tabs.get(shown).map(|t| t.layout.clone());
         let count = layout.as_ref().map_or(0, |l| l.panes().len());
+        // A browser an agent uses, in another tab of the project: a picture of it in a corner of
+        // the tile (a chip in its header when the tile is small).
+        let in_tile: Vec<PaneId> = layout.as_ref().map_or_else(|| pane_id.into_iter().collect(), |l| l.panes());
+        let web = self.tile_web(project_id, &in_tile);
+        let web_small = rect.width() < 380.0 || rect.height() < 260.0;
         // An agent that finished its turn: what it changed is one click away.
         let review = pane_id.filter(|id| self.panes.get(id).is_some_and(|x| x.tracker.status == Status::Done));
         // An agent without the hooks (it can't say when it needs the user).
@@ -555,6 +561,24 @@ impl App {
             ui.painter().text(r.center(), Align2::CENTER_CENTER, icons::WARNING, style::icon_font(13.0), p.warn);
             if resp.on_hover_text(self.unconnected_tip(&[agent])).clicked() {
                 self.actions.push(Action::PlanInstall(agent.1));
+            }
+        }
+        // The browser an agent uses, on a tile too small for its picture: shows it in the tile.
+        if let Some(w) = web.as_ref().filter(|_| web_small) {
+            let g = ui.painter().layout_no_wrap(t("browser").to_string(), small.clone(), p.info);
+            let wd = 6.0 + 13.0 + 4.0 + g.size().x + 6.0;
+            let r = Rect::from_center_size(pos2(right - wd / 2.0, cy), vec2(wd, 22.0));
+            right -= wd + 6.0;
+            let resp = ui.interact(r, egui::Id::new(("tile-web", project_id)), Sense::click());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("tile-web-chip:{name}"), r);
+            let fill = style::tint(p.info, dark);
+            ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), if resp.hovered() { fill.gamma_multiply(1.6) } else { fill });
+            ui.painter().text(pos2(r.left() + 6.0 + 6.5, cy), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(12.0), p.info);
+            ui.painter().galley(pos2(r.left() + 6.0 + 13.0 + 4.0, cy - g.size().y / 2.0), g, p.info);
+            let tip = format!("{} · {}\n{}", w.address, w.who, t("Click: show the browser in this tile · ⌥-click: in Focus"));
+            if resp.on_hover_text(tip).clicked() {
+                self.show_tile_web(project_id, w, ui.input(|i| i.modifiers.alt));
             }
         }
         // A local server its panes started: ":5173" opens it in the browser.
@@ -807,8 +831,119 @@ impl App {
         for (id, r) in banners {
             self.resume_banner(ui, id, r, true);
         }
+        if let Some(w) = web.filter(|_| !web_small) {
+            self.tile_pip(ui, project_id, body, &w);
+        }
         // The border last, over the terminals' edges.
         ui.painter_at(rect.expand(2.0)).rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
+    }
+
+    /// A project's browser an agent uses (or used in the last 10 s), out of the tile's view
+    /// (`in_tile`): what the tile's corner shows of it.
+    fn tile_web(&self, project: ProjectId, in_tile: &[PaneId]) -> Option<TileWeb> {
+        let p = self.project(project)?;
+        self.browsers.values().filter(|b| b.project == project && !in_tile.contains(&b.id)).find_map(|b| {
+            let d = b.driver.as_ref().filter(|d| !d.paused)?;
+            let working = self.browser_jobs.iter().any(|j| j.browser == b.id);
+            if !working && d.last.elapsed() > std::time::Duration::from_secs(10) {
+                return None;
+            }
+            let tab = p.tab_of(b.id)?;
+            let (host, path) = crate::browser::split_url(&b.url);
+            Some(TileWeb { id: b.id, tab, doing: d.doing.clone(), who: d.who.clone(), address: format!("{host}{path}") })
+        })
+    }
+
+    /// Shows a tile's web page: in the tile (its tab), or in Focus (⌥).
+    fn show_tile_web(&mut self, project: ProjectId, web: &TileWeb, focus: bool) {
+        if focus {
+            self.actions.push(Action::FocusPane(web.id));
+        } else {
+            self.actions.push(Action::GridShowTab(project, web.tab));
+        }
+    }
+
+    /// The picture of an agent's page in the corner of its tile: the page (two pictures a second
+    /// at most), what the agent does, and a click to show it in the tile.
+    fn tile_pip(&mut self, ui: &mut Ui, project: ProjectId, body: Rect, web: &TileWeb) {
+        let p = style::pal(ui);
+        let size = if body.width() >= 520.0 && body.height() >= 300.0 { vec2(216.0, 146.0) } else { vec2(160.0, 108.0) };
+        if body.width() < size.x + 40.0 || body.height() < size.y + 30.0 {
+            return;
+        }
+        let r = Rect::from_min_size(body.max - size - vec2(10.0, 10.0), size);
+        let ctx = ui.ctx().clone();
+        #[cfg(target_os = "macos")]
+        if let Some(b) = self.browsers.get_mut(&web.id)
+            && b.still.as_ref().is_none_or(|(_, at)| at.elapsed() > std::time::Duration::from_millis(500))
+        {
+            b.ask_picture(&ctx, Some(f64::from(size.x)));
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        let resp = ui.interact(r, egui::Id::new(("tile-pip", project)), Sense::click());
+        #[cfg(debug_assertions)]
+        crate::devtest::record(format!("tile-pip:{project}"), r);
+        let painter = ui.painter_at(r.expand(2.0));
+        painter.rect_filled(r, CornerRadius::same(style::RADIUS_LG), egui::Color32::WHITE);
+        if let Some((tex, _)) = self.browsers.get(&web.id).and_then(|b| b.still.as_ref()) {
+            let s = tex.size_vec2();
+            let h = r.width() * s.y / s.x.max(1.0);
+            ui.painter_at(r.shrink(1.0)).image(tex.id(), Rect::from_min_size(r.min, vec2(r.width(), h)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+        }
+        let cap = Rect::from_min_max(pos2(r.left(), r.bottom() - 24.0), r.max);
+        painter.rect_filled(cap, CornerRadius { nw: 0, ne: 0, sw: style::RADIUS_LG, se: style::RADIUS_LG }, style::soft(p.surface, 0.94));
+        painter.hline(cap.x_range(), cap.top() + 0.5, Stroke::new(1.0, p.border));
+        painter.text(pos2(cap.left() + 13.0, cap.center().y), Align2::CENTER_CENTER, icons::CURSOR_CLICK, style::icon_font(12.5), p.info);
+        let mut job = egui::text::LayoutJob::simple_singleline(web.doing.clone(), egui::FontId::proportional(11.0), p.text_muted);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((cap.width() - 22.0 - 24.0).max(10.0));
+        let g = painter.layout_job(job);
+        painter.galley(pos2(cap.left() + 22.0, cap.center().y - g.size().y / 2.0), g, p.text_muted);
+        painter.text(pos2(cap.right() - 12.0, cap.center().y), Align2::CENTER_CENTER, icons::ARROWS_OUT_SIMPLE, style::icon_font(12.0), if resp.hovered() { p.text } else { p.text_faint });
+        let ring = if resp.hovered() { p.info } else { style::over(p.border, p.info, 0.6) };
+        painter.rect_stroke(r, CornerRadius::same(style::RADIUS_LG), Stroke::new(if resp.hovered() { 1.5 } else { 1.0 }, ring), egui::StrokeKind::Outside);
+        let tip = format!("{} · {}\n{}", web.address, web.who, t("Click: show the browser in this tile · ⌥-click: in Focus"));
+        if resp.on_hover_text(tip).clicked() {
+            let alt = ui.input(|i| i.modifiers.alt);
+            self.show_tile_web(project, web, alt);
+        }
+    }
+
+    /// A browser pane in a tile: live when the whole of it is in view, else its picture.
+    fn tile_browser(&mut self, ui: &mut Ui, id: PaneId, rect: Rect) {
+        let p = style::pal(ui);
+        let Some(b) = self.browsers.get(&id) else { return };
+        let driven = b.driven();
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.canvas);
+        let mut page = rect;
+        if driven {
+            ui.painter().rect_stroke(rect, CornerRadius::ZERO, Stroke::new(2.0, style::soft(p.info, 0.65)), egui::StrokeKind::Inside);
+            page = rect.shrink(2.0);
+        }
+        let whole = ui.clip_rect().contains_rect(page) && page.width() >= 40.0 && page.height() >= 40.0;
+        #[cfg(debug_assertions)]
+        crate::devtest::record(format!("tile-browser:{id}"), page);
+        if whole && !b.url.is_empty() {
+            self.browser_pages.insert(id, page);
+            return;
+        }
+        if let Some((tex, _)) = &b.still {
+            let s = tex.size_vec2();
+            let h = page.width() * s.y / s.x.max(1.0);
+            ui.painter().with_clip_rect(page.intersect(ui.clip_rect())).image(tex.id(), Rect::from_min_size(page.min, vec2(page.width(), h)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+            return;
+        }
+        let (host, _) = crate::browser::split_url(&b.url);
+        let c = page.center();
+        ui.painter().text(c - vec2(0.0, 16.0), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(22.0), p.text_faint);
+        ui.painter().text(c + vec2(0.0, 8.0), Align2::CENTER_CENTER, b.label(), egui::FontId::proportional(12.5), p.text_muted);
+        ui.painter().text(c + vec2(0.0, 26.0), Align2::CENTER_CENTER, host, egui::FontId::proportional(style::SMALL), p.text_faint);
+        #[cfg(target_os = "macos")]
+        {
+            let ctx = ui.ctx().clone();
+            if let Some(b) = self.browsers.get_mut(&id) {
+                b.ask_picture(&ctx, Some(f64::from(page.width())));
+            }
+        }
     }
 
     /// One pane inside a tile, sized to it (`tile`), typing goes to it once clicked; drawn
@@ -825,15 +960,10 @@ impl App {
         input_enabled: bool,
         wheel: bool,
     ) {
-        // A browser pane: what page it holds (its web view is shown in Focus).
-        if let Some(b) = self.browsers.get(&pane_id) {
-            let p = style::pal(ui);
-            ui.painter().rect_filled(rect, CornerRadius::ZERO, p.canvas);
-            let (host, _) = crate::browser::split_url(&b.url);
-            let c = rect.center();
-            ui.painter().text(c - vec2(0.0, 16.0), Align2::CENTER_CENTER, super::icons::GLOBE, style::icon_font(22.0), p.text_faint);
-            ui.painter().text(c + vec2(0.0, 8.0), Align2::CENTER_CENTER, b.label(), egui::FontId::proportional(12.5), p.text_muted);
-            ui.painter().text(c + vec2(0.0, 26.0), Align2::CENTER_CENTER, host, egui::FontId::proportional(style::SMALL), p.text_faint);
+        // A browser pane: its page, live when the whole pane is in view (a web view can't be
+        // cut to the Grid's scrolling), else its picture, else what page it holds.
+        if self.browsers.contains_key(&pane_id) {
+            self.tile_browser(ui, pane_id, rect);
             return;
         }
         if self.panes.get(&pane_id).is_some_and(|x| x.dormant()) {
@@ -901,6 +1031,8 @@ struct StripTab {
     status: Option<Status>,
     waits: bool,
     resume: Option<String>,
+    /// A browser tab: whether its page is asleep.
+    web: Option<bool>,
 }
 
 /// How a tile's strip of tabs is drawn, from the room there is: each tab with its icon and
@@ -961,7 +1093,14 @@ impl App {
         let icon_of = |t: &StripTab, on: bool| match (t.status, &t.resume) {
             (Some(s), _) => (status::icon(s), status::color(s, &p)),
             (None, Some(_)) => (icons::CLOCK_COUNTER_CLOCKWISE, p.accent_text),
-            (None, None) => (icons::TERMINAL, if on { p.accent_text } else { p.text_faint }),
+            (None, None) => (
+                match t.web {
+                    Some(true) => icons::MOON,
+                    Some(false) => icons::GLOBE,
+                    None => icons::TERMINAL,
+                },
+                if on { p.accent_text } else { p.text_faint },
+            ),
         };
         if mode == StripMode::Menu {
             // One chip: the number of tabs (warning when one not shown waits), a menu of them.
@@ -1070,6 +1209,16 @@ fn chip_dot(painter: &egui::Painter, rect: Rect, color: egui::Color32, ring: egu
     let c = pos2(rect.right() - 1.0, rect.top() + 1.0);
     painter.circle_filled(c, 4.5, ring);
     painter.circle_filled(c, 3.0, color);
+}
+
+/// An agent's page a tile shows in its corner (`App::tile_web`).
+struct TileWeb {
+    id: PaneId,
+    /// Its tab in the project.
+    tab: usize,
+    doing: String,
+    who: String,
+    address: String,
 }
 
 #[cfg(test)]

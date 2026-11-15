@@ -211,7 +211,7 @@ impl Project {
             worktree_setup: saved.worktree_setup.clone(),
             folded: saved.folded,
             new_worktree: saved.new_worktree,
-            sites: saved.sites.clone(),
+            sites: saved.browser_sites.clone(),
             missing: false,
             merge_offered: false,
         }
@@ -273,7 +273,7 @@ impl Project {
             worktree_setup: self.worktree_setup.clone(),
             folded: self.folded,
             new_worktree: self.new_worktree,
-            sites: self.sites.clone(),
+            browser_sites: self.sites.clone(),
         }
     }
 }

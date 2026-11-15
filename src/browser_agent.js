@@ -4,9 +4,37 @@
 // page: at document start, and again by any call that finds it missing). Every function
 // returns a plain object: `{error}` when it could not do its job.
 if (!window.__tc) window.__tc = (() => {
-  // ----- the console, from the start of the page
+  // ----- the console, from the start of the page: kept here for the agents' tool, and sent to
+  // TernaryCode (its console drawer), in batches at most four times a second
   const log = [];
-  const say = (line) => { log.push(line.slice(0, 2000)); if (log.length > 300) log.shift(); };
+  let outbox = [];
+  let sending = 0;
+  // Where a message was written: the file and line of the caller (best effort).
+  const source = () => {
+    const lines = String(new Error().stack || '').split('\n');
+    for (const l of lines.slice(3)) {
+      const m = l.match(/([^/@\s()]+?)(?:\?[^:]*)?:(\d+):\d+\)?$/);
+      if (m) return `${m[1]}:${m[2]}`;
+    }
+    return '';
+  };
+  const send = (level, text, src) => {
+    outbox.push([level, text.slice(0, 2000), src || '']);
+    if (outbox.length > 200) outbox.shift();
+    if (!sending) {
+      sending = setTimeout(() => {
+        sending = 0;
+        const batch = outbox;
+        outbox = [];
+        try { window.ipc.postMessage('console:' + JSON.stringify(batch)); } catch (e) { /* no app */ }
+      }, 250);
+    }
+  };
+  const say = (line, level, src) => {
+    log.push(line.slice(0, 2000));
+    if (log.length > 300) log.shift();
+    if (level) send(level, line.replace(/^\[\w+\] /, ''), src);
+  };
   const show = (a) => {
     if (typeof a === 'string') return a;
     if (a instanceof Error) return a.stack || String(a);
@@ -15,12 +43,15 @@ if (!window.__tc) window.__tc = (() => {
   for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
     const original = console[level];
     console[level] = function (...args) {
-      say(`[${level}] ${args.map(show).join(' ')}`);
+      say(`[${level}] ${args.map(show).join(' ')}`, level, source());
       return original.apply(this, args);
     };
   }
-  addEventListener('error', (e) => say(`[error] ${e.message} (${e.filename || 'page'}:${e.lineno || 0})`));
-  addEventListener('unhandledrejection', (e) => say(`[error] Unhandled rejection: ${show(e.reason)}`));
+  addEventListener('error', (e) => {
+    const file = String(e.filename || '').split('/').pop().split('?')[0];
+    say(`[error] ${e.message} (${e.filename || 'page'}:${e.lineno || 0})`, 'error', file ? `${file}:${e.lineno || 0}` : '');
+  });
+  addEventListener('unhandledrejection', (e) => say(`[error] Unhandled rejection: ${show(e.reason)}`, 'error', ''));
 
   // ----- refs: the elements of the last outline an agent can act on
   const refs = new Map();
@@ -147,7 +178,7 @@ if (!window.__tc) window.__tc = (() => {
       if (node.nodeType === Node.TEXT_NODE) { addText(node.textContent, depth); return; }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
       const el = node;
-      if (SKIP.has(el.tagName) || !shown(el)) return;
+      if (SKIP.has(el.tagName) || el.id === '__tc_ring' || el.id === '__tc_cursor' || !shown(el)) return;
       if (el.tagName === 'svg' || el.tagName === 'SVG') {
         const label = squash(el.getAttribute('aria-label') || (el.querySelector('title') || {}).textContent);
         if (label) { flush(); emit(depth, `img ${JSON.stringify(clip(label))}`); }
@@ -209,7 +240,42 @@ if (!window.__tc) window.__tc = (() => {
     return text || '- (the page shows nothing)';
   }
 
-  // ----- what the user sees the agent do: a ring around the element, with what it does
+  // ----- what the user sees the agent do: its cursor going to the element, and a ring around
+  // the element with what it does (both made of plain elements: no markup from strings, which
+  // a page's Trusted Types would refuse)
+  let cursorTimer = 0;
+  const cursor = (x, y) => {
+    try {
+      let c = document.getElementById('__tc_cursor');
+      if (!c) {
+        c = document.createElement('div');
+        c.id = '__tc_cursor';
+        c.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;width:22px;height:22px;transition:left .22s ease,top .22s ease,opacity .3s;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.45))';
+        const ns = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(ns, 'svg');
+        svg.setAttribute('width', '22');
+        svg.setAttribute('height', '22');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        const path = document.createElementNS(ns, 'path');
+        path.setAttribute('d', 'M4 2 L4 20 L9 15.2 L12.4 22 L15.6 20.5 L12.3 13.9 L19 13.9 Z');
+        path.setAttribute('fill', '#3b82f6');
+        path.setAttribute('stroke', '#fff');
+        path.setAttribute('stroke-width', '1.6');
+        path.setAttribute('stroke-linejoin', 'round');
+        svg.appendChild(path);
+        c.appendChild(svg);
+        c.style.left = innerWidth / 2 + 'px';
+        c.style.top = innerHeight / 2 + 'px';
+        document.documentElement.appendChild(c);
+        c.getBoundingClientRect();
+      }
+      c.style.opacity = '1';
+      c.style.left = x - 3 + 'px';
+      c.style.top = y - 2 + 'px';
+      clearTimeout(cursorTimer);
+      cursorTimer = setTimeout(() => { c.style.opacity = '0'; }, 2500);
+    } catch (e) { /* only a courtesy */ }
+  };
   let ringTimer = 0;
   const ring = (el, label) => {
     try {
@@ -233,7 +299,12 @@ if (!window.__tc) window.__tc = (() => {
 
   // ----- acting
   const pause = (ms) => new Promise((r) => setTimeout(r, ms));
-  const LOCAL = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$|\.local$|\.localhost$/;
+  // `allowed`: the sites the agent may open (`example.com` or `*.example.com`: that host and
+  // its subdomains).
+  const listed = (host, allowed) => allowed.some((s) => {
+    const h = String(s).trim().replace(/^\*\./, '').toLowerCase();
+    return h && (host === h || host.endsWith('.' + h));
+  });
   // Where a click on `el` takes the page, when that is a site the agent may not open.
   const leaves = (el, allowed) => {
     const a = el.closest && el.closest('a[href]');
@@ -245,8 +316,7 @@ if (!window.__tc) window.__tc = (() => {
     let u;
     try { u = new URL(url, location.href); } catch (e) { return null; }
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-    if (u.host === location.host || LOCAL.test(u.hostname)) return null;
-    if (allowed.some((h) => u.hostname === h || u.hostname.endsWith('.' + h))) return null;
+    if (u.host === location.host || listed(u.hostname, allowed)) return null;
     return u.href;
   };
   const mouse = (target, type, x, y) => {
@@ -263,7 +333,10 @@ if (!window.__tc) window.__tc = (() => {
     const r = el.getBoundingClientRect();
     const x = r.left + r.width / 2;
     const y = r.top + r.height / 2;
+    cursor(x, y);
     ring(el, 'click');
+    // The cursor gets there before the click, so the user can follow it.
+    await pause(240);
     const top = document.elementFromPoint(x, y);
     const target = top && (top === el || el.contains(top)) ? top : el;
     mouse(target, 'pointerover', x, y); mouse(target, 'mouseover', x, y);
@@ -284,7 +357,10 @@ if (!window.__tc) window.__tc = (() => {
     const el = byRef(args.ref);
     if (!el) return gone(args.ref);
     el.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const fr = el.getBoundingClientRect();
+    cursor(fr.left + Math.min(24, fr.width / 2), fr.top + fr.height / 2);
     ring(el, 'type');
+    await pause(200);
     el.focus();
     const text = String(args.text ?? '');
     if (el.isContentEditable) {
@@ -381,6 +457,37 @@ if (!window.__tc) window.__tc = (() => {
     }
   }
 
+  // The box that scrolls `el` (the nearest ancestor that can), else the page.
+  const scroller = (el) => {
+    for (let e = el; e && e !== document.body && e !== document.documentElement; e = e.parentElement) {
+      const s = getComputedStyle(e);
+      if (/(auto|scroll)/.test(s.overflowY + s.overflowX) && (e.scrollHeight > e.clientHeight || e.scrollWidth > e.clientWidth)) return e;
+    }
+    return null;
+  };
+  async function scroll(args) {
+    const el = args.ref ? byRef(args.ref) : null;
+    if (args.ref && !el) return gone(args.ref);
+    if (el && !args.direction) {
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      ring(el, 'scroll');
+      await pause(250);
+      return { ok: true };
+    }
+    const box = el ? scroller(el) : null;
+    const n = Number(args.pages) > 0 ? Number(args.pages) : 1;
+    const h = (box ? box.clientHeight : innerHeight) * 0.85 * n;
+    const w = (box ? box.clientWidth : innerWidth) * 0.85 * n;
+    const d = String(args.direction || 'down');
+    const by = { left: d === 'left' ? -w : d === 'right' ? w : 0, top: d === 'up' ? -h : d === 'down' ? h : 0, behavior: 'instant' };
+    if (box) box.scrollBy(by); else window.scrollBy(by);
+    await pause(300);
+    const root = document.scrollingElement || document.documentElement;
+    const at = box ? box.scrollTop : scrollY;
+    const end = box ? box.scrollHeight - box.clientHeight : root.scrollHeight - innerHeight;
+    return { ok: true, note: ` Now at ${Math.round(at)} of ${Math.max(0, Math.round(end))} px.` };
+  }
+
   async function run(name, args) {
     try {
       switch (name) {
@@ -390,6 +497,7 @@ if (!window.__tc) window.__tc = (() => {
         case 'select': return await select(args);
         case 'press': return await press(args);
         case 'wait': return await wait(args);
+        case 'scroll': return await scroll(args);
         case 'console': return { text: log.length ? log.join('\n') : 'No console messages.' };
         default: return { error: `Unknown action ${name}.` };
       }

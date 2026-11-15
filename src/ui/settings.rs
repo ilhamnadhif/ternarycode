@@ -4,6 +4,7 @@
 //! change.
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use tc_agent::integrate::InstallRecord;
 use tc_core::agent::{AgentKind, Preset};
 use tc_core::model::{CursorShape, Integration, Language, ThemeMode};
 
@@ -40,7 +41,7 @@ fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str
         (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically", "Group active projects at the top"]),
         (SettingsPage::Appearance, icons::PAINT_BRUSH, "Appearance", &["Theme", "Language", "With the dark theme", "With the light theme", "Font", "Size", "Cursor", "Blinking cursor"]),
         (SettingsPage::Terminal, icons::TERMINAL, "Terminal", &["Scrollback per pane", "Scrollback memory for all panes", "Option key as Meta", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]),
-        (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "Put browsers to sleep after", "Logins & cookies", "Sites agents may open"]),
+        (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "When an agent opens the browser", "Put browsers to sleep after", "Logins & cookies", "Agents can use the browser", "Sites agents may open without asking", "Agents may run JavaScript in pages"]),
         (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks"]),
         (SettingsPage::Editor, icons::CODE, "Editor", &["Language features", "Start servers only when needed", "Completion while typing", "Format on save"]),
         (SettingsPage::Notifications, icons::BELL, "Notifications", &["An agent needs input", "A process failed", "An agent finished its turn", "A long command finished", "Badge on the Dock icon"]),
@@ -149,6 +150,21 @@ impl Card<'_> {
             }
         });
     }
+}
+
+/// A site in the list agents may open without asking, with × to take it out. Returns whether ×
+/// was clicked.
+fn site_chip(ui: &mut Ui, site: &str) -> bool {
+    let p = style::pal(ui);
+    let g = ui.painter().layout_no_wrap(site.to_string(), egui::FontId::monospace(11.5), p.text);
+    let (rect, _) = ui.allocate_exact_size(vec2(g.size().x + 10.0 + 18.0, 24.0), Sense::hover());
+    ui.painter().rect(rect, CornerRadius::same(style::RADIUS), p.subtle, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    ui.painter().galley(pos2(rect.left() + 8.0, rect.center().y - g.size().y / 2.0), g, p.text);
+    let x = Rect::from_center_size(pos2(rect.right() - 11.0, rect.center().y), vec2(16.0, 16.0));
+    let r = ui.interact(x, ui.id().with(("site-x", site)), Sense::click()).on_hover_text(t("Remove"));
+    let c = if r.hovered() { p.text } else { p.text_faint };
+    ui.painter().text(x.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(11.0), c);
+    r.clicked()
 }
 
 /// A card of rows: drawn only when one of them matches the search. Returns whether it was.
@@ -491,12 +507,24 @@ impl App {
 
     fn browser_page(&mut self, ui: &mut Ui, search: &str) {
         page_head(ui, t("Browser"), t("Web pages beside your terminals, for you and your agents."));
-        let labels = [(t("Open web pages in TernaryCode"), ""), (t("Put browsers to sleep after"), ""), (t("Logins & cookies"), "")];
+        let labels = [
+            (t("Open web pages in TernaryCode"), ""),
+            (t("When an agent opens the browser"), ""),
+            (t("Put browsers to sleep after"), ""),
+            (t("Logins & cookies"), ""),
+        ];
         card(ui, search, &labels, |c| {
-            c.row(t("Open web pages in TernaryCode"), t("Server chips, ⌘-clicked links and HTML files open beside the terminal. Hold ⌥ for your default browser."), |ui| {
+            c.row(t("Open web pages in TernaryCode"), t("Server chips, ⌘-clicked links, HTML files and programs that open a browser. Hold ⌥ for your default browser."), |ui| {
                 kit::switch(ui, &mut self.settings.browser_here);
             });
-            c.row(t("Put browsers to sleep after"), t("Out of view and unused, a page is let go and loads again when shown."), |ui| {
+            c.row(t("When an agent opens the browser"), t("Beside its pane when there is room, otherwise in a new tab. The keyboard never moves."), |ui| {
+                let options = [t("Beside its pane"), t("In a new tab")];
+                let current = options[usize::from(!self.settings.browser_agent_beside)];
+                if let Some(i) = kit::select(ui, "browser-agent-place", current, &options, 150.0) {
+                    self.settings.browser_agent_beside = i == 0;
+                }
+            });
+            c.row(t("Put browsers to sleep after"), t("Out of view and unused. Never while an agent uses one."), |ui| {
                 const STEPS: [u32; 7] = [1, 5, 10, 15, 30, 60, 120];
                 let n = self.settings.browser_sleep_minutes;
                 let at = STEPS.iter().position(|s| *s >= n).unwrap_or(STEPS.len() - 1);
@@ -506,24 +534,91 @@ impl App {
                     _ => {}
                 }
             });
-            c.row(t("Logins & cookies"), t("One profile for every project: log in once, and stay logged in through restarts and updates."), |ui| {
-                if kit::button_ex(ui, kit::Kind::Secondary, None, t("Clear"), true).clicked() {
-                    self.clear_browsing_data();
+            c.row(t("Logins & cookies"), t("One profile for every project: log in once and stay logged in, through restarts and updates."), |ui| {
+                if kit::button_ex(ui, kit::Kind::Secondary, None, t("Clear…"), true).clicked() {
+                    self.dialog = Some(crate::app::Dialog::ConfirmClearBrowsing);
                 }
             });
         });
-        // The sites each project's agents may open without asking (Always for … adds them).
+
+        // Agents: whether they get the tools, which sites they open without asking, scripts.
+        let labels = [
+            (t("Agents can use the browser"), t("Only agents in TernaryCode panes, each in its own project’s browser. Agents in other terminals don’t see the tools.")),
+            (t("Sites agents may open without asking"), t("Every project. A project’s own sites are added from the question (“Always for …”).")),
+            (t("Agents may run JavaScript in pages"), ""),
+        ];
+        if labels.iter().any(|(l, n)| hit(search, l, n)) {
+            group(ui, t("Agents"));
+        }
+        let mut tools_changed = false;
+        let mut remove_site = None;
+        let mut add_site = None;
+        let mut install = None;
+        let statuses: Vec<(AgentKind, bool, String)> = [AgentKind::Claude, AgentKind::Codex, AgentKind::Gemini].into_iter().map(|a| self.browser_tools_status(a)).collect();
+        card(ui, search, &labels, |c| {
+            c.row(labels[0].0, labels[0].1, |ui| {
+                tools_changed = kit::switch(ui, &mut self.settings.browser_agents).changed();
+            });
+            c.row_with(labels[1].0, labels[1].1, true, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    for site in &self.settings.browser_agent_sites {
+                        if site_chip(ui, site) {
+                            remove_site = Some(site.clone());
+                        }
+                    }
+                    let id = egui::Id::new("browser-add-site");
+                    let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
+                    let r = kit::field(ui, id.with("field"), &mut text, Some(icons::PLUS), t("Add Site"), 150.0, false);
+                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if enter && !text.trim().is_empty() {
+                        add_site = Some(text.trim().to_string());
+                        text.clear();
+                    }
+                    ui.data_mut(|d| d.insert_temp(id, text));
+                });
+            });
+            c.row(labels[2].0, t("browser_evaluate: anything a page’s own scripts can do, cookies included."), |ui| {
+                kit::switch(ui, &mut self.settings.browser_agent_js);
+            });
+            for (agent, ok, status) in &statuses {
+                c.row_icon(icons::PLUGS_CONNECTED, if *ok { style::pal(c.ui).ok } else { style::pal(c.ui).text_faint }, agent.label(), status, |ui| {
+                    if !ok && *agent != AgentKind::Claude && kit::button_ex(ui, kit::Kind::Secondary, None, t("Install…"), true).clicked() {
+                        install = Some(*agent);
+                    }
+                });
+            }
+        });
+        if tools_changed {
+            // The next agent run gets (or no longer gets) the tools.
+            let _ = self.hook_bin.pane_env(&crate::paths::integrations_dir(), self.settings.browser_agents);
+        }
+        if let Some(site) = remove_site {
+            self.settings.browser_agent_sites.retain(|s| *s != site);
+        }
+        if let Some(site) = add_site {
+            let site = crate::browser::host_of(&site).trim_start_matches("*.").to_string();
+            let site = if site.is_empty() { String::new() } else { site };
+            if !site.is_empty() && !self.settings.browser_agent_sites.contains(&site) {
+                self.settings.browser_agent_sites.push(site);
+            }
+        }
+        if let Some(agent) = install {
+            self.actions.push(Action::PlanInstall(agent));
+        }
+
+        // The sites one project's agents may open (added from the question in its browser).
         let sites: Vec<(tc_core::ProjectId, String, String)> =
             self.projects.iter().flat_map(|p| p.sites.iter().map(|s| (p.id, p.name.clone(), s.clone()))).collect();
-        let labels = [(t("Sites agents may open"), t("Agents open this machine's addresses (localhost, 127.0.0.1, *.local) without asking. Another site asks you first; Always for a project adds it here."))];
-        let mut remove = None;
-        if hit(search, labels[0].0, labels[0].1) {
-            group(ui, t("Sites agents may open"));
+        if sites.is_empty() {
+            return;
         }
+        let labels = [(t("Sites added for a project"), "")];
+        if hit(search, labels[0].0, "") {
+            group(ui, t("Sites added for a project"));
+        }
+        let mut remove = None;
         card(ui, search, &labels, |c| {
-            if sites.is_empty() {
-                c.row(t("Only this machine"), labels[0].1, |_| {});
-            }
             for (id, project, site) in &sites {
                 c.row(site, project, |ui| {
                     if kit::button_ex(ui, kit::Kind::Ghost, None, t("Remove"), true).clicked() {
@@ -538,6 +633,23 @@ impl App {
             p.sites.retain(|s| *s != site);
             self.mark_dirty();
         }
+    }
+
+    /// Whether `agent` gets the browser tools, and how that reads in Settings → Browser.
+    fn browser_tools_status(&self, agent: AgentKind) -> (AgentKind, bool, String) {
+        let mode = self.settings.integration(agent);
+        let installed = self.installed(agent);
+        let has_server = |rec: &Option<InstallRecord>| {
+            rec.as_ref().and_then(|r| std::fs::read_to_string(&r.path).ok()).is_some_and(|text| text.contains("ternarycode-hook") && (text.contains("mcp_servers.ternarycode") || text.contains("\"mcpServers\"")))
+        };
+        let (ok, text) = match (agent, mode) {
+            (AgentKind::Claude | AgentKind::Codex, Integration::PerLaunch) => (true, t("Added to each run it starts from a preset")),
+            (AgentKind::Claude, _) => (false, t("Only with Per launch (Settings → Agents)")),
+            (_, Integration::Installed) if has_server(&installed) => (true, t("Browser tools installed")),
+            (_, Integration::Installed) => (false, t("Installed before the browser tools: install again")),
+            _ => (false, t("Hooks not installed")),
+        };
+        (agent, ok, text.to_string())
     }
 
     fn terminal_page(&mut self, ui: &mut Ui, search: &str) {

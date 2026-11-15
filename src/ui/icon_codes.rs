@@ -99,5 +99,6 @@ pub const TRASH: &str = "\u{E4A6}";
 pub const TRAY: &str = "\u{E4AA}";
 pub const USER: &str = "\u{E4C2}";
 pub const WARNING: &str = "\u{E4E0}";
+pub const WARNING_CIRCLE: &str = "\u{E4E2}";
 pub const X: &str = "\u{E4F6}";
 pub const X_CIRCLE: &str = "\u{E4F8}";

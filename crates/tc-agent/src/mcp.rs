@@ -71,6 +71,11 @@ pub fn tools() -> Value {
             "annotations": {"readOnlyHint": true},
         },
         {
+            "name": "browser_scroll",
+            "description": "Scroll the page (or the scrollable part holding ref) up or down by screenfuls, or bring the element ref into view (no direction). Returns a snapshot.",
+            "inputSchema": {"type": "object", "properties": {"ref": r#ref, "element": element, "direction": {"type": "string", "enum": ["up", "down", "left", "right"]}, "pages": {"type": "number", "description": "How many screenfuls (default 1)."}}},
+        },
+        {
             "name": "browser_take_screenshot",
             "description": "A picture of the page as it shows in the pane (PNG). Use it to check how something looks; use the snapshot to act.",
             "inputSchema": {"type": "object", "properties": {}},
@@ -84,7 +89,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "browser_evaluate",
-            "description": "Run a JavaScript function in the page and return its result as JSON, e.g. \"() => document.title\" (it may be async).",
+            "description": "Run a JavaScript function in the page and return its result as JSON, e.g. \"() => document.title\" (it may be async). Off unless the user allows it in TernaryCode's settings.",
             "inputSchema": {"type": "object", "properties": {"function": {"type": "string"}}, "required": ["function"]},
         },
     ])
@@ -171,13 +176,18 @@ fn call_app(_p: &Pane, _name: &str, _args: &Value) -> Value {
     json!({"error": "The browser tools run on macOS only for now."})
 }
 
+/// The TernaryCode pane this process runs in (from its environment), if any.
+pub(crate) fn pane_from_env(agent: Option<String>) -> Option<Pane> {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    match (var(ENV_SOCK), var(ENV_PANE).and_then(|p| p.parse().ok()), var(ENV_TOKEN)) {
+        (Some(sock), Some(pane), Some(token)) => Some(Pane { sock, pane, token, agent }),
+        _ => None,
+    }
+}
+
 /// Entry point of `ternarycode-hook mcp [agent]`; returns the exit code.
 pub fn run(args: &[String]) -> i32 {
-    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    let env = match (var(ENV_SOCK), var(ENV_PANE).and_then(|p| p.parse().ok()), var(ENV_TOKEN)) {
-        (Some(sock), Some(pane), Some(token)) => Some(Pane { sock, pane, token, agent: args.first().cloned() }),
-        _ => None,
-    };
+    let env = pane_from_env(args.first().cloned());
     let out = Arc::new(Mutex::new(std::io::stdout()));
     let write = |out: &Mutex<std::io::Stdout>, v: &Value| {
         let mut o = out.lock();
@@ -239,7 +249,7 @@ mod tests {
         let list = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"});
         assert_eq!(answer(&list, &None, &none).unwrap()["result"]["tools"], json!([]));
         let n = answer(&list, &pane(), &none).unwrap()["result"]["tools"].as_array().map(Vec::len).unwrap_or(0);
-        assert_eq!(n, if cfg!(target_os = "macos") { 11 } else { 0 });
+        assert_eq!(n, if cfg!(target_os = "macos") { 12 } else { 0 });
     }
 
     #[test]

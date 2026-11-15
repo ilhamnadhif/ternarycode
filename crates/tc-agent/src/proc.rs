@@ -163,12 +163,18 @@ pub fn ppid(_pid: i32) -> Option<i32> {
 /// Resident memory of this process in bytes (for the status bar).
 #[cfg(target_os = "macos")]
 pub fn own_resident_bytes() -> Option<u64> {
+    resident_bytes(std::process::id() as i32)
+}
+
+/// Resident memory of process `pid` (one of this user's) in bytes.
+#[cfg(target_os = "macos")]
+pub fn resident_bytes(pid: i32) -> Option<u64> {
     // SAFETY: proc_taskinfo is plain old data; proc_pidinfo fills it.
     let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
     let r = unsafe {
         libc::proc_pidinfo(
-            std::process::id() as i32,
+            pid,
             libc::PROC_PIDTASKINFO,
             0,
             (&mut info as *mut libc::proc_taskinfo).cast(),

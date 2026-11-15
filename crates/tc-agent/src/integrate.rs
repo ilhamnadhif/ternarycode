@@ -24,6 +24,16 @@ pub const ENV_CLAUDE_SETTINGS: &str = "TC_CLAUDE_SETTINGS";
 pub const ENV_CLAUDE_MCP: &str = "TC_CLAUDE_MCP";
 pub const ENV_CODEX_HOOKS: &str = "TC_CODEX_HOOKS";
 pub const ENV_CODEX_NOTIFY: &str = "TC_CODEX_NOTIFY";
+/// `-c mcp_servers.ternarycode={…}` for `codex`: the browser tools for one run.
+pub const ENV_CODEX_MCP: &str = "TC_CODEX_MCP";
+
+/// The variables `ternarycode-hook mcp` needs from the pane. Codex passes only those it is told
+/// to; Gemini CLI drops any with TOKEN in its name unless the server's `env` names it.
+const MCP_ENV: [&str; 3] = [crate::ENV_SOCK, crate::ENV_PANE, crate::ENV_TOKEN];
+
+/// How long an agent waits for a browser tool: a page may load slowly, or the user be asked
+/// whether the agent may open a site.
+const MCP_TOOL_SECS: u32 = 900;
 
 pub const CLAUDE_EVENTS: &[&str] = &[
     "SessionStart",
@@ -132,16 +142,41 @@ impl Hooks {
     }
 
     /// The file passed with `claude --mcp-config`: `ternarycode-hook mcp claude`, the browser
-    /// tools of the pane the agent runs in.
-    pub fn claude_mcp(&self) -> String {
-        serde_json::to_string_pretty(&json!({
-            "mcpServers": { "ternarycode": {
+    /// tools of the pane the agent runs in (`tools` off: none).
+    pub fn claude_mcp(&self, tools: bool) -> String {
+        let servers = if tools {
+            json!({ "ternarycode": {
                 "type": "stdio",
                 "command": self.bin.to_string_lossy(),
                 "args": ["mcp", "claude"],
-            } }
-        }))
-        .unwrap_or_default()
+            } })
+        } else {
+            json!({})
+        };
+        serde_json::to_string_pretty(&json!({ "mcpServers": servers })).unwrap_or_default()
+    }
+
+    /// `mcp_servers.ternarycode={…}` for `codex -c`: the browser tools for one run (`tools`
+    /// off: there, but disabled).
+    pub fn codex_mcp_override(&self, tools: bool) -> String {
+        let env: Vec<String> = MCP_ENV.iter().map(|v| Self::toml_str(v)).collect();
+        format!(
+            "mcp_servers.ternarycode={{command={},args=[\"mcp\",\"codex\"],env_vars=[{}],tool_timeout_sec={MCP_TOOL_SECS}{}}}",
+            Self::toml_str(&self.bin.to_string_lossy()),
+            env.join(","),
+            if tools { "" } else { ",enabled=false" }
+        )
+    }
+
+    /// The browser tools' entry in Gemini CLI's `mcpServers` (installed with the hooks).
+    pub fn gemini_mcp(&self) -> Value {
+        json!({
+            "command": self.bin.to_string_lossy(),
+            "args": ["mcp", "gemini"],
+            "env": { crate::ENV_TOKEN: format!("${}", crate::ENV_TOKEN) },
+            "timeout": MCP_TOOL_SECS * 1000,
+            "trust": true,
+        })
     }
 
     fn toml_str(s: &str) -> String {
@@ -171,11 +206,12 @@ impl Hooks {
     }
 
     /// Writes the `--settings` and `--mcp-config` files and returns the variables every pane
-    /// gets.
-    pub fn pane_env(&self, integrations_dir: &Path) -> io::Result<Vec<(String, String)>> {
+    /// gets. `tools`: agents get the browser tools (Settings → Browser); written again when that
+    /// changes, the variables staying the same.
+    pub fn pane_env(&self, integrations_dir: &Path, tools: bool) -> io::Result<Vec<(String, String)>> {
         let file = integrations_dir.join("claude-settings.json");
         let mcp = integrations_dir.join("claude-mcp.json");
-        for (path, text) in [(&file, self.claude_settings()), (&mcp, self.claude_mcp())] {
+        for (path, text) in [(&file, self.claude_settings()), (&mcp, self.claude_mcp(tools))] {
             // Unchanged since the last launch (the usual case): not written again (each write
             // syncs to disk).
             if std::fs::read(path).ok().as_deref() != Some(text.as_bytes()) {
@@ -190,8 +226,32 @@ impl Hooks {
             (ENV_CLAUDE_MCP.into(), mcp.to_string_lossy().into_owned()),
             (ENV_CODEX_HOOKS.into(), self.codex_hooks_override()),
             (ENV_CODEX_NOTIFY.into(), self.codex_notify_override()),
+            (ENV_CODEX_MCP.into(), self.codex_mcp_override(tools)),
         ])
     }
+}
+
+/// The `$BROWSER` of TernaryCode's panes, written into `dir` (a folder whose path has no spaces:
+/// some programs split `$BROWSER` at them): it runs `ternarycode-hook browse`. It is a shell
+/// script and a Node.js script at once, since Vite and Create React App run a `$BROWSER` ending in
+/// `.js` with node (and take any other one for an app's name), while Python, gh and git run it.
+pub fn write_browse_script(dir: &Path, hooks: &Hooks) -> io::Result<PathBuf> {
+    let path = dir.join("browse.js");
+    let bin = hooks.bin.to_string_lossy();
+    let text = format!(
+        "#!/bin/sh\n//bin/true; exec {} browse \"$@\"\n// TernaryCode's $BROWSER: opens an address in the browser of the pane's project. The line\n// above runs for sh, the one below for node.\nrequire('child_process').spawnSync({}, ['browse', ...process.argv.slice(2)], {{ stdio: 'inherit' }});\n",
+        shell_quote(&bin),
+        serde_json::to_string(&*bin).unwrap_or_default()
+    );
+    if std::fs::read(&path).ok().as_deref() != Some(text.as_bytes()) {
+        tc_core::persist::write_private(&path, text.as_bytes())?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(path)
 }
 
 /// Whether `s` starts with the bare TOML key `key` (not `key_x`), followed by one of `next`.
@@ -227,6 +287,11 @@ pub fn codex_has_own_hooks(config_toml: &str) -> bool {
 /// Claude Code's flags for one launch: the browser tools (on macOS, where browser panes show
 /// pages) and the hooks. `--mcp-config` takes several files, so it goes first: the word after
 /// it is a flag, never a prompt typed after the command.
+/// Codex's browser tools for one launch, on macOS (where browser panes show pages).
+fn codex_mcp_flag() -> String {
+    if cfg!(target_os = "macos") { format!(" -c {}", env_ref(ENV_CODEX_MCP)) } else { String::new() }
+}
+
 fn claude_flags() -> String {
     let settings = format!("--settings {}", env_ref(ENV_CLAUDE_SETTINGS));
     if cfg!(target_os = "macos") {
@@ -250,11 +315,12 @@ pub fn launch_command(
     let flags = match agent {
         Some(AgentKind::Claude) => claude_flags(),
         Some(AgentKind::Codex) if codex_hooks => format!(
-            "-c {} -c {}",
+            "-c {} -c {}{}",
             env_ref(ENV_CODEX_HOOKS),
-            env_ref(ENV_CODEX_NOTIFY)
+            env_ref(ENV_CODEX_NOTIFY),
+            codex_mcp_flag()
         ),
-        Some(AgentKind::Codex) => format!("-c {}", env_ref(ENV_CODEX_NOTIFY)),
+        Some(AgentKind::Codex) => format!("-c {}{}", env_ref(ENV_CODEX_NOTIFY), codex_mcp_flag()),
         _ => return command.to_string(),
     };
     let program = agent.map(AgentKind::slug).unwrap_or_default();
@@ -377,16 +443,13 @@ pub fn plan_claude(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
 /// before any table) unless the user set one, and the hooks as arrays of tables at the end.
 pub fn plan_codex(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
     let before = read_existing(path)?;
-    let text = before.clone().unwrap_or_default();
-    if text.contains(MARK_BEGIN) {
-        return Ok(InstallPlan {
-            agent: AgentKind::Codex,
-            path: path.to_path_buf(),
-            after: text.clone(),
-            before,
-            before_normalized: None,
-        });
-    }
+    // Installed already: planned again from the user's own lines, so that an older install
+    // gets what is new (the same install plans no change).
+    let had = before.as_deref().is_some_and(|t| t.contains(MARK_BEGIN));
+    let text = match before.as_deref() {
+        Some(t) if had => without_marked(t),
+        other => other.unwrap_or_default().to_string(),
+    };
     if codex_has_own_hooks(&text) {
         return Err(format!(
             "{} already defines hooks; add TernaryCode's by hand or use per-launch mode",
@@ -409,6 +472,15 @@ pub fn plan_codex(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
         tail.push_str(&format!(
             "[[hooks.{e}]]\nhooks = [{{ type = \"command\", command = {} }}]\n",
             Hooks::toml_str(&hooks.command(AgentKind::Codex, e))
+        ));
+    }
+    // The browser tools, unless the user has a server of that name.
+    if !text.contains("[mcp_servers.ternarycode]") && !text.contains("mcp_servers.ternarycode") {
+        let env: Vec<String> = MCP_ENV.iter().map(|v| Hooks::toml_str(v)).collect();
+        tail.push_str(&format!(
+            "[mcp_servers.ternarycode]\ncommand = {}\nargs = [\"mcp\", \"codex\"]\nenv_vars = [{}]\ntool_timeout_sec = {MCP_TOOL_SECS}\n",
+            Hooks::toml_str(&hooks.bin.to_string_lossy()),
+            env.join(", ")
         ));
     }
     tail.push_str(MARK_END);
@@ -479,6 +551,18 @@ pub fn plan_gemini(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
                 }]
             }));
         }
+    }
+    // The browser tools (a server of that name that is not TernaryCode's stays).
+    let servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("\"mcpServers\" is not an object")?;
+    let theirs = servers
+        .get("ternarycode")
+        .is_some_and(|s| !s["command"].as_str().is_some_and(|c| is_ours(c, hooks)));
+    if !theirs {
+        servers.insert("ternarycode".into(), hooks.gemini_mcp());
     }
     let mut after = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     after.push('\n');
@@ -672,6 +756,27 @@ pub fn uninstall(record: &InstallRecord, hooks: &Hooks) -> Result<Uninstalled, S
 }
 
 /// Whether `text` (a file at `agent`'s path) has hooks TernaryCode installed.
+/// `text` without TernaryCode's marked blocks (Codex's `config.toml`).
+fn without_marked(text: &str) -> String {
+    let mut out = String::new();
+    let mut skipping = false;
+    for line in text.lines() {
+        if line == MARK_BEGIN {
+            skipping = true;
+            continue;
+        }
+        if line == MARK_END {
+            skipping = false;
+            continue;
+        }
+        if !skipping {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.trim_end_matches('\n').to_string() + "\n"
+}
+
 fn has_ours(agent: AgentKind, text: &str, hooks: &Hooks) -> bool {
     match agent {
         AgentKind::Codex => text.lines().any(|l| l == MARK_BEGIN),
@@ -713,29 +818,22 @@ fn remove_ours(record: &InstallRecord, text: &str, hooks: &Hooks) -> Result<(), 
             {
                 o.remove("hooks");
             }
+            // The browser tools' server (Gemini's), when it is TernaryCode's.
+            if let Some(servers) = root.get_mut("mcpServers").and_then(Value::as_object_mut) {
+                if servers.get("ternarycode").is_some_and(|s| s["command"].as_str().is_some_and(|c| is_ours(c, hooks))) {
+                    servers.remove("ternarycode");
+                }
+                if servers.is_empty()
+                    && let Some(o) = root.as_object_mut()
+                {
+                    o.remove("mcpServers");
+                }
+            }
             let mut s = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
             s.push('\n');
             s
         }
-        _ => {
-            let mut out = String::new();
-            let mut skipping = false;
-            for line in text.lines() {
-                if line == MARK_BEGIN {
-                    skipping = true;
-                    continue;
-                }
-                if line == MARK_END {
-                    skipping = false;
-                    continue;
-                }
-                if !skipping {
-                    out.push_str(line);
-                    out.push('\n');
-                }
-            }
-            out.trim_end_matches('\n').to_string() + "\n"
-        }
+        _ => without_marked(text),
     };
     tc_core::persist::write_private(&record.path, cleaned.as_bytes()).map_err(|e| e.to_string())
 }
@@ -791,6 +889,9 @@ mod tests {
         assert_eq!(settings, "\"$TC_CLAUDE_SETTINGS\"");
         // Claude Code: the browser tools first on macOS (`--mcp-config` takes several files).
         let claude = claude_flags();
+        let mcp = codex_mcp_flag();
+        #[cfg(target_os = "macos")]
+        assert_eq!(mcp, " -c \"$TC_CODEX_MCP\"");
         #[cfg(target_os = "macos")]
         assert_eq!(claude, format!("--mcp-config \"$TC_CLAUDE_MCP\" --settings {settings}"));
         #[cfg(not(target_os = "macos"))]
@@ -805,11 +906,11 @@ mod tests {
         );
         assert_eq!(
             launch_command("codex resume --last", Some(AgentKind::Codex), pl, true),
-            format!("codex -c {hooks} -c {notify} resume --last")
+            format!("codex -c {hooks} -c {notify}{mcp} resume --last")
         );
         assert_eq!(
             launch_command("codex", Some(AgentKind::Codex), pl, false),
-            format!("codex -c {notify}")
+            format!("codex -c {notify}{mcp}")
         );
         assert_eq!(
             launch_command("claude", Some(AgentKind::Claude), Integration::Installed, true),
@@ -832,11 +933,11 @@ mod tests {
         );
         assert_eq!(
             launch_command("codex&&say done", Some(AgentKind::Codex), pl, false),
-            format!("codex -c {notify}&&say done")
+            format!("codex -c {notify}{mcp}&&say done")
         );
         assert_eq!(
             launch_command("codex --full-auto | tee log", Some(AgentKind::Codex), pl, false),
-            format!("codex -c {notify} --full-auto | tee log")
+            format!("codex -c {notify}{mcp} --full-auto | tee log")
         );
         // Not the program first: at the end, as before.
         assert_eq!(
@@ -851,6 +952,10 @@ mod tests {
 
     #[test]
     fn codex_overrides_are_valid_toml_shapes() {
+        let on = hooks().codex_mcp_override(true);
+        assert!(on.starts_with("mcp_servers.ternarycode={command="));
+        assert!(on.ends_with(",args=[\"mcp\",\"codex\"],env_vars=[\"TERNARYCODE_SOCK\",\"TERNARYCODE_PANE\",\"TERNARYCODE_TOKEN\"],tool_timeout_sec=900}"));
+        assert!(hooks().codex_mcp_override(false).ends_with(",tool_timeout_sec=900,enabled=false}"));
         let h = hooks().codex_hooks_override();
         #[cfg(unix)]
         assert!(h.starts_with("hooks={SessionStart=[{hooks=[{type=\"command\",command=\"'/Applications/Ternary Code.app/"));
@@ -925,9 +1030,29 @@ mod tests {
         assert_eq!(v["hooks"]["Notification"][0]["matcher"], "*");
         assert_eq!(v["hooks"]["Notification"][0]["hooks"][0]["type"], "command");
         assert!(!diff(&plan).lines().any(|l| l.starts_with("- ")));
+        // The browser tools, the token named (Gemini CLI drops variables named *TOKEN*).
+        let server = &v["mcpServers"]["ternarycode"];
+        assert_eq!(server["args"], json!(["mcp", "gemini"]));
+        assert_eq!(server["env"]["TERNARYCODE_TOKEN"], "$TERNARYCODE_TOKEN");
         let record = apply(&plan, &dir.path().join("b")).unwrap();
         assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Restored));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        // Changed since: only TernaryCode's parts go (hooks and server), the user's stay.
+        let plan = plan_gemini(&hooks(), &path).unwrap();
+        let record = apply(&plan, &dir.path().join("b2")).unwrap();
+        let mut v: Value = serde_json::from_str(&plan.after).unwrap();
+        v["mcpServers"]["mine"] = json!({"command": "my-server"});
+        v["theme"] = json!("Dracula");
+        std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        assert!(uninstall(&record, &hooks()).is_ok());
+        let left: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(left["mcpServers"].get("ternarycode").is_none());
+        assert_eq!(left["mcpServers"]["mine"]["command"], "my-server");
+        assert_eq!(left["hooks"]["AfterAgent"].as_array().unwrap().len(), 1);
+        // A server of that name that is not TernaryCode's is left alone.
+        std::fs::write(&path, "{\"mcpServers\": {\"ternarycode\": {\"command\": \"elsewhere\"}}}\n").unwrap();
+        let v: Value = serde_json::from_str(&plan_gemini(&hooks(), &path).unwrap().after).unwrap();
+        assert_eq!(v["mcpServers"]["ternarycode"]["command"], "elsewhere");
         // Comments are refused rather than lost.
         std::fs::write(&path, "{ // mine\n}").unwrap();
         assert!(plan_gemini(&hooks(), &path).is_err());
@@ -958,9 +1083,22 @@ mod tests {
         let notify_at = plan.after.find("notify = [").unwrap();
         assert!(notify_at < plan.after.find("[tui]").unwrap());
         assert!(plan.after.contains("[[hooks.PermissionRequest]]"));
+        // The browser tools, with the pane's variables passed through.
+        assert!(plan.after.contains("[mcp_servers.ternarycode]\n"));
+        assert!(plan.after.contains("args = [\"mcp\", \"codex\"]\nenv_vars = [\"TERNARYCODE_SOCK\", \"TERNARYCODE_PANE\", \"TERNARYCODE_TOKEN\"]\ntool_timeout_sec = 900\n"));
         let record = apply(&plan, &dir.path().join("b")).unwrap();
+        // Installed: planned again, nothing changes.
+        assert_eq!(plan_codex(&hooks(), &path).unwrap().after, plan.after);
         assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Restored));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        // An install from before the browser tools gets them, its old block replaced.
+        let old = format!("{MARK_BEGIN}\nnotify = [\"old\"]\n{MARK_END}\nmodel = \"gpt-5\"\n\n{MARK_BEGIN}\n[[hooks.Stop]]\nhooks = []\n{MARK_END}\n");
+        std::fs::write(&path, &old).unwrap();
+        let up = plan_codex(&hooks(), &path).unwrap();
+        assert!(!up.after.contains("\"old\""));
+        assert!(up.after.contains("[mcp_servers.ternarycode]"));
+        assert_eq!(up.after.matches(MARK_BEGIN).count(), 2);
+        assert!(up.after.contains("model = \"gpt-5\""));
         // The user's own hooks or notify are respected.
         std::fs::write(&path, "[[hooks.Stop]]\nhooks = []\n").unwrap();
         assert!(plan_codex(&hooks(), &path).is_err());
@@ -969,6 +1107,35 @@ mod tests {
         assert!(!p.after.starts_with(MARK_BEGIN), "the user's notify stays");
         assert!(codex_has_own_hooks("[hooks]\nStop = []\n"));
         assert!(!codex_has_own_hooks("model = \"x\"\n"));
+    }
+
+    /// The `$BROWSER` file runs `ternarycode-hook browse <address>` as a shell script and, where
+    /// Node.js is installed, as a Node.js one (how Vite runs it).
+    #[cfg(unix)]
+    #[test]
+    fn browser_script_runs_for_sh_and_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("args.txt");
+        // A stand-in for the hook program, in a folder with a space and a quote in its name.
+        let bin_dir = dir.path().join("Ternary Code's");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let bin = bin_dir.join("ternarycode-hook");
+        std::fs::write(&bin, format!("#!/bin/sh\nprintf '%s|' \"$@\" >> '{}'\n", out.display())).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let script = write_browse_script(dir.path(), &Hooks { bin }).unwrap();
+        assert!(script.to_string_lossy().ends_with("browse.js"));
+        let ok = std::process::Command::new(&script).arg("http://localhost:5173/").status().unwrap();
+        assert!(ok.success());
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "browse|http://localhost:5173/|");
+        if std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success()) {
+            std::fs::remove_file(&out).unwrap();
+            let ok = std::process::Command::new("node").arg(&script).arg("https://a.b/?q=1 2").status().unwrap();
+            assert!(ok.success());
+            assert_eq!(std::fs::read_to_string(&out).unwrap(), "browse|https://a.b/?q=1 2|");
+        }
     }
 
     #[test]

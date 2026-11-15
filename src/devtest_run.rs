@@ -535,6 +535,10 @@ impl App {
                 };
                 match action {
                     Some(a) => self.actions.push(a),
+                    // Settings, at its Browser page.
+                    None if name == "settings-browser" => {
+                        self.dialog = Some(crate::app::Dialog::Settings(crate::ui::settings::SettingsPage::Browser));
+                    }
                     None => self.devtest.check(false, &format!("unknown action {arg}")),
                 }
             }

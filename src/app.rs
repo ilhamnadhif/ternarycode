@@ -102,6 +102,8 @@ pub enum Dialog {
     ConfirmRemove(ProjectId, Vec<Busy>),
     /// Moving a file or folder to the Trash.
     ConfirmTrash(PathBuf),
+    /// Forgetting every page's logins, cookies, cache and history (Settings → Browser).
+    ConfirmClearBrowsing,
     /// Closing a tab (index in the active project) would stop these programs.
     ConfirmCloseTab(Vec<PaneId>, Vec<Busy>),
     /// ⌘W on a pane where a program runs.
@@ -285,6 +287,8 @@ pub struct App {
     pub last_agent_place: usize,
     pub updater: crate::ui::update_ui::Updater,
     pub mem_bytes: (Option<u64>, Option<Instant>),
+    /// Memory the browser panes' pages take (WebKit's processes), read with `mem_bytes`.
+    pub browser_bytes: Option<u64>,
     pub first_frame: bool,
     /// Terminal tab being dragged (index in the active project).
     pub tab_drag: Option<usize>,
@@ -499,7 +503,7 @@ impl App {
                 ctx.request_repaint();
             }));
         }
-        let pane_env = hook_bin.pane_env(&paths::integrations_dir());
+        let pane_env = hook_bin.pane_env(&paths::integrations_dir(), settings.browser_agents);
         let per_launch = pane_env.is_ok();
         let mut base_env = pane_env.unwrap_or_default();
         // Shell integration (OSC 133): scripts in the data folder, activated through the
@@ -522,6 +526,17 @@ impl App {
         }
         if !cfg!(test) {
             let _ = std::thread::Builder::new().name("ternarycode-cli".into()).spawn(crate::cli::ensure_installed);
+        }
+        // Programs that open a browser (`vite --open`, Python, gh) open the page in the project's
+        // browser: `$BROWSER` (unless the user set one) and `open https://…` (shell integration).
+        #[cfg(target_os = "macos")]
+        if let Some(dir) = hooks.as_ref().and_then(|h| h.path().parent())
+            && let Ok(script) = integrate::write_browse_script(dir, &hook_bin)
+        {
+            base_env.push(("TERNARYCODE_HOOK".into(), hook_bin.bin.to_string_lossy().into_owned()));
+            if std::env::var_os("BROWSER").is_none() {
+                base_env.push(("BROWSER".into(), script.to_string_lossy().into_owned()));
+            }
         }
         let codex_config = paths::home_dir().join(".codex/config.toml");
         let codex_hooks = !std::fs::read_to_string(codex_config)
@@ -584,6 +599,7 @@ impl App {
             last_agent_place: 0,
             updater: Default::default(),
             mem_bytes: (None, None),
+            browser_bytes: None,
             first_frame: true,
             tab_drag: None,
             tab_drag_home: None,
@@ -1351,6 +1367,10 @@ impl App {
         self.active = Some(project);
         self.show_focus();
         self.focus_request = Some(pane);
+        // A terminal takes the keyboard from a page that had it.
+        if self.panes.contains_key(&pane) {
+            self.release_page_keyboard();
+        }
         self.mark_dirty();
     }
 

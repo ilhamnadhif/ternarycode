@@ -101,6 +101,17 @@ _tc_deferred_init() {
         precmd_functions+=(_tc_precmd_ps1)
     fi
     builtin unfunction _tc_deferred_init
+    # `open https://…` typed here opens in TernaryCode's browser (unless the user has an `open`
+    # of their own); anything else goes to macOS's `open`.
+    if [[ -n ${TERNARYCODE_HOOK-} && -x /usr/bin/open ]] && (( ! ${+functions[open]} && ! ${+aliases[open]} )); then
+        open() {
+            if [[ $# == 1 && ( $1 == http://* || $1 == https://* ) && -n ${TERNARYCODE_SOCK-} ]]; then
+                command "$TERNARYCODE_HOOK" browse "$1"
+            else
+                command open "$@"
+            fi
+        }
+    fi
     # This prompt's round of hooks is already running without them.
     _tc_precmd
     _tc_precmd_ps1

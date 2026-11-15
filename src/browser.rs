@@ -21,9 +21,34 @@ pub enum Event {
     Loading(bool),
     /// The page was clicked: it has the keyboard.
     Focused,
-    /// The page asked for a new window: opened here instead.
+    /// The page asked for a new window (a link with target=_blank, window.open).
     OpenHere(String),
+    /// Lines the page wrote to its console.
+    Console(Vec<ConsoleLine>),
 }
+
+/// A line of a page's console.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleLine {
+    /// `error`, `warn`, `info`, `log` or `debug`.
+    pub level: String,
+    pub text: String,
+    /// The file and line it came from (`CartSummary.tsx:41`), when known.
+    pub src: String,
+}
+
+impl ConsoleLine {
+    pub fn is_error(&self) -> bool {
+        self.level == "error"
+    }
+
+    pub fn is_warning(&self) -> bool {
+        self.level == "warn"
+    }
+}
+
+/// Lines a page's console keeps (the oldest go first).
+const CONSOLE_LINES: usize = 500;
 
 /// An agent using a page (its browser tools, `browser_agent`).
 #[derive(Clone, Debug)]
@@ -93,6 +118,32 @@ pub struct Browser {
     pub ask: Option<Ask>,
     /// A host the user let the agent open once: its next load is not stopped.
     pub pass: Option<String>,
+    /// The user handed the page back to its agent: its next call is told where it is.
+    pub handed_back: bool,
+    /// What the page wrote to its console since it loaded.
+    pub console: std::collections::VecDeque<ConsoleLine>,
+    /// The console drawer is open.
+    pub console_open: bool,
+    /// Pictures of the page, decoded and waiting to become a texture.
+    pub(crate) picture: Picture,
+    /// When a picture was asked for (one at a time).
+    pub(crate) picture_asked: Option<Instant>,
+    /// The page's last picture, and when it came: shown in its place while something covers
+    /// it, and small in the Grid while an agent uses it.
+    pub still: Option<(eframe::egui::TextureHandle, Instant)>,
+    /// Since when something is drawn over the page (its picture shows meanwhile).
+    pub(crate) covered_since: Option<Instant>,
+    /// Its server (on this machine) does not answer: the pane says so instead of a blank page.
+    pub down: bool,
+    /// The terminal last seen serving the page.
+    pub served_by: Option<PaneId>,
+    /// Whether the server answered, from the last check (filled by another thread).
+    probe: Arc<Mutex<Option<bool>>>,
+    probing: bool,
+    /// When to check again while it is down.
+    probe_due: Option<Instant>,
+    /// The page was loading in the last frame (a load that ends is checked).
+    was_loading: bool,
     events: Arc<Mutex<Vec<Event>>>,
     #[cfg(target_os = "macos")]
     pub(crate) view: Option<wry::WebView>,
@@ -123,6 +174,19 @@ impl Browser {
             driver: None,
             ask: None,
             pass: None,
+            handed_back: false,
+            console: Default::default(),
+            console_open: false,
+            picture: Arc::default(),
+            picture_asked: None,
+            still: None,
+            covered_since: None,
+            down: false,
+            served_by: None,
+            probe: Arc::default(),
+            probing: false,
+            probe_due: None,
+            was_loading: false,
             events: Arc::default(),
             #[cfg(target_os = "macos")]
             view: None,
@@ -130,6 +194,70 @@ impl Browser {
             placed: None,
             offscreen: false,
             dimmed: false,
+        }
+    }
+
+    /// Asks for a picture of the page (`width` points wide, else as it shows), unless one is on
+    /// its way.
+    #[cfg(target_os = "macos")]
+    pub fn ask_picture(&mut self, ctx: &eframe::egui::Context, width: Option<f64>) {
+        let Some(v) = &self.view else { return };
+        if self.picture_asked.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+            return;
+        }
+        self.picture_asked = Some(Instant::now());
+        take_picture(v, width, self.picture.clone(), ctx.clone());
+    }
+
+    /// Takes in a picture that came: it becomes the page's still.
+    pub fn pick_up_picture(&mut self, ctx: &eframe::egui::Context) {
+        let Some(rgba) = self.picture.lock().take() else { return };
+        self.picture_asked = None;
+        let image = eframe::egui::ColorImage::from_rgba_unmultiplied([rgba.width as usize, rgba.height as usize], &rgba.pixels);
+        match &mut self.still {
+            Some((tex, at)) => {
+                tex.set(image, eframe::egui::TextureOptions::LINEAR);
+                *at = Instant::now();
+            }
+            None => self.still = Some((ctx.load_texture(format!("browser-still-{}", self.id), image, eframe::egui::TextureOptions::LINEAR), Instant::now())),
+        }
+    }
+
+    /// Follows whether the page's server (on this machine) answers: checked when a load ends,
+    /// and every 2 s while it does not; once it answers again, the page loads again.
+    pub fn watch_server(&mut self, loading: bool, ctx: &eframe::egui::Context) {
+        let ended = self.was_loading && !loading;
+        self.was_loading = loading;
+        if let Some(up) = self.probe.lock().take() {
+            self.probing = false;
+            if up {
+                if self.down {
+                    self.down = false;
+                    self.reload();
+                }
+            } else {
+                self.down = true;
+                self.probe_due = Some(Instant::now() + Duration::from_secs(2));
+            }
+        }
+        let due = self.down && self.probe_due.is_some_and(|t| Instant::now() >= t);
+        if (ended || due) && !self.probing {
+            match local_server(&self.url) {
+                Some(addr) => {
+                    self.probing = true;
+                    self.probe_due = None;
+                    let (slot, ctx) = (self.probe.clone(), ctx.clone());
+                    let _ = std::thread::Builder::new().name("browser-probe".into()).spawn(move || {
+                        let up = answers(&addr);
+                        *slot.lock() = Some(up);
+                        ctx.request_repaint();
+                    });
+                }
+                None => self.down = false,
+            }
+        }
+        if self.down && !self.probing {
+            ctx.request_repaint_after(Duration::from_secs(2));
         }
     }
 
@@ -158,6 +286,17 @@ impl Browser {
             match e {
                 Event::Url(u) if !u.is_empty() && u != "about:blank" => {
                     self.url = u.clone();
+                }
+                // A new page: its console starts empty (as a browser's does).
+                Event::Loading(true) => {
+                    self.loading = true;
+                    self.console.clear();
+                }
+                Event::Console(lines) => {
+                    self.console.extend(lines.iter().cloned());
+                    while self.console.len() > CONSOLE_LINES {
+                        self.console.pop_front();
+                    }
                 }
                 Event::Title(t) => self.title = t.clone(),
                 Event::Loading(l) => self.loading = *l,
@@ -196,10 +335,18 @@ impl Browser {
         }
     }
 
+    /// Loads the page again; a view that never got its page (its server did not answer) loads
+    /// the address.
     pub fn reload(&self) {
         #[cfg(target_os = "macos")]
         if let Some(v) = &self.view {
-            let _ = v.reload();
+            // The view shows the address (not the page it was on when a load of it failed).
+            let shows_it = v.url().is_ok_and(|u| u.trim_end_matches('/') == self.url.trim_end_matches('/'));
+            if shows_it || self.url.is_empty() {
+                let _ = v.reload();
+            } else {
+                let _ = v.load_url(&self.url);
+            }
         }
     }
 
@@ -213,6 +360,8 @@ impl Browser {
         self.shown = false;
         self.offscreen = false;
         self.dimmed = false;
+        self.still = None;
+        self.covered_since = None;
         self.asleep = true;
         self.loading = false;
     }
@@ -254,8 +403,17 @@ pub fn host_of(url: &str) -> String {
     }
 }
 
-/// Whether an agent may open `url` without asking: this machine's addresses, local files and
-/// blank pages, the project's own sites (`sites`, each with its subdomains), and `pass` (a
+/// Whether `host` is on a list of sites: `example.com` (or `*.example.com`) takes that host and
+/// its subdomains.
+pub fn site_listed(host: &str, sites: &[String]) -> bool {
+    sites.iter().any(|s| {
+        let s = s.trim().trim_start_matches("*.").to_ascii_lowercase();
+        !s.is_empty() && (host == s || host.ends_with(&format!(".{s}")))
+    })
+}
+
+/// Whether an agent may open `url` without asking: local files and blank pages, the sites on
+/// the lists (every project's, from Settings, and this project's own: `sites`), and `pass` (a
 /// host the user let it open once).
 pub fn agent_may_open(url: &str, sites: &[String], pass: Option<&str>) -> bool {
     let scheme = url.split_once(':').map_or("", |(s, _)| s).to_ascii_lowercase();
@@ -263,9 +421,26 @@ pub fn agent_may_open(url: &str, sites: &[String], pass: Option<&str>) -> bool {
         return matches!(scheme.as_str(), "about" | "file" | "data" | "blob");
     }
     let host = host_of(url);
-    local_host(&host)
-        || pass == Some(host.as_str())
-        || sites.iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
+    pass == Some(host.as_str()) || site_listed(&host, sites)
+}
+
+/// A server on this machine an address is at (host, port), to check whether it answers.
+fn local_server(url: &str) -> Option<(String, u16)> {
+    let scheme = url.split_once("://")?.0.to_ascii_lowercase();
+    let (hostport, _) = split_url(url);
+    let host = host_of(url);
+    if !local_host(&host) || host.ends_with(".local") {
+        return None;
+    }
+    let port = hostport.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).unwrap_or(if scheme == "https" { 443 } else { 80 });
+    Some((host.trim_start_matches('[').trim_end_matches(']').to_string(), port))
+}
+
+/// Whether something listens at (host, port) on this machine.
+fn answers((host, port): &(String, u16)) -> bool {
+    use std::net::ToSocketAddrs;
+    let host = if host == "0.0.0.0" { "127.0.0.1" } else { host.as_str() };
+    (host, *port).to_socket_addrs().is_ok_and(|mut addrs| addrs.any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(400)).is_ok()))
 }
 
 /// Whether an address is on this machine (a dev server): http, not https, when typed bare.
@@ -365,8 +540,15 @@ pub fn build_view(
             NewWindowResponse::Deny
         })
         .with_ipc_handler(move |req| {
-            if req.body() == "focus" {
+            let body = req.body();
+            if body == "focus" {
                 s4.push(Event::Focused);
+            } else if let Some(json) = body.strip_prefix("console:") {
+                let lines: Vec<(String, String, String)> = serde_json::from_str(json).unwrap_or_default();
+                let lines: Vec<ConsoleLine> = lines.into_iter().map(|(level, text, src)| ConsoleLine { level, text, src }).collect();
+                if !lines.is_empty() {
+                    s4.push(Event::Console(lines));
+                }
             }
         })
         .build_as_child(window)
@@ -406,6 +588,12 @@ pub fn edit_command(view: &wry::WebView, command: &str) {
 /// The page as it shows now, as a PNG, handed to `done` (on the main thread, once).
 #[cfg(target_os = "macos")]
 pub fn snapshot(view: &wry::WebView, done: impl FnOnce(Option<Vec<u8>>) + 'static) {
+    snapshot_at(view, None, done);
+}
+
+/// [`snapshot`], `width` points wide (a smaller picture costs less to make).
+#[cfg(target_os = "macos")]
+pub fn snapshot_at(view: &wry::WebView, width: Option<f64>, done: impl FnOnce(Option<Vec<u8>>) + 'static) {
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
     use objc2_foundation::{NSDictionary, NSError};
     use wry::WebViewExtMacOS;
@@ -425,8 +613,34 @@ pub fn snapshot(view: &wry::WebView, done: impl FnOnce(Option<Vec<u8>>) + 'stati
         }
     });
     let wk = view.webview();
+    let config = width.zip(objc2::MainThreadMarker::new()).map(|(w, mtm)| {
+        // SAFETY: a new configuration, on the main thread.
+        unsafe {
+            let c = objc2_web_kit::WKSnapshotConfiguration::new(mtm);
+            c.setSnapshotWidth(Some(&objc2_foundation::NSNumber::new_f64(w)));
+            c
+        }
+    });
     // SAFETY: a snapshot of the whole visible page; the block lives as long as WebKit keeps it.
-    unsafe { wk.takeSnapshotWithConfiguration_completionHandler(None, &block) };
+    unsafe { wk.takeSnapshotWithConfiguration_completionHandler(config.as_deref(), &block) };
+}
+
+/// A picture of a page, decoded (off the main thread) for egui.
+pub type Picture = Arc<Mutex<Option<tc_doc::Rgba>>>;
+
+/// Takes a picture of the page into `slot` (`width` points wide, else as it shows): the
+/// snapshot on the main thread, decoding on another; the window is woken when it is there.
+#[cfg(target_os = "macos")]
+pub fn take_picture(view: &wry::WebView, width: Option<f64>, slot: Picture, ctx: eframe::egui::Context) {
+    snapshot_at(view, width, move |png| {
+        let Some(png) = png else { return };
+        let _ = std::thread::Builder::new().name("browser-picture".into()).spawn(move || {
+            if let Ok(rgba) = tc_doc::img::decode(&png, 2400) {
+                *slot.lock() = Some(rgba);
+                ctx.request_repaint();
+            }
+        });
+    });
 }
 
 /// Runs `body` (the body of an async function) in the page and hands what it returns, as a
@@ -500,6 +714,24 @@ pub fn has_keyboard(view: &wry::WebView) -> bool {
     first.downcast_ref::<NSView>().is_some_and(|v| v.isDescendantOf(&wk))
 }
 
+/// The process WebKit draws the page in (each page has its own), for the memory it takes.
+#[cfg(target_os = "macos")]
+pub fn web_pid(view: &wry::WebView) -> Option<i32> {
+    use wry::WebViewExtMacOS;
+    let wk = view.webview();
+    let sel = objc2::sel!(_webProcessIdentifier);
+    // SAFETY: a getter WKWebView has had since macOS 10.13 (not public, so asked whether it is
+    // there first), returning a pid_t.
+    unsafe {
+        let responds: bool = objc2::msg_send![&*wk, respondsToSelector: sel];
+        if !responds {
+            return None;
+        }
+        let pid: i32 = objc2::msg_send![&*wk, _webProcessIdentifier];
+        (pid > 0).then_some(pid)
+    }
+}
+
 /// Dims the page (a question is asked over it) or shows it fully again.
 #[cfg(target_os = "macos")]
 pub fn dim(view: &wry::WebView, dimmed: bool) {
@@ -550,11 +782,12 @@ mod tests {
     fn agents_open_this_machine_and_the_project_sites() {
         assert_eq!(host_of("https://User@Checkout.Stripe.com:443/c/pay"), "checkout.stripe.com");
         assert_eq!(host_of("http://[::1]:3000/"), "[::1]");
-        let sites = vec!["stripe.com".to_string()];
-        for ok in ["http://localhost:5173/cart", "http://127.0.0.1:8080", "http://app.local/", "http://[::1]:3000", "about:blank", "file:///tmp/a.html", "https://checkout.stripe.com/x", "https://stripe.com"] {
+        let mut sites = tc_core::model::agent_sites();
+        sites.push("stripe.com".to_string());
+        for ok in ["http://localhost:5173/cart", "http://127.0.0.1:8080", "http://app.local/", "about:blank", "file:///tmp/a.html", "https://checkout.stripe.com/x", "https://stripe.com"] {
             assert!(agent_may_open(ok, &sites, None), "{ok}");
         }
-        for asks in ["https://github.com/", "https://notstripe.com/", "https://stripe.com.evil.io/", "javascript:alert(1)", "ftp://x.org/"] {
+        for asks in ["https://github.com/", "https://notstripe.com/", "https://stripe.com.evil.io/", "javascript:alert(1)", "ftp://x.org/", "http://localhost.evil.io/"] {
             assert!(!agent_may_open(asks, &sites, None), "{asks}");
         }
         assert!(agent_may_open("https://github.com/x", &[], Some("github.com")));

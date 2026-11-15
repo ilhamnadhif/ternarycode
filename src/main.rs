@@ -19,6 +19,8 @@ fn main() -> eframe::Result {
         // The same as the separate `ternarycode-hook` program (which is what hooks run, since
         // it starts much faster than this one).
         Some("hook") => std::process::exit(tc_agent::client::run(&args[1..])),
+        // `ternarycode browse <address>` in a pane: the page opens in the project's browser.
+        Some("browse") => std::process::exit(tc_agent::client::browse(&args[1..])),
         _ => {}
     }
     ternarycode::app::mark_process_start();

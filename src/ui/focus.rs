@@ -190,7 +190,8 @@ impl App {
                     .map(|pane| (pane.tracker.status, status::described(&pane.tracker)));
                 let doing = self.panes.get(&tab.focused).and_then(|pane| pane.program_title.clone());
                 let progress = tab.layout.panes().iter().filter_map(|id| self.panes.get(id)).find_map(|pane| pane.progress);
-                let web = self.browsers.contains_key(&tab.focused);
+                // A browser tab: Some(whether its page is asleep).
+                let web = self.browsers.get(&tab.focused).map(|b| b.asleep && !b.url.is_empty());
                 (i, label, waiting, doing, tab.focused, progress, web)
             })
             .collect();
@@ -1393,7 +1394,7 @@ fn terminal_tab(
     dragging: bool,
     closable: bool,
     progress: Option<(u8, Option<u8>)>,
-    web: bool,
+    web: Option<bool>,
 ) -> (egui::Response, bool) {
     let p = style::pal(ui);
     let font = style::medium(12.5);
@@ -1426,7 +1427,15 @@ fn terminal_tab(
     }
     let (icon, color) = match waiting {
         Some(s) => (status::icon(s), status::color(s, &p)),
-        None => (if web { icons::GLOBE } else { icons::TERMINAL }, if on { p.accent_text } else { p.text_faint }),
+        None => (
+            match web {
+                // A page let go to save memory: it loads again when shown.
+                Some(true) => icons::MOON,
+                Some(false) => icons::GLOBE,
+                None => icons::TERMINAL,
+            },
+            if on { p.accent_text } else { p.text_faint },
+        ),
     };
     painter.text(pos2(rect.left() + 9.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), color);
     let text_color = if on { p.text } else { p.text_muted };

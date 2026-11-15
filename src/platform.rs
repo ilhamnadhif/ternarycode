@@ -14,6 +14,7 @@ const INHERITED_MARKERS: &[&str] = &[
     "TERNARYCODE_SOCK",
     "TERNARYCODE_PANE",
     "TERNARYCODE_TOKEN",
+    "TERNARYCODE_HOOK",
     // Set on the copy started apart from a terminal (`cli::launch_detached`; `main` reads it
     // first): a TernaryCode started from a pane is not that copy.
     "TERNARYCODE_DETACHED",
@@ -27,6 +28,11 @@ pub fn clean_inherited_env() {
             // SAFETY: called at the very start of main, before other threads run.
             unsafe { std::env::remove_var(name) };
         }
+    }
+    // A pane's `$BROWSER` (TernaryCode's own, next to its hook socket) is not the user's.
+    if std::env::var("BROWSER").is_ok_and(|b| b.ends_with("/browse.js") && b.contains("/ternarycode-")) {
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("BROWSER") };
     }
 }
 

@@ -446,6 +446,27 @@ impl App {
                         keep = false;
                     }
                 }
+                Dialog::ConfirmClearBrowsing => {
+                    ui.set_width(440.0);
+                    if header(
+                        ui,
+                        icons::TRASH,
+                        p.err,
+                        t("Clear logins, cookies and history?"),
+                        Some(t("Every browser pane is signed out of every site, in every project. This can't be undone.")),
+                    ) {
+                        keep = false;
+                    }
+                    ui.add_space(12.0);
+                    let (cancel, ok) = footer(ui, None, t("Clear"), Confirm::Danger, true);
+                    if cancel {
+                        keep = false;
+                    }
+                    if ok {
+                        self.clear_browsing_data();
+                        keep = false;
+                    }
+                }
                 Dialog::ConfirmClosePane(id, what) => {
                     ui.set_width(440.0);
                     if header(
