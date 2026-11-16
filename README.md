@@ -269,12 +269,23 @@ goes (the two take turns there). On Windows and Linux pages open in your default
   programs that open a browser in a pane (`$BROWSER`, `open https://…`, `vite --open`) all open
   their page in it. Hold `⌥` for your default browser.
 - **Agents check their own work in it.** Agents started from TernaryCode get its browser tools
-  (open a page, click, type, pick an option, press keys, scroll, wait, read the page, take a
-  screenshot, read the console). Ask one to check its change in the browser and the page opens
+  (open a page, click, double-click, type, pick an option, press keys, hover, drag, scroll, wait,
+  read the page, take a screenshot, read the console, answer a dialog, upload a file). Their clicks
+  and keys are real mouse and keyboard events, as yours are: they reach into frames of other sites
+  (a card form, a captcha; an agent clicks those at a point of the page), open file choosers and
+  pop-ups, and type into any editor. Ask one to check its change in the browser and the page opens
   beside it, framed in blue, with a bar saying what it does (“Clicking the Add to cart button”).
   Click or type in the page to **Take Over**; **Hand Back** lets the agent carry on.
-- **A page per agent.** Two agents in one tab each get a page of their own, marked CC, Cx… on its
-  tab. The page in front follows the terminal you click; an agent working on a page behind it
+- **It works as a browser does.** A sign-in pop-up (“Continue with Google”, “Sign in with Apple”)
+  opens in a small window over the app, tied to its page, and closes itself when you are done; its
+  title bar names the site. `alert()`, `confirm()` and `prompt()` show as a bar above their page.
+  Camera and microphone ask you for each site. Downloads go to your Downloads folder and are listed
+  on the page's toolbar. `⌘F` finds in the page, `⌘=` and `⌘−` zoom it, and its `⋯` menu has
+  **Inspect Element** (Safari's Web Inspector) and **Print…**. An agent is told of a dialog or a
+  pop-up its click opened and acts in it (never typing your passwords: it asks you), and hears
+  where a download went; it uploads only files from the project's folder or Downloads.
+- **A page per agent.** Two agents in one tab each get a page of their own, marked with the
+  agent's logo on its tab. The page in front follows the terminal you click; an agent working on a page behind it
   shows a blue dot there. A link you open never takes an agent's page.
 - **Terminals are never squeezed.** Side by side and too narrow beside the panel, they show
   stacked while it is open (**Keep Side by Side** if you prefer them squeezed); with no room even
@@ -366,6 +377,7 @@ everything, with its shortcut.
 | `⇧⌘R` | `Ctrl+Shift+R` | review changes |
 | `⇧⌘B` · `⌥⇧⌘B` | `Ctrl+Shift+Alt+B` | Browser panel · new page (Windows, Linux: the project's server in your browser) |
 | `⌘L` · `⌘R` · `⌘[` `⌘]` | | in the Browser panel: address · reload · back, forward (while a page has the keyboard) |
+| `⌘F` · `⌘=` `⌘−` | | in the Browser panel: find in the page · zoom in, out (while a page has the keyboard) |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | find in the pane, file or document · in all panes |
 | `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` · `Ctrl+Shift+1`–`9` | sidebar · project 1–9 |
 | `⌘=` · `⌘-` | `Ctrl+Shift+=` · `Ctrl+Shift+-` · `Ctrl+Shift+Backspace` | bigger · smaller · actual size text |

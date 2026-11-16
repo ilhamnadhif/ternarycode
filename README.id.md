@@ -279,13 +279,25 @@ bergantian di sana). Di Windows dan Linux, halaman untuk sementara terbuka di br
   `open https://…`, `vite --open`) semuanya membuka halamannya di sana. Tahan `⌥` untuk browser
   default Anda.
 - **Agent memeriksa hasil kerjanya sendiri di sana.** Agent yang dijalankan dari TernaryCode
-  mendapat tool browser-nya (membuka halaman, klik, mengetik, memilih opsi, menekan tombol, scroll,
-  menunggu, membaca halaman, screenshot, membaca console). Minta agent memeriksa perubahannya di
+  mendapat tool browser-nya (membuka halaman, klik, klik ganda, mengetik, memilih opsi, menekan
+  tombol, hover, drag, scroll, menunggu, membaca halaman, screenshot, membaca console, menjawab
+  dialog, upload file). Klik dan ketikannya adalah event mouse dan keyboard sungguhan, sama seperti
+  milik Anda: sampai ke dalam frame situs lain (form kartu, captcha; agent mengkliknya di titik
+  halaman), membuka pemilih file dan popup, dan bisa mengetik di editor apa pun. Minta agent memeriksa perubahannya di
   browser dan halamannya terbuka di sampingnya, berbingkai biru, dengan bar yang menyebut apa yang
   sedang ia lakukan (“Clicking the Add to cart button”). Klik atau ketik di halaman untuk
   **Take Over**; **Hand Back** membiarkan agent melanjutkan.
+- **Bekerja seperti browser biasa.** Popup login (“Continue with Google”, “Sign in with Apple”)
+  terbuka di jendela kecil di atas app, tetap terhubung ke halamannya, dan menutup sendiri setelah
+  selesai; title bar-nya menyebut situsnya. `alert()`, `confirm()`, dan `prompt()` tampil sebagai bar
+  di atas halamannya. Kamera dan mikrofon bertanya dulu untuk tiap situs. Download masuk folder
+  Downloads dan tercantum di toolbar halaman. `⌘F` mencari di halaman, `⌘=` dan `⌘−` memperbesar dan
+  memperkecil, dan menu `⋯` halaman punya **Inspect Element** (Web Inspector Safari) dan **Print…**.
+  Agent diberi tahu dialog atau popup yang dibuka kliknya dan bekerja di dalamnya (tidak pernah
+  mengetik password Anda: ia meminta Anda), mendapat lokasi file yang diunduh, dan hanya meng-upload
+  file dari folder project atau Downloads.
 - **Satu halaman per agent.** Dua agent di satu tab masing-masing mendapat halaman sendiri,
-  bertanda CC, Cx… di tab-nya. Halaman yang di depan mengikuti terminal yang Anda klik; agent yang
+  bertanda logo agent-nya di tab-nya. Halaman yang di depan mengikuti terminal yang Anda klik; agent yang
   bekerja di halaman di belakangnya memberi titik biru di sana. Link yang Anda buka tidak pernah
   mengambil halaman agent.
 - **Terminal tidak pernah diperas.** Terminal berdampingan yang jadi terlalu sempit di samping panel
@@ -380,6 +392,7 @@ semuanya, lengkap dengan shortcut-nya.
 | `⇧⌘R` | `Ctrl+Shift+R` | review perubahan |
 | `⇧⌘B` · `⌥⇧⌘B` | `Ctrl+Shift+Alt+B` | panel Browser · halaman baru (Windows, Linux: server project di browser Anda) |
 | `⌘L` · `⌘R` · `⌘[` `⌘]` | | di panel Browser: alamat · muat ulang · mundur, maju (saat halaman memegang keyboard) |
+| `⌘F` · `⌘=` `⌘−` | | di panel Browser: cari di halaman · perbesar, perkecil (saat halaman memegang keyboard) |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | cari di pane, file, atau dokumen · di semua pane |
 | `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` · `Ctrl+Shift+1`–`9` | sidebar · project 1–9 |
 | `⌘=` · `⌘-` | `Ctrl+Shift+=` · `Ctrl+Shift+-` · `Ctrl+Shift+Backspace` | perbesar · perkecil · ukuran asli teks |
