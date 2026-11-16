@@ -352,11 +352,30 @@ impl App {
         let mut x = r.left() + 6.0;
         if owner.is_some() {
             let mark = mark.unwrap_or_else(|| kind.map_or("AI", tc_core::agent::AgentKind::mark));
-            let g = painter.layout_no_wrap(mark.to_string(), style::semibold(9.5), if ended { p.text_faint } else { p.text });
-            let m = Rect::from_min_size(pos2(x, r.center().y - 8.0), vec2(g.size().x.max(12.0) + 6.0, 16.0));
-            painter.rect_filled(m, CornerRadius::same(4), p.subtle);
-            painter.galley(pos2(m.center().x - g.size().x / 2.0, m.center().y - g.size().y / 2.0), g, p.text);
-            x = m.right() + 6.0;
+            let ink = if ended { p.text_faint } else { p.text };
+            match kind.filter(|k| super::agent_logo::has(*k)) {
+                // Its agent's logo, and its number when two agents of a kind have pages here.
+                Some(k) => {
+                    let n = mark.strip_prefix(k.mark()).unwrap_or("");
+                    let g = (!n.is_empty()).then(|| painter.layout_no_wrap(n.to_string(), style::semibold(9.5), ink));
+                    let w = 11.0 + g.as_ref().map_or(0.0, |g| g.size().x + 2.0) + 5.0;
+                    let m = Rect::from_min_size(pos2(x, r.center().y - 8.0), vec2(w.max(18.0), 16.0));
+                    painter.rect_filled(m, CornerRadius::same(4), p.subtle);
+                    let left = if g.is_some() { m.left() + 2.5 } else { m.center().x - 5.5 };
+                    super::agent_logo::paint(painter, Rect::from_min_size(pos2(left, m.center().y - 5.5), vec2(11.0, 11.0)), k, p.text, ended);
+                    if let Some(g) = g {
+                        painter.galley(pos2(left + 13.0, m.center().y - g.size().y / 2.0), g, ink);
+                    }
+                    x = m.right() + 6.0;
+                }
+                None => {
+                    let g = painter.layout_no_wrap(mark.to_string(), style::semibold(9.5), ink);
+                    let m = Rect::from_min_size(pos2(x, r.center().y - 8.0), vec2(g.size().x.max(12.0) + 6.0, 16.0));
+                    painter.rect_filled(m, CornerRadius::same(4), p.subtle);
+                    painter.galley(pos2(m.center().x - g.size().x / 2.0, m.center().y - g.size().y / 2.0), g, p.text);
+                    x = m.right() + 6.0;
+                }
+            }
         } else {
             let icon = if b.asleep && !b.url.is_empty() { icons::MOON } else { icons::GLOBE };
             painter.text(pos2(x + 6.5, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), p.text_faint);

@@ -866,14 +866,10 @@ impl App {
                 painter.text(egui::pos2(rect.left() + 12.0 + 5.0, cy), egui::Align2::CENTER_CENTER, (i + 1).to_string(), egui::FontId::proportional(11.0), p.text_faint);
                 let tile = egui::Rect::from_center_size(egui::pos2(rect.left() + 12.0 + 10.0 + 12.0 + 15.0, cy), egui::vec2(30.0, 30.0));
                 painter.rect_filled(tile, CornerRadius::same(8), p.subtle);
-                let mark = match preset.agent {
-                    Some(AgentKind::Claude) => "CC".to_string(),
-                    Some(AgentKind::Codex) => "Cx".to_string(),
-                    Some(AgentKind::Gemini) => "Gm".to_string(),
-                    Some(AgentKind::OpenCode) => "OC".to_string(),
-                    _ => initials(&preset.name),
-                };
-                painter.text(tile.center(), egui::Align2::CENTER_CENTER, mark, style::semibold(11.5), p.text_muted);
+                let logo = egui::Rect::from_center_size(tile.center(), egui::vec2(17.0, 17.0));
+                if !preset.agent.is_some_and(|a| super::agent_logo::paint(painter, logo, a, p.text, false)) {
+                    painter.text(tile.center(), egui::Align2::CENTER_CENTER, initials(&preset.name), style::semibold(11.5), p.text_muted);
+                }
                 let x = tile.right() + 12.0;
                 painter.text(egui::pos2(x, cy - 8.0), egui::Align2::LEFT_CENTER, &preset.name, style::medium(13.5), p.text);
                 painter.text(egui::pos2(x, cy + 9.0), egui::Align2::LEFT_CENTER, &preset.command, egui::FontId::monospace(11.0), p.text_faint);
@@ -1100,7 +1096,7 @@ impl App {
     }
 }
 
-/// Two letters for an agent's tile ("Claude Code" → "CC", "Codex" → "Cx").
+/// Two letters for the tile of an agent with no logo ("My Agent" → "MA", "Aider" → "Ad").
 fn initials(name: &str) -> String {
     let words: Vec<&str> = name.split_whitespace().collect();
     match words.as_slice() {

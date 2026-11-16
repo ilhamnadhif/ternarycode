@@ -1,5 +1,6 @@
 //! egui user interface.
 
+pub mod agent_logo;
 pub mod caption;
 pub mod dialogs;
 pub mod docview_ui;

@@ -914,7 +914,10 @@ impl App {
                     let cy = head.center().y;
                     let tile = Rect::from_center_size(pos2(head.left() + 14.0 + 16.0, cy), vec2(32.0, 32.0));
                     ui.painter().rect_filled(tile, CornerRadius::same(8), p.subtle);
-                    ui.painter().text(tile.center(), Align2::CENTER_CENTER, agent_mark(preset), style::semibold(11.5), p.text_muted);
+                    let logo = Rect::from_center_size(tile.center(), vec2(18.0, 18.0));
+                    if !preset.agent.is_some_and(|a| super::agent_logo::paint(ui.painter(), logo, a, p.text, false)) {
+                        ui.painter().text(tile.center(), Align2::CENTER_CENTER, agent_mark(preset), style::semibold(11.5), p.text_muted);
+                    }
                     let x = tile.right() + 12.0;
                     let g = ui.painter().layout_no_wrap(preset.name.clone(), style::medium(13.5), p.text);
                     let nw = g.size().x;
@@ -1171,13 +1174,10 @@ fn hooks_note(agent: AgentKind) -> &'static str {
     }
 }
 
-/// Two letters for an agent's tile.
+/// Two letters for the tile of an agent with no logo.
 fn agent_mark(preset: &Preset) -> String {
     match preset.agent {
-        Some(AgentKind::Claude) => "CC".into(),
-        Some(AgentKind::Codex) => "Cx".into(),
-        Some(AgentKind::Gemini) => "Gm".into(),
-        Some(AgentKind::OpenCode) => "OC".into(),
+        Some(a) if a != AgentKind::Custom => a.mark().into(),
         _ => preset.name.chars().filter(|c| c.is_alphanumeric()).take(2).collect::<String>(),
     }
 }
