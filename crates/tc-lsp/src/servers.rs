@@ -383,8 +383,13 @@ mod tests {
     #[test]
     fn paths_are_joined_in_order_each_once() {
         let v = |s: &[&str]| s.iter().map(PathBuf::from).collect::<Vec<_>>();
-        let joined = join_paths_once(&[v(&["/usr/bin", "/opt/new/bin/"]), v(&["/bin", "/usr/bin/", "", "/opt/new/bin"]), v(&["/app"])]);
-        assert_eq!(joined, Some(OsString::from("/usr/bin:/opt/new/bin/:/bin:/app")));
+        let joined = |s: &[&str]| std::env::join_paths(s).ok();
+        let got = join_paths_once(&[v(&["/usr/bin", "/opt/new/bin/"]), v(&["/bin", "/usr/bin/", "", "/opt/new/bin"]), v(&["/app"])]);
+        assert_eq!(got, joined(&["/usr/bin", "/opt/new/bin/", "/bin", "/app"]));
         assert_eq!(join_paths_once(&[]), Some(OsString::new()));
+        // Windows folders are the same whatever their case.
+        if cfg!(windows) {
+            assert_eq!(join_paths_once(&[v(&[r"C:\Tools\"]), v(&[r"c:\tools"])]), joined(&[r"C:\Tools\"]));
+        }
     }
 }
