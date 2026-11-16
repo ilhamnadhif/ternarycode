@@ -329,6 +329,8 @@ pub struct App {
     pub browser_focus: Option<PaneId>,
     /// A browser pane whose page is to take the keyboard (it was focused).
     pub browser_focus_request: Option<PaneId>,
+    /// A page's dialog just came up and should take the keyboard (its OK button or field).
+    pub dialog_focus: Option<PaneId>,
     /// A browser pane whose address field is to take the keyboard (a new, empty one).
     pub browser_edit: Option<PaneId>,
     /// Agents' browser tool calls being carried out (`browser_agent`).
@@ -635,6 +637,7 @@ impl App {
             browser_pages: HashMap::new(),
             browser_focus: None,
             browser_focus_request: None,
+            dialog_focus: None,
             browser_edit: None,
             browser_jobs: Vec::new(),
             browser_done: Default::default(),

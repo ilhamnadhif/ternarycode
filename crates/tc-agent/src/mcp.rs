@@ -97,6 +97,11 @@ pub fn tools() -> Value {
             "annotations": {"readOnlyHint": true},
         },
         {
+            "name": "browser_handle_dialog",
+            "description": "Answer the page's dialog (alert, confirm or prompt), which a step's result reports: the page waits for it. accept true is OK, false is Cancel; promptText fills a prompt. Returns a snapshot.",
+            "inputSchema": {"type": "object", "properties": {"accept": {"type": "boolean"}, "promptText": {"type": "string"}}, "required": ["accept"]},
+        },
+        {
             "name": "browser_evaluate",
             "description": "Run a JavaScript function in the page and return its result as JSON, e.g. \"() => document.title\" (it may be async). Off unless the user allows it in TernaryCode's settings.",
             "inputSchema": {"type": "object", "properties": {"function": {"type": "string"}}, "required": ["function"]},
@@ -264,7 +269,7 @@ mod tests {
         let list = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"});
         assert_eq!(answer(&list, &None, &none).unwrap()["result"]["tools"], json!([]));
         let n = answer(&list, &pane(), &none).unwrap()["result"]["tools"].as_array().map(Vec::len).unwrap_or(0);
-        assert_eq!(n, if cfg!(target_os = "macos") { 12 } else { 0 });
+        assert_eq!(n, if cfg!(target_os = "macos") { 13 } else { 0 });
     }
 
     #[test]

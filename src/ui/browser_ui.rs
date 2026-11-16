@@ -11,7 +11,7 @@ use tc_core::PaneId;
 use super::{icons, kit, style};
 use crate::actions::Action;
 use crate::app::App;
-use crate::browser::{Answer, Ask, Browser, Driver, Event};
+use crate::browser::{Answer, Ask, Browser, Dialog, DialogKind, Driver, Event};
 use crate::i18n::{t, tf};
 
 /// The toolbar at the top of a browser pane (its header, also in a split).
@@ -41,6 +41,7 @@ impl App {
         let project = b.project;
         let driver = b.driver.clone();
         let ask = b.ask.clone();
+        let dialog = b.dialog.clone();
         let bar = Rect::from_min_size(rect.min, vec2(rect.width(), BAR_H));
         let mut top = bar.bottom();
         let painter = ui.painter();
@@ -84,6 +85,20 @@ impl App {
             let n = if errors + warnings > 0 { (errors + warnings).to_string() } else { String::new() };
             let g = ui.painter().layout_no_wrap(n, egui::FontId::proportional(style::SMALL), p.text);
             let w = if g.size().x > 0.0 { g.size().x + 30.0 } else { 26.0 };
+            fits(right, w).then(|| {
+                let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
+                right = r.left() - 4.0;
+                r
+            })
+        }).flatten();
+        // What the page downloaded (a click lists it): blue while one runs, red when the last
+        // failed, green when all came.
+        let (dl_count, dl_running, dl_failed) = self.browsers.get(&id).map_or((0, false, false), |b| {
+            (b.downloads.len(), b.downloads.iter().any(|d| d.done.is_none()), b.downloads.last().is_some_and(|d| d.done == Some(false)))
+        });
+        let dl_rect = (dl_count > 0).then(|| {
+            let g = ui.painter().layout_no_wrap(dl_count.to_string(), egui::FontId::proportional(style::SMALL), p.text);
+            let w = g.size().x + 30.0;
             fits(right, w).then(|| {
                 let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
                 right = r.left() - 4.0;
@@ -173,6 +188,21 @@ impl App {
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser-more:{id}"), more.rect);
         egui::Popup::menu(&more).align(egui::RectAlign::BOTTOM_END).width(230.0).show(|ui| self.browser_menu(ui, id));
+        if let Some(r) = dl_rect {
+            let resp = ui.interact(r, egui::Id::new(("browser-downloads", id)), Sense::click());
+            let c = if dl_running { p.info } else if dl_failed { p.err } else { p.ok };
+            let dark = ui.visuals().dark_mode;
+            ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), if resp.hovered() { style::tint(c, dark).gamma_multiply(1.6) } else { style::tint(c, dark) });
+            ui.painter().text(pos2(r.left() + 13.0, r.center().y), Align2::CENTER_CENTER, icons::DOWNLOAD_SIMPLE, style::icon_font(12.0), c);
+            ui.painter().text(pos2(r.left() + 23.0, r.center().y), Align2::LEFT_CENTER, dl_count.to_string(), style::medium(style::SMALL), c);
+            if dl_running {
+                ui.ctx().request_repaint_after(Duration::from_millis(250));
+            }
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("browser-downloads:{id}"), r);
+            let resp = resp.on_hover_text(t("Downloads"));
+            egui::Popup::menu(&resp).align(egui::RectAlign::BOTTOM_END).width(300.0).show(|ui| self.downloads_menu(ui, id));
+        }
         bar_resp.context_menu(|ui| self.browser_menu(ui, id));
         let mut navigated = false;
         if let Some(b) = self.browsers.get_mut(&id) {
@@ -217,6 +247,10 @@ impl App {
             let name = self.project(project).map(|x| x.name.clone()).unwrap_or_default();
             self.ask_card(ui, id, r, a, &who, &name);
             top = r.bottom();
+        }
+        // A dialog of the page (alert, confirm, prompt): the page waits for its answer.
+        if let Some(d) = &dialog {
+            top += self.dialog_bar(ui, id, pos2(rect.left(), top), rect.width(), d);
         }
         // The console's chip in the toolbar, and its drawer at the foot of the pane.
         if let Some(r) = cons_rect {
@@ -463,6 +497,136 @@ impl App {
         crate::devtest::record(format!("browser-agent:{id}"), r);
         if clicked.0 {
             self.take_over_browser(id, !d.paused);
+        }
+    }
+
+    /// A page's dialog above it: who asks, the message, a field for a prompt, OK (and Cancel).
+    /// Enter answers OK, Esc Cancel. Returns its height.
+    fn dialog_bar(&mut self, ui: &mut Ui, id: PaneId, at: egui::Pos2, width: f32, d: &Dialog) -> f32 {
+        let p = style::pal(ui);
+        let x = at.x + 40.0;
+        let text_w = (width - 52.0).max(60.0);
+        let mut job = egui::text::LayoutJob::simple(d.message.clone(), egui::FontId::proportional(12.5), p.text, text_w);
+        job.wrap.max_rows = 8;
+        let msg = ui.painter().layout_job(job);
+        let prompt = d.kind == DialogKind::Prompt;
+        let h = 10.0 + 18.0 + msg.size().y + 10.0 + if prompt { 34.0 } else { 0.0 } + 26.0 + 12.0;
+        let r = Rect::from_min_size(at, vec2(width, h));
+        let painter = ui.painter_at(r);
+        painter.rect_filled(r, CornerRadius::ZERO, style::over(p.surface, p.info, 0.07));
+        painter.hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, style::over(p.surface, p.info, 0.3)));
+        painter.text(pos2(r.left() + 22.0, r.top() + 19.0), Align2::CENTER_CENTER, icons::INFO, style::icon_font(17.0), p.info);
+        let who = if prompt { tf("{} asks:", &[&d.host]) } else { tf("{} says:", &[&d.host]) };
+        painter.text(pos2(x, r.top() + 10.0), Align2::LEFT_TOP, who, style::medium(12.5), p.text_muted);
+        painter.galley(pos2(x, r.top() + 28.0), msg.clone(), p.text);
+        let mut y = r.top() + 28.0 + msg.size().y + 10.0;
+        let mut answer = None;
+        let mut has_keys = false;
+        let fid = egui::Id::new(("browser-dialog-field", id));
+        let focus = std::mem::take(&mut self.dialog_focus) == Some(id);
+        if prompt {
+            let field = Rect::from_min_size(pos2(x, y), vec2((r.right() - 12.0 - x).min(360.0), 26.0));
+            let mut text = d.text.clone();
+            let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(field), |ui| kit::field(ui, fid, &mut text, None, "", field.width(), false)).inner;
+            if focus {
+                resp.request_focus();
+            }
+            has_keys |= resp.has_focus();
+            if resp.changed()
+                && let Some(b) = self.browsers.get_mut(&id)
+                && let Some(dd) = b.dialog.as_mut()
+            {
+                dd.text = text;
+            }
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                answer = Some(true);
+            }
+            y += 34.0;
+        }
+        let row = Rect::from_min_max(pos2(x, y), pos2(r.right() - 12.0, y + 26.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let ok = kit::button_ex(ui, kit::Kind::Primary, None, t("OK"), true);
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("browser-dialog-ok:{id}"), ok.rect);
+            if focus && !prompt {
+                ok.request_focus();
+            }
+            has_keys |= ok.has_focus();
+            if ok.clicked() {
+                answer = Some(true);
+            }
+            if d.kind != DialogKind::Alert {
+                let cancel = kit::button_ex(ui, kit::Kind::Secondary, None, t("Cancel"), true);
+                #[cfg(debug_assertions)]
+                crate::devtest::record(format!("browser-dialog-cancel:{id}"), cancel.rect);
+                has_keys |= cancel.has_focus();
+                if cancel.clicked() {
+                    answer = Some(false);
+                }
+            }
+        });
+        // Esc while the bar has the keyboard: Cancel (OK for an alert).
+        if has_keys && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            answer = Some(d.kind == DialogKind::Alert);
+        }
+        #[cfg(debug_assertions)]
+        crate::devtest::record(format!("browser-dialog:{id}"), r);
+        if let Some(accept) = answer {
+            self.answer_dialog(id, accept);
+        }
+        h
+    }
+
+    /// Answers a page's dialog (OK or Cancel; a prompt's field with OK). Returns whether one
+    /// was waiting.
+    pub fn answer_dialog(&mut self, id: PaneId, accept: bool) -> bool {
+        let Some(d) = self.browsers.get_mut(&id).and_then(|b| b.dialog.take()) else { return false };
+        #[cfg(target_os = "macos")]
+        crate::browser_dialog::answer(d.id, accept, &d.text);
+        #[cfg(not(target_os = "macos"))]
+        let _ = (d, accept);
+        true
+    }
+
+    /// The list of what a page downloaded: newest first; a click opens the file, the magnifier
+    /// shows it in the Finder.
+    fn downloads_menu(&mut self, ui: &mut Ui, id: PaneId) {
+        let p = style::pal(ui);
+        let Some(b) = self.browsers.get(&id) else { return };
+        let list: Vec<crate::browser::Download> = b.downloads.iter().rev().cloned().collect();
+        ui.label(egui::RichText::new(t("Downloads")).font(style::semibold(style::SMALL)).color(p.text_faint));
+        let mut clear = false;
+        for d in &list {
+            let name = d.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let meta = match d.done {
+                None => t("Downloading…").to_string(),
+                Some(false) => t("Download failed").to_string(),
+                Some(true) => {
+                    let size = std::fs::metadata(&d.path).map(|m| m.len()).unwrap_or(0);
+                    format!("{} · {}", super::update_ui::human_size(size), super::dialogs::ago(std::time::SystemTime::now() - d.at.elapsed()))
+                }
+            };
+            ui.horizontal(|ui| {
+                let open = ui.add(egui::Button::new(egui::RichText::new(&name).font(style::medium(12.5))).frame(false)).on_hover_text(d.path.display().to_string());
+                if open.clicked() && d.done == Some(true) {
+                    crate::platform::reveal(&d.path);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS, t("Show in Finder"), false, 22.0).clicked() {
+                        crate::platform::reveal_in_folder(&d.path);
+                    }
+                });
+            });
+            ui.label(egui::RichText::new(meta).font(egui::FontId::proportional(style::SMALL)).color(if d.done == Some(false) { p.err } else { p.text_muted }));
+            ui.add_space(4.0);
+        }
+        ui.separator();
+        if ui.button(t("Clear List")).clicked() {
+            clear = true;
+        }
+        if clear && let Some(b) = self.browsers.get_mut(&id) {
+            b.downloads.retain(|d| d.done.is_none());
         }
     }
 
@@ -773,6 +937,7 @@ impl App {
         // Loads that began in pages an agent uses: (page, address, the address before).
         let mut began = Vec::new();
         let mut new_tabs = Vec::new();
+        let mut dialogs = Vec::new();
         for b in self.browsers.values_mut() {
             let before = b.url.clone();
             for e in b.take_events() {
@@ -793,6 +958,11 @@ impl App {
                     Event::OpenHere(url) if b.driven() => b.navigate(&url),
                     Event::OpenHere(url) => new_tabs.push((b.project, url)),
                     Event::Url(_) => moved = true,
+                    Event::Dialog(d) => {
+                        b.dialog = Some(d);
+                        dialogs.push(b.id);
+                    }
+                    e @ (Event::DownloadStarted(..) | Event::DownloadDone(..)) => b.note_download(&e),
                     Event::Loading(true) if b.driven() => began.push((b.id, b.url.clone(), before.clone())),
                     _ => {}
                 }
@@ -800,6 +970,25 @@ impl App {
         }
         for (project, url) in new_tabs {
             self.browser_tab_at(project, &url);
+        }
+        // A dialog came up: the keyboard leaves its page (blocked till it is answered) for the
+        // dialog's bar, when the page had it.
+        for id in dialogs {
+            #[cfg(target_os = "macos")]
+            if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref())
+                && crate::browser::has_keyboard(v)
+            {
+                let _ = v.focus_parent();
+                self.dialog_focus = Some(id);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = id;
+        }
+        // Dialogs of pages that went away are answered (WebKit wants each answered).
+        #[cfg(target_os = "macos")]
+        {
+            let live: Vec<objc2::rc::Retained<objc2_web_kit::WKWebView>> = self.browsers.values().filter_map(|b| b.view.as_ref()).map(crate::browser::web_view_of).collect();
+            crate::browser_dialog::tidy(&live.iter().map(|w| &**w).collect::<Vec<_>>());
         }
         #[cfg(target_os = "macos")]
         for (id, url, before) in began {
@@ -989,7 +1178,7 @@ impl App {
                 let loading = b.loading;
                 b.watch_server(loading, ctx);
             }
-            let dim = b.ask.is_some();
+            let dim = b.ask.is_some() || b.dialog.is_some();
             if dim != b.dimmed
                 && let Some(v) = &b.view
             {

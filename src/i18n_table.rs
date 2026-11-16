@@ -950,4 +950,12 @@ const ID: &[(&str, &str)] = &[
     ("Run Anyway", "Tetap Jalankan"),
     // A page's pop-up window (a sign-in), off https.
     ("Not Secure", "Tidak Aman"),
+    // A page's dialogs and downloads.
+    ("Answering the page’s dialog", "Menjawab dialog halaman"),
+    ("{} asks:", "{} bertanya:"),
+    ("{} says:", "{} berkata:"),
+    ("Downloads", "Unduhan"),
+    ("Downloading…", "Mengunduh…"),
+    ("Download failed", "Unduhan gagal"),
+    ("Clear List", "Bersihkan Daftar"),
 ];

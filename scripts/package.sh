@@ -64,6 +64,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSCameraUsageDescription</key><string>A website open in TernaryCode's browser wants to use the camera (it asks first, each site).</string>
+    <key>NSMicrophoneUsageDescription</key><string>A website open in TernaryCode's browser wants to use the microphone (it asks first, each site).</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>NSHumanReadableCopyright</key><string>© 2026 ilhamnadhif. MIT License.</string>
 </dict>

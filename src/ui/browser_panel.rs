@@ -382,7 +382,7 @@ impl App {
             x += 19.0;
         }
         // The dot: it needs the user (a site to allow), or an agent works in it.
-        let dot = if b.ask.is_some() { Some(p.warn) } else if b.driven() { Some(p.info) } else { None };
+        let dot = if b.ask.is_some() || b.dialog.is_some() { Some(p.warn) } else if b.driven() { Some(p.info) } else { None };
         let show_x = hovered || front;
         let mut text_right = r.right() - 6.0;
         let x_rect = Rect::from_center_size(pos2(r.right() - 12.0, r.center().y), vec2(16.0, 16.0));

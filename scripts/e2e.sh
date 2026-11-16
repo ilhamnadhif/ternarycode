@@ -23,7 +23,7 @@ run() { # name, seconds, script
     if [ -n "$ONLY" ] && [[ "$name" != *"$ONLY"* ]]; then return; fi
     local data="$WORK/data-$name"
     mkdir -p "$data"
-    TERNARYCODE_DATA_DIR="$data" TERNARYCODE_SHOT_DIR="$WORK" TERNARYCODE_DEV_SCRIPT="$script" \
+    TERNARYCODE_DATA_DIR="$data" TERNARYCODE_SHOT_DIR="$WORK" TERNARYCODE_DEV_SCRIPT="$script" TERNARYCODE_DOWNLOAD_DIR="$WORK/downloads" \
         env ${LSP:+TERNARYCODE_LSP_OVERRIDE="$LSP"} \
         perl -e 'alarm shift; exec @ARGV' "$secs" "$BIN" > "$WORK/$name.log" 2>&1
     local p f
@@ -121,7 +121,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # terminal, where the web view sits exactly on the page's place; an address typed goes there;
 # a new page (⌥⇧⌘B) opens the project's server beside it in the panel; a page tab brings its
 # page back. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -179,6 +179,22 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\nm pnav; m pclick; sleep 3; m pcont; m pclick2; sleep 2; m pnav2; m pelse\n' "$HOOK" "$MCP" "$MCP" > "$WORK/agentpop.sh"
     mkdir -p "$WORK/data-browser-agent-popup"; printf '{"presets":[{"id":"popper","name":"Popper","command":"sh %s"}]}\n' "$WORK/agentpop.sh" > "$WORK/data-browser-agent-popup/settings.json"
     run browser-agent-popup 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run popper;; wait-screen ok-pnav;; expect-file $MCP/pnav.out Page: Agent Popup Opener;; wait-screen ok-pclick;; wait-popups 1;; expect-file $MCP/pclick.out A pop-up window opened;; expect-file $MCP/pclick.out Page: Agent Sign In (a pop-up window);; wait-screen ok-pcont;; wait-popups 0;; expect-file $MCP/pcont.out The pop-up window closed;; expect-file $MCP/pcont.out Page: Signed in: agent-ok;; wait-pages 3*;; wait-screen ok-pclick2;; wait-popups 1;; wait-screen ok-pnav2;; wait-popups 0;; expect-file $MCP/pnav2.out The pop-up window closed;; expect-file $MCP/pnav2.out Page: Agent Popup Opener;; wait-shown browser-ask:3;; wait-popups 0;; click browser-block:3;; wait-screen ok-pelse;; expect-file $MCP/pelse.out Blocked by the user: tc-popup.invalid;; wait-popups 0;; quit"
+    # A page's dialogs show as a bar above it and the page goes on with the answer (Cancel, OK, a
+    # prompt's text); a download lands in the downloads folder and is listed on the page. An
+    # agent is told of a dialog its click opened, answers it with browser_handle_dialog, and hears
+    # where a download went.
+    DL="$WORK/downloads"; mkdir -p "$DL"; printf 'hello download\n' > "$SITE/file.txt"
+    printf '<!doctype html><title>Dialogs</title><button id="rm" onclick="document.title = confirm(&quot;Remove Wool Beanie?&quot;) ? &quot;Removed&quot; : &quot;Kept&quot;">Remove</button><button id="hi" onclick="alert(&quot;Hello there&quot;); document.title = &quot;Alerted&quot;">Hello</button><button id="nm" onclick="document.title = &quot;Name: &quot; + prompt(&quot;Your name?&quot;, &quot;Dina&quot;)">Name</button><a id="dl" href="/file.txt" download>Get the file</a>\n' > "$SITE/dialogs.html"
+    run browser-dialogs 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web http://localhost:$WEBPORT/dialogs.html;; wait-browser Dialogs;; wait-pages 3*;; sleep 800;; web-click document.getElementById('rm');; wait-dialog Remove Wool Beanie;; expect-shown browser-dialog:3;; shot e2e-browser-dialog;; click browser-dialog-cancel:3;; wait-browser Kept;; expect-hidden browser-dialog:3;; web-click document.getElementById('rm');; wait-dialog Remove Wool Beanie;; click browser-dialog-ok:3;; wait-browser Removed;; web-click document.getElementById('hi');; wait-dialog Hello there;; click browser-dialog-ok:3;; wait-browser Alerted;; web-click document.getElementById('nm');; wait-dialog Your name;; click browser-dialog-ok:3;; wait-browser Name: Dina;; web-click document.getElementById('dl');; wait-download file.txt;; expect-file $DL/file.txt hello download;; expect-shown browser-downloads:3;; quit"
+    call dnav browser_navigate "{\"url\":\"localhost:$WEBPORT/dialogs.html\"}"
+    call drm browser_click '{"ref":"e1","element":"Remove button"}'
+    call dno browser_handle_dialog '{"accept":false}'
+    call dnm browser_click '{"ref":"e3","element":"Name button"}'
+    call dyes browser_handle_dialog '{"accept":true,"promptText":"Ada"}'
+    call ddl browser_click '{"ref":"e4","element":"Get the file link"}'
+    printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\nm dnav; m drm; m dno; m dnm; m dyes; m ddl\n' "$HOOK" "$MCP" "$MCP" > "$WORK/agentdlg.sh"
+    mkdir -p "$WORK/data-browser-agent-dialogs"; printf '{"presets":[{"id":"dlg","name":"Dialogs","command":"sh %s"}]}\n' "$WORK/agentdlg.sh" > "$WORK/data-browser-agent-dialogs/settings.json"
+    run browser-agent-dialogs 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run dlg;; wait-screen ok-ddl;; expect-file $MCP/drm.out A dialog is open in the page (confirm;; expect-file $MCP/drm.out Remove Wool Beanie?;; expect-file $MCP/dno.out Dismissed the dialog;; expect-file $MCP/dno.out Page: Kept;; expect-file $MCP/dnm.out A dialog is open in the page (prompt;; expect-file $MCP/dyes.out Page: Name: Ada;; expect-file $MCP/ddl.out Downloaded file.txt to $DL/file.txt;; quit"
     # More of the browser: $BROWSER (Python's webbrowser) opens the page beside the terminal; its
     # console's error and warning show as a chip, then in the drawer; under the palette the page
     # is a picture; `open https://…` and `ternarycode browse` go to the same browser; a link to a

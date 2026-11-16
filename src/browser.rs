@@ -26,7 +26,49 @@ pub enum Event {
     OpenHere(String),
     /// Lines the page wrote to its console.
     Console(Vec<ConsoleLine>),
+    /// The page opened a dialog (alert, confirm, prompt); it waits for the answer.
+    Dialog(Dialog),
+    /// A download began, to this file.
+    DownloadStarted(String, std::path::PathBuf),
+    /// The download of this address ended (or failed).
+    DownloadDone(String, bool),
 }
+
+/// The kinds of a page's JavaScript dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogKind {
+    /// A message, with OK.
+    Alert,
+    /// A question, OK or Cancel.
+    Confirm,
+    /// A question with a text to give.
+    Prompt,
+}
+
+/// A page's dialog waiting for an answer (`browser_dialog`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dialog {
+    pub id: u64,
+    pub kind: DialogKind,
+    /// The site asking.
+    pub host: String,
+    pub message: String,
+    /// What the prompt's field holds.
+    pub text: String,
+}
+
+/// A file the page downloaded (or is downloading).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Download {
+    pub url: String,
+    pub path: std::path::PathBuf,
+    /// Ended: whether it worked; `None` while it runs.
+    pub done: Option<bool>,
+    pub at: Instant,
+}
+
+/// Downloads a page keeps in its list (the oldest go first).
+const DOWNLOADS: usize = 20;
 
 /// A line of a page's console.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +169,12 @@ pub struct Browser {
     pub console: std::collections::VecDeque<ConsoleLine>,
     /// The console drawer is open.
     pub console_open: bool,
+    /// A dialog of the page waiting for an answer.
+    pub dialog: Option<Dialog>,
+    /// What the page downloaded, the newest last.
+    pub downloads: Vec<Download>,
+    /// The list of downloads is open.
+    pub downloads_open: bool,
     /// Pictures of the page, decoded and waiting to become a texture.
     pub(crate) picture: Picture,
     /// When a picture was asked for (one at a time).
@@ -185,6 +233,9 @@ impl Browser {
             handed_back: false,
             console: Default::default(),
             console_open: false,
+            dialog: None,
+            downloads: Vec::new(),
+            downloads_open: false,
             picture: Arc::default(),
             picture_asked: None,
             still: None,
@@ -360,6 +411,24 @@ impl Browser {
         }
     }
 
+    /// Notes a download that began, or ended.
+    pub fn note_download(&mut self, e: &Event) {
+        match e {
+            Event::DownloadStarted(url, path) => {
+                self.downloads.push(Download { url: url.clone(), path: path.clone(), done: None, at: Instant::now() });
+                if self.downloads.len() > DOWNLOADS {
+                    self.downloads.remove(0);
+                }
+            }
+            Event::DownloadDone(url, ok) => {
+                if let Some(d) = self.downloads.iter_mut().rev().find(|d| &d.url == url && d.done.is_none()) {
+                    d.done = Some(*ok);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Lets the page go (memory); it loads again when shown.
     pub fn sleep(&mut self) {
         #[cfg(target_os = "macos")]
@@ -375,6 +444,8 @@ impl Browser {
         self.asleep = true;
         self.loading = false;
         self.zoom = 1.0;
+        // Its dialog went with the page (answered Cancel, `browser_dialog::tidy`).
+        self.dialog = None;
     }
 
     /// The page has a web view (it is not asleep).
@@ -533,11 +604,11 @@ pub fn build_view(
     bounds: wry::Rect,
     sink: Sink,
 ) -> Option<wry::WebView> {
-    use wry::{NewWindowResponse, PageLoadEvent, WebViewBuilder};
-    let (s1, s2, s3, s4) = (sink.clone(), sink.clone(), sink.clone(), sink);
+    use wry::{NewWindowResponse, PageLoadEvent, PermissionResponse, WebViewBuilder};
+    let (s1, s2, s3, s4, s5, s6) = (sink.clone(), sink.clone(), sink.clone(), sink.clone(), sink.clone(), sink.clone());
     let url = if url.is_empty() { "about:blank" } else { url };
     watch_clicks();
-    WebViewBuilder::new()
+    let view = WebViewBuilder::new()
         .with_url(url)
         .with_bounds(bounds)
         .with_user_agent(USER_AGENT)
@@ -578,8 +649,25 @@ pub fn build_view(
                 }
             }
         })
+        // Camera and microphone: WebKit asks the user, per site (never granted unasked).
+        .with_permission_handler(|_| PermissionResponse::Default)
+        // Downloads go to the Downloads folder (a name taken gets a number); the page lists them.
+        .with_download_started_handler(move |url, path| {
+            // Tests keep the user's Downloads folder out of it.
+            #[cfg(debug_assertions)]
+            if let (Some(dir), Some(name)) = (std::env::var_os("TERNARYCODE_DOWNLOAD_DIR"), path.file_name().map(|n| n.to_owned())) {
+                *path = std::path::PathBuf::from(dir).join(name);
+            }
+            s5.push(Event::DownloadStarted(url, path.clone()));
+            true
+        })
+        .with_download_completed_handler(move |url, _, ok| s6.push(Event::DownloadDone(url, ok)))
         .build_as_child(window)
-        .ok()
+        .ok()?;
+    let wk = web_view_of(&view);
+    crate::browser_dialog::install(&wk);
+    crate::browser_dialog::register(&wk, sink);
+    Some(view)
 }
 
 /// A rectangle in egui points as the web view's bounds.

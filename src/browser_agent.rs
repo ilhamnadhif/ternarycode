@@ -55,6 +55,8 @@ enum Op {
     Read,
     /// A picture of the page, for the answer.
     Shot,
+    /// Answer the page's dialog: OK (with a prompt's text) or Cancel.
+    Dialog(bool, Option<String>),
 }
 
 /// What a job waits for.
@@ -87,6 +89,8 @@ pub struct Job {
     /// The web view a click (or key) of the job acts in now: a pop-up it opens to a site the
     /// agent may not open is asked about.
     acted: Option<usize>,
+    /// When it came: the downloads begun since are reported.
+    since: Instant,
 }
 
 /// The helper's function `name` with `args`, as the body of an async function.
@@ -200,6 +204,7 @@ impl App {
             "browser_take_screenshot" => (t("Taking a screenshot").into(), vec![Op::Shot]),
             "browser_console_messages" => (t("Reading the console").into(), vec![Op::Act("console", json!({}), String::new())]),
             "browser_evaluate" => (t("Running a script in the page").into(), vec![Op::Eval(s("function"))]),
+            "browser_handle_dialog" => (t("Answering the page’s dialog").into(), vec![Op::Dialog(a["accept"].as_bool().unwrap_or(true), a["promptText"].as_str().map(str::to_string)), Op::Settle, Op::Read]),
             other => return fail(reply, &format!("Unknown tool {other}.")),
         };
         let Some(id) = self.agent_browser(agent_pane, project, call.call == "browser_navigate") else {
@@ -228,6 +233,7 @@ impl App {
             seqs: Vec::new(),
             on_popup: None,
             acted: None,
+            since: Instant::now(),
         });
         self.mark_dirty();
     }
@@ -289,6 +295,17 @@ impl App {
                 b.ask = None;
             }
             self.asked(job.agent_pane);
+        }
+        // What the page downloaded meanwhile (the agent may need the file).
+        if let Some(b) = self.browsers.get(&job.browser) {
+            for d in b.downloads.iter().filter(|d| d.at >= job.since) {
+                let name = d.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                job.text.push_str(&match d.done {
+                    Some(true) => format!("\nDownloaded {name} to {}.", d.path.display()),
+                    Some(false) => format!("\nThe download of {name} failed."),
+                    None => format!("\nDownloading {name} to {} (not finished yet).", d.path.display()),
+                });
+            }
         }
         let answer = match error {
             Some(e) => json!({ "error": e }),
@@ -412,6 +429,25 @@ impl App {
             };
             if let Some(d) = b.driver.as_ref().filter(|d| d.paused) {
                 return Some(Some(format!("The user took the browser over from {} in TernaryCode. Wait until they hand it back, or ask them.", d.who)));
+            }
+            // A dialog of the page: its scripts wait for the answer, so no step that runs one can
+            // go on; the agent is told (unless this step answers it).
+            if let Some(d) = &b.dialog {
+                let job = &self.browser_jobs[i];
+                let answering = matches!(job.ops.front(), Some(Op::Dialog(..))) && job.waiting.is_none();
+                if !answering && !matches!(job.waiting, Some(Waiting::User { .. })) {
+                    let kind = match d.kind {
+                        crate::browser::DialogKind::Alert => "alert",
+                        crate::browser::DialogKind::Confirm => "confirm",
+                        crate::browser::DialogKind::Prompt => "prompt",
+                    };
+                    let note = format!(
+                        "A dialog is open in the page ({kind} from {}): “{}”. The page waits for it: answer it with browser_handle_dialog (accept true for OK, false for Cancel; promptText for a prompt), or ask the user.\n",
+                        d.host, d.message
+                    );
+                    self.browser_jobs[i].text.push_str(&note);
+                    return Some(None);
+                }
             }
             // Where the steps act: the newest pop-up the page opened while one is open, else the
             // page (it comes up out of view if need be, `sync_browsers`).
@@ -611,6 +647,20 @@ impl App {
                         Op::Settle => {
                             job.waiting = Some(Waiting::Load { since: now, started: loading, grace: Duration::from_millis(600), quiet: 0 });
                         }
+                        Op::Dialog(accept, text) => {
+                            let line = match self.browsers.get_mut(&id).and_then(|b| b.dialog.as_mut()) {
+                                Some(d) => {
+                                    if let Some(t) = &text {
+                                        d.text = t.clone();
+                                    }
+                                    format!("{} the dialog “{}”.\n", if accept { "Accepted" } else { "Dismissed" }, d.message)
+                                }
+                                None => return Some(Some("No dialog is open in the page.".into())),
+                            };
+                            self.answer_dialog(id, accept);
+                            self.browser_jobs[i].text.push_str(&line);
+                            continue;
+                        }
                         op => {
                             // The other steps need the page up: until then, they wait.
                             let Some(view) = view.as_deref() else {
@@ -661,7 +711,7 @@ impl App {
                                     });
                                     job.waiting = Some(Waiting::Picture { seq, since: now });
                                 }
-                                Op::Go(_) | Op::Settle => {}
+                                Op::Go(_) | Op::Settle | Op::Dialog(..) => {}
                             }
                             self.browser_seq += 1;
                             job.seqs.push(seq);

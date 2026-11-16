@@ -216,6 +216,20 @@ impl App {
             // `wait-popup-title TEXT`: the first pop-up's window title holds TEXT.
             #[cfg(target_os = "macos")]
             "wait-popup-title" => Some(crate::browser_popup::first_title().is_some_and(|t| t.contains(arg.trim()))).filter(|ok| *ok),
+            // `wait-dialog TEXT`: the open project's front page shows a dialog saying TEXT.
+            "wait-dialog" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                let d = front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.dialog.as_ref());
+                Some(d.is_some_and(|d| d.message.contains(arg.trim()))).filter(|ok| *ok)
+            }
+            // `wait-download NAME`: the open project's front page downloaded a file of this name.
+            "wait-download" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                let ok = front.and_then(|id| self.browsers.get(&id)).is_some_and(|b| {
+                    b.downloads.iter().any(|d| d.done == Some(true) && d.path.file_name().is_some_and(|n| n.to_string_lossy() == arg.trim()))
+                });
+                Some(ok).filter(|ok| *ok)
+            }
             // A page has the keyboard (clicked).
             "wait-page-focus" => Some(self.browser_focus.is_some()).filter(|ok| *ok),
             // `wait-pages 3,4*`: the open project's panel holds these pages, in this order, the one
@@ -618,7 +632,7 @@ impl App {
                 self.devtest.check(!disk.contains(&want), &format!("expect-not-file {path} lacks {want:?}"));
             }
             "wait-screen" | "wait-status" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
-            | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-find" | "wait-caret"
+            | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-dialog" | "wait-download" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
             | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" => {
                 WAIT.with(|w| {

@@ -12,7 +12,7 @@ use crate::i18n::{t, tf};
 use crate::update::{self, CURRENT, Prepared, Release, Stage};
 
 /// "12.4 MB".
-fn human_size(bytes: u64) -> String {
+pub(super) fn human_size(bytes: u64) -> String {
     let mb = bytes as f64 / (1024.0 * 1024.0);
     if mb >= 1.0 { format!("{mb:.1} MB") } else { format!("{} KB", bytes / 1024) }
 }

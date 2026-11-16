@@ -20,7 +20,7 @@ use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSApplication, NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSMenu, NSWindow, NSWindowDelegate, NSWindowOrderingMode, NSWindowStyleMask};
 use objc2_foundation::{NSNotification, NSPoint, NSRect, NSSize, NSString};
-use objc2_web_kit::{WKNavigation, WKNavigationAction, WKNavigationDelegate, WKUIDelegate, WKUserContentController, WKWebView, WKWebViewConfiguration, WKWindowFeatures};
+use objc2_web_kit::{WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationDelegate, WKUIDelegate, WKUserContentController, WKWebView, WKWebViewConfiguration, WKWindowFeatures};
 
 use crate::browser::{Event, Sink};
 
@@ -383,6 +383,35 @@ fn popup_key(key: &str, plain: bool, shift: bool) -> PopupKey {
     }
 }
 
+/// A pop-up page's dialog, as a sheet on its window: "host says:", the message, OK (and Cancel;
+/// a field for a prompt). `done` gets OK or not, and the field's text.
+fn sheet(web: &WKWebView, kind: crate::browser::DialogKind, message: &NSString, default: Option<&NSString>, done: impl Fn(bool, Option<Retained<NSString>>) + 'static) {
+    use crate::browser::DialogKind;
+    use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSTextField};
+    let (Some(mtm), Some(window)) = (MainThreadMarker::new(), web.window()) else {
+        return done(false, None);
+    };
+    let alert = NSAlert::new(mtm);
+    let host = crate::browser::host_of(&url_of(web));
+    let who = if kind == DialogKind::Prompt { crate::i18n::tf("{} asks:", &[&host]) } else { crate::i18n::tf("{} says:", &[&host]) };
+    alert.setMessageText(&NSString::from_str(&who));
+    alert.setInformativeText(message);
+    alert.addButtonWithTitle(&NSString::from_str(crate::i18n::t("OK")));
+    if kind != DialogKind::Alert {
+        alert.addButtonWithTitle(&NSString::from_str(crate::i18n::t("Cancel")));
+    }
+    let field = (kind == DialogKind::Prompt).then(|| {
+        let f = NSTextField::textFieldWithString(&default.map_or_else(|| NSString::from_str(""), |d| NSString::from_str(&d.to_string())), mtm);
+        f.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(260.0, 24.0)));
+        alert.setAccessoryView(Some(&f));
+        f
+    });
+    let block = block2::RcBlock::new(move |response: objc2_app_kit::NSModalResponse| {
+        done(response == NSAlertFirstButtonReturn, field.as_ref().map(|f| f.stringValue()));
+    });
+    alert.beginSheetModalForWindow_completionHandler(&window, Some(&block));
+}
+
 /// A pop-up's own new window: another pop-up when it is one (and the user's), else a page in the
 /// panel of the page that opened the first.
 fn new_window_of_popup(web: &WKWebView, config: &WKWebViewConfiguration, action: &WKNavigationAction, features: &WKWindowFeatures) -> Option<Retained<WKWebView>> {
@@ -415,6 +444,28 @@ define_class!(
         #[unsafe(method_id(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
         fn create_web_view(&self, web: &WKWebView, config: &WKWebViewConfiguration, action: &WKNavigationAction, features: &WKWindowFeatures) -> Option<Retained<WKWebView>> {
             new_window_of_popup(web, config, action, features)
+        }
+
+        // The page's dialogs: a sheet on the pop-up's window.
+        #[unsafe(method(webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:))]
+        fn alert(&self, web: &WKWebView, message: &NSString, _frame: &WKFrameInfo, done: &block2::Block<dyn Fn()>) {
+            let done = done.copy();
+            sheet(web, crate::browser::DialogKind::Alert, message, None, move |_, _| done.call(()));
+        }
+
+        #[unsafe(method(webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:))]
+        fn confirm(&self, web: &WKWebView, message: &NSString, _frame: &WKFrameInfo, done: &block2::Block<dyn Fn(objc2::runtime::Bool)>) {
+            let done = done.copy();
+            sheet(web, crate::browser::DialogKind::Confirm, message, None, move |ok, _| done.call((objc2::runtime::Bool::new(ok),)));
+        }
+
+        #[unsafe(method(webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:))]
+        fn prompt(&self, web: &WKWebView, message: &NSString, default: Option<&NSString>, _frame: &WKFrameInfo, done: &block2::Block<dyn Fn(*mut NSString)>) {
+            let done = done.copy();
+            sheet(web, crate::browser::DialogKind::Prompt, message, default, move |ok, text: Option<Retained<NSString>>| {
+                let text = text.filter(|_| ok);
+                done.call((text.as_ref().map_or(std::ptr::null_mut(), |t| Retained::as_ptr(t).cast_mut()),));
+            });
         }
 
         // The page closed itself (`window.close()`, a sign-in done).
