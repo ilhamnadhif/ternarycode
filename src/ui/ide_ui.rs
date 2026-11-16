@@ -827,8 +827,10 @@ impl App {
         ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
         let root = self.project(project).map(|x| x.path.clone()).unwrap_or_default();
         let current = self.editors.get(&project).and_then(|e| e.file()).map(|f| f.path.clone());
-        // Each: severity, message, file, line, and where it starts as the server counts.
-        let mut rows: Vec<(u8, String, std::path::PathBuf, usize, (lt::Position, tc_lsp::pos::Encoding))> = Vec::new();
+        // Where a problem starts as its server counts (a column in the server's encoding).
+        type ServerAt = (lt::Position, tc_lsp::pos::Encoding);
+        // Each: severity, message, file, line, and where it starts.
+        let mut rows: Vec<(u8, String, std::path::PathBuf, usize, ServerAt)> = Vec::new();
         for (path, (enc, diags)) in &self.lsp.diagnostics {
             let here = if self.problems_project { path.starts_with(&root) } else { Some(path) == current.as_ref() };
             if !here {

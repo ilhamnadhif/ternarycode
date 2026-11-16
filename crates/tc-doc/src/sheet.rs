@@ -172,11 +172,14 @@ fn cell_of(d: &Data) -> Cell {
     }
 }
 
+/// A cell that holds something, at its row and column (0-based).
+type Placed = ((u32, u32), Cell);
+
 /// The cells that hold something, from `next` (a sheet's cell reader), at most `MAX_CELLS` of
 /// them; and whether there were more.
 fn used_cells<E: ToString>(
     mut next: impl FnMut() -> Result<Option<((u32, u32), Data)>, E>,
-) -> Result<(Vec<((u32, u32), Cell)>, bool), String> {
+) -> Result<(Vec<Placed>, bool), String> {
     let mut cells = Vec::new();
     while let Some((pos, data)) = next().map_err(|e| e.to_string())? {
         let cell = cell_of(&data);
@@ -193,7 +196,7 @@ fn used_cells<E: ToString>(
 
 /// A sheet from the cells that hold something: its rows are made one by one, as many as
 /// `from_rows` keeps (never the whole rectangle at once).
-fn sheet_of_cells(name: String, mut cells: Vec<((u32, u32), Cell)>, more: bool) -> Sheet {
+fn sheet_of_cells(name: String, mut cells: Vec<Placed>, more: bool) -> Sheet {
     cells.sort_by_key(|(pos, _)| *pos);
     let (Some(first), Some(last)) = (cells.first().map(|c| c.0.0), cells.last().map(|c| c.0.0)) else {
         return Sheet::from_rows(name, (0, 0), std::iter::empty());
