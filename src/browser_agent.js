@@ -488,10 +488,71 @@ if (!window.__tc) window.__tc = (() => {
     return { ok: true, note: ` Now at ${Math.round(at)} of ${Math.max(0, Math.round(end))} px.` };
   }
 
+  // Where a real click (a mouse event the app sends) lands on `el`: its middle, in the page's
+  // viewport (an element in a frame of this site counts its frame's place), after it is brought
+  // into view and shown to the user (the cursor, a ring with `label`). For a click, a link or
+  // form to a site the agent may not open answers `leaves` instead.
+  async function aim(args) {
+    const el = byRef(args.ref);
+    if (!el) return gone(args.ref);
+    if (args.label === 'click') {
+      const out = !args.force && leaves(el, args.allowed || []);
+      if (out) return { leaves: out };
+    }
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const r = el.getBoundingClientRect();
+    let x = r.left + r.width / 2;
+    let y = r.top + r.height / 2;
+    for (let w = el.ownerDocument.defaultView; w && w !== window && w.frameElement; w = w.parent) {
+      const f = w.frameElement.getBoundingClientRect();
+      x += f.left; y += f.top;
+    }
+    if (el.ownerDocument === document) cursor(x, y);
+    ring(el, args.label || 'click');
+    await pause(220);
+    const top = document.elementFromPoint(x, y);
+    const covered = top && el.ownerDocument === document && top !== el && !el.contains(top) && !top.contains(el)
+      ? ` (another element was over it: ${clip(squash(top.innerText || top.tagName), 60)})` : '';
+    return { x, y, note: covered, draggable: !!(el.closest && el.closest('[draggable="true"]')) };
+  }
+  // A drag with the page's own drag and drop (an element that is draggable), from one element
+  // to another: the events a person's drag makes, with one shared DataTransfer.
+  async function dragHtml5(args) {
+    const a = byRef(args.ref);
+    const b = byRef(args.to);
+    if (!a) return gone(args.ref);
+    if (!b) return gone(args.to);
+    const src = a.closest('[draggable="true"]') || a;
+    const dt = new DataTransfer();
+    const at = (el) => { const r = el.getBoundingClientRect(); return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; };
+    const fire = (el, type) => el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: dt, ...at(el) }));
+    ring(src, 'drag');
+    fire(src, 'dragstart');
+    await pause(60);
+    fire(b, 'dragenter');
+    fire(b, 'dragover');
+    ring(b, 'drop');
+    await pause(60);
+    fire(b, 'drop');
+    fire(src, 'dragend');
+    await pause(200);
+    return { ok: true };
+  }
+  // The agent's cursor at a point of the page (a click there comes next).
+  async function point(args) {
+    cursor(Number(args.x) || 0, Number(args.y) || 0);
+    await pause(220);
+    const top = document.elementFromPoint(Number(args.x) || 0, Number(args.y) || 0);
+    return { ok: true, note: top ? ` (on ${clip(squash(top.innerText || top.getAttribute('aria-label') || top.tagName), 60)})` : '' };
+  }
+
   async function run(name, args) {
     try {
       switch (name) {
         case 'snapshot': return { text: outline(), title: document.title, url: location.href };
+        case 'aim': return await aim(args);
+        case 'drag5': return await dragHtml5(args);
+        case 'point': return await point(args);
         case 'click': return await click(args);
         case 'type': return await type(args);
         case 'select': return await select(args);

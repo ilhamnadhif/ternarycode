@@ -8,6 +8,8 @@ pub mod browser_agent;
 #[cfg(target_os = "macos")]
 pub mod browser_dialog;
 #[cfg(target_os = "macos")]
+pub mod browser_input;
+#[cfg(target_os = "macos")]
 pub mod browser_popup;
 pub mod cli;
 #[cfg(debug_assertions)]

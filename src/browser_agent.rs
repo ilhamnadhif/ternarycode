@@ -38,6 +38,8 @@ const DRIVER_LINGER: Duration = Duration::from_secs(30);
 const LOAD_LIMIT: Duration = Duration::from_secs(30);
 /// Longest wait for the page to answer a step (`browser_wait_for` waits up to 60 s in it).
 const STEP_LIMIT: Duration = Duration::from_secs(70);
+/// The moment between typed characters.
+const KEY_GAP: Duration = Duration::from_millis(12);
 
 /// A step of a job.
 #[derive(Clone, Debug)]
@@ -55,8 +57,41 @@ enum Op {
     Read,
     /// A picture of the page, for the answer.
     Shot,
+    /// A moment between keys.
+    Pause(Duration),
     /// Answer the page's dialog: OK (with a prompt's text) or Cancel.
     Dialog(bool, Option<String>),
+    /// Find an element (the helper's `aim`: into view, shown), then act on its middle with real
+    /// mouse events; the line the answer gets for it.
+    Aim(Value, Then, String),
+    /// Real mouse or keyboard events, with the line the answer gets for them.
+    Native(Native, String),
+}
+
+/// What real events follow the aim at an element.
+#[derive(Clone, Debug)]
+enum Then {
+    Click,
+    Hover,
+    /// A click that opens a file chooser, answered with these files.
+    Upload(Vec<std::path::PathBuf>),
+    /// The start of a drag to the element of this ref.
+    DragFrom(String),
+    /// The end of a drag from this point.
+    DragTo(f64, f64),
+}
+
+/// Real events not aimed at an element.
+#[derive(Clone, Debug)]
+enum Native {
+    /// A click at a point of the page (CSS pixels).
+    ClickAt(f64, f64),
+    Key(String),
+    /// Text typed into what has the keyboard; Enter after it.
+    Type(String, bool),
+    /// One character typed (text goes a character at a time, a moment apart: WebKit's input
+    /// takes text from keys sent all at once only for the first few).
+    Char(char),
 }
 
 /// What a job waits for.
@@ -68,6 +103,8 @@ enum Waiting {
     /// one, is briefly not loading in between).
     Load { since: Instant, started: bool, grace: Duration, quiet: u8 },
     Picture { seq: u64, since: Instant },
+    /// A moment, until then.
+    Pause(Instant),
     /// The user's answer about a site; then the page goes there (or the click is made).
     User { then: Op },
 }
@@ -91,6 +128,35 @@ pub struct Job {
     acted: Option<usize>,
     /// When it came: the downloads begun since are reported.
     since: Instant,
+    /// Files wait for a file chooser its click opens.
+    uploading: bool,
+    /// The real click (or key) just made, to make again once the user lets a pop-up it opened
+    /// go to a site the agent may not open.
+    redo: Option<Op>,
+}
+
+/// A file an agent may upload: one that exists, in the project's folder (a relative path is
+/// taken from there) or the Downloads folder; nothing else of the user's leaves for a site.
+fn upload_path(f: &str, root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let p = std::path::Path::new(f.trim());
+    let p = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
+    let p = p.canonicalize().map_err(|_| format!("No such file: {f}"))?;
+    if !p.is_file() {
+        return Err(format!("Not a file: {f}"));
+    }
+    let mut places = vec![root.to_path_buf()];
+    if let Some(home) = std::env::var_os("HOME") {
+        places.push(std::path::PathBuf::from(home).join("Downloads"));
+    }
+    #[cfg(debug_assertions)]
+    if let Some(d) = std::env::var_os("TERNARYCODE_DOWNLOAD_DIR") {
+        places.push(d.into());
+    }
+    if places.iter().filter_map(|d| d.canonicalize().ok()).any(|d| p.starts_with(d)) {
+        Ok(p)
+    } else {
+        Err(format!("{f} is outside the project's folder and Downloads: only files there can be uploaded. Ask the user to copy it into the project."))
+    }
 }
 
 /// The helper's function `name` with `args`, as the body of an async function.
@@ -153,7 +219,6 @@ impl App {
         let s = |k: &str| a[k].as_str().unwrap_or("").trim().to_string();
         // What the agent says the element is (shown to the user), else its ref.
         let element = || Some(s("element")).filter(|e| !e.is_empty()).unwrap_or_else(|| s("ref"));
-        let refs = json!({ "ref": s("ref") });
         let (doing, ops): (String, Vec<Op>) = match call.call.as_str() {
             "browser_navigate" => {
                 let url = crate::browser::normalize(&s("url"));
@@ -166,7 +231,46 @@ impl App {
             "browser_snapshot" => (t("Reading the page").into(), vec![Op::Read]),
             "browser_click" => {
                 let e = element();
-                (tf("Clicking {}", &[&e]), vec![Op::Act("click", refs, format!("Clicked {e}.")), Op::Settle, Op::Read])
+                let args = json!({ "ref": s("ref"), "label": "click" });
+                let then = if a["doubleClick"].as_bool().unwrap_or(false) { "Double-clicked" } else { "Clicked" };
+                (tf("Clicking {}", &[&e]), vec![Op::Aim(args, Then::Click, format!("{then} {e}.")), Op::Settle, Op::Read])
+            }
+            "browser_hover" => {
+                let e = element();
+                (tf("Pointing at {}", &[&e]), vec![Op::Aim(json!({ "ref": s("ref"), "label": "hover" }), Then::Hover, format!("The pointer is on {e}.")), Op::Settle, Op::Read])
+            }
+            "browser_drag" => {
+                let (from, to) = (s("startElement"), s("endElement"));
+                let args = json!({ "ref": s("startRef"), "label": "drag" });
+                (tf("Dragging {} to {}", &[&from, &to]), vec![Op::Aim(args, Then::DragFrom(s("endRef")), format!("Dragged {from} to {to}.")), Op::Settle, Op::Read])
+            }
+            "browser_mouse_click_xy" => {
+                let (x, y) = (a["x"].as_f64().unwrap_or(0.0), a["y"].as_f64().unwrap_or(0.0));
+                let e = Some(s("element")).filter(|e| !e.is_empty()).unwrap_or_else(|| format!("{x:.0}, {y:.0}"));
+                (tf("Clicking {}", &[&e]), vec![Op::Act("point", json!({ "x": x, "y": y }), String::new()), Op::Native(Native::ClickAt(x, y), format!("Clicked at {x:.0}, {y:.0}.")), Op::Settle, Op::Read])
+            }
+            "browser_keyboard_type" => {
+                let text = a["text"].as_str().unwrap_or("").to_string();
+                let submit = a["submit"].as_bool().unwrap_or(false);
+                (t("Typing").into(), vec![Op::Native(Native::Type(text, submit), "Typed.".into()), Op::Settle, Op::Read])
+            }
+            "browser_file_upload" => {
+                let e = element();
+                let root = self.project(project).map(|p| p.path.clone()).unwrap_or_default();
+                let mut files = Vec::new();
+                for f in a["paths"].as_array().cloned().unwrap_or_default() {
+                    let f = f.as_str().unwrap_or("");
+                    match upload_path(f, &root) {
+                        Ok(p) => files.push(p),
+                        Err(e) => return fail(reply, &e),
+                    }
+                }
+                if files.is_empty() {
+                    return fail(reply, "No files given (paths).");
+                }
+                let names: Vec<String> = files.iter().filter_map(|f| f.file_name()).map(|n| n.to_string_lossy().to_string()).collect();
+                let line = format!("Chose {} for {e}.", names.join(", "));
+                (tf("Uploading {} to {}", &[&names.join(", "), &e]), vec![Op::Aim(json!({ "ref": s("ref"), "label": "upload" }), Then::Upload(files), line), Op::Settle, Op::Read])
             }
             "browser_type" => {
                 let e = element();
@@ -180,7 +284,7 @@ impl App {
             }
             "browser_press_key" => {
                 let key = s("key");
-                (tf("Pressing {}", &[&key]), vec![Op::Act("press", json!({ "key": key }), format!("Pressed {key}.")), Op::Settle, Op::Read])
+                (tf("Pressing {}", &[&key]), vec![Op::Native(Native::Key(key.clone()), format!("Pressed {key}.")), Op::Settle, Op::Read])
             }
             "browser_wait_for" => {
                 let what = if !s("text").is_empty() { tf("Waiting for “{}”", &[&s("text")]) } else { t("Waiting").to_string() };
@@ -234,6 +338,8 @@ impl App {
             on_popup: None,
             acted: None,
             since: Instant::now(),
+            uploading: false,
+            redo: None,
         });
         self.mark_dirty();
     }
@@ -414,7 +520,9 @@ impl App {
             }
         }
         if !self.browser_jobs.is_empty() {
-            ctx.request_repaint_after(Duration::from_millis(40));
+            // Typing goes a key a frame: sooner then.
+            let typing = self.browser_jobs.iter().any(|j| matches!(j.waiting, Some(Waiting::Pause(_))));
+            ctx.request_repaint_after(Duration::from_millis(if typing { 8 } else { 40 }));
         }
     }
 
@@ -505,6 +613,13 @@ impl App {
                                 job.ops.push_front(Op::Settle);
                             }
                         }
+                        (Op::Aim(_, _, line), Err(_)) => {
+                            job.text.push_str(&line);
+                            job.text.push('\n');
+                            if !matches!(job.ops.front(), Some(Op::Settle)) {
+                                job.ops.push_front(Op::Settle);
+                            }
+                        }
                         (Op::Read, Err(e)) => {
                             if job.reread {
                                 return Some(Some(format!("Could not read the page: {e}")));
@@ -553,6 +668,55 @@ impl App {
                                 Op::Eval(_) => {
                                     job.text.push_str(&format!("Result: {}", v["result"].as_str().unwrap_or("null")));
                                 }
+                                Op::Aim(mut args, then, line) => {
+                                    if let Some(url) = v["leaves"].as_str() {
+                                        // A link to a site the agent may not open: asked first.
+                                        args["force"] = json!(true);
+                                        let pane = job.agent_pane;
+                                        job.waiting = Some(Waiting::User { then: Op::Aim(args, then, line) });
+                                        self.ask_site(id, pane, url, true);
+                                        return None;
+                                    }
+                                    let (x, y) = (v["x"].as_f64().unwrap_or(0.0), v["y"].as_f64().unwrap_or(0.0));
+                                    let Some(wk) = view.as_deref() else { return Some(Some("The page went away.".into())) };
+                                    let note = v["note"].as_str().unwrap_or("").to_string();
+                                    match then {
+                                        Then::Click | Then::Upload(_) => {
+                                            if let Then::Upload(files) = &then {
+                                                crate::browser_dialog::upload_next(wk, files.clone());
+                                                job.uploading = true;
+                                            }
+                                            // A pop-up its click opens is the agent's.
+                                            crate::browser_popup::agent_acting(wk, sites.clone(), pass.clone());
+                                            job.acted = Some(std::ptr::from_ref(wk) as usize);
+                                            let mut again = args.clone();
+                                            again["force"] = json!(true);
+                                            job.redo = Some(Op::Aim(again, then.clone(), line.clone()));
+                                            let double = line.starts_with("Double-clicked");
+                                            crate::browser_input::click(wk, x, y, if double { 2 } else { 1 });
+                                        }
+                                        Then::Hover => {
+                                            crate::browser_input::hover(wk, x, y);
+                                        }
+                                        Then::DragFrom(to) => {
+                                            // The page's own drag and drop for a draggable element; real
+                                            // mouse events for the rest (sliders, sortable lists).
+                                            let next = if v["draggable"].as_bool().unwrap_or(false) {
+                                                Op::Act("drag5", json!({ "ref": args["ref"], "to": to }), line)
+                                            } else {
+                                                Op::Aim(json!({ "ref": to, "label": "drop" }), Then::DragTo(x, y), line)
+                                            };
+                                            job.ops.push_front(next);
+                                            continue;
+                                        }
+                                        Then::DragTo(fx, fy) => {
+                                            crate::browser_input::drag(wk, (fx, fy), (x, y));
+                                        }
+                                    }
+                                    job.text.push_str(&line);
+                                    job.text.push_str(&note);
+                                    job.text.push('\n');
+                                }
                                 _ => {}
                             }
                         }
@@ -582,6 +746,12 @@ impl App {
                             job.waiting = Some(Waiting::Picture { seq, since });
                             return None;
                         }
+                    }
+                }
+                Some(Waiting::Pause(until)) => {
+                    if now < until {
+                        job.waiting = Some(Waiting::Pause(until));
+                        return None;
                     }
                 }
                 Some(Waiting::User { then }) => {
@@ -623,6 +793,30 @@ impl App {
                     continue;
                 }
                 None => {
+                    // A pop-up the last real click (or key) opened to a site the agent may not
+                    // open (WebKit asks for it after the click): the user is asked, then the click
+                    // is made again.
+                    if !matches!(job.ops.front(), Some(Op::Settle))
+                        && let Some(k) = job.acted
+                        && let Some(url) = crate::browser_popup::take_blocked(k)
+                        && let Some(redo) = job.redo.take()
+                    {
+                        job.acted = None;
+                        let pane = job.agent_pane;
+                        job.waiting = Some(Waiting::User { then: redo });
+                        self.ask_site(id, pane, &url, true);
+                        return None;
+                    }
+                    // Files given for a file chooser that never came (the click was not on a file
+                    // field): taken back, and the agent told.
+                    if job.uploading && !matches!(job.ops.front(), Some(Op::Settle)) {
+                        job.uploading = false;
+                        if let Some(wk) = view.as_deref()
+                            && crate::browser_dialog::upload_unused(wk)
+                        {
+                            return Some(Some("The click did not open a file chooser: give the ref of the file field (or the button that opens it).".into()));
+                        }
+                    }
                     let Some(op) = job.ops.pop_front() else {
                         return Some(None);
                     };
@@ -646,6 +840,9 @@ impl App {
                         }
                         Op::Settle => {
                             job.waiting = Some(Waiting::Load { since: now, started: loading, grace: Duration::from_millis(600), quiet: 0 });
+                        }
+                        Op::Pause(d) => {
+                            job.waiting = Some(Waiting::Pause(now + d));
                         }
                         Op::Dialog(accept, text) => {
                             let line = match self.browsers.get_mut(&id).and_then(|b| b.dialog.as_mut()) {
@@ -693,6 +890,49 @@ impl App {
                                     });
                                     job.waiting = Some(Waiting::Page { seq, op: Op::Act(name, args, line), since: now, at: (page_url.clone(), loading) });
                                 }
+                                Op::Aim(args, then, line) => {
+                                    let mut args = args;
+                                    args["allowed"] = json!(sites);
+                                    crate::browser::run_js_in(view, &helper_call("aim", &args), move |r| {
+                                        page(r);
+                                    });
+                                    job.waiting = Some(Waiting::Page { seq, op: Op::Aim(args, then, line), since: now, at: (page_url.clone(), loading) });
+                                }
+                                Op::Native(native, line) => {
+                                    crate::browser_popup::agent_acting(view, sites.clone(), pass.clone());
+                                    job.acted = Some(std::ptr::from_ref(view) as usize);
+                                    if !matches!(native, Native::Char(_) | Native::Type(..)) {
+                                        job.redo = Some(Op::Native(native.clone(), line.clone()));
+                                    }
+                                    let done = match native {
+                                        Native::ClickAt(x, y) => crate::browser_input::click(view, x, y, 1).then_some(()).ok_or_else(|| "The page has no window.".to_string()),
+                                        Native::Key(k) => crate::browser_input::key(view, &k),
+                                        Native::Char(c) => crate::browser_input::type_text(view, &c.to_string()).then_some(()).ok_or_else(|| "The page has no window.".to_string()),
+                                        Native::Type(text, submit) => {
+                                            // A character at a time, a moment apart (then Enter).
+                                            let mut keys: Vec<Op> = Vec::new();
+                                            for c in text.chars() {
+                                                keys.push(Op::Native(Native::Char(c), String::new()));
+                                                keys.push(Op::Pause(KEY_GAP));
+                                            }
+                                            if submit {
+                                                keys.push(Op::Native(Native::Key("Enter".into()), String::new()));
+                                            }
+                                            for k in keys.into_iter().rev() {
+                                                job.ops.push_front(k);
+                                            }
+                                            Ok(())
+                                        }
+                                    };
+                                    if let Err(e) = done {
+                                        return Some(Some(e));
+                                    }
+                                    if !line.is_empty() {
+                                        job.text.push_str(&line);
+                                        job.text.push('\n');
+                                    }
+                                    continue;
+                                }
                                 Op::Eval(src) => {
                                     crate::browser::run_js_in(view, &eval_call(&src), move |r| {
                                         page(r);
@@ -706,12 +946,21 @@ impl App {
                                     job.waiting = Some(Waiting::Page { seq, op: Op::Read, since: now, at: (page_url.clone(), loading) });
                                 }
                                 Op::Shot => {
+                                    // The page's size, for clicks at a point of the picture.
+                                    // SAFETY: a plain WKWebView getter on the main thread.
+                                    let z = unsafe { view.pageZoom() }.max(0.01);
+                                    let b = view.bounds();
+                                    job.text.push_str(&format!(
+                                        "The page shows {:.0}×{:.0} CSS pixels (browser_mouse_click_xy takes a point in those; scale from the picture's size).\n",
+                                        b.size.width / z,
+                                        b.size.height / z
+                                    ));
                                     crate::browser::snapshot_view(view, None, move |png| {
                                         page(png.map(|d| tc_agent::shell::base64(&d)).ok_or_else(|| "the page gave no picture".to_string()));
                                     });
                                     job.waiting = Some(Waiting::Picture { seq, since: now });
                                 }
-                                Op::Go(_) | Op::Settle | Op::Dialog(..) => {}
+                                Op::Go(_) | Op::Settle | Op::Dialog(..) | Op::Pause(_) => {}
                             }
                             self.browser_seq += 1;
                             job.seqs.push(seq);

@@ -964,4 +964,9 @@ const ID: &[(&str, &str)] = &[
     ("Inspect Element", "Periksa Elemen"),
     ("No matches", "Tidak ditemukan"),
     ("Print…", "Cetak…"),
+    // What an agent does in a page with real mouse and keyboard events.
+    ("Dragging {} to {}", "Menyeret {} ke {}"),
+    ("Pointing at {}", "Menunjuk {}"),
+    ("Typing", "Mengetik"),
+    ("Uploading {} to {}", "Mengunggah {} ke {}"),
 ];

@@ -5,7 +5,9 @@
 //! goes on with the answer. Only that page waits; the app does not.
 //!
 //! wry's own delegate class (`WryWebViewUIDelegate`) answers the rest of WebKit's questions; the
-//! three dialog methods, which it lacks, are added to it once, before the first page is made.
+//! three dialog methods, which it lacks, are added to it once, with the first page. Its file
+//! chooser (`<input type=file>`) is wrapped: an agent's upload answers it with the agent's files,
+//! anything else gets wry's own (the Finder's open panel).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,7 +17,7 @@ use block2::{Block, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
 use objc2::sel;
-use objc2_foundation::NSString;
+use objc2_foundation::{NSArray, NSString, NSURL};
 use objc2_web_kit::{WKFrameInfo, WKWebView};
 
 use crate::browser::{Dialog, DialogKind, Event, Sink};
@@ -37,6 +39,49 @@ thread_local! {
     /// The pages' web views and where each reports (main thread only).
     static PAGES: RefCell<HashMap<usize, Sink>> = RefCell::new(HashMap::new());
     static WAITING: RefCell<HashMap<u64, Waiting>> = RefCell::new(HashMap::new());
+    /// Files an agent's step gives the next file chooser of a page (by its web view).
+    static UPLOADS: RefCell<HashMap<usize, Vec<std::path::PathBuf>>> = RefCell::new(HashMap::new());
+}
+
+/// wry's own file chooser (the Finder's open panel), for choosers no agent answers.
+static WRY_OPEN_PANEL: std::sync::OnceLock<Imp> = std::sync::OnceLock::new();
+
+type OpenPanel = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut WKWebView, *mut AnyObject, *mut WKFrameInfo, *mut Block<dyn Fn(*const NSArray<NSURL>)>);
+
+/// The next file chooser of `web` takes these files (an agent's upload).
+pub fn upload_next(web: &WKWebView, files: Vec<std::path::PathBuf>) {
+    UPLOADS.with_borrow_mut(|u| u.insert(key(web), files));
+}
+
+/// Whether files given to `web`'s next chooser are still waiting (no chooser came): they are
+/// taken back.
+pub fn upload_unused(web: &WKWebView) -> bool {
+    UPLOADS.with_borrow_mut(|u| u.remove(&key(web)).is_some())
+}
+
+unsafe extern "C-unwind" fn open_panel(this: *mut AnyObject, cmd: Sel, web: *mut WKWebView, params: *mut AnyObject, frame: *mut WKFrameInfo, done: *mut Block<dyn Fn(*const NSArray<NSURL>)>) {
+    // SAFETY: WebKit hands a live web view (or null) for the length of the call.
+    let files = unsafe { web.as_ref() }.and_then(|w| UPLOADS.with_borrow_mut(|u| u.remove(&key(w))));
+    match files {
+        Some(files) => {
+            // SAFETY: the parameters WebKit hands; `allowsMultipleSelection` is a plain getter.
+            let many: bool = unsafe { objc2::msg_send![&*params, allowsMultipleSelection] };
+            let urls: Vec<Retained<NSURL>> = files.iter().take(if many { usize::MAX } else { 1 }).map(|f| NSURL::fileURLWithPath(&NSString::from_str(&f.to_string_lossy()))).collect();
+            let list = NSArray::from_retained_slice(&urls);
+            // SAFETY: WebKit's completion handler, called once with the chosen files.
+            if let Some(done) = unsafe { done.as_ref() } {
+                done.call((Retained::as_ptr(&list),));
+            }
+        }
+        None => {
+            if let Some(imp) = WRY_OPEN_PANEL.get() {
+                // SAFETY: wry's own method for this selector, with the arguments WebKit gave.
+                unsafe { std::mem::transmute::<Imp, OpenPanel>(*imp)(this, cmd, web, params, frame, done) };
+            } else if let Some(done) = unsafe { done.as_ref() } {
+                done.call((std::ptr::null(),));
+            }
+        }
+    }
 }
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -77,6 +122,13 @@ pub fn install(web: &WKWebView) {
                 std::mem::transmute::<unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut WKWebView, *mut NSString, *mut NSString, *mut WKFrameInfo, *mut Block<dyn Fn(*mut NSString)>), Imp>(prompt),
                 c"v@:@@@@@?",
             );
+            // The file chooser: an agent's upload, else wry's own.
+            let m = objc2::ffi::class_getInstanceMethod(class, sel!(webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:));
+            if !m.is_null()
+                && let Some(old) = objc2::ffi::method_setImplementation(m, std::mem::transmute::<OpenPanel, Imp>(open_panel))
+            {
+                let _ = WRY_OPEN_PANEL.set(old);
+            }
         }
     }
     drop(done);

@@ -121,7 +121,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # terminal, where the web view sits exactly on the page's place; an address typed goes there;
 # a new page (⌥⇧⌘B) opens the project's server beside it in the panel; a page tab brings its
 # page back. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-tools browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-agent-human browser-tools browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -200,6 +200,28 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     # Web Inspector opens.
     printf '<!doctype html><title>Find Page</title><p>Linen shirt</p><p>Wool beanie</p><p>linen tote and LINEN scarf</p>\n' > "$SITE/find.html"
     run browser-tools 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web http://localhost:$WEBPORT/find.html;; wait-browser Find Page;; wait-pages 3*;; sleep 800;; page-find linen;; wait-page-find 1/3;; expect-shown browser-find:3;; page-find-next;; wait-page-find 2/3;; page-find-next;; wait-page-find 3/3;; page-find-next;; wait-page-find 1/3;; page-find-prev;; wait-page-find 3/3;; shot e2e-browser-find;; page-find zzz;; wait-page-find 0/0;; page-zoom 1;; sleep 400;; expect-page-zoom 1.1;; expect-shown browser-zoom:3;; page-zoom 1;; sleep 400;; expect-page-zoom 1.25;; click browser-zoom:3;; sleep 400;; expect-page-zoom 1;; expect-hidden browser-zoom:3;; page-inspect;; wait-inspector;; page-print;; sleep 1500;; shot e2e-browser-print;; key esc;; sleep 800;; expect-web-placed;; quit"
+    # An agent acting as a person: real keys type and submit, the pointer hovers, drags (pointer
+    # events, and the page's own drag and drop), a file field gets a project file (one outside the
+    # project and Downloads is refused), and a frame of another site (127.0.0.1 in a localhost
+    # page) takes clicks and keys at points of the page.
+    printf 'upload me\n' > "$P1/upload.txt"
+    printf '<!doctype html><title>Pay Frame</title><body style="margin:0"><input id="card" style="position:absolute;left:10px;top:10px;width:200px;height:30px"><button style="position:absolute;left:10px;top:60px;width:100px;height:30px" onclick="parent.postMessage(&quot;paid:&quot; + document.getElementById(&quot;card&quot;).value, &quot;*&quot;)">Pay</button></body>\n' > "$SITE/frame.html"
+    printf '<!doctype html><title>Human Page</title><body style="margin:0;font:14px sans-serif"><form onsubmit="event.preventDefault(); document.title = &quot;Submitted: &quot; + this.q.value"><input name="q" aria-label="Search field" style="position:absolute;left:10px;top:10px;width:150px"><button style="position:absolute;left:170px;top:10px">Search</button></form><div role="button" style="position:absolute;left:10px;top:50px;width:100px;height:30px;background:#ddd" onmouseenter="document.title = &quot;Hovered&quot;">Hover me</div><div id="a" role="button" style="position:absolute;left:10px;top:90px;width:80px;height:30px;background:#cde">Drag A</div><div id="b" role="button" style="position:absolute;left:200px;top:90px;width:80px;height:30px;background:#edc">Target B</div><div role="button" draggable="true" style="position:absolute;left:10px;top:130px;width:80px;height:30px;background:#dec" ondragstart="event.dataTransfer.setData(&quot;text&quot;, &quot;c&quot;)">Card C</div><div role="button" style="position:absolute;left:200px;top:130px;width:80px;height:30px;background:#ced" ondragover="event.preventDefault()" ondrop="document.title = &quot;HTML5 drop &quot; + event.dataTransfer.getData(&quot;text&quot;)">Drop D</div><input type="file" aria-label="Receipt" style="position:absolute;left:10px;top:170px" onchange="document.title = &quot;File: &quot; + this.files[0].name"><iframe title="Pay" src="http://127.0.0.1:%s/frame.html" style="position:absolute;left:20px;top:220px;width:320px;height:120px;border:0"></iframe><script>let down = false; document.getElementById("a").addEventListener("pointerdown", () => down = true); document.addEventListener("pointerup", (e) => { const t = document.elementFromPoint(e.clientX, e.clientY); if (down && t && t.id === "b") document.title = "Dropped on B"; down = false; }); addEventListener("message", (e) => { if (String(e.data).startsWith("paid:")) document.title = "Paid: " + String(e.data).slice(5); });</script></body>\n' "$WEBPORT" > "$SITE/human.html"
+    call hnav browser_navigate "{\"url\":\"localhost:$WEBPORT/human.html\"}"
+    call hq browser_click '{"ref":"e1","element":"Search field"}'
+    call htype browser_keyboard_type '{"text":"hello","submit":true}'
+    call hhover browser_hover '{"ref":"e3","element":"Hover me"}'
+    call hdrag browser_drag '{"startRef":"e4","startElement":"Drag A","endRef":"e5","endElement":"Target B"}'
+    call hdnd browser_drag '{"startRef":"e6","startElement":"Card C","endRef":"e7","endElement":"Drop D"}'
+    call hup browser_file_upload '{"ref":"e8","element":"Receipt","paths":["upload.txt"]}'
+    call hbad browser_file_upload '{"ref":"e8","element":"Receipt","paths":["/etc/hosts"]}'
+    call hshot browser_take_screenshot '{}'
+    call hxy1 browser_mouse_click_xy '{"x":130,"y":245,"element":"Card number in the Pay frame"}'
+    call htype2 browser_keyboard_type '{"text":"4242"}'
+    call hxy2 browser_mouse_click_xy '{"x":80,"y":295,"element":"Pay in the Pay frame"}'
+    printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\nm hnav; m hq; m htype; m hhover; m hdrag; m hdnd; m hup; m hbad; m hshot; m hxy1; m htype2; m hxy2\n' "$HOOK" "$MCP" "$MCP" > "$WORK/agenthuman.sh"
+    mkdir -p "$WORK/data-browser-agent-human"; printf '{"presets":[{"id":"hum","name":"Human","command":"sh %s"}]}\n' "$WORK/agenthuman.sh" > "$WORK/data-browser-agent-human/settings.json"
+    run browser-agent-human 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action run hum;; wait-screen ok-hdrag;; wait-screen ok-hbad;; wait-screen ok-hxy1;; wait-screen ok-hxy2;; expect-file $MCP/hnav.out [ref=e8];; expect-file $MCP/htype.out Page: Submitted: hello;; expect-file $MCP/hhover.out Page: Hovered;; expect-file $MCP/hdrag.out Page: Dropped on B;; expect-file $MCP/hdnd.out Page: HTML5 drop c;; expect-file $MCP/hup.out Page: File: upload.txt;; expect-file $MCP/hbad.out outside the project;; expect-file $MCP/hshot.out CSS pixels;; expect-file $MCP/hxy2.out Page: Paid: 4242;; quit"
     # More of the browser: $BROWSER (Python's webbrowser) opens the page beside the terminal; its
     # console's error and warning show as a chip, then in the drawer; under the palette the page
     # is a picture; `open https://…` and `ternarycode browse` go to the same browser; a link to a

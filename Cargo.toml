@@ -41,7 +41,7 @@ eframe = { version = "0.36.2", default-features = false, features = ["wgpu"] }
 muda = "0.21.2"
 winit = "0.30"
 objc2 = "0.6.5"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSSet", "NSFileManager", "NSURL", "NSData", "NSDate", "NSValue", "NSNotification"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSSet", "NSFileManager", "NSURL", "NSData", "NSDate", "NSValue", "NSNotification", "NSProcessInfo"] }
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "bitflags", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 block2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSEvent", "NSApplication", "NSResponder", "NSWindow", "NSView", "NSGraphicsContext", "NSDockTile", "NSRunningApplication", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSScreen", "NSGraphics", "NSMenu", "NSMenuItem", "NSAlert", "NSButton", "NSControl", "NSTextField", "NSPrintInfo", "NSPrintOperation"] }

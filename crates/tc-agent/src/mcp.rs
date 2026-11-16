@@ -55,8 +55,33 @@ pub fn tools() -> Value {
         },
         {
             "name": "browser_click",
-            "description": "Click an element of the page; returns a snapshot after it (and after the page it leads to has loaded).",
+            "description": "Click an element of the page with the mouse, as the user would (a real click: it opens file choosers and pop-ups and counts as the user's action); returns a snapshot after it (and after the page it leads to has loaded).",
+            "inputSchema": {"type": "object", "properties": {"ref": r#ref, "element": element, "doubleClick": {"type": "boolean"}}, "required": ["ref", "element"]},
+        },
+        {
+            "name": "browser_mouse_click_xy",
+            "description": "Click at a point of the page, in CSS pixels from its top left (the screenshot tool says the page's size). For what a snapshot has no ref for: inside a frame of another site (a card form, a captcha), a canvas, a map. Returns a snapshot.",
+            "inputSchema": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "element": element}, "required": ["x", "y"]},
+        },
+        {
+            "name": "browser_keyboard_type",
+            "description": "Type text with the keyboard into what has the focus in the page (after clicking a field, also inside another site's frame), a key at a time; submit presses Enter after it. Never type the user's passwords or one-time codes: ask the user. Returns a snapshot.",
+            "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "submit": {"type": "boolean"}}, "required": ["text"]},
+        },
+        {
+            "name": "browser_hover",
+            "description": "Move the mouse onto an element (menus and tooltips that show on hover). Returns a snapshot.",
             "inputSchema": {"type": "object", "properties": {"ref": r#ref, "element": element}, "required": ["ref", "element"]},
+        },
+        {
+            "name": "browser_drag",
+            "description": "Drag one element onto another with the mouse (sortable lists, sliders, drag and drop). Returns a snapshot.",
+            "inputSchema": {"type": "object", "properties": {"startRef": r#ref, "startElement": element, "endRef": r#ref, "endElement": element}, "required": ["startRef", "startElement", "endRef", "endElement"]},
+        },
+        {
+            "name": "browser_file_upload",
+            "description": "Choose files for a file field: clicks ref (the file field, or the button that opens its chooser) and answers the chooser with paths. Only files in the project's folder (relative paths start there) or the Downloads folder. Returns a snapshot.",
+            "inputSchema": {"type": "object", "properties": {"ref": r#ref, "element": element, "paths": {"type": "array", "items": {"type": "string"}}}, "required": ["ref", "element", "paths"]},
         },
         {
             "name": "browser_type",
@@ -70,7 +95,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "browser_press_key",
-            "description": "Press a key in the page, where the focus is: Enter, Escape, Tab, ArrowDown, a letter… Returns a snapshot.",
+            "description": "Press a key in the page, where the focus is, as the keyboard would: Enter, Escape, Tab, Backspace, ArrowDown, a letter… Returns a snapshot.",
             "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]},
         },
         {
@@ -269,7 +294,7 @@ mod tests {
         let list = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"});
         assert_eq!(answer(&list, &None, &none).unwrap()["result"]["tools"], json!([]));
         let n = answer(&list, &pane(), &none).unwrap()["result"]["tools"].as_array().map(Vec::len).unwrap_or(0);
-        assert_eq!(n, if cfg!(target_os = "macos") { 13 } else { 0 });
+        assert_eq!(n, if cfg!(target_os = "macos") { 18 } else { 0 });
     }
 
     #[test]
