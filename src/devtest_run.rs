@@ -206,6 +206,8 @@ impl App {
                 let at = |b: &crate::browser::Browser| b.url.contains(arg.trim()) || b.title.contains(arg.trim());
                 Some(front.and_then(|id| self.browsers.get(&id)).is_some_and(at)).filter(|ok| *ok)
             }
+            // A page has the keyboard (clicked).
+            "wait-page-focus" => Some(self.browser_focus.is_some()).filter(|ok| *ok),
             // `wait-pages 3,4*`: the open project's panel holds these pages, in this order, the one
             // marked * in front ("-": none).
             "wait-pages" => {
@@ -608,7 +610,7 @@ impl App {
             "wait-screen" | "wait-status" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
             | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-panel" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
-            | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" => {
+            | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" => {
                 WAIT.with(|w| {
                     *w.borrow_mut() = Some(Wait {
                         step: step.clone(),
@@ -903,6 +905,11 @@ impl App {
             "expect-review" => {
                 let got = self.review.as_ref().map(|r| format!("{:?} {}", r.base, if r.expanded { "full" } else { "drawer" })).unwrap_or_else(|| "closed".into());
                 self.devtest.check(got == arg.trim(), &format!("expect-review {arg} (got {got})"));
+            }
+            // `expect-page-focus yes|no`: a page has the keyboard.
+            "expect-page-focus" => {
+                let has = self.browser_focus.is_some();
+                self.devtest.check(has == (arg.trim() == "yes"), &format!("expect-page-focus {arg} (got {has})"));
             }
             "expect-dialog" => {
                 let open = self.dialog.is_some();

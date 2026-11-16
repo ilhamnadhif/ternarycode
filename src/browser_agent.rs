@@ -533,7 +533,10 @@ impl App {
                     }
                     if let Some(b) = self.browsers.get_mut(&id) {
                         b.ask = None;
-                        b.pass = Some(host.clone());
+                        // Blocked: no pass (the agent asking again is asked about again).
+                        if answer != Answer::Block {
+                            b.pass = Some(host.clone());
+                        }
                     }
                     self.asked(pane);
                     match answer {

@@ -366,6 +366,23 @@ fn defines_hooks(line: &str) -> bool {
         })
 }
 
+/// Whether the user's Codex configuration has a `notify` of its own (at the top, before any
+/// table; the one in TernaryCode's block is not the user's).
+pub fn codex_has_own_notify(config_toml: &str) -> bool {
+    let mut ours = false;
+    for l in config_toml.lines() {
+        match l {
+            MARK_BEGIN => ours = true,
+            MARK_END => ours = false,
+            _ if ours => {}
+            _ if l.trim_start().starts_with('[') => return false,
+            _ if toml_key(l, "notify", &['=']) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Whether the user's Codex configuration has hooks of its own: a `-c hooks=…` override would
 /// hide them for that run, so then only `notify` is added. The hooks in TernaryCode's own block
 /// are not the user's.
@@ -407,8 +424,24 @@ pub fn launch_command(
     integration: Integration,
     codex_hooks: bool,
 ) -> String {
+    launch_command_with(command, agent, integration, codex_hooks, false)
+}
+
+/// `launch_command`, where `codex_own_notify`: the user's Codex config has a `notify` of its
+/// own. With TernaryCode's hooks added, theirs is kept for the run (the hooks say when a turn
+/// ends), as an install keeps it.
+pub fn launch_command_with(
+    command: &str,
+    agent: Option<AgentKind>,
+    integration: Integration,
+    codex_hooks: bool,
+    codex_own_notify: bool,
+) -> String {
     let flags = match (agent, integration) {
         (Some(AgentKind::Claude), Integration::PerLaunch) => claude_flags(),
+        (Some(AgentKind::Codex), Integration::PerLaunch) if codex_hooks && codex_own_notify => {
+            format!("-c {}{}", env_ref(ENV_CODEX_HOOKS), codex_mcp_flag())
+        }
         (Some(AgentKind::Codex), Integration::PerLaunch) if codex_hooks => format!(
             "-c {} -c {}{}",
             env_ref(ENV_CODEX_HOOKS),
@@ -853,21 +886,46 @@ pub fn uninstall(record: &InstallRecord, hooks: &Hooks) -> Result<Uninstalled, S
     Ok(Uninstalled::Removed)
 }
 
-/// Whether `text` (a file at `agent`'s path) has hooks TernaryCode installed.
-/// `text` without TernaryCode's marked blocks (Codex's `config.toml`).
+/// The name of the table a TOML line starts (`[a.b]`, `[[a.b]]`, quotes and spaces left out),
+/// if it starts one.
+fn toml_table(line: &str) -> Option<String> {
+    let t = line.trim();
+    let inner = t.strip_prefix('[')?;
+    let close = inner.rfind(']')?;
+    // After the `]`: nothing, or a comment (else it is a line of an array).
+    if !inner[close + 1..].trim().is_empty() && !inner[close + 1..].trim_start().starts_with('#') {
+        return None;
+    }
+    let name = inner[..close].strip_prefix('[').unwrap_or(&inner[..close]);
+    let name = name.strip_suffix(']').unwrap_or(name);
+    Some(name.chars().filter(|c| !matches!(c, '"' | '\'' | ' ' | '\t')).collect())
+}
+
+/// `text` without what TernaryCode wrote in its marked blocks (Codex's `config.toml`): the
+/// `notify` at the top, the `[[hooks.…]]` tables and the browser tools' server. Codex edits the
+/// file itself (toml_edit): a key it adds at the top goes right after our `notify`, and a table
+/// it adds goes before the file's last comment, our closing mark. Those lines are the user's,
+/// inside our marks, and they stay.
 fn without_marked(text: &str) -> String {
     let mut out = String::new();
-    let mut skipping = false;
+    // In a marked block; a table started yet (in the file); the table the line is in is ours.
+    let (mut marked, mut in_table, mut ours) = (false, false, false);
     for line in text.lines() {
         if line == MARK_BEGIN {
-            skipping = true;
+            marked = true;
             continue;
         }
         if line == MARK_END {
-            skipping = false;
+            marked = false;
             continue;
         }
-        if !skipping {
+        if let Some(name) = toml_table(line) {
+            in_table = true;
+            ours = marked && (name == "hooks" || name.starts_with("hooks.") || name == "mcp_servers.ternarycode" || name.starts_with("mcp_servers.ternarycode."));
+        }
+        let drop = marked
+            && if in_table { ours || line.trim().is_empty() } else { toml_key(line, "notify", &['=']) || line.trim().is_empty() };
+        if !drop {
             out.push_str(line);
             out.push('\n');
         }
@@ -1273,6 +1331,52 @@ mod tests {
         assert!(!p.after.starts_with(MARK_BEGIN), "the user's notify stays");
         assert!(codex_has_own_hooks("[hooks]\nStop = []\n"));
         assert!(!codex_has_own_hooks("model = \"x\"\n"));
+        // The user's notify, not ours or one in a table.
+        assert!(codex_has_own_notify("model = \"x\"\nnotify = [\"say\"]\n"));
+        assert!(!codex_has_own_notify(&p.after.replace("notify = [\"x\"]", "")));
+        assert!(!codex_has_own_notify(&plan_codex(&hooks(), &dir.path().join("none.toml")).unwrap().after));
+        assert!(!codex_has_own_notify("[tui]\nnotify = true\n"));
+        // Per launch, their notify stays when TernaryCode's hooks are added.
+        let pl = Integration::PerLaunch;
+        let kept = launch_command_with("codex", Some(AgentKind::Codex), pl, true, true);
+        assert!(kept.contains("TC_CODEX_HOOKS") && !kept.contains("TC_CODEX_NOTIFY"), "{kept}");
+        let without_hooks = launch_command_with("codex", Some(AgentKind::Codex), pl, false, true);
+        assert!(without_hooks.contains("TC_CODEX_NOTIFY"), "{without_hooks}");
+    }
+
+    /// Codex writes into its config itself (toml_edit): a key it adds at the top lands after our
+    /// `notify`, a table it adds lands before our closing mark. Uninstalling keeps them.
+    #[test]
+    fn codex_uninstall_keeps_what_codex_wrote_inside_our_marks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[tui]\nnotifications = true\n").unwrap();
+        let plan = plan_codex(&hooks(), &path).unwrap();
+        let record = apply(&plan, &dir.path().join("b")).unwrap();
+        let installed = std::fs::read_to_string(&path).unwrap();
+        let notify = installed.lines().nth(1).unwrap().to_string();
+        assert!(notify.starts_with("notify = ["));
+        let edited = installed.replacen(&format!("{notify}\n"), &format!("{notify}\nmodel = \"gpt-5.5\"\n"), 1);
+        let last = edited.rfind(MARK_END).unwrap();
+        let edited = format!(
+            "{}\n[projects.\"/Users/me/new app\"]\ntrust_level = \"trusted\"\n\n[mcp_servers.ternarycode.tools.browser_click]\napproval_mode = \"approve\"\n{}",
+            &edited[..last],
+            &edited[last..]
+        );
+        std::fs::write(&path, &edited).unwrap();
+        assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Removed));
+        let left = std::fs::read_to_string(&path).unwrap();
+        assert!(left.starts_with("model = \"gpt-5.5\"\n"), "{left}");
+        assert!(left.contains("[tui]\nnotifications = true\n"), "{left}");
+        assert!(left.contains("[projects.\"/Users/me/new app\"]\ntrust_level = \"trusted\"\n"), "{left}");
+        assert!(!left.contains("notify") && !left.contains("hooks") && !left.contains("ternarycode") && !left.contains("approval_mode"), "{left}");
+        assert!(!left.contains(MARK_BEGIN) && !left.contains(MARK_END), "{left}");
+        // Installed again over it: the user's lines stay, ours come back once.
+        std::fs::write(&path, &edited).unwrap();
+        let again = plan_codex(&hooks(), &path).unwrap().after;
+        assert!(again.contains("model = \"gpt-5.5\"") && again.contains("trust_level = \"trusted\""), "{again}");
+        assert_eq!(again.matches("[mcp_servers.ternarycode]").count(), 1, "{again}");
+        assert_eq!(again.matches("notify = [").count(), 1, "{again}");
     }
 
     /// The `$BROWSER` file runs `ternarycode-hook browse <address>` as a shell script and, where

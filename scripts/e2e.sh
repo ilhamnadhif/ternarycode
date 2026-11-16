@@ -117,7 +117,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # terminal, where the web view sits exactly on the page's place; an address typed goes there;
 # a new page (⌥⇧⌘B) opens the project's server beside it in the panel; a page tab brings its
 # page back. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-focus browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -168,6 +168,10 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     DOWNPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
     call evl browser_evaluate '{"function":"() => 1"}'
     run browser-more 90 "sleep 1000;; action add-project $P1;; sleep 1500;; keys python3 -c 'import webbrowser; webbrowser.open(\"http://localhost:$WEBPORT/console.html\")'\\r;; wait-browser Console Page;; wait-pages 3*;; sleep 1000;; expect-shown browser-console:3;; click browser-console:3;; sleep 400;; expect-shown browser-console-drawer:3;; sleep 300;; expect-web-placed;; shot e2e-browser-console;; action palette;; sleep 800;; expect-web-hidden;; shot e2e-browser-still;; key esc;; sleep 600;; expect-web-placed;; focus-pane 0;; keys clear; open http://localhost:$WEBPORT/second.html\\r;; wait-browser Second;; keys \"\$(dirname \"\$TERNARYCODE_HOOK\")/ternarycode\" browse http://localhost:$WEBPORT/newwin.html\\r;; wait-browser New Window Page;; sleep 800;; mouse down browser:3@0.3,0.08;; mouse up browser:3@0.3,0.08;; wait-tabs 0:2;; wait-pages 3,4*;; wait-browser Second;; click page-tab:3;; wait-pages 3*,4;; sleep 300;; focus-pane 0;; keys \"\$(dirname \"\$TERNARYCODE_HOOK\")/ternarycode\" browse http://localhost:$DOWNPORT/\\r;; wait-pages 3,5*,4;; sleep 2500;; expect-shown browser-down:5;; shot e2e-browser-down;; keys python3 -m http.server $DOWNPORT --bind 127.0.0.1 &\\r;; sleep 4000;; expect-hidden browser-down:5;; wait-browser Directory listing;; keys kill %1; $HOOK mcp claude < $MCP/evl.json > $MCP/evl.out; echo ok-\$((1+1))-evl\\r;; wait-screen ok-2-evl;; expect-file $MCP/evl.out JavaScript in pages is off;; action settings-browser;; sleep 600;; shot e2e-settings-browser;; key esc;; quit"
+    # A page's script can't take the keyboard from a terminal (it says it was clicked every 50
+    # ms; anyone's script can post that); a real click on the page gives it the keyboard.
+    printf '<!doctype html><title>Focus Page</title><h1 style="height:400px">Grab</h1><script>setInterval(function () { try { window.ipc.postMessage("focus"); } catch (e) {} }, 50);</script>\n' > "$SITE/focus.html"
+    run browser-focus 60 "sleep 1000;; action add-project $P1;; sleep 1500;; keys clear; open http://localhost:$WEBPORT/focus.html\\r;; wait-browser Focus Page;; wait-pages 3*;; sleep 1000;; focus-pane 0;; sleep 800;; expect-page-focus no;; keys echo kept-\$((40+2))\\r;; wait-screen kept-42;; expect-page-focus no;; mouse down browser:3@0.5,0.3;; mouse up browser:3@0.5,0.3;; wait-page-focus;; quit"
     # The Grid: an agent's page in a panel left hidden (Settings: only the Browser button lights
     # up) shows as a picture in the corner of the agent's tile; a click on it shows the panel in
     # the tile, beside the terminal, where its web view is laid (zoomed out as need be).

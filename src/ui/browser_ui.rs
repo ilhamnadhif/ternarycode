@@ -777,7 +777,17 @@ impl App {
             let before = b.url.clone();
             for e in b.take_events() {
                 match e {
-                    Event::Focused => focused = Some(b.id),
+                    // Believed after a real click on the page only: a script in it can post
+                    // that message too, to take the keyboard from a terminal.
+                    Event::Focused => {
+                        #[cfg(target_os = "macos")]
+                        let clicked = b.view.as_ref().is_some_and(crate::browser::clicked_in);
+                        #[cfg(not(target_os = "macos"))]
+                        let clicked = true;
+                        if clicked {
+                            focused = Some(b.id);
+                        }
+                    }
                     // A link to a new window: a new page of the user's in the panel; an agent's
                     // page keeps it (the agent follows it there).
                     Event::OpenHere(url) if b.driven() => b.navigate(&url),

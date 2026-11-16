@@ -392,10 +392,12 @@ pub fn sleep_after(minutes: u32) -> Duration {
     Duration::from_secs(u64::from(minutes.max(1)) * 60)
 }
 
-/// The host (with its port) and the rest of an address, for the address field.
+/// The host (with its port) and the rest of an address, for the address field. The host ends
+/// where WebKit ends it: at `/`, `?`, `#` or `\` (so `evil.example#@localhost` is not at
+/// localhost).
 pub fn split_url(url: &str) -> (String, String) {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    match rest.find('/') {
+    match rest.find(['/', '?', '#', '\\']) {
         Some(i) => (rest[..i].to_string(), rest[i..].to_string()),
         None => (rest.to_string(), String::new()),
     }
@@ -530,6 +532,7 @@ pub fn build_view(
     use wry::{NewWindowResponse, PageLoadEvent, WebViewBuilder};
     let (s1, s2, s3, s4) = (sink.clone(), sink.clone(), sink.clone(), sink);
     let url = if url.is_empty() { "about:blank" } else { url };
+    watch_clicks();
     WebViewBuilder::new()
         .with_url(url)
         .with_bounds(bounds)
@@ -710,6 +713,51 @@ pub fn turn_back(view: &wry::WebView) {
     }
 }
 
+/// When and where (window number, point in the window) a mouse button last went down in the
+/// app, seen before AppKit hands the click on.
+#[cfg(target_os = "macos")]
+static LAST_CLICK: Mutex<Option<(std::time::Instant, isize, f64, f64)>> = Mutex::new(None);
+
+/// Starts noting the app's clicks (`clicked_in`), once.
+#[cfg(target_os = "macos")]
+fn watch_clicks() {
+    use objc2_app_kit::{NSEvent, NSEventMask};
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let block = block2::RcBlock::new(|e: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit hands the monitor a live event, on the main thread.
+            let ev = unsafe { e.as_ref() };
+            let at = ev.locationInWindow();
+            *LAST_CLICK.lock() = Some((std::time::Instant::now(), ev.windowNumber(), at.x, at.y));
+            // The click goes on as it came.
+            e.as_ptr()
+        });
+        let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown;
+        // SAFETY: the block returns the event it was given. The monitor stays for the app's life.
+        let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
+        std::mem::forget(monitor);
+    });
+}
+
+/// Whether the user's last click, a moment ago, was on this page. A page saying it was clicked
+/// (`Event::Focused`) is believed only then: any script in the page can post that message
+/// (`window.ipc` is the page's), and the keyboard must not leave a terminal for it.
+#[cfg(target_os = "macos")]
+pub fn clicked_in(view: &wry::WebView) -> bool {
+    use wry::WebViewExtMacOS;
+    let Some((at, window, x, y)) = *LAST_CLICK.lock() else { return false };
+    if at.elapsed() > Duration::from_secs(3) {
+        return false;
+    }
+    let wk = view.webview();
+    if wk.window().is_none_or(|w| w.windowNumber() != window) {
+        return false;
+    }
+    // The page's place in the window, as the click's point (from the window's bottom left).
+    let r = wk.convertRect_toView(wk.bounds(), None);
+    x >= r.origin.x && x <= r.origin.x + r.size.width && y >= r.origin.y && y <= r.origin.y + r.size.height
+}
+
 /// Whether the page has the keyboard (its web view, or a view in it, is the window's first
 /// responder).
 #[cfg(target_os = "macos")]
@@ -790,6 +838,12 @@ mod tests {
     fn agents_open_this_machine_and_the_project_sites() {
         assert_eq!(host_of("https://User@Checkout.Stripe.com:443/c/pay"), "checkout.stripe.com");
         assert_eq!(host_of("http://[::1]:3000/"), "[::1]");
+        // A `@` after the host is in the query or the fragment, not before the host.
+        assert_eq!(host_of("https://evil.example#@localhost/"), "evil.example");
+        assert_eq!(host_of("https://evil.example?q=1@localhost"), "evil.example");
+        assert_eq!(host_of("https://evil.example\\@localhost/"), "evil.example");
+        assert!(!agent_may_open("https://evil.example#@localhost/", &["localhost".into()], None));
+        assert_eq!(split_url("http://localhost:3000?x=1"), ("localhost:3000".into(), "?x=1".into()));
         let mut sites = tc_core::model::agent_sites();
         sites.push("stripe.com".to_string());
         for ok in ["http://localhost:5173/cart", "http://127.0.0.1:8080", "http://app.local/", "about:blank", "file:///tmp/a.html", "https://checkout.stripe.com/x", "https://stripe.com"] {
