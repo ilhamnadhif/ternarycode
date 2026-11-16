@@ -21,7 +21,8 @@ pub enum Event {
     Loading(bool),
     /// The page was clicked: it has the keyboard.
     Focused,
-    /// The page asked for a new window (a link with target=_blank, window.open).
+    /// The page asked for a new window that is not a pop-up (a link with target=_blank, a
+    /// script's window.open): a new page.
     OpenHere(String),
     /// Lines the page wrote to its console.
     Console(Vec<ConsoleLine>),
@@ -516,9 +517,10 @@ const FOCUS_SCRIPT: &str = "window.addEventListener('pointerdown', function (e) 
 /// it hears the console from the first line.
 pub const AGENT_JS: &str = include_str!("browser_agent.js");
 
-/// Safari's own name: some sites refuse a web view that does not say it is Safari.
+/// Safari's own name: some sites refuse a web view that does not say it is Safari (Google's
+/// sign-in among them).
 #[cfg(target_os = "macos")]
-const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15";
+pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15";
 
 /// The page as a web view laid over the window at `bounds` (logical points from the top left of
 /// the window's content).
@@ -546,7 +548,17 @@ pub fn build_view(
             s2.push(Event::Url(u));
             s2.push(Event::Loading(matches!(e, PageLoadEvent::Started)));
         })
-        .with_new_window_req_handler(move |u, _| {
+        .with_new_window_req_handler(move |u, f| {
+            // A window of a size, opened by the user's click in the page (Continue with Google,
+            // Sign in with Apple): a pop-up tied to the page, which hears back from it through
+            // `window.opener`. Anything else (a link to a new tab): a new page in the panel.
+            let sized = f.size.is_some() || f.position.is_some();
+            if crate::browser_popup::wanted(sized, crate::browser_popup::user_acted_in(&f.opener.webview)) {
+                let size = f.size.map(|s| (s.width, s.height));
+                if let Some(webview) = crate::browser_popup::open(&f.opener.webview, &u, &f.opener.target_configuration, size, s3.clone()) {
+                    return NewWindowResponse::Create { webview };
+                }
+            }
             s3.push(Event::OpenHere(u));
             NewWindowResponse::Deny
         })
@@ -605,9 +617,15 @@ pub fn snapshot(view: &wry::WebView, done: impl FnOnce(Option<Vec<u8>>) + 'stati
 /// [`snapshot`], `width` points wide (a smaller picture costs less to make).
 #[cfg(target_os = "macos")]
 pub fn snapshot_at(view: &wry::WebView, width: Option<f64>, done: impl FnOnce(Option<Vec<u8>>) + 'static) {
+    use wry::WebViewExtMacOS;
+    snapshot_view(&view.webview(), width, done);
+}
+
+/// [`snapshot_at`] of a web view.
+#[cfg(target_os = "macos")]
+pub fn snapshot_view(wk: &objc2_web_kit::WKWebView, width: Option<f64>, done: impl FnOnce(Option<Vec<u8>>) + 'static) {
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
     use objc2_foundation::{NSDictionary, NSError};
-    use wry::WebViewExtMacOS;
     let done = std::cell::RefCell::new(Some(done));
     let block = block2::RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
         // SAFETY: WebKit hands a valid image (or null) for the length of the call.
@@ -623,7 +641,6 @@ pub fn snapshot_at(view: &wry::WebView, width: Option<f64>, done: impl FnOnce(Op
             f(png);
         }
     });
-    let wk = view.webview();
     let config = width.zip(objc2::MainThreadMarker::new()).map(|(w, mtm)| {
         // SAFETY: a new configuration, on the main thread.
         unsafe {
@@ -718,21 +735,29 @@ pub fn turn_back(view: &wry::WebView) {
 #[cfg(target_os = "macos")]
 static LAST_CLICK: Mutex<Option<(std::time::Instant, isize, f64, f64)>> = Mutex::new(None);
 
-/// Starts noting the app's clicks (`clicked_in`), once.
+/// When a key last went down in the app.
+#[cfg(target_os = "macos")]
+static LAST_KEY: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// Starts noting the app's clicks (`clicked_in`) and keys, once.
 #[cfg(target_os = "macos")]
 fn watch_clicks() {
-    use objc2_app_kit::{NSEvent, NSEventMask};
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventType};
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let block = block2::RcBlock::new(|e: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
             // SAFETY: AppKit hands the monitor a live event, on the main thread.
             let ev = unsafe { e.as_ref() };
-            let at = ev.locationInWindow();
-            *LAST_CLICK.lock() = Some((std::time::Instant::now(), ev.windowNumber(), at.x, at.y));
-            // The click goes on as it came.
+            if ev.r#type() == NSEventType::KeyDown {
+                *LAST_KEY.lock() = Some(std::time::Instant::now());
+            } else {
+                let at = ev.locationInWindow();
+                *LAST_CLICK.lock() = Some((std::time::Instant::now(), ev.windowNumber(), at.x, at.y));
+            }
+            // The event goes on as it came.
             e.as_ptr()
         });
-        let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown;
+        let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown | NSEventMask::KeyDown;
         // SAFETY: the block returns the event it was given. The monitor stays for the app's life.
         let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
         std::mem::forget(monitor);
@@ -745,11 +770,16 @@ fn watch_clicks() {
 #[cfg(target_os = "macos")]
 pub fn clicked_in(view: &wry::WebView) -> bool {
     use wry::WebViewExtMacOS;
+    clicked_in_view(&view.webview(), Duration::from_secs(3))
+}
+
+/// Whether the user's last click, at most `within` ago, was on this page.
+#[cfg(target_os = "macos")]
+pub fn clicked_in_view(wk: &objc2_web_kit::WKWebView, within: Duration) -> bool {
     let Some((at, window, x, y)) = *LAST_CLICK.lock() else { return false };
-    if at.elapsed() > Duration::from_secs(3) {
+    if at.elapsed() > within {
         return false;
     }
-    let wk = view.webview();
     if wk.window().is_none_or(|w| w.windowNumber() != window) {
         return false;
     }
@@ -762,12 +792,23 @@ pub fn clicked_in(view: &wry::WebView) -> bool {
 /// responder).
 #[cfg(target_os = "macos")]
 pub fn has_keyboard(view: &wry::WebView) -> bool {
-    use objc2_app_kit::NSView;
     use wry::WebViewExtMacOS;
-    let wk = view.webview();
+    view_has_keyboard(&view.webview())
+}
+
+/// [`has_keyboard`] of a web view.
+#[cfg(target_os = "macos")]
+pub fn view_has_keyboard(wk: &objc2_web_kit::WKWebView) -> bool {
+    use objc2_app_kit::NSView;
     let Some(window) = wk.window() else { return false };
     let Some(first) = window.firstResponder() else { return false };
-    first.downcast_ref::<NSView>().is_some_and(|v| v.isDescendantOf(&wk))
+    first.downcast_ref::<NSView>().is_some_and(|v| v.isDescendantOf(wk))
+}
+
+/// Whether a key went down in the app at most `within` ago.
+#[cfg(target_os = "macos")]
+pub fn typed_within(within: Duration) -> bool {
+    LAST_KEY.lock().is_some_and(|at| at.elapsed() <= within)
 }
 
 /// The process WebKit draws the page in (each page has its own), for the memory it takes.

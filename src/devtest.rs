@@ -153,7 +153,7 @@ pub fn shown(name: &str) -> bool {
 // were skipped; the rest of the script (actions, checks) runs everywhere.
 
 #[cfg(target_os = "macos")]
-pub use native::{bring_to_front, click, key, mouse, type_text};
+pub use native::{bring_to_front, click, key, key_in_key_window, mouse, type_in_key_window, type_text};
 
 #[cfg(target_os = "macos")]
 mod native {
@@ -162,6 +162,7 @@ mod native {
     use objc2::rc::Retained;
     use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
     use objc2_foundation::{NSPoint, NSString};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Makes the app active and its window the key window, in front.
     pub fn bring_to_front() {
@@ -240,9 +241,30 @@ mod native {
         }
     }
 
+    /// Keys go to the key window (as the keyboard's do), not the app's main window.
+    static TO_KEY_WINDOW: AtomicBool = AtomicBool::new(false);
+
+    /// [`key`] sent to the key window (a pop-up over the app, when one has the keyboard).
+    pub fn key_in_key_window(spec: &str) {
+        TO_KEY_WINDOW.store(true, Ordering::Relaxed);
+        key(spec);
+        TO_KEY_WINDOW.store(false, Ordering::Relaxed);
+    }
+
+    /// [`type_text`] sent to the key window.
+    pub fn type_in_key_window(text: &str) {
+        TO_KEY_WINDOW.store(true, Ordering::Relaxed);
+        type_text(text);
+        TO_KEY_WINDOW.store(false, Ordering::Relaxed);
+    }
+
     /// Sends a key press (down, then up).
     fn press(flags: NSEventModifierFlags, chars: &str, unmod: &str, code: u16) {
-        let Some(w) = window() else { return };
+        let key_window = TO_KEY_WINDOW
+            .load(Ordering::Relaxed)
+            .then(|| MainThreadMarker::new().and_then(|mtm| NSApplication::sharedApplication(mtm).keyWindow()))
+            .flatten();
+        let Some(w) = key_window.or_else(window) else { return };
         let wn = w.windowNumber();
         let (Some(down), Some(up)) = (
             key_event(true, flags, chars, unmod, code, wn),
@@ -410,6 +432,16 @@ pub fn type_text(_text: &str) {
 #[cfg(not(target_os = "macos"))]
 pub fn key(_spec: &str) {
     skipped("key");
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn key_in_key_window(_spec: &str) {
+    skipped("popup-key");
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn type_in_key_window(_text: &str) {
+    skipped("popup-keys");
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -206,6 +206,16 @@ impl App {
                 let at = |b: &crate::browser::Browser| b.url.contains(arg.trim()) || b.title.contains(arg.trim());
                 Some(front.and_then(|id| self.browsers.get(&id)).is_some_and(at)).filter(|ok| *ok)
             }
+            // `wait-popups N`: N pop-up windows of pages are open.
+            #[cfg(target_os = "macos")]
+            "wait-popups" => Some(crate::browser_popup::count().to_string() == arg.trim()).filter(|ok| *ok),
+            // `wait-popup TEXT`: the first pop-up's page is at an address, or shows a title,
+            // holding TEXT.
+            #[cfg(target_os = "macos")]
+            "wait-popup" => Some(crate::browser_popup::first_page().is_some_and(|(u, t)| u.contains(arg.trim()) || t.contains(arg.trim()))).filter(|ok| *ok),
+            // `wait-popup-title TEXT`: the first pop-up's window title holds TEXT.
+            #[cfg(target_os = "macos")]
+            "wait-popup-title" => Some(crate::browser_popup::first_title().is_some_and(|t| t.contains(arg.trim()))).filter(|ok| *ok),
             // A page has the keyboard (clicked).
             "wait-page-focus" => Some(self.browser_focus.is_some()).filter(|ok| *ok),
             // `wait-pages 3,4*`: the open project's panel holds these pages, in this order, the one
@@ -608,7 +618,7 @@ impl App {
                 self.devtest.check(!disk.contains(&want), &format!("expect-not-file {path} lacks {want:?}"));
             }
             "wait-screen" | "wait-status" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
-            | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-panel" | "wait-find" | "wait-caret"
+            | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
             | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" => {
                 WAIT.with(|w| {
@@ -855,6 +865,43 @@ impl App {
                     }
                     None => self.devtest.check(false, "web-shot: no page"),
                 }
+            }
+            // `web-click EXPR`: the user's click (through the window) at the middle of the element
+            // a script finds in the open project's front page (`document.querySelector('#go')`).
+            #[cfg(target_os = "macos")]
+            "web-click" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                match front.and_then(|id| self.browsers.get(&id)).and_then(|b| Some((b.view.as_ref()?, b.placed?))) {
+                    Some((v, placed)) => {
+                        let body = format!("const el = ({}); if (!el) return ''; el.scrollIntoView({{block: 'center'}}); const r = el.getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]);", arg.trim());
+                        let what = arg.trim().to_string();
+                        crate::browser::run_js(v, &body, move |out| {
+                            let at: Option<(f32, f32)> = out.ok().and_then(|s| serde_json::from_str(&s).ok());
+                            match at {
+                                Some((x, y)) => {
+                                    eprintln!("DEVTEST LOG: web-click {what} at {x},{y}");
+                                    devtest::click(placed.min + egui::vec2(x, y), 1, false);
+                                }
+                                None => eprintln!("DEVTEST FAIL: web-click {what}: not found"),
+                            }
+                        });
+                    }
+                    None => self.devtest.check(false, "web-click: no page"),
+                }
+            }
+            // `popup-key SPEC`, `popup-keys TEXT`: keys sent to the window with the keyboard (a
+            // pop-up), as typed.
+            "popup-key" => devtest::key_in_key_window(arg.trim()),
+            "popup-keys" => devtest::type_in_key_window(&devtest::unescape(arg)),
+            // `popup-shot NAME`: the first pop-up's page as it shows, into the shot folder.
+            #[cfg(target_os = "macos")]
+            "popup-shot" => {
+                let dir = std::env::var("TERNARYCODE_SHOT_DIR").unwrap_or_else(|_| ".".into());
+                let path = format!("{dir}/{}.png", arg.trim());
+                crate::browser_popup::snapshot_first(move |png| {
+                    let ok = png.is_some_and(|d| std::fs::write(&path, d).is_ok());
+                    eprintln!("DEVTEST {}: popup-shot {path}", if ok { "PASS" } else { "FAIL" });
+                });
             }
             // `expect-web-placed`: each shown page's web view sits where its pane's page was
             // drawn (WebKit's frame against egui's rectangle, in points), and is visible.

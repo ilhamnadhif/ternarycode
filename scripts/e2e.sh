@@ -121,7 +121,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # terminal, where the web view sits exactly on the page's place; an address typed goes there;
 # a new page (⌥⇧⌘B) opens the project's server beside it in the panel; a page tab brings its
 # page back. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-focus browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -176,6 +176,14 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     # ms; anyone's script can post that); a real click on the page gives it the keyboard.
     printf '<!doctype html><title>Focus Page</title><h1 style="height:400px">Grab</h1><script>setInterval(function () { try { window.ipc.postMessage("focus"); } catch (e) {} }, 50);</script>\n' > "$SITE/focus.html"
     run browser-focus 60 "sleep 1000;; action add-project $P1;; sleep 1500;; keys clear; open http://localhost:$WEBPORT/focus.html\\r;; wait-browser Focus Page;; wait-pages 3*;; sleep 1000;; focus-pane 0;; sleep 800;; expect-page-focus no;; keys echo kept-\$((40+2))\\r;; wait-screen kept-42;; expect-page-focus no;; mouse down browser:3@0.5,0.3;; mouse up browser:3@0.5,0.3;; wait-page-focus;; quit"
+    # A sign-in pop-up (window.open with a size, after a click in the page, as "Continue with
+    # Google" does) opens in a window of its own, tied to the page: it reports back through
+    # window.opener and closes itself, and the page goes on signed in, with no new page in the
+    # panel. Its title bar names the site; keys with ⌘ stay in it (⌘A selects its field's text, ⌘←
+    # goes to the field's start, ⌘K does not open the palette behind it, ⌘W closes the pop-up, not the pane behind it).
+    printf '<!doctype html><title>Popup Opener</title><button id="signin" style="font:30px sans-serif;margin:40px;padding:20px">Sign in</button><button id="stay" style="font:30px sans-serif;margin:40px;padding:20px">Stay</button><script>document.getElementById("signin").onclick = function () { window.open("/signin.html", "signin", "width=480,height=560"); }; document.getElementById("stay").onclick = function () { window.open("/signin.html?stay", "stay", "width=480,height=560"); }; window.addEventListener("message", function (e) { if (e.origin === location.origin) document.title = "Signed in: " + e.data; });</script>\n' > "$SITE/popup.html"
+    printf '<!doctype html><title>Sign In Page</title><h1>Sign in</h1><input id="f" autofocus oninput="document.title = &quot;Typed: &quot; + this.value"><script>if (location.search !== "?stay") setTimeout(function () { window.opener.postMessage("tc-ok", "*"); window.close(); }, 1500);</script>\n' > "$SITE/signin.html"
+    run browser-popup 60 "sleep 1000;; action add-project $P1;; sleep 1500;; keys clear; open http://localhost:$WEBPORT/popup.html\\r;; wait-browser Popup Opener;; wait-pages 3*;; sleep 1000;; web-click document.getElementById('signin');; wait-popups 1;; wait-popup signin.html;; sleep 400;; popup-shot e2e-popup;; shot e2e-popup-app;; wait-popups 0;; wait-browser Signed in: tc-ok;; wait-pages 3*;; web-click document.getElementById('stay');; wait-popups 1;; wait-popup stay;; wait-popup-title localhost;; sleep 500;; popup-keys hello;; popup-key cmd+a;; popup-keys z;; wait-popup Typed: z;; popup-key cmd+left;; popup-keys X;; wait-popup Typed: Xz;; popup-key cmd+k;; sleep 600;; expect-web-placed;; wait-popups 1;; popup-key cmd+w;; wait-popups 0;; wait-pages 3*;; wait-tabs 0:2;; quit"
     # The Grid: an agent's page in a panel left hidden (Settings: only the Browser button lights
     # up) shows as a picture in the corner of the agent's tile; a click on it shows the panel in
     # the tile, beside the terminal, where its web view is laid (zoomed out as need be).

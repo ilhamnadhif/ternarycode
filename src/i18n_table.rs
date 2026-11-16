@@ -948,4 +948,6 @@ const ID: &[(&str, &str)] = &[
     ("Help", "Bantuan"),
     ("Exit", "Keluar"),
     ("Run Anyway", "Tetap Jalankan"),
+    // A page's pop-up window (a sign-in), off https.
+    ("Not Secure", "Tidak Aman"),
 ];
