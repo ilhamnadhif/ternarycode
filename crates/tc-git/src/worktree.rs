@@ -157,8 +157,9 @@ pub fn dirty_files(dir: &Path) -> Vec<String> {
         if rec.len() < 4 {
             continue;
         }
-        if matches!(rec[0], b'R' | b'C') {
-            // The old name of a rename follows as a record of its own.
+        if matches!(rec[0], b'R' | b'C') || matches!(rec[1], b'R' | b'C') {
+            // The old name of a rename follows as a record of its own (also for one in the
+            // working tree, ` R new\0old`).
             records.next();
         }
         files.push(String::from_utf8_lossy(&rec[3..]).into_owned());

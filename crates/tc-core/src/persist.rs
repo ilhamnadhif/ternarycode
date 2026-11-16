@@ -25,7 +25,19 @@ pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
     // A symbolic link (a dotfiles repository, say) stays one: the file it points at is written.
     let resolved;
     let path = if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-        resolved = fs::canonicalize(path)?;
+        resolved = match fs::canonicalize(path) {
+            Ok(target) => target,
+            // The file it points at is not there (deleted in the repository): made there, when
+            // its folder is (a folder that is not there, a repository not cloned yet, is not
+            // made: the write fails).
+            Err(e) => {
+                let target = path.parent().unwrap_or(Path::new(".")).join(fs::read_link(path)?);
+                if !target.parent().is_some_and(Path::is_dir) {
+                    return Err(e);
+                }
+                target
+            }
+        };
         resolved.as_path()
     } else {
         path
@@ -177,5 +189,26 @@ mod tests {
         // Missing file: defaults.
         let missing: Settings = load_json(&dir.path().join("nope.json"));
         assert_eq!(missing, Settings::default());
+    }
+
+    /// A link stays a link: the file it points at is written, also when that file is not there
+    /// yet (but its folder is).
+    #[cfg(unix)]
+    #[test]
+    fn writes_through_a_link_even_to_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("dotfiles")).unwrap();
+        let link = dir.path().join("settings.json");
+        std::os::unix::fs::symlink("dotfiles/settings.json", &link).unwrap();
+        write_private(&link, b"{}").unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(dir.path().join("dotfiles/settings.json")).unwrap(), b"{}");
+        write_private(&link, b"{\"a\": 1}").unwrap();
+        assert_eq!(fs::read(&link).unwrap(), b"{\"a\": 1}");
+        // Into a folder that is not there: not made.
+        let far = dir.path().join("far.json");
+        std::os::unix::fs::symlink("not-cloned/far.json", &far).unwrap();
+        assert!(write_private(&far, b"{}").is_err());
+        assert!(!dir.path().join("not-cloned").exists());
     }
 }

@@ -769,12 +769,14 @@ pub fn install_for_restart(prepared: &Prepared) -> Result<PathBuf, Outcome> {
         Install::MacApp(bundle) => install_mac_now(prepared, &bundle),
         #[cfg(target_os = "linux")]
         Install::LinuxArchive(target) => {
+            // The app first: a new app with an old hook still works, not the reverse.
             let hook = prepared.file.with_file_name("ternarycode-hook");
             let replaced = (|| {
+                replace_file(&prepared.file, &target)?;
                 if hook.is_file() {
                     replace_file(&hook, &target.with_file_name("ternarycode-hook"))?;
                 }
-                replace_file(&prepared.file, &target)
+                Ok::<(), String>(())
             })();
             replaced.map_err(Outcome::Failed)?;
             let _ = std::fs::remove_dir_all(&prepared.dir);
@@ -802,9 +804,11 @@ fn install_mac_now(prepared: &Prepared, bundle: &Path) -> Result<PathBuf, Outcom
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = std::fs::remove_dir_all(&prepared.dir);
+    // The swap copies the new app: when it did not go in (the password was not given, it
+    // failed), the download stays for "Restart to Update" again.
     match parse_outcome(&text) {
         Some(Outcome::Installed(_)) => {
+            let _ = std::fs::remove_dir_all(&prepared.dir);
             // Reported by the next run, as when the helper installs it.
             let _ = crate::paths::write_private(&outcome_file(), format!("{}\n0\n", prepared.version).as_bytes());
             Ok(exe)
@@ -871,12 +875,13 @@ fn replace_file(new: &Path, target: &Path) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 fn replace_and_relaunch(prepared: &Prepared, target: &Path) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
-    // The hook program first: a new app with an old hook still works, not the reverse.
+    // The app first, then the hook program: a new app with an old hook still works, not the
+    // reverse.
     let hook = prepared.file.with_file_name("ternarycode-hook");
+    replace_file(&prepared.file, target)?;
     if hook.is_file() {
         replace_file(&hook, &target.with_file_name("ternarycode-hook"))?;
     }
-    replace_file(&prepared.file, target)?;
     let _ = std::fs::remove_dir_all(&prepared.dir);
     record_pending(&prepared.version)?;
     command("/bin/sh")

@@ -588,8 +588,9 @@ pub fn parse_status(out: &[u8], prefix: &str, project: &Path) -> Option<GitInfo>
             continue;
         }
         let (x, y) = (rec[0], rec[1]);
-        if matches!(x, b'R' | b'C') {
-            // The original path follows as a record of its own.
+        if matches!(x, b'R' | b'C') || matches!(y, b'R' | b'C') {
+            // The original path follows as a record of its own (a rename in the index, or one
+            // git sees in the working tree: ` R new\0old`).
             records.next();
         }
         info.changed += 1;
@@ -794,5 +795,11 @@ mod tests {
         let fresh = parse_status(b"## No commits yet on trunk\0?? x\0", "", root).unwrap();
         assert_eq!(fresh.branch, "trunk");
         assert_eq!(fresh.changes.get(&root.join("x")), Some(&Change::Untracked));
+        // A rename git sees in the working tree (`git add -N` of the new name): its old name
+        // follows too.
+        let moved = parse_status(b"## main\0 R src/new_name.rs\0src/old_name.rs\0", "", root).unwrap();
+        assert_eq!(moved.changed, 1);
+        assert_eq!(moved.changes.get(&root.join("src/new_name.rs")), Some(&Change::Renamed));
+        assert_eq!(moved.changes.len(), 1);
     }
 }
