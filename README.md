@@ -71,8 +71,9 @@ with macOS): the window is up in about 0.2 s, it idles at 0 % CPU, and ten open 
 5. Optional: **Settings → Integrations** installs the hooks once, so agents you start by hand
    report their status too.
 
-The agent must be installed on its own (`claude`, `codex`, `gemini` or `opencode` must work in a
-terminal); TernaryCode runs it, it does not bundle it.
+The agent must be installed on its own (`claude`, `codex`, `gemini` or `opencode`); TernaryCode
+runs it, it does not bundle it. When one isn't installed, Run Agent says so and shows its install
+command, with **Install in Terminal**.
 
 ## Install
 
@@ -116,6 +117,13 @@ Panes run PowerShell 7 (`pwsh`) when it is installed, otherwise Windows PowerShe
 integration loaded without touching your profile or execution policy. Agents run as they do in any
 terminal (Claude Code, Codex, Gemini CLI and OpenCode all work natively on Windows), and their
 hooks reach the app over a named pipe.
+
+As on macOS, the window has no separate title bar: the top bar is the title bar, with minimise,
+maximise and close at its right end. Drag it to move the window (and snap it to a side), double-
+click it to maximise, right-click it for the window menu. Every new pane reads the `PATH` Windows
+has now, so a program installed while TernaryCode runs is found without restarting it, as in
+Windows Terminal. The terminal font is Cascadia Mono when it is installed (Windows 11), else
+Consolas.
 
 > [!IMPORTANT]
 > **“Windows protected your PC”?** The builds are not code-signed yet, so SmartScreen warns about
@@ -329,6 +337,7 @@ commits and what is not committed yet, with **Merge** and **Remove** at hand.
 | Agent status from hooks, `⌘J`, Grid | ✓ | ✓ | ✓ |
 | Desktop notifications | ✓ | — | ✓ (`notify-send`) |
 | Shell integration | zsh, bash, fish | PowerShell | zsh, bash, fish |
+| Window buttons in the top bar (no separate title bar) | ✓ | ✓ | — |
 | Browser panel and the agents' browser tools | ✓ | default browser | default browser |
 | Editor, language servers, documents, Review, worktrees | ✓ | ✓ | ✓ |
 | Updates itself | `.dmg`, `.zip`, installer | setup | AppImage, `.tar.gz` |
@@ -367,11 +376,16 @@ text smaller.
 
 ## Troubleshooting
 
-**`codex : The term 'codex' is not recognized…` or `zsh: command not found: claude`** after Run
-Agent. The agent's own CLI isn't installed, or TernaryCode can't find it on the `PATH`. Install it
-(for example `npm install -g @openai/codex`), check that `codex --version` works in a normal
-terminal, then quit and reopen TernaryCode: its panes get the `PATH` it had when it started, so a
-program installed while it ran shows up only after a restart.
+**Run Agent says an agent isn't installed.** It looks for the agent's program (`claude`, `codex`,
+`gemini`, `opencode`) on the `PATH` a new pane gets. **Install in Terminal** types its install
+command in the project's terminal (an npm one needs Node.js first, which it says); once it is
+installed, run the agent again: a new tab finds it without restarting TernaryCode. **Run Anyway**
+starts the command as it is, for an alias or a shell function the check can't see.
+
+**Windows: `… cannot be loaded because running scripts is disabled on this system`.** Windows
+PowerShell's default execution policy blocks the `.ps1` launchers npm installs (`codex.ps1`,
+`npm.ps1`). Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or install PowerShell 7
+(`winget install Microsoft.PowerShell`), which TernaryCode's panes use when it is there.
 
 **An agent shows only *Active*, or the status bar says it is not connected.** It was started by
 hand without hooks. Start it with **Run Agent** (hooks for that run), or install the hooks once in

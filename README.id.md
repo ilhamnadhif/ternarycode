@@ -74,8 +74,9 @@ memakai sekitar 70 MB.
 5. Opsional: **Settings → Integrations** memasang hook sekali, supaya agent yang Anda jalankan
    sendiri juga melaporkan statusnya.
 
-Agent-nya harus dipasang sendiri (`claude`, `codex`, `gemini`, atau `opencode` harus bisa jalan di
-terminal); TernaryCode menjalankannya, tidak membawanya.
+Agent-nya harus dipasang sendiri (`claude`, `codex`, `gemini`, atau `opencode`); TernaryCode
+menjalankannya, tidak membawanya. Kalau belum terpasang, Run Agent memberi tahu dan menampilkan
+perintah pemasangannya, dengan tombol **Install in Terminal**.
 
 ## Instalasi
 
@@ -120,6 +121,13 @@ Pane menjalankan PowerShell 7 (`pwsh`) kalau terpasang, kalau tidak Windows Powe
 shell integration yang dimuat tanpa mengubah profil atau execution policy Anda. Agent berjalan
 seperti di terminal lain (Claude Code, Codex, Gemini CLI, dan OpenCode berjalan native di Windows),
 dan hook-nya sampai ke app lewat named pipe.
+
+Seperti di macOS, jendelanya tidak punya title bar terpisah: top bar-lah title bar-nya, dengan
+tombol minimize, maximize, dan close di ujung kanannya. Seret untuk memindahkan jendela (dan
+menempelkannya ke sisi layar), klik dua kali untuk maximize, klik kanan untuk menu jendela. Setiap
+pane baru membaca `PATH` Windows yang terbaru, jadi program yang dipasang selama TernaryCode
+berjalan langsung ditemukan tanpa restart, seperti di Windows Terminal. Font terminalnya Cascadia
+Mono kalau terpasang (Windows 11), kalau tidak Consolas.
 
 > [!IMPORTANT]
 > **“Windows protected your PC”?** Build belum ditandatangani kode, jadi SmartScreen memperingatkan
@@ -343,6 +351,7 @@ yang belum di-commit, dengan **Merge** dan **Hapus** di dekatnya.
 | Status agent dari hook, `⌘J`, Grid | ✓ | ✓ | ✓ |
 | Notifikasi desktop | ✓ | — | ✓ (`notify-send`) |
 | Shell integration | zsh, bash, fish | PowerShell | zsh, bash, fish |
+| Tombol jendela di top bar (tanpa title bar terpisah) | ✓ | ✓ | — |
 | Panel Browser dan tool browser untuk agent | ✓ | browser default | browser default |
 | Editor, language server, dokumen, Review, worktree | ✓ | ✓ | ✓ |
 | Memperbarui dirinya sendiri | `.dmg`, `.zip`, installer | setup | AppImage, `.tar.gz` |
@@ -381,11 +390,18 @@ shortcut itu memperkecil teks.
 
 ## Kalau ada masalah
 
-**`codex : The term 'codex' is not recognized…` atau `zsh: command not found: claude`** setelah
-Run Agent. CLI agent-nya belum terpasang, atau TernaryCode tidak menemukannya di `PATH`. Pasang
-dulu (misalnya `npm install -g @openai/codex`), pastikan `codex --version` jalan di terminal biasa,
-lalu tutup dan buka lagi TernaryCode: pane-nya memakai `PATH` saat TernaryCode dibuka, jadi program
-yang dipasang selama app berjalan baru terlihat setelah restart.
+**Run Agent bilang agent belum terpasang.** Run Agent mencari program agent-nya (`claude`,
+`codex`, `gemini`, `opencode`) di `PATH` yang didapat pane baru. **Install in Terminal** mengetik
+perintah pemasangannya di terminal project (perintah npm butuh Node.js dulu, dan itu disebutkan);
+setelah terpasang, jalankan agent-nya lagi: tab baru langsung menemukannya tanpa restart
+TernaryCode. **Run Anyway** menjalankan perintahnya apa adanya, untuk alias atau fungsi shell yang
+tidak terlihat oleh pengecekan.
+
+**Windows: `… cannot be loaded because running scripts is disabled on this system`.** Execution
+policy bawaan Windows PowerShell memblokir launcher `.ps1` yang dipasang npm (`codex.ps1`,
+`npm.ps1`). Jalankan `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` sekali, atau pasang
+PowerShell 7 (`winget install Microsoft.PowerShell`), yang otomatis dipakai pane TernaryCode kalau
+ada.
 
 **Agent hanya menampilkan *Aktif*, atau status bar bilang belum terhubung.** Agent itu dijalankan
 sendiri tanpa hook. Jalankan lewat **Run Agent** (hook untuk sesi itu), atau pasang hook sekali di
