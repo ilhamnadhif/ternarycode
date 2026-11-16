@@ -118,12 +118,13 @@ integration loaded without touching your profile or execution policy. Agents run
 terminal (Claude Code, Codex, Gemini CLI and OpenCode all work natively on Windows), and their
 hooks reach the app over a named pipe.
 
-As on macOS, the window has no separate title bar: the top bar is the title bar, with minimise,
-maximise and close at its right end. Drag it to move the window (and snap it to a side), double-
-click it to maximise, right-click it for the window menu. Every new pane reads the `PATH` Windows
-has now, so a program installed while TernaryCode runs is found without restarting it, as in
-Windows Terminal. The terminal font is Cascadia Mono when it is installed (Windows 11), else
-Consolas.
+The window has TernaryCode's own title bar, as Windows apps do: the app's name and its menus
+(File, Edit, View, Agent, Window, Help, the ones the Mac menu bar has, with their shortcuts) at
+the left, minimise, maximise and close at the right. Drag it to move the window (and snap it to a
+side), double-click it to maximise, right-click it for the window menu. Every new pane reads the
+`PATH` Windows has now, so a program installed while TernaryCode runs is found without restarting
+it, as in Windows Terminal. The terminal font is Cascadia Mono when it is installed (Windows 11),
+else Consolas.
 
 > [!IMPORTANT]
 > **“Windows protected your PC”?** The builds are not code-signed yet, so SmartScreen warns about
@@ -337,7 +338,7 @@ commits and what is not committed yet, with **Merge** and **Remove** at hand.
 | Agent status from hooks, `⌘J`, Grid | ✓ | ✓ | ✓ |
 | Desktop notifications | ✓ | — | ✓ (`notify-send`) |
 | Shell integration | zsh, bash, fish | PowerShell | zsh, bash, fish |
-| Window buttons in the top bar (no separate title bar) | ✓ | ✓ | — |
+| Title bar and menus | the system's menu bar | TernaryCode's own, with File, Edit, View… | the system's title bar |
 | Browser panel and the agents' browser tools | ✓ | default browser | default browser |
 | Editor, language servers, documents, Review, worktrees | ✓ | ✓ | ✓ |
 | Updates itself | `.dmg`, `.zip`, installer | setup | AppImage, `.tar.gz` |

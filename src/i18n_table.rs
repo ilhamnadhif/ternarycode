@@ -945,5 +945,7 @@ const ID: &[(&str, &str)] = &[
     // The window buttons on Windows (the app draws the title bar).
     ("Maximize", "Maksimalkan"),
     ("Restore Down", "Pulihkan Ukuran"),
+    ("Help", "Bantuan"),
+    ("Exit", "Keluar"),
     ("Run Anyway", "Tetap Jalankan"),
 ];

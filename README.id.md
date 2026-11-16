@@ -122,12 +122,13 @@ shell integration yang dimuat tanpa mengubah profil atau execution policy Anda. 
 seperti di terminal lain (Claude Code, Codex, Gemini CLI, dan OpenCode berjalan native di Windows),
 dan hook-nya sampai ke app lewat named pipe.
 
-Seperti di macOS, jendelanya tidak punya title bar terpisah: top bar-lah title bar-nya, dengan
-tombol minimize, maximize, dan close di ujung kanannya. Seret untuk memindahkan jendela (dan
-menempelkannya ke sisi layar), klik dua kali untuk maximize, klik kanan untuk menu jendela. Setiap
-pane baru membaca `PATH` Windows yang terbaru, jadi program yang dipasang selama TernaryCode
-berjalan langsung ditemukan tanpa restart, seperti di Windows Terminal. Font terminalnya Cascadia
-Mono kalau terpasang (Windows 11), kalau tidak Consolas.
+Jendelanya punya title bar TernaryCode sendiri, seperti app Windows pada umumnya: nama app dan
+menunya (File, Edit, View, Agent, Window, Help, sama dengan menu bar di Mac, lengkap dengan
+shortcut-nya) di kiri, tombol minimize, maximize, dan close di kanan. Seret untuk memindahkan
+jendela (dan menempelkannya ke sisi layar), klik dua kali untuk maximize, klik kanan untuk menu
+jendela. Setiap pane baru membaca `PATH` Windows yang terbaru, jadi program yang dipasang selama
+TernaryCode berjalan langsung ditemukan tanpa restart, seperti di Windows Terminal. Font
+terminalnya Cascadia Mono kalau terpasang (Windows 11), kalau tidak Consolas.
 
 > [!IMPORTANT]
 > **“Windows protected your PC”?** Build belum ditandatangani kode, jadi SmartScreen memperingatkan
@@ -351,7 +352,7 @@ yang belum di-commit, dengan **Merge** dan **Hapus** di dekatnya.
 | Status agent dari hook, `⌘J`, Grid | ✓ | ✓ | ✓ |
 | Notifikasi desktop | ✓ | — | ✓ (`notify-send`) |
 | Shell integration | zsh, bash, fish | PowerShell | zsh, bash, fish |
-| Tombol jendela di top bar (tanpa title bar terpisah) | ✓ | ✓ | — |
+| Title bar dan menu | menu bar sistem | milik TernaryCode, dengan File, Edit, View… | title bar sistem |
 | Panel Browser dan tool browser untuk agent | ✓ | browser default | browser default |
 | Editor, language server, dokumen, Review, worktree | ✓ | ✓ | ✓ |
 | Memperbarui dirinya sendiri | `.dmg`, `.zip`, installer | setup | AppImage, `.tar.gz` |

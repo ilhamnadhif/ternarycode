@@ -216,8 +216,9 @@ pub fn set_window_movable(movable: bool) {
 #[cfg(not(target_os = "macos"))]
 pub fn set_window_movable(_movable: bool) {}
 
-/// Windows: the app draws the title bar itself (its top bar, with the window buttons at the
-/// right and its own resize edges): the system's caption is off (`with_decorations(false)`).
+/// Windows: the app draws the title bar itself (mark, name, menus and the window buttons, above
+/// the sidebar and the top bar; `ui::caption`) and its resize edges: the system's caption is off
+/// (`with_decorations(false)`).
 pub fn custom_caption() -> bool {
     cfg!(windows)
 }

@@ -8,13 +8,17 @@ use crate::app::App;
 pub const STATUS_H: f32 = 26.0;
 
 /// Empty space that moves the window (macOS, where the title bar is hidden and the content runs
-/// under it; Windows, where the app draws the title bar), as a title bar does: a double click
-/// zooms (maximises), and on Windows a right click shows the window's system menu. Add it before
-/// the widgets on top of it.
+/// under it); a double click zooms, like a title bar. Add it before the widgets on top of it.
 pub fn window_drag_area(ui: &Ui, rect: egui::Rect, id: &str) {
-    if !cfg!(target_os = "macos") && !crate::platform::custom_caption() {
-        return;
+    if cfg!(target_os = "macos") {
+        title_drag_area(ui, rect, id);
     }
+}
+
+/// Empty space of a title bar the app draws: dragging it moves the window (snapping on
+/// Windows), a double click zooms (maximises), and on Windows a right click shows the window's
+/// system menu. Add it before the widgets on top of it.
+pub fn title_drag_area(ui: &Ui, rect: egui::Rect, id: &str) {
     let r = ui.interact(rect, egui::Id::new(("window-drag", id)), egui::Sense::click_and_drag());
     if r.drag_started_by(egui::PointerButton::Primary) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
@@ -45,6 +49,16 @@ impl App {
                 ui.spacing_mut().item_spacing = spacing;
                 self.status_bar(ui)
             });
+        // Windows: the title bar the app draws (the system's is off), across the window.
+        if crate::platform::custom_caption() {
+            egui::Panel::top("title-bar")
+                .frame(egui::Frame::NONE.fill(p.chrome))
+                .exact_size(super::caption::TITLE_H)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = spacing;
+                    self.title_bar(ui)
+                });
+        }
         let mut visible = !self.settings.sidebar_hidden;
         let response = egui::Panel::left("sidebar")
             .resizable(true)

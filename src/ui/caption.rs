@@ -1,15 +1,21 @@
-//! Windows: the window buttons at the right of the top bar and the resize edges, for a window
-//! without the system caption (`platform::custom_caption`). They look and act as Windows 11's.
+//! Windows: the title bar the app draws for a window without the system caption
+//! (`platform::custom_caption`): the app's mark and name, its menus (those of the macOS menu
+//! bar), the window buttons as Windows 11 draws them, and the resize edges.
 
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, ResizeDirection, Sense, Stroke, Ui, ViewportCommand, pos2, vec2};
 
-use super::style;
+use super::{kit, style};
+use crate::actions::Action;
+use crate::app::App;
 use crate::i18n::t;
+use tc_core::model::View;
 
+/// The title bar's height (the system's is 32 px at 100 %).
+pub const TITLE_H: f32 = 32.0;
 /// One window button: as wide as Windows makes them.
 const BUTTON_W: f32 = 46.0;
-/// The three buttons, at the right end of the top bar.
-pub const CAPTION_W: f32 = 3.0 * BUTTON_W;
+/// The three buttons, at the right end of the title bar.
+const CAPTION_W: f32 = 3.0 * BUTTON_W;
 /// How far in from the window's border a press resizes it.
 const EDGE: f32 = 4.0;
 /// How far along an edge from a corner the press resizes both ways.
@@ -24,9 +30,157 @@ enum Button {
     Close,
 }
 
+impl App {
+    /// The title bar: mark and name at the left, then the menus; empty space moves the window;
+    /// the window buttons at the right.
+    pub fn title_bar(&mut self, ui: &mut Ui) {
+        let p = style::pal(ui);
+        let bar = ui.max_rect();
+        ui.painter().hline(bar.x_range(), bar.bottom() - 0.5, Stroke::new(1.0, p.border));
+        super::view::title_drag_area(ui, bar, "title-bar");
+        let caption = Rect::from_min_max(pos2(bar.right() - CAPTION_W, bar.top()), bar.max);
+        caption_buttons(ui, caption, self.window_focused);
+
+        let text = if self.window_focused { p.text } else { p.text_faint };
+        let mark = Rect::from_center_size(pos2(bar.left() + 12.0 + 8.0, bar.center().y), vec2(16.0, 16.0));
+        super::settings::paint_logo(ui.painter(), mark, &p);
+        let name = ui.painter().layout_no_wrap("TernaryCode".to_string(), style::semibold(12.5), text);
+        let name_at = pos2(mark.right() + 8.0, bar.center().y - name.size().y / 2.0);
+        let name_w = name.size().x;
+        ui.painter().galley(name_at, name, text);
+
+        let menus = Rect::from_min_max(pos2(name_at.x + name_w + 14.0, bar.top()), pos2(caption.left() - 8.0, bar.bottom()));
+        #[cfg(debug_assertions)]
+        crate::devtest::record("title-menus", menus);
+        let chosen = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(menus).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+                ui.set_clip_rect(menus.intersect(ui.clip_rect()));
+                egui::MenuBar::new().ui(ui, |ui| self.title_menus(ui)).inner
+            })
+            .inner;
+        if let Some(action) = chosen {
+            self.actions.push(action);
+        }
+    }
+
+    /// The menus, as the macOS menu bar has them (`menu.rs`), the Windows way: Settings and
+    /// Exit under File, updates and About under Help. The action of the row clicked.
+    fn title_menus(&mut self, ui: &mut Ui) -> Option<Action> {
+        use Action as A;
+        let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+        let mut chosen = None;
+        ui.menu_button(t("File"), |ui| {
+            chosen = menu_rows(ui, &[
+                Some((t("Add Project…"), A::AddProject)),
+                Some((t("Open File…"), A::QuickOpen)),
+                Some((t("Save"), A::SaveFile)),
+                None,
+                Some((t("New Tab"), A::NewTab)),
+                Some((t("New Browser Page"), A::NewBrowserTab)),
+                Some((t("Close Pane"), A::ClosePane)),
+                None,
+                Some((t("Settings…"), A::Settings)),
+                Some((t("Agent Integrations…"), A::Integrations)),
+                None,
+                Some((t("Exit"), A::Quit)),
+            ]);
+        });
+        ui.menu_button(t("Edit"), |ui| {
+            chosen = menu_rows(ui, &[
+                Some((t("Copy"), A::Copy)),
+                Some((t("Paste"), A::Paste)),
+                Some((t("Select All"), A::SelectAll)),
+                None,
+                Some((t("Find in Pane…"), A::Find)),
+                Some((t("Find in All Panes…"), A::FindAll)),
+                None,
+                Some((t("Clear Scrollback"), A::ClearScrollback)),
+            ]);
+        });
+        ui.menu_button(t("View"), |ui| {
+            chosen = menu_rows(ui, &[
+                Some((t("Command Palette…"), A::Palette)),
+                Some((t("Switch Project…"), A::SwitchProject)),
+                Some((t("Show/Hide Sidebar"), A::ToggleSidebar)),
+                Some((t("Show/Hide Code"), A::ToggleEditor)),
+                Some((t("Show/Hide Files"), A::ToggleFiles)),
+                None,
+                Some((t("Browser"), A::ShowBrowser)),
+                Some((t("Open Address"), A::BrowserAddress)),
+                Some((t("Reload Page"), A::BrowserReload)),
+                None,
+                Some((t("Focus View"), A::SetView(View::Focus))),
+                Some((t("Grid of All Projects"), A::ToggleGrid)),
+                None,
+                Some((t("Split Right"), A::SplitRight)),
+                Some((t("Split Down"), A::SplitDown)),
+                Some((t("Next Pane"), A::NextPane)),
+                Some((t("Previous Pane"), A::PrevPane)),
+                None,
+                Some((t("Bigger Text"), A::FontBigger)),
+                Some((t("Smaller Text"), A::FontSmaller)),
+                Some((t("Actual Size"), A::FontReset)),
+            ]);
+        });
+        ui.menu_button(t("Agent"), |ui| {
+            chosen = menu_rows(ui, &[
+                Some((t("Run Agent…"), A::PickPreset)),
+                Some((t("Review Changes…"), A::Review)),
+                None,
+                Some((t("Go to Next Waiting Agent"), A::NextAttention)),
+                Some((t("Back to Where I Was"), A::BackAttention)),
+                Some((t("Show Attention List"), A::ToggleAttention)),
+            ]);
+        });
+        ui.menu_button(t("Window"), |ui| {
+            menu_body(ui);
+            if kit::menu_item(ui, None, t("Minimize"), None, false).clicked() {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
+                ui.close();
+            }
+            let zoom = if maximized { t("Restore Down") } else { t("Maximize") };
+            if kit::menu_item(ui, None, zoom, None, false).clicked() {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                ui.close();
+            }
+            kit::menu_sep(ui);
+            chosen = menu_rows(ui, &[Some((t("Show Next Tab"), A::NextTab)), Some((t("Show Previous Tab"), A::PrevTab))]);
+        });
+        ui.menu_button(t("Help"), |ui| {
+            chosen = menu_rows(ui, &[Some((t("Check for Updates…"), A::CheckForUpdates)), None, Some((t("About TernaryCode"), A::About))]);
+        });
+        chosen
+    }
+}
+
+/// Rows of a title bar menu (`None`: a line between groups) with their shortcuts; the action
+/// of the one clicked.
+fn menu_rows(ui: &mut Ui, rows: &[Option<(&str, Action)>]) -> Option<Action> {
+    menu_body(ui);
+    let mut chosen = None;
+    for row in rows {
+        match row {
+            Some((label, action)) => {
+                if kit::menu_item(ui, None, label, kit::keys(action), false).clicked() {
+                    chosen = Some(action.clone());
+                    ui.close();
+                }
+            }
+            None => kit::menu_sep(ui),
+        }
+    }
+    chosen
+}
+
+/// A title bar menu's width: rows take all there is, and a menu bar's popup has a lot.
+fn menu_body(ui: &mut Ui) {
+    kit::menu_body(ui);
+    ui.set_width(260.0);
+}
+
 /// Minimise, maximise (restore when maximised) and close, from the right end of `bar`. Glyphs
 /// are fainter while the window is not the active one.
-pub fn caption_buttons(ui: &mut Ui, bar: Rect, focused: bool) {
+fn caption_buttons(ui: &mut Ui, bar: Rect, focused: bool) {
     let p = style::pal(ui);
     let dark = ui.visuals().dark_mode;
     let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));

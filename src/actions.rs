@@ -199,6 +199,8 @@ pub enum Action {
     QuitNow,
     /// "Check for Updates…": looks now and shows the update dialog.
     CheckForUpdates,
+    /// Settings → About (Windows: Help → About TernaryCode).
+    About,
     /// The status bar's update item: shows the update dialog.
     ShowUpdate,
     /// Quits and installs the downloaded update (after asking when programs run).

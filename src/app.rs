@@ -2954,6 +2954,7 @@ impl App {
             Action::Integrations => {
                 self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::Integrations))
             }
+            Action::About => self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::About)),
             Action::PlanInstall(agent) => {
                 let Some(path) = Self::agent_config_path(agent) else {
                     return;
