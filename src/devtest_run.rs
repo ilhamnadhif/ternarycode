@@ -230,6 +230,18 @@ impl App {
                 });
                 Some(ok).filter(|ok| *ok)
             }
+            // `wait-page-find 2/3`: the front page's find bar is at match 2 of 3 ("0/0": none).
+            "wait-page-find" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                let f = front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.find.as_ref());
+                Some(f.is_some_and(|f| format!("{}/{}", f.index, f.count.unwrap_or(usize::MAX)) == arg.trim())).filter(|ok| *ok)
+            }
+            // The front page's Web Inspector is open.
+            #[cfg(target_os = "macos")]
+            "wait-inspector" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                Some(front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()).is_some_and(|v| v.is_devtools_open())).filter(|ok| *ok)
+            }
             // A page has the keyboard (clicked).
             "wait-page-focus" => Some(self.browser_focus.is_some()).filter(|ok| *ok),
             // `wait-pages 3,4*`: the open project's panel holds these pages, in this order, the one
@@ -632,7 +644,7 @@ impl App {
                 self.devtest.check(!disk.contains(&want), &format!("expect-not-file {path} lacks {want:?}"));
             }
             "wait-screen" | "wait-status" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
-            | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-dialog" | "wait-download" | "wait-find" | "wait-caret"
+            | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-dialog" | "wait-download" | "wait-page-find" | "wait-inspector" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
             | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" => {
                 WAIT.with(|w| {
@@ -922,6 +934,56 @@ impl App {
                     .and_then(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow())
                     .map(|w| w.title().to_string());
                 eprintln!("DEVTEST LOG: key window {title:?}");
+            }
+            // `page-find TEXT`: the open project's front page's find bar, looking for TEXT;
+            // `page-find-next`, `page-find-prev`: the next match, the one before.
+            "page-find" | "page-find-next" | "page-find-prev" => {
+                match self.active_project().and_then(|p| p.panel.front) {
+                    Some(id) => {
+                        if cmd == "page-find" {
+                            self.open_page_find(id);
+                            if let Some(f) = self.browsers.get_mut(&id).and_then(|b| b.find.as_mut()) {
+                                f.query = arg.trim().to_string();
+                            }
+                        }
+                        self.find_in_page_step(id, match cmd { "page-find" => 0, "page-find-next" => 1, _ => -1 });
+                    }
+                    None => self.devtest.check(false, "page-find: no page"),
+                }
+            }
+            // `page-zoom 1|-1|0`: the front page one step in, out, or back to 100%.
+            "page-zoom" => match self.active_project().and_then(|p| p.panel.front) {
+                Some(id) => self.zoom_page(id, arg.trim().parse().unwrap_or(0)),
+                None => self.devtest.check(false, "page-zoom: no page"),
+            },
+            // `expect-page-zoom 1.1`: the front page is drawn at this zoom (WebKit's own).
+            #[cfg(target_os = "macos")]
+            "expect-page-zoom" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                let got = front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()).map(|v| {
+                    // SAFETY: a plain WKWebView getter on the main thread.
+                    unsafe { crate::browser::web_view_of(v).pageZoom() }
+                });
+                let want: f64 = arg.trim().parse().unwrap_or(1.0);
+                self.devtest.check(got.is_some_and(|z| (z - want).abs() < 0.01), &format!("expect-page-zoom {arg} (got {got:?})"));
+            }
+            // `page-print`: the front page's print sheet opens.
+            #[cfg(target_os = "macos")]
+            "page-print" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                match front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()) {
+                    Some(v) => crate::browser::print(v),
+                    None => self.devtest.check(false, "page-print: no page"),
+                }
+            }
+            // `page-inspect`: the front page's Web Inspector opens.
+            #[cfg(target_os = "macos")]
+            "page-inspect" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                match front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()) {
+                    Some(v) => v.open_devtools(),
+                    None => self.devtest.check(false, "page-inspect: no page"),
+                }
             }
             // `popup-key SPEC`, `popup-keys TEXT`: keys sent to the window with the keyboard (a
             // pop-up), as typed.

@@ -121,7 +121,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # terminal, where the web view sits exactly on the page's place; an address typed goes there;
 # a new page (⌥⇧⌘B) opens the project's server beside it in the panel; a page tab brings its
 # page back. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-tools browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -195,6 +195,11 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\nm dnav; m drm; m dno; m dnm; m dyes; m ddl\n' "$HOOK" "$MCP" "$MCP" > "$WORK/agentdlg.sh"
     mkdir -p "$WORK/data-browser-agent-dialogs"; printf '{"presets":[{"id":"dlg","name":"Dialogs","command":"sh %s"}]}\n' "$WORK/agentdlg.sh" > "$WORK/data-browser-agent-dialogs/settings.json"
     run browser-agent-dialogs 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run dlg;; wait-screen ok-ddl;; expect-file $MCP/drm.out A dialog is open in the page (confirm;; expect-file $MCP/drm.out Remove Wool Beanie?;; expect-file $MCP/dno.out Dismissed the dialog;; expect-file $MCP/dno.out Page: Kept;; expect-file $MCP/dnm.out A dialog is open in the page (prompt;; expect-file $MCP/dyes.out Page: Name: Ada;; expect-file $MCP/ddl.out Downloaded file.txt to $DL/file.txt;; quit"
+    # A page's tools: the find bar counts and steps through matches (round), the zoom steps
+    # (WebKit draws the page at it; the toolbar's chip shows it and a click resets it), and the
+    # Web Inspector opens.
+    printf '<!doctype html><title>Find Page</title><p>Linen shirt</p><p>Wool beanie</p><p>linen tote and LINEN scarf</p>\n' > "$SITE/find.html"
+    run browser-tools 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web http://localhost:$WEBPORT/find.html;; wait-browser Find Page;; wait-pages 3*;; sleep 800;; page-find linen;; wait-page-find 1/3;; expect-shown browser-find:3;; page-find-next;; wait-page-find 2/3;; page-find-next;; wait-page-find 3/3;; page-find-next;; wait-page-find 1/3;; page-find-prev;; wait-page-find 3/3;; shot e2e-browser-find;; page-find zzz;; wait-page-find 0/0;; page-zoom 1;; sleep 400;; expect-page-zoom 1.1;; expect-shown browser-zoom:3;; page-zoom 1;; sleep 400;; expect-page-zoom 1.25;; click browser-zoom:3;; sleep 400;; expect-page-zoom 1;; expect-hidden browser-zoom:3;; page-inspect;; wait-inspector;; page-print;; sleep 1500;; shot e2e-browser-print;; key esc;; sleep 800;; expect-web-placed;; quit"
     # More of the browser: $BROWSER (Python's webbrowser) opens the page beside the terminal; its
     # console's error and warning show as a chip, then in the drawer; under the palette the page
     # is a picture; `open https://…` and `ternarycode browse` go to the same browser; a link to a

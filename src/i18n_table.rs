@@ -958,4 +958,10 @@ const ID: &[(&str, &str)] = &[
     ("Downloading…", "Mengunduh…"),
     ("Download failed", "Unduhan gagal"),
     ("Clear List", "Bersihkan Daftar"),
+    // A page's find bar, zoom, Web Inspector and printing (⋯ menu).
+    ("Find in page", "Cari di halaman"),
+    ("Find…", "Cari…"),
+    ("Inspect Element", "Periksa Elemen"),
+    ("No matches", "Tidak ditemukan"),
+    ("Print…", "Cetak…"),
 ];

@@ -57,6 +57,54 @@ pub struct Dialog {
     pub text: String,
 }
 
+/// The find bar of a page: what is looked for, how many matches, which one is selected.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageFind {
+    pub query: String,
+    /// Matches in the page (`None` until the page answered).
+    pub count: Option<usize>,
+    /// The selected match, from 1 (0: none).
+    pub index: usize,
+    /// The field takes the keyboard next frame.
+    pub focus: bool,
+    /// The search the page is answering: 0 from the top, 1 the next match, -1 the one before.
+    pub step: i32,
+}
+
+impl PageFind {
+    /// Takes in the page's answer to the last search: `count` matches, one `found` (selected).
+    pub fn answered(&mut self, count: usize, found: bool) {
+        self.count = Some(count);
+        self.index = match (found, count) {
+            (false, _) | (_, 0) => 0,
+            _ if self.step == 0 || self.index == 0 => 1,
+            _ if self.step > 0 => self.index % count + 1,
+            _ => (self.index + count - 2) % count + 1,
+        };
+    }
+}
+
+/// The zoom steps of a page (as Safari's).
+pub const ZOOMS: [f32; 13] = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+
+/// The zoom one step in (`dir` 1) or out (-1) from `z`.
+pub fn zoom_step(z: f32, dir: i32) -> f32 {
+    if dir > 0 {
+        ZOOMS.iter().copied().find(|s| *s > z + 0.001).unwrap_or(ZOOMS[ZOOMS.len() - 1])
+    } else {
+        ZOOMS.iter().rev().copied().find(|s| *s < z - 0.001).unwrap_or(ZOOMS[0])
+    }
+}
+
+/// The script that looks for `query` in the page: the number of matches (case-insensitive, in
+/// the page's text), and the next one selected (`back`: the one before; `fresh`: from the top).
+pub fn find_script(query: &str, back: bool, fresh: bool) -> String {
+    let q = serde_json::to_string(query).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        "const q = {q}; if (!q) {{ getSelection().removeAllRanges(); return JSON.stringify([0, false]); }} const text = (document.body ? document.body.innerText : '').toLowerCase(); const n = text.split(q.toLowerCase()).length - 1; if ({fresh}) getSelection().removeAllRanges(); const found = n > 0 && window.find(q, false, {back}, true, false, true, false); return JSON.stringify([n, found]);"
+    )
+}
+
 /// A file the page downloaded (or is downloading).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Download {
@@ -175,6 +223,12 @@ pub struct Browser {
     pub downloads: Vec<Download>,
     /// The list of downloads is open.
     pub downloads_open: bool,
+    /// The find bar (⌘F), when open.
+    pub find: Option<PageFind>,
+    /// What the page's last search found: (matches, found one), filled by the page's answer.
+    pub(crate) find_result: Arc<Mutex<Option<(usize, bool)>>>,
+    /// The zoom the user chose for the page (⌘= / ⌘−), on top of `zoom_want`.
+    pub user_zoom: f32,
     /// Pictures of the page, decoded and waiting to become a texture.
     pub(crate) picture: Picture,
     /// When a picture was asked for (one at a time).
@@ -236,6 +290,9 @@ impl Browser {
             dialog: None,
             downloads: Vec::new(),
             downloads_open: false,
+            find: None,
+            find_result: Arc::default(),
+            user_zoom: 1.0,
             picture: Arc::default(),
             picture_asked: None,
             still: None,
@@ -651,6 +708,8 @@ pub fn build_view(
         })
         // Camera and microphone: WebKit asks the user, per site (never granted unasked).
         .with_permission_handler(|_| PermissionResponse::Default)
+        // Web Inspector (Inspect Element in the page's menu, or ⋯ → Inspect Element).
+        .with_devtools(true)
         // Downloads go to the Downloads folder (a name taken gets a number); the page lists them.
         .with_download_started_handler(move |url, path| {
             // Tests keep the user's Downloads folder out of it.
@@ -800,6 +859,23 @@ pub fn run_js_in(wk: &objc2_web_kit::WKWebView, body: &str, done: impl FnOnce(Re
     unsafe {
         let world = WKContentWorld::pageWorld(mtm);
         wk.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(&NSString::from_str(body), None, None, &world, Some(&block));
+    }
+}
+
+/// Prints the page (the system's print sheet, on the page's window).
+#[cfg(target_os = "macos")]
+pub fn print(view: &wry::WebView) {
+    use objc2_app_kit::NSPrintInfo;
+    let wk = web_view_of(view);
+    let Some(window) = wk.window() else { return };
+    // SAFETY: WebKit's print operation of the page, run as a sheet on its window (main thread).
+    unsafe {
+        let op = wk.printOperationWithPrintInfo(&NSPrintInfo::sharedPrintInfo());
+        // Without a frame the operation prints an empty page.
+        if let Some(v) = op.view() {
+            v.setFrame(wk.bounds());
+        }
+        op.runOperationModalForWindow_delegate_didRunSelector_contextInfo(&window, None, None, std::ptr::null_mut());
     }
 }
 
@@ -978,6 +1054,36 @@ pub fn clear_data() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_counts_round() {
+        let mut f = PageFind { query: "a".into(), ..Default::default() };
+        f.answered(3, true);
+        assert_eq!(f.index, 1);
+        f.step = 1;
+        f.answered(3, true);
+        f.answered(3, true);
+        assert_eq!(f.index, 3);
+        f.answered(3, true);
+        assert_eq!(f.index, 1);
+        f.step = -1;
+        f.answered(3, true);
+        assert_eq!(f.index, 3);
+        f.answered(0, false);
+        assert_eq!((f.index, f.count), (0, Some(0)));
+    }
+
+    #[test]
+    fn zoom_steps_as_safari() {
+        assert_eq!(zoom_step(1.0, 1), 1.1);
+        assert_eq!(zoom_step(1.0, -1), 0.9);
+        assert_eq!(zoom_step(3.0, 1), 3.0);
+        assert_eq!(zoom_step(0.5, -1), 0.5);
+        assert_eq!(zoom_step(1.05, -1), 1.0);
+        let s = find_script("Linen \"shirt\"", true, false);
+        assert!(s.starts_with("const q = \"Linen \\\"shirt\\\"\";"), "{s}");
+        assert!(s.contains("window.find(q, false, true, true"));
+    }
 
     #[test]
     fn addresses_as_typed() {

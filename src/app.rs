@@ -3285,6 +3285,12 @@ impl App {
             }
             Action::QuickOpen => self.open_palette(PaletteMode::Files),
             // A document shown in the editor, with the keyboard not in a terminal: search it.
+            // A page with the keyboard: its find bar.
+            Action::Find if self.page_with_keys().is_some() => {
+                if let Some(id) = self.page_with_keys() {
+                    self.open_page_find(id);
+                }
+            }
             Action::Find if self.view == View::Focus && self.doc_has_keyboard(ctx) => {
                 if let Some(v) = self.active.and_then(|id| self.editors.get_mut(&id)).and_then(|e| e.file_mut()).and_then(|f| f.doc.as_deref_mut()) {
                     v.open_find();
@@ -3371,6 +3377,17 @@ impl App {
                 self.focus_pane(pane);
                 if let Some(p) = self.panes.get(&pane) {
                     tc_term::search::reveal(&p.shared, &m);
+                }
+            }
+            // A page with the keyboard: its zoom.
+            Action::FontBigger if self.page_with_keys().is_some() => {
+                if let Some(id) = self.page_with_keys() {
+                    self.zoom_page(id, 1);
+                }
+            }
+            Action::FontSmaller if self.page_with_keys().is_some() => {
+                if let Some(id) = self.page_with_keys() {
+                    self.zoom_page(id, -1);
                 }
             }
             Action::Copy if self.page_has_keys("copy") => {}

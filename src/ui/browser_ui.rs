@@ -11,7 +11,7 @@ use tc_core::PaneId;
 use super::{icons, kit, style};
 use crate::actions::Action;
 use crate::app::App;
-use crate::browser::{Answer, Ask, Browser, Dialog, DialogKind, Driver, Event};
+use crate::browser::{Answer, Ask, Browser, Dialog, DialogKind, Driver, Event, PageFind};
 use crate::i18n::{t, tf};
 
 /// The toolbar at the top of a browser pane (its header, also in a split).
@@ -22,6 +22,8 @@ const WEB_INSET: f32 = 3.0;
 const AGENT_H: f32 = 34.0;
 /// The question about a site an agent's step would open.
 const ASK_H: f32 = 84.0;
+/// The find bar's height.
+const FIND_H: f32 = 34.0;
 
 impl App {
     /// What a pane is called (a tab, a tile): a terminal's label, or a browser's page.
@@ -85,6 +87,16 @@ impl App {
             let n = if errors + warnings > 0 { (errors + warnings).to_string() } else { String::new() };
             let g = ui.painter().layout_no_wrap(n, egui::FontId::proportional(style::SMALL), p.text);
             let w = if g.size().x > 0.0 { g.size().x + 30.0 } else { 26.0 };
+            fits(right, w).then(|| {
+                let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
+                right = r.left() - 4.0;
+                r
+            })
+        }).flatten();
+        // The page's zoom, when it is not 100% (a click: back to 100%).
+        let user_zoom = self.browsers.get(&id).map_or(1.0, |b| b.user_zoom);
+        let zoom_rect = ((user_zoom - 1.0).abs() > 0.001).then(|| {
+            let w = 44.0;
             fits(right, w).then(|| {
                 let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
                 right = r.left() - 4.0;
@@ -188,6 +200,18 @@ impl App {
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser-more:{id}"), more.rect);
         egui::Popup::menu(&more).align(egui::RectAlign::BOTTOM_END).width(230.0).show(|ui| self.browser_menu(ui, id));
+        if let Some(r) = zoom_rect {
+            let resp = ui.interact(r, egui::Id::new(("browser-zoom", id)), Sense::click());
+            ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), if resp.hovered() { p.hover } else { p.subtle });
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, format!("{:.0}%", user_zoom * 100.0), style::medium(style::SMALL), p.text_muted);
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("browser-zoom:{id}"), r);
+            if resp.on_hover_text(t("Actual Size")).clicked()
+                && let Some(b) = self.browsers.get_mut(&id)
+            {
+                b.user_zoom = 1.0;
+            }
+        }
         if let Some(r) = dl_rect {
             let resp = ui.interact(r, egui::Id::new(("browser-downloads", id)), Sense::click());
             let c = if dl_running { p.info } else if dl_failed { p.err } else { p.ok };
@@ -251,6 +275,12 @@ impl App {
         // A dialog of the page (alert, confirm, prompt): the page waits for its answer.
         if let Some(d) = &dialog {
             top += self.dialog_bar(ui, id, pos2(rect.left(), top), rect.width(), d);
+        }
+        // The find bar (⌘F while the page has the keyboard).
+        if let Some(f) = self.browsers.get(&id).and_then(|b| b.find.clone()) {
+            let r = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), FIND_H));
+            self.page_find_bar(ui, id, r, &f);
+            top = r.bottom();
         }
         // The console's chip in the toolbar, and its drawer at the foot of the pane.
         if let Some(r) = cons_rect {
@@ -500,6 +530,128 @@ impl App {
         }
     }
 
+    /// The find bar of a page: the field (Enter: next, ⇧Enter: the one before, Esc: done), how
+    /// many matches, ↑ ↓ and ×.
+    fn page_find_bar(&mut self, ui: &mut Ui, id: PaneId, r: Rect, f: &PageFind) {
+        let p = style::pal(ui);
+        let painter = ui.painter_at(r);
+        painter.rect_filled(r, CornerRadius::ZERO, p.surface);
+        painter.hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, p.border));
+        let fid = egui::Id::new(("browser-find", id));
+        let count = match f.count {
+            _ if f.query.is_empty() => String::new(),
+            None => String::new(),
+            Some(0) => t("No matches").to_string(),
+            Some(n) => tf("{} of {}", &[&f.index.to_string(), &n.to_string()]),
+        };
+        let cg = painter.layout_no_wrap(count, egui::FontId::proportional(style::SMALL), if f.count == Some(0) { p.err } else { p.text_muted });
+        let x_close = Rect::from_center_size(pos2(r.right() - 17.0, r.center().y), vec2(22.0, 22.0));
+        let down = Rect::from_center_size(pos2(x_close.left() - 13.0, r.center().y), vec2(22.0, 22.0));
+        let up = Rect::from_center_size(pos2(down.left() - 13.0, r.center().y), vec2(22.0, 22.0));
+        let field = Rect::from_min_max(pos2(r.left() + 10.0, r.center().y - 12.0), pos2((up.left() - 8.0 - cg.size().x - 8.0).max(r.left() + 80.0), r.center().y + 12.0));
+        let mut text = f.query.clone();
+        let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(field), |ui| kit::field(ui, fid, &mut text, Some(icons::MAGNIFYING_GLASS), t("Find in page"), field.width(), true)).inner;
+        #[cfg(debug_assertions)]
+        crate::devtest::record(format!("browser-find:{id}"), field);
+        if f.focus {
+            resp.request_focus();
+            if let Some(b) = self.browsers.get_mut(&id)
+                && let Some(ff) = b.find.as_mut()
+            {
+                ff.focus = false;
+            }
+        }
+        ui.painter().galley(pos2(field.right() + 8.0, r.center().y - cg.size().y / 2.0), cg, p.text_muted);
+        let mut step = None;
+        if resp.changed() {
+            if let Some(ff) = self.browsers.get_mut(&id).and_then(|b| b.find.as_mut()) {
+                ff.query = text.clone();
+            }
+            step = Some(0);
+        }
+        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if enter {
+            step = Some(if ui.input(|i| i.modifiers.shift) { -1 } else { 1 });
+            resp.request_focus();
+        }
+        let clicked = |ui: &mut Ui, r: Rect, icon: &str, tip: &str| ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, 22.0)).inner.clicked();
+        if clicked(ui, up, icons::CARET_UP, t("Previous")) {
+            step = Some(-1);
+        }
+        if clicked(ui, down, icons::CARET_DOWN, t("Next")) {
+            step = Some(1);
+        }
+        let close = clicked(ui, x_close, icons::X, t("Done")) || (resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)));
+        if close {
+            self.close_page_find(id);
+        } else if let Some(step) = step {
+            self.find_in_page_step(id, step);
+        }
+    }
+
+    /// Opens a page's find bar (or gives it the keyboard again).
+    pub fn open_page_find(&mut self, id: PaneId) {
+        if let Some(b) = self.browsers.get_mut(&id) {
+            let f = b.find.get_or_insert_with(PageFind::default);
+            f.focus = true;
+            #[cfg(target_os = "macos")]
+            if let Some(v) = &b.view {
+                let _ = v.focus_parent();
+            }
+        }
+        if self.browser_focus == Some(id) {
+            self.browser_focus = None;
+        }
+    }
+
+    /// Closes a page's find bar (its selection goes).
+    pub fn close_page_find(&mut self, id: PaneId) {
+        if let Some(b) = self.browsers.get_mut(&id)
+            && b.find.take().is_some()
+        {
+            #[cfg(target_os = "macos")]
+            if let Some(v) = &b.view {
+                crate::browser::run_js(v, "getSelection().removeAllRanges(); return '';", |_| {});
+            }
+        }
+    }
+
+    /// Looks for the find bar's text in the page: from the top (`step` 0), the next match (1),
+    /// or the one before (-1). The page answers in a while (`find_result`).
+    pub fn find_in_page_step(&mut self, id: PaneId, step: i32) {
+        let Some(b) = self.browsers.get_mut(&id) else { return };
+        let Some(f) = b.find.as_mut() else { return };
+        f.step = step;
+        if f.query.is_empty() {
+            f.count = None;
+            f.index = 0;
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(v) = &b.view {
+            let slot = b.find_result.clone();
+            let ctx = self.ctx.clone();
+            crate::browser::run_js(v, &crate::browser::find_script(&f.query, step < 0, step == 0), move |r| {
+                let got: Option<(usize, bool)> = r.ok().and_then(|s| serde_json::from_str(&s).ok());
+                if let Some(got) = got {
+                    *slot.lock() = Some(got);
+                    ctx.request_repaint();
+                }
+            });
+        }
+    }
+
+    /// Zooms the page one step in (1) or out (-1), or back to 100% (0).
+    pub fn zoom_page(&mut self, id: PaneId, dir: i32) {
+        if let Some(b) = self.browsers.get_mut(&id) {
+            b.user_zoom = if dir == 0 { 1.0 } else { crate::browser::zoom_step(b.user_zoom, dir) };
+        }
+    }
+
+    /// The page with the keyboard (keys meant for a page act there: ⌘F, ⌘=, ⌘−).
+    pub fn page_with_keys(&self) -> Option<PaneId> {
+        self.browser_focus.filter(|id| self.browsers.contains_key(id))
+    }
+
     /// A page's dialog above it: who asks, the message, a field for a prompt, OK (and Cancel).
     /// Enter answers OK, Esc Cancel. Returns its height.
     fn dialog_bar(&mut self, ui: &mut Ui, id: PaneId, at: egui::Pos2, width: f32, d: &Dialog) -> f32 {
@@ -703,6 +855,38 @@ impl App {
         }
         if ui.add_enabled_ui(!url.is_empty(), |ui| kit::menu_item(ui, Some(icons::ARROW_SQUARE_OUT), t("Open in Default Browser"), None, false)).inner.clicked() {
             crate::platform::open_url(&url);
+            ui.close();
+        }
+        kit::menu_sep(ui);
+        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS), t("Find…"), kit::keys(&Action::Find), true).clicked() {
+            self.open_page_find(id);
+            ui.close();
+        }
+        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS_PLUS), t("Zoom In"), kit::keys(&Action::FontBigger), true).clicked() {
+            self.zoom_page(id, 1);
+            ui.close();
+        }
+        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS_MINUS), t("Zoom Out"), kit::keys(&Action::FontSmaller), true).clicked() {
+            self.zoom_page(id, -1);
+            ui.close();
+        }
+        if kit::menu_item(ui, None, t("Actual Size"), None, true).clicked() {
+            self.zoom_page(id, 0);
+            ui.close();
+        }
+        kit::menu_sep(ui);
+        #[cfg(target_os = "macos")]
+        if kit::menu_item(ui, Some(icons::CODE), t("Inspect Element"), None, true).clicked() {
+            if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
+                v.open_devtools();
+            }
+            ui.close();
+        }
+        #[cfg(target_os = "macos")]
+        if kit::menu_item(ui, None, t("Print…"), None, true).clicked() {
+            if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
+                crate::browser::print(v);
+            }
             ui.close();
         }
         kit::menu_sep(ui);
@@ -939,6 +1123,12 @@ impl App {
         let mut new_tabs = Vec::new();
         let mut dialogs = Vec::new();
         for b in self.browsers.values_mut() {
+            // The page answered a search of its find bar.
+            if let Some((n, found)) = b.find_result.lock().take()
+                && let Some(f) = b.find.as_mut()
+            {
+                f.answered(n, found);
+            }
             let before = b.url.clone();
             for e in b.take_events() {
                 match e {
@@ -1108,11 +1298,13 @@ impl App {
                         }
                     }
                     // Zoomed out in a Grid tile (the layout of Focus, smaller), as is in Focus.
-                    if (b.zoom - b.zoom_want).abs() > 0.004
+                    // And the zoom the user chose for the page (⌘= / ⌘−).
+                    let want = b.zoom_want * b.user_zoom;
+                    if (b.zoom - want).abs() > 0.004
                         && let Some(v) = &b.view
                     {
-                        let _ = v.zoom(f64::from(b.zoom_want));
-                        b.zoom = b.zoom_want;
+                        let _ = v.zoom(f64::from(want));
+                        b.zoom = want;
                     }
                 }
                 _ if in_use.contains(&b.id) => {
