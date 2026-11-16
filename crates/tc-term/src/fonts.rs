@@ -207,14 +207,22 @@ const SYMBOLS: (&str, &str) = ("symbols", "seguisym.ttf");
 #[cfg(not(any(target_os = "macos", windows)))]
 const SYMBOLS: (&str, &str) = ("symbols", "DejaVuSans.ttf");
 
-/// The terminal font when none was chosen: the platform's usual one.
-const DEFAULT_FONT: &str = if cfg!(target_os = "macos") {
-    "Menlo"
-} else if cfg!(windows) {
-    "Consolas"
-} else {
-    "Hack (built-in)"
-};
+/// The terminal font when none was chosen: the platform's usual one. On Windows that is
+/// Cascadia Mono (Windows Terminal's font, part of Windows 11) when it is installed, else
+/// Consolas; looked up once.
+fn default_font() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Menlo"
+    } else if cfg!(windows) {
+        static PICK: OnceLock<&'static str> = OnceLock::new();
+        PICK.get_or_init(|| {
+            let cascadia = PRESETS.iter().find(|p| p.name == "Cascadia Mono");
+            if cascadia.is_some_and(is_available) { "Cascadia Mono" } else { "Consolas" }
+        })
+    } else {
+        "Hack (built-in)"
+    }
+}
 
 /// The system's font folders (Windows and Linux).
 #[cfg(windows)]
@@ -506,7 +514,7 @@ pub fn apply(ctx: &egui::Context, choice: &FontChoice, load_cjk: bool) -> bool {
 pub fn effective_choice(choice: &FontChoice) -> FontChoice {
     if choice.name.is_empty() && choice.path.is_none() {
         FontChoice {
-            name: DEFAULT_FONT.into(),
+            name: default_font().into(),
             path: None,
             index: 0,
         }
@@ -520,10 +528,10 @@ mod tests {
     use super::*;
 
     /// Settings offers the presets whose files are on this computer: the platform's usual font
-    /// (Menlo, Consolas; the built-in Hack on Linux), never one whose file is missing.
+    /// (Menlo, Cascadia Mono or Consolas; the built-in Hack on Linux), never one whose file is missing.
     #[test]
     fn presets_are_offered_when_their_file_exists() {
-        let default = PRESETS.iter().find(|p| p.name == DEFAULT_FONT).unwrap();
+        let default = PRESETS.iter().find(|p| p.name == default_font()).unwrap();
         assert!(is_available(default), "{}", default.name);
         assert!(is_available(&BUILT_IN));
         for file in ["ternaryshell-no-such-font.ttf", "/no/such/dir/font.ttf"] {

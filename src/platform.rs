@@ -216,6 +216,73 @@ pub fn set_window_movable(movable: bool) {
 #[cfg(not(target_os = "macos"))]
 pub fn set_window_movable(_movable: bool) {}
 
+/// Windows: the app draws the title bar itself (its top bar, with the window buttons at the
+/// right and its own resize edges): the system's caption is off (`with_decorations(false)`).
+pub fn custom_caption() -> bool {
+    cfg!(windows)
+}
+
+/// The window, for the system menu (Windows).
+#[cfg(windows)]
+static WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Windows: keeps the window for `show_system_menu`, and asks Windows 11 for rounded corners
+/// (a window without the system caption gets square ones; Windows 10 ignores it). egui-winit
+/// gives it the shadow.
+#[cfg(windows)]
+pub fn init_window_frame(window: &impl raw_window_handle::HasWindowHandle) {
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
+    let Ok(handle) = window.window_handle() else { return };
+    let raw_window_handle::RawWindowHandle::Win32(h) = handle.as_raw() else { return };
+    let hwnd = h.hwnd.get();
+    WINDOW.store(hwnd, std::sync::atomic::Ordering::Relaxed);
+    let round = DWMWCP_ROUND;
+    unsafe {
+        DwmSetWindowAttribute(hwnd as _, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&raw const round).cast(), size_of_val(&round) as u32);
+    }
+}
+
+/// Windows: the window's system menu (Restore, Move, Size, Minimise, Maximise, Close) where the
+/// pointer is, as a right click on a title bar shows it; the item chosen is carried out.
+#[cfg(windows)]
+pub fn show_system_menu(maximized: bool) {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnableMenuItem, GetCursorPos, GetSystemMenu, MF_BYCOMMAND, MFS_DISABLED, MFS_ENABLED, PostMessageW, SC_CLOSE, SC_MAXIMIZE,
+        SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SetMenuDefaultItem, TPM_LEFTALIGN, TPM_RETURNCMD, TrackPopupMenu, WM_SYSCOMMAND,
+    };
+    let hwnd = WINDOW.load(std::sync::atomic::Ordering::Relaxed);
+    if hwnd == 0 {
+        return;
+    }
+    let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
+    unsafe {
+        let menu = GetSystemMenu(hwnd, 0);
+        if menu.is_null() {
+            return;
+        }
+        let state = |on: bool| MF_BYCOMMAND | if on { MFS_ENABLED } else { MFS_DISABLED };
+        EnableMenuItem(menu, SC_RESTORE, state(maximized));
+        EnableMenuItem(menu, SC_MOVE, state(!maximized));
+        EnableMenuItem(menu, SC_SIZE, state(!maximized));
+        EnableMenuItem(menu, SC_MINIMIZE, state(true));
+        EnableMenuItem(menu, SC_MAXIMIZE, state(!maximized));
+        EnableMenuItem(menu, SC_CLOSE, state(true));
+        SetMenuDefaultItem(menu, SC_CLOSE, 0);
+        let mut at = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut at) == 0 {
+            return;
+        }
+        let chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN, at.x, at.y, 0, hwnd, std::ptr::null());
+        if chosen != 0 {
+            PostMessageW(hwnd, WM_SYSCOMMAND, chosen as usize, 0);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn show_system_menu(_maximized: bool) {}
+
 /// Room the window buttons (close, minimise, zoom) take at the top left when the content runs
 /// under the title bar (macOS, not in full screen).
 pub fn traffic_light_inset(fullscreen: bool) -> f32 {

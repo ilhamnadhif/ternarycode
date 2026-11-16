@@ -95,6 +95,9 @@ pub enum Dialog {
     /// Closing a file with unsaved edits: its project and path (not its place in the editor,
     /// which a switch of project while the dialog shows would change), its name.
     ConfirmCloseFile(ProjectId, PathBuf, String),
+    /// Run Agent found no `program` for this preset on the PATH a new shell gets: how to install
+    /// it. With how it was started, for Run Anyway; `npm`: its installer (npm) is missing too.
+    AgentMissing { preset: String, launch: crate::actions::Launch, place: Option<usize>, program: String, npm: bool },
     /// Taking an agent's installed hooks out of its settings.
     ConfirmUninstall(AgentKind),
     ConfirmQuit(Vec<Busy>),
@@ -347,6 +350,9 @@ pub struct App {
     /// The pointer is over a terminal tab (or one is being dragged) this frame.
     pub tabs_hot: bool,
     window_movable: Option<bool>,
+    /// The next preset started skips the check that its agent's program is installed (Run
+    /// Anyway).
+    skip_agent_check: bool,
     pub cell: Option<egui::Vec2>,
     /// How terminals are drawn, worked out once a frame (every Grid tile asks): the frame, the
     /// theme, the style.
@@ -437,6 +443,8 @@ impl App {
         inbox: Option<crate::instance::Inbox>,
     ) -> Self {
         let ctx = &cc.egui_ctx;
+        #[cfg(windows)]
+        platform::init_window_frame(cc);
         let mut settings: Settings = tc_core::persist::load_json(&paths::settings_file());
         if settings.migrate() {
             let _ = tc_core::persist::save_json(&paths::settings_file(), &settings);
@@ -638,6 +646,7 @@ impl App {
             last_full_body: None,
             tabs_hot: false,
             window_movable: None,
+            skip_agent_check: false,
             cell: None,
             term_style_memo: std::cell::Cell::new(None),
             pending_rename: None,
@@ -2128,11 +2137,21 @@ impl App {
     /// none: beside the pane in view, or a new tab when its tab is crowded). `resume` runs its
     /// command that continues the last session.
     fn run_preset(&mut self, ctx: &egui::Context, preset_id: &str, launch: crate::actions::Launch, place: Option<usize>) {
+        let check = !std::mem::take(&mut self.skip_agent_check);
         let Some(preset) = self.presets().into_iter().find(|p| p.id == preset_id) else {
             return;
         };
         if self.active.is_none() {
             self.toast(t("Add a project first.").into());
+            return;
+        }
+        // The agent's program is not on the PATH a new shell gets: say how to install it rather
+        // than type a command the shell refuses.
+        if check && let Some((program, npm)) = self.missing_agent(&preset) {
+            self.dialog = Some(Dialog::AgentMissing { preset: preset.id.clone(), launch, place, program, npm });
+            // Read the user's PATH again: it may change while the dialog shows (an install).
+            #[cfg(not(windows))]
+            self.lsp_find_path();
             return;
         }
         // A session already open in a pane: go there (two agents on one session would write
@@ -2191,6 +2210,41 @@ impl App {
             self.actions
                 .push(Action::SetProjectPreset(project, Some(preset.id)));
         }
+    }
+
+    /// A built-in agent's program missing from the PATH a new pane gets, and whether npm (that
+    /// installs it) is missing too. None when it is there, when that PATH isn't known yet, or
+    /// for a program TernaryCode knows no install for (an alias or a script is fine there).
+    fn missing_agent(&self, preset: &Preset) -> Option<(String, bool)> {
+        let install = preset.agent.and_then(tc_core::agent::install_command)?;
+        let program = tc_core::agent::command_program(&preset.command)?;
+        #[cfg(windows)]
+        let path = crate::cli::pane_path()?;
+        #[cfg(not(windows))]
+        let path = self.lsp.path_env.clone()?;
+        if tc_lsp::servers::resolve(program, &path).is_some() {
+            return None;
+        }
+        let npm = tc_core::agent::needs_npm(install) && tc_lsp::servers::resolve("npm", &path).is_none();
+        Some((program.to_string(), npm))
+    }
+
+    /// Types `command` in the project's shell waiting at its prompt, or in a new tab.
+    fn type_in_terminal(&mut self, ctx: &egui::Context, command: String) {
+        let pane = match self.idle_command_pane() {
+            Some(id) => {
+                if self.panes.get(&id).is_some_and(Pane::dormant) {
+                    self.wake(ctx, id);
+                }
+                Some(id)
+            }
+            None => self.new_tab(ctx),
+        };
+        let Some(pane) = pane else { return };
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.type_command(command);
+        }
+        self.focus_pane(pane);
     }
 
     pub fn launch_command(&self, preset: &Preset, command: &str) -> String {
@@ -2812,6 +2866,11 @@ impl App {
             }
             Action::RunPreset(id) => self.run_preset(ctx, &id, crate::actions::Launch::New, None),
             Action::RunAgent(id, launch, place) => self.run_preset(ctx, &id, launch, Some(place)),
+            Action::RunPresetAnyway(id, launch, place) => {
+                self.skip_agent_check = true;
+                self.run_preset(ctx, &id, launch, place);
+            }
+            Action::TypeInTerminal(command) => self.type_in_terminal(ctx, command),
             Action::Resume(id) => self.resume(ctx, id),
             Action::DismissResume(id) => {
                 // Not offered again after the next restart either.
@@ -3844,6 +3903,9 @@ impl App {
             self.end_tab_drag_view();
         }
         self.draw(ui);
+        if platform::custom_caption() {
+            ui::caption::resize_edges(&ctx);
+        }
         self.drop_overlay(&ctx);
         // The title bar region moves the window, except over the tabs (they can be dragged).
         let movable = !self.tabs_hot && self.tab_drag.is_none() && self.pane_drag.is_none();

@@ -365,6 +365,11 @@ impl Pane {
             }
         };
         let mut env: HashMap<String, String> = spawn.env.iter().cloned().collect();
+        // Windows: the PATH as it is now (the one in `spawn.env` is from the app's start).
+        #[cfg(windows)]
+        if let Some(path) = crate::cli::pane_path() {
+            env.insert("PATH".into(), path.to_string_lossy().into_owned());
+        }
         self.hook_env = spawn.hook.clone();
         self.adopted = false;
         if let Some((sock, token)) = &spawn.hook {

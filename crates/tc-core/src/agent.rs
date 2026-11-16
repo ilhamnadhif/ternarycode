@@ -129,6 +129,46 @@ pub fn builtin_presets() -> Vec<Preset> {
     ]
 }
 
+/// How to install an agent's program, typed in a pane of this system (from each agent's own
+/// install instructions, November 2026). None: no usual way. On Windows npm is called as
+/// `npm.cmd`: Windows PowerShell's default execution policy refuses `npm.ps1`.
+pub fn install_command(agent: AgentKind) -> Option<&'static str> {
+    let windows = cfg!(windows);
+    Some(match agent {
+        AgentKind::Claude if windows => "irm https://claude.ai/install.ps1 | iex",
+        AgentKind::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
+        AgentKind::Codex if windows => "npm.cmd install -g @openai/codex",
+        AgentKind::Codex => "npm install -g @openai/codex",
+        AgentKind::Gemini if windows => "npm.cmd install -g @google/gemini-cli",
+        AgentKind::Gemini => "npm install -g @google/gemini-cli",
+        AgentKind::OpenCode if windows => "npm.cmd install -g opencode-ai",
+        AgentKind::OpenCode => "npm install -g opencode-ai",
+        AgentKind::Antigravity | AgentKind::Custom => return None,
+    })
+}
+
+/// Whether an install command runs npm (it comes with Node.js).
+pub fn needs_npm(command: &str) -> bool {
+    command.starts_with("npm ") || command.starts_with("npm.cmd ")
+}
+
+/// How to install Node.js from a terminal, where there is a usual way (`brew`: Homebrew is
+/// there).
+pub fn node_install_command(brew: bool) -> Option<&'static str> {
+    if cfg!(windows) {
+        Some("winget install OpenJS.NodeJS.LTS")
+    } else if cfg!(target_os = "macos") && brew {
+        Some("brew install node")
+    } else {
+        None
+    }
+}
+
+/// The program a preset's command starts: its first word.
+pub fn command_program(command: &str) -> Option<&str> {
+    command.split_whitespace().next()
+}
+
 /// The file name in a path, also a Windows one, without `.exe`.
 fn basename(s: &str) -> &str {
     let name = s.rsplit(['/', '\\']).next().unwrap_or(s);
@@ -261,5 +301,20 @@ mod tests {
         let presets = builtin_presets();
         assert_eq!(presets.len(), 4);
         assert!(presets.iter().all(|p| p.resume.is_some() && p.builtin));
+    }
+
+    /// Every built-in preset's agent can be installed from a terminal, and its command starts
+    /// the program the install puts on the PATH.
+    #[test]
+    fn built_in_agents_say_how_to_install_them() {
+        for p in builtin_presets() {
+            let agent = p.agent.unwrap();
+            let install = install_command(agent).unwrap();
+            assert_eq!(command_program(&p.command), Some(agent.slug()));
+            assert_eq!(needs_npm(install), agent != AgentKind::Claude, "{install}");
+        }
+        assert_eq!(install_command(AgentKind::Custom), None);
+        assert_eq!(command_program("  codex -c x"), Some("codex"));
+        assert_eq!(command_program(""), None);
     }
 }

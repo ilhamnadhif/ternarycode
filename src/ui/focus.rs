@@ -49,9 +49,15 @@ impl App {
         ui.painter().rect_filled(header, CornerRadius::ZERO, p.chrome);
         ui.painter().hline(header.x_range(), header.bottom() - 0.5, Stroke::new(1.0, p.border));
         super::view::window_drag_area(ui, header, "content-top");
+        // Windows: the window buttons at the right end (no system caption above the bar).
+        let caption = crate::platform::custom_caption().then(|| Rect::from_min_max(pos2(header.right() - super::caption::CAPTION_W, header.top()), header.max));
+        if let Some(rect) = caption {
+            super::caption::caption_buttons(ui, rect, self.window_focused);
+        }
 
         // Toolbar, from the right.
-        let inner = Rect::from_min_max(pos2(header.left() + 12.0, header.top()), pos2(header.right() - 8.0, header.bottom()));
+        let right = caption.map_or(header.right(), |c| c.left()) - 8.0;
+        let inner = Rect::from_min_max(pos2(header.left() + 12.0, header.top()), pos2(right, header.bottom()));
         let used = ui
             .scope_builder(
                 egui::UiBuilder::new()

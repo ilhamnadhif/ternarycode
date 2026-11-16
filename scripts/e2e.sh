@@ -77,6 +77,10 @@ run unconnected 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WOR
 # again, the shell is in use, so it gets a pane of its own. A preset that only echoes.
 mkdir -p "$WORK/data-run-here"; printf '{"presets":[{"id":"echoer","name":"Echoer","command":"echo agent-ran-here"}]}\n' > "$WORK/data-run-here/settings.json"
 run run-here 40 "sleep 1000;; action add-project $P1;; sleep 1200;; wait-tabs 0:2;; action run echoer;; wait-screen agent-ran-here;; wait-tabs 0:2;; action run echoer;; sleep 800;; wait-tabs 0:2,3;; quit"
+# Run Agent when the agent's program is not on the PATH: a dialog says how to install it and
+# nothing is typed; Run Anyway types the command all the same (an alias the check can't see).
+mkdir -p "$WORK/data-agent-missing"; printf '{"presets":[{"id":"codex","name":"Codex","agent":"codex","command":"tc-no-such-agent"}]}\n' > "$WORK/data-agent-missing/settings.json"
+run agent-missing 40 "sleep 1000;; action add-project $P1;; sleep 3000;; action run-agent codex;; sleep 600;; expect-dialog open;; expect-shown dialog-anyway;; expect-screen-count tc-no-such-agent 0;; click dialog-anyway;; sleep 500;; expect-dialog closed;; wait-screen tc-no-such-agent;; quit"
 # Run Agent's first choice in a shell used before: at its prompt with nothing typed, the agent
 # starts in it ("This Tab"); with something typed on its command line, in a new tab.
 mkdir -p "$WORK/data-run-here-idle"; cp "$WORK/data-run-here/settings.json" "$WORK/data-run-here-idle/settings.json"

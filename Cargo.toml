@@ -55,13 +55,16 @@ raw-window-handle = "0.6.2"
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "x11", "wayland"] }
 
 # OpenGL, and Direct3D 12 (only that wgpu backend) for machines without OpenGL 2 (virtual
-# machines, Remote Desktop, no graphics driver), as in TernaryShell. windows-sys: the Recycle Bin, where the pointer is while files are dragged in.
+# machines, Remote Desktop, no graphics driver), as in TernaryShell. windows-sys: the Recycle
+# Bin, where the pointer is while files are dragged in, the window's corners and system menu.
 # getrandom: the token of the single-instance port (src/instance.rs).
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "wgpu_no_default_features"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 getrandom = "0.4.3"
+# The window (HWND) for its rounded corners and system menu (no system caption, src/platform.rs).
+raw-window-handle = "0.6.2"
 
 # The icon and version information of ternarycode.exe (Explorer, the taskbar, Start menu).
 [target.'cfg(windows)'.build-dependencies]

@@ -211,10 +211,78 @@ pub fn user_path() -> OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
-/// Windows: programs see the user's PATH already (it is in the registry, not a shell's files).
+/// Windows: the PATH a program started now would get, as the registry holds it (the user's
+/// shell reads no files for it). It differs from this process's when something was installed
+/// after TernaryCode started.
 #[cfg(windows)]
 pub fn login_shell_path() -> Option<OsString> {
+    registry_path()
+}
+
+/// Windows: the machine's PATH then the user's, from the registry, with the variables in them
+/// expanded (as Explorer and Windows Terminal build a new program's PATH). None elsewhere.
+#[cfg(windows)]
+pub fn registry_path() -> Option<OsString> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    let machine = registry_string(
+        HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        "Path",
+    );
+    let user = registry_string(HKEY_CURRENT_USER, "Environment", "Path");
+    let parts: Vec<String> = [machine, user].into_iter().flatten().filter(|p| !p.is_empty()).collect();
+    (!parts.is_empty()).then(|| OsString::from(parts.join(";")))
+}
+
+#[cfg(not(windows))]
+pub fn registry_path() -> Option<OsString> {
     None
+}
+
+/// A string value of the registry (`REG_EXPAND_SZ` comes back expanded).
+#[cfg(windows)]
+fn registry_string(root: windows_sys::Win32::System::Registry::HKEY, key: &str, name: &str) -> Option<String> {
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{RRF_RT_REG_SZ, RegGetValueW};
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (key, name) = (wide(key), wide(name));
+    let mut buf: Vec<u16> = vec![0; 2048];
+    // Expanding can need more room than the size asked for first: retry with what it says.
+    for _ in 0..4 {
+        let mut bytes = (buf.len() * 2) as u32;
+        let rc = unsafe {
+            RegGetValueW(root, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut bytes)
+        };
+        if rc == ERROR_SUCCESS {
+            let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            return Some(String::from_utf16_lossy(&buf[..len]));
+        }
+        if rc != ERROR_MORE_DATA {
+            return None;
+        }
+        buf = vec![0; (bytes as usize).div_ceil(2).max(buf.len() * 2)];
+    }
+    None
+}
+
+/// The folders of `lists`, in order, each once: on Windows compared without case and without a
+/// trailing separator (`C:\Tools\` is `c:\tools`). Empty entries are dropped.
+pub fn join_paths_once(lists: &[Vec<PathBuf>]) -> Option<OsString> {
+    let key = |p: &Path| {
+        let s = p.to_string_lossy();
+        if cfg!(windows) {
+            s.trim_end_matches(['\\', '/']).to_lowercase()
+        } else {
+            s.trim_end_matches('/').to_string()
+        }
+    };
+    let mut seen = std::collections::HashSet::new();
+    let dirs: Vec<&PathBuf> = lists
+        .iter()
+        .flatten()
+        .filter(|d| !d.as_os_str().is_empty() && seen.insert(key(d)))
+        .collect();
+    std::env::join_paths(dirs).ok()
 }
 
 /// `PATH` printed by the user's interactive login shell (it reads their startup files), between
@@ -308,5 +376,15 @@ mod tests {
         let path = OsString::from("/nowhere:/bin:/usr/bin");
         assert_eq!(resolve("sh", &path), Some(PathBuf::from("/bin/sh")));
         assert_eq!(resolve("no-such-program-tc", &path), None);
+    }
+
+    /// A pane's PATH: the registry's folders first, then the app's own that it lacks, each folder
+    /// once (a trailing separator makes no difference), empty entries dropped.
+    #[test]
+    fn paths_are_joined_in_order_each_once() {
+        let v = |s: &[&str]| s.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let joined = join_paths_once(&[v(&["/usr/bin", "/opt/new/bin/"]), v(&["/bin", "/usr/bin/", "", "/opt/new/bin"]), v(&["/app"])]);
+        assert_eq!(joined, Some(OsString::from("/usr/bin:/opt/new/bin/:/bin:/app")));
+        assert_eq!(join_paths_once(&[]), Some(OsString::new()));
     }
 }

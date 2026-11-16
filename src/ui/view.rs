@@ -8,18 +8,23 @@ use crate::app::App;
 pub const STATUS_H: f32 = 26.0;
 
 /// Empty space that moves the window (macOS, where the title bar is hidden and the content runs
-/// under it); a double click zooms, like a title bar. Add it before the widgets on top of it.
+/// under it; Windows, where the app draws the title bar), as a title bar does: a double click
+/// zooms (maximises), and on Windows a right click shows the window's system menu. Add it before
+/// the widgets on top of it.
 pub fn window_drag_area(ui: &Ui, rect: egui::Rect, id: &str) {
-    if !cfg!(target_os = "macos") {
+    if !cfg!(target_os = "macos") && !crate::platform::custom_caption() {
         return;
     }
     let r = ui.interact(rect, egui::Id::new(("window-drag", id)), egui::Sense::click_and_drag());
     if r.drag_started_by(egui::PointerButton::Primary) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
+    let zoomed = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
     if r.double_clicked() {
-        let zoomed = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
+    }
+    if r.secondary_clicked() && crate::platform::custom_caption() {
+        crate::platform::show_system_menu(zoomed);
     }
 }
 

@@ -317,6 +317,9 @@ impl App {
                 Dialog::WorktreeSetup { id, copy, adding, run, fresh } => {
                     keep = self.worktree_setup_dialog(ui, *id, copy, adding, run, fresh, enter);
                 }
+                Dialog::AgentMissing { preset, launch, place, program, npm } => {
+                    keep = self.agent_missing_dialog(ui, preset, launch, *place, program, *npm, enter);
+                }
                 Dialog::ConfirmCloseFile(project, path, name) => {
                     ui.set_width(460.0);
                     if header(ui, icons::FLOPPY_DISK, p.warn, &tf("Save changes to {}?", &[name]), Some(t("Your changes are lost if you don’t save them."))) {
@@ -1121,4 +1124,106 @@ pub(super) fn ago(at: std::time::SystemTime) -> String {
         3600..86400 => tf("{} h", &[&(s / 3600).to_string()]),
         _ => tf("{} d", &[&(s / 86400).to_string()]),
     }
+}
+
+impl App {
+    /// Run Agent found no program for a preset: how to install it (Install in Terminal types the
+    /// command), or Run Anyway (an alias or a function the check can't see).
+    #[allow(clippy::too_many_arguments)]
+    fn agent_missing_dialog(&mut self, ui: &mut Ui, preset: &str, launch: &crate::actions::Launch, place: Option<usize>, program: &str, npm: bool, enter: bool) -> bool {
+        let p = style::pal(ui);
+        ui.set_width(480.0);
+        let mut keep = true;
+        let found = self.presets().into_iter().find(|x| x.id == preset);
+        let name = found.as_ref().map_or_else(|| program.to_string(), |x| x.name.clone());
+        let install = found.as_ref().and_then(|x| x.agent).and_then(tc_core::agent::install_command);
+        let brew = cfg!(target_os = "macos") && ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].iter().any(|b| std::path::Path::new(b).exists());
+        let node = if npm { tc_core::agent::node_install_command(brew) } else { None };
+        // What Install in Terminal types: Node.js first when npm is missing, else the agent.
+        let now = if npm { node } else { install };
+        let sub = tf("TernaryCode starts “{}” from your PATH, and it isn’t there.", &[program]);
+        if header(ui, icons::DOWNLOAD_SIMPLE, p.warn, &tf("{} isn’t installed", &[&name]), Some(&sub)) {
+            keep = false;
+        }
+        let mut copied = None;
+        body(ui, |ui| {
+            if npm {
+                let text = if node.is_some() {
+                    t("It is installed with npm, which comes with Node.js: install Node.js first.")
+                } else {
+                    t("It is installed with npm, which comes with Node.js: install Node.js first, from nodejs.org.")
+                };
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.label(RichText::new(icons::WARNING).font(style::icon_font(14.0)).color(p.warn));
+                    ui.add(egui::Label::new(RichText::new(text).size(12.5).color(p.text).line_height(Some(18.0))).wrap());
+                });
+                ui.add_space(6.0);
+            }
+            for command in [node, install].into_iter().flatten() {
+                if command_box(ui, command) {
+                    copied = Some(command);
+                }
+                ui.add_space(6.0);
+            }
+            ui.add(
+                egui::Label::new(
+                    RichText::new(t("Once it is installed, start the agent again: a new tab finds it without restarting TernaryCode."))
+                        .size(style::SMALL)
+                        .color(p.text_muted),
+                )
+                .wrap(),
+            );
+        });
+        if let Some(command) = copied {
+            ui.ctx().copy_text(command.to_string());
+            self.toast_ok(t("Install command copied.").into());
+        }
+        let mut install_now = false;
+        // No "↵ …" hint: three buttons fill the footer (Enter still installs).
+        footer_with(ui, None, |ui| {
+            if now.is_some() {
+                let r = kit::button_ex(ui, kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Install in Terminal"), false);
+                #[cfg(debug_assertions)]
+                crate::devtest::record("dialog-ok", r.rect);
+                install_now = r.clicked();
+            }
+            if kit::secondary(ui, None, t("Cancel")).clicked() {
+                keep = false;
+            }
+            let r = kit::button_ex(ui, kit::Kind::Ghost, None, t("Run Anyway"), false);
+            #[cfg(debug_assertions)]
+            crate::devtest::record("dialog-anyway", r.rect);
+            if r.clicked() {
+                self.actions.push(Action::RunPresetAnyway(preset.to_string(), launch.clone(), place));
+                keep = false;
+            }
+        });
+        if let Some(command) = now
+            && (install_now || enter)
+        {
+            self.actions.push(Action::TypeInTerminal(command.to_string()));
+            keep = false;
+        }
+        keep
+    }
+}
+
+/// A command in a quiet monospace box; true when it is clicked (to copy it).
+fn command_box(ui: &mut Ui, command: &str) -> bool {
+    let p = style::pal(ui);
+    let frame = egui::Frame::NONE
+        .fill(p.canvas)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(style::RADIUS + 1))
+        .inner_margin(Margin::symmetric(12, 9))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(egui::Label::new(RichText::new(command).font(egui::FontId::monospace(12.5)).color(p.text)).selectable(false));
+        });
+    let r = ui.interact(frame.response.rect, ui.id().with(("command-box", command)), egui::Sense::click()).on_hover_text(t("Copy"));
+    if r.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    r.clicked()
 }

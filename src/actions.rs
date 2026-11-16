@@ -71,6 +71,12 @@ pub enum Action {
     /// From the Run Agent dialog: the preset, which session (a new one, its last, or one chosen),
     /// where (0 new tab, 1 split right, 2 split down).
     RunAgent(String, Launch, usize),
+    /// Starts a preset although its program was not found on the PATH (an alias or a shell
+    /// function the check can't see): as `RunAgent` with a place, else as `RunPreset`.
+    RunPresetAnyway(String, Launch, Option<usize>),
+    /// Types a command in the project's shell waiting at its prompt, or in a new tab (an
+    /// agent's install command).
+    TypeInTerminal(String),
     /// Run Agent → New worktree: makes a worktree of the project in view (called `name`,
     /// starting at the branch `base`) and starts the preset in it.
     NewWorktree { preset: String, name: String, base: String },

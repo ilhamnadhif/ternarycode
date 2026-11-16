@@ -159,14 +159,15 @@ end run"#;
     Ok(link)
 }
 
-/// The app's own folder on a pane's `PATH`, so `ternarycode` works in every pane.
+/// A pane's `PATH`: the app's, with its own folder added so `ternarycode` works in every pane.
+/// On Windows the registry's PATH comes first, read again for every new pane: a program
+/// installed while TernaryCode runs (an agent's CLI) is found without a restart, as in Windows
+/// Terminal.
 pub fn pane_path() -> Option<std::ffi::OsString> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-    if !dirs.contains(&dir) {
-        dirs.push(dir);
-    }
-    std::env::join_paths(dirs).ok()
+    let split = |p: Option<std::ffi::OsString>| p.map(|p| std::env::split_paths(&p).collect::<Vec<PathBuf>>()).unwrap_or_default();
+    let fresh = split(tc_lsp::servers::registry_path());
+    tc_lsp::servers::join_paths_once(&[fresh, split(std::env::var_os("PATH")), vec![dir]])
 }
 
 /// Started from a terminal, with no TernaryCode running: starts the app apart from the

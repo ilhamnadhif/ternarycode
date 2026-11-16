@@ -20,5 +20,9 @@ parking_lot = "0.12.5"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "process"] }
 
+# The PATH as the registry holds it now (programs installed after the app started).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
+
 [dev-dependencies]
 tempfile = "3.27.0"

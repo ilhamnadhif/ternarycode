@@ -935,4 +935,15 @@ const ID: &[(&str, &str)] = &[
     ("Keep their layout, smaller", "Tata letak tetap, diperkecil"),
     ("Fit the tile", "Pas dengan tile"),
     ("In every TernaryCode pane, typed by hand too", "Di setiap pane TernaryCode, termasuk yang diketik sendiri"),
+    // Run Agent when the agent's program is not installed.
+    ("{} isn’t installed", "{} belum terpasang"),
+    ("TernaryCode starts “{}” from your PATH, and it isn’t there.", "TernaryCode menjalankan “{}” dari PATH kamu, dan program itu tidak ada di sana."),
+    ("It is installed with npm, which comes with Node.js: install Node.js first.", "Agent ini dipasang dengan npm, yang ikut bersama Node.js: pasang Node.js dulu."),
+    ("It is installed with npm, which comes with Node.js: install Node.js first, from nodejs.org.", "Agent ini dipasang dengan npm, yang ikut bersama Node.js: pasang Node.js dulu, dari nodejs.org."),
+    ("Once it is installed, start the agent again: a new tab finds it without restarting TernaryCode.", "Setelah terpasang, jalankan agent-nya lagi: tab baru langsung menemukannya tanpa me-restart TernaryCode."),
+    ("Install in Terminal", "Pasang di Terminal"),
+    // The window buttons on Windows (the app draws the title bar).
+    ("Maximize", "Maksimalkan"),
+    ("Restore Down", "Pulihkan Ukuran"),
+    ("Run Anyway", "Tetap Jalankan"),
 ];

@@ -110,6 +110,12 @@ fn native_options(saved: Option<[f32; 4]>, renderer: eframe::Renderer) -> eframe
             .with_titlebar_shown(false)
             .with_title_shown(false);
     }
+    // Windows: no system caption; the top bar is the title bar (window buttons at its right,
+    // drag to move, double-click to maximise) and the app draws its own resize edges.
+    #[cfg(windows)]
+    {
+        viewport = viewport.with_decorations(false);
+    }
     if let Some([x, y, w, h]) = saved {
         // A place far off the screens (a display unplugged since) is left to the system.
         if (-200.0..8000.0).contains(&x) && (0.0..8000.0).contains(&y) {
