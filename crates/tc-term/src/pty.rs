@@ -1,28 +1,28 @@
 //! Local PTY sessions: spawn a shell (or a program) on a pseudo-terminal, feed its output into a
 //! `Feeder` from the tokio runtime, and write keyboard input back.
 //!
-//! The PTY itself comes from `alacritty_terminal::tty`. Three things are done here instead of
-//! through its helpers:
-//! - resizing uses `ioctl` directly, because `OnResize::on_resize` exits the process when the
-//!   ioctl fails (it can, once the program is gone);
-//! - the child's exit is read with `waitpid(WNOHANG)` when SIGCHLD arrives, since `Pty` only
-//!   lends out `&Child`;
-//! - dropping a `Pty` waits for the child, so it is dropped on a separate thread.
+//! The PTY is opened and its program started here as `alacritty_terminal::tty::new` does it, but
+//! without the SIGCHLD socket that gives each terminal (see [`spawn_on_pty`]). The program's exit
+//! is looked at with `waitid` when SIGCHLD arrives; letting go of a terminal sends its program
+//! SIGHUP and waits for it, on a thread of its own.
 //!
 //! A PTY can also be adopted: when the app restarts in place for an update, the new app takes
 //! over the terminals (and programs) the old one started, see [`LocalPty::adopt`].
 
 use std::collections::HashMap;
+use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use alacritty_terminal::event::WindowSize;
-use alacritty_terminal::tty::{self, Options, Shell};
 use parking_lot::Mutex;
+use rustix_openpty::rustix;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{mpsc, watch};
@@ -55,16 +55,11 @@ pub struct SpawnOptions {
     pub cell_px: (u16, u16),
 }
 
-/// The terminal's master side: a PTY this app started, or one an earlier run of it started and
-/// handed over at an update.
-enum Master {
-    Spawned(tty::Pty),
-    Adopted(File),
-}
-
 /// A program running on a local pseudo-terminal.
 pub struct LocalPty {
-    pty: Mutex<Option<Master>>,
+    /// The terminal's master side: a PTY this app opened, or one an earlier run of it opened and
+    /// handed over at an update. `None` once let go of.
+    pty: Mutex<Option<File>>,
     master: RawFd,
     pid: u32,
     exit: Mutex<Option<ExitInfo>>,
@@ -85,28 +80,158 @@ fn base_env(env: &mut HashMap<String, String>) {
     }
 }
 
+/// Opens a PTY and starts the program on it as `alacritty_terminal::tty::new` does (the same
+/// shell, variables and setup), less the SIGCHLD handler that registers for each terminal: it
+/// writes a byte to a socket only alacritty's event loop reads, not used here. Unread, the socket
+/// was full after 8192 SIGCHLDs (every git or language server that ends sends one), and macOS
+/// then blocks that write in the handler in spite of `MSG_DONTWAIT`: each thread the next
+/// SIGCHLDs went to hung, and the app with them.
+fn spawn_on_pty(opts: &SpawnOptions, env: &HashMap<String, String>) -> io::Result<(File, u32)> {
+    let os = |e: rustix::io::Errno| io::Error::from_raw_os_error(e.raw_os_error());
+    let win = rustix::termios::Winsize {
+        ws_row: opts.size.rows as u16,
+        ws_col: opts.size.cols as u16,
+        ws_xpixel: (opts.size.cols as u16).saturating_mul(opts.cell_px.0.max(1)),
+        ws_ypixel: (opts.size.rows as u16).saturating_mul(opts.cell_px.1.max(1)),
+    };
+    let pty = rustix_openpty::openpty(None, Some(&win)).map_err(os)?;
+    let (master, slave) = (pty.controller, pty.user);
+    let (master_fd, slave_fd) = (master.as_raw_fd(), slave.as_raw_fd());
+    // Input in UTF-8 (a backspace takes back a whole character).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Ok(mut termios) = rustix::termios::tcgetattr(&master) {
+        termios.input_modes.set(rustix::termios::InputModes::IUTF8, true);
+        let _ = rustix::termios::tcsetattr(&master, rustix::termios::OptionalActions::Now, &termios);
+    }
+    let user = ShellUser::from_env()?;
+    let mut cmd = match &opts.program {
+        Some((program, args)) => {
+            let mut cmd = Command::new(program);
+            cmd.args(args);
+            cmd
+        }
+        None => user.login_shell(),
+    };
+    cmd.stdin(slave.try_clone()?);
+    cmd.stderr(slave.try_clone()?);
+    cmd.stdout(slave);
+    // As alacritty's `tty` set them, so programs see what they saw before.
+    cmd.env("ALACRITTY_WINDOW_ID", "0");
+    cmd.env("USER", &user.name);
+    cmd.env("HOME", &user.home);
+    cmd.env("WINDOWID", "0");
+    cmd.envs(env);
+    // Linux startup notification, for the app's own window only.
+    cmd.env_remove("XDG_ACTIVATION_TOKEN");
+    cmd.env_remove("DESKTOP_STARTUP_ID");
+    let cwd = CString::new(opts.cwd.as_os_str().as_bytes()).ok();
+    // SAFETY: between fork and exec, only async-signal-safe calls on values made before the fork.
+    unsafe {
+        cmd.pre_exec(move || {
+            // A session of its own, with this terminal as its controlling one.
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            // A folder that is gone leaves the program where the app is.
+            if let Some(cwd) = &cwd {
+                libc::chdir(cwd.as_ptr());
+            }
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            libc::close(slave_fd);
+            libc::close(master_fd);
+            for sig in [libc::SIGCHLD, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGALRM] {
+                libc::signal(sig, libc::SIG_DFL);
+            }
+            Ok(())
+        });
+    }
+    // SAFETY: fcntl on the fd just opened; the reader needs it non-blocking.
+    unsafe {
+        let flags = libc::fcntl(master_fd, libc::F_GETFL);
+        if flags == -1 || libc::fcntl(master_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    let child = cmd.spawn().map_err(|e| {
+        io::Error::new(e.kind(), format!("Failed to spawn command '{}': {e}", cmd.get_program().to_string_lossy()))
+    })?;
+    // The terminal's other side is the program's alone now: its end is how the reader learns
+    // the program and everything it started are gone.
+    drop(cmd);
+    Ok((File::from(master), child.id()))
+}
+
+/// Who the program runs as: `$USER`, `$HOME` and `$SHELL`, else this user's passwd entry.
+struct ShellUser {
+    name: String,
+    home: String,
+    shell: String,
+}
+
+impl ShellUser {
+    fn from_env() -> io::Result<Self> {
+        let mut entry: Option<io::Result<[String; 3]>> = None;
+        let mut get = |var: &str, field: usize| match std::env::var(var) {
+            Ok(value) => Ok(value),
+            Err(_) => match entry.get_or_insert_with(passwd_entry) {
+                Ok(e) => Ok(e[field].clone()),
+                Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
+            },
+        };
+        Ok(Self { name: get("USER", 0)?, home: get("HOME", 1)?, shell: get("SHELL", 2)? })
+    }
+
+    /// The user's shell as a login shell. On macOS through `login`, as Terminal does, so it is a
+    /// terminal session of its own.
+    #[cfg(target_os = "macos")]
+    fn login_shell(&self) -> Command {
+        let name = self.shell.rsplit('/').next().unwrap_or(&self.shell);
+        // `exec -a` puts the '-' of a login shell before its name (zsh's builtin, hence zsh).
+        let exec = format!("exec -a -{name} {}", self.shell);
+        // -f: no password for the user already logged in; -l: no cd to $HOME (and no '-'); -p:
+        // the environment kept; -q: quiet, as a ~/.hushlogin asks (login looks for one only in
+        // the folder it starts in).
+        let hush = std::path::Path::new(&self.home).join(".hushlogin").exists();
+        let mut cmd = Command::new("/usr/bin/login");
+        cmd.args([if hush { "-qflp" } else { "-flp" }, self.name.as_str(), "/bin/zsh", "-fc", exec.as_str()]);
+        cmd
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn login_shell(&self) -> Command {
+        Command::new(&self.shell)
+    }
+}
+
+/// This user's name, home folder and shell from the user database.
+fn passwd_entry() -> io::Result<[String; 3]> {
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: an all-zero passwd is a valid value for getpwuid_r to fill in; its strings point
+    // into `buf`, which outlives their use here.
+    unsafe {
+        let mut pw: libc::passwd = std::mem::zeroed();
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        let r = libc::getpwuid_r(libc::getuid(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut found);
+        if r != 0 || found.is_null() {
+            return Err(io::Error::other("this user is not in the user database"));
+        }
+        let text = |p: *const libc::c_char| {
+            if p.is_null() { String::new() } else { CStr::from_ptr(p).to_string_lossy().into_owned() }
+        };
+        Ok([text(pw.pw_name), text(pw.pw_dir), text(pw.pw_shell)])
+    }
+}
+
 impl LocalPty {
     pub fn spawn(opts: &SpawnOptions) -> io::Result<Arc<Self>> {
         let mut env = opts.env.clone();
         base_env(&mut env);
-        let options = Options {
-            shell: opts.program.clone().map(|(p, a)| Shell::new(p, a)),
-            working_directory: Some(opts.cwd.clone()),
-            env,
-            // `drain_on_exit` is for alacritty's event loop, which is not used: the reader drains.
-            ..Options::default()
-        };
-        let size = WindowSize {
-            num_lines: opts.size.rows as u16,
-            num_cols: opts.size.cols as u16,
-            cell_width: opts.cell_px.0.max(1),
-            cell_height: opts.cell_px.1.max(1),
-        };
-        let pty = tty::new(&options, size, 0)?;
-        let master = pty.file().as_raw_fd();
-        let pid = pty.child().id();
+        let (file, pid) = spawn_on_pty(opts, &env)?;
+        let master = file.as_raw_fd();
         Ok(Arc::new(Self {
-            pty: Mutex::new(Some(Master::Spawned(pty))),
+            pty: Mutex::new(Some(file)),
             master,
             pid,
             exit: Mutex::new(None),
@@ -130,7 +255,7 @@ impl LocalPty {
         // SAFETY: the fd is open and was handed over to this run alone.
         let file = unsafe { File::from_raw_fd(master) };
         let me = Arc::new(Self {
-            pty: Mutex::new(Some(Master::Adopted(file))),
+            pty: Mutex::new(Some(file)),
             master,
             pid,
             exit: Mutex::new(None),
@@ -163,8 +288,7 @@ impl LocalPty {
 
     fn dup_master(&self) -> io::Result<File> {
         match self.pty.lock().as_ref() {
-            Some(Master::Spawned(pty)) => pty.file().try_clone(),
-            Some(Master::Adopted(file)) => file.try_clone(),
+            Some(file) => file.try_clone(),
             None => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
         }
     }
@@ -177,7 +301,7 @@ impl LocalPty {
             ws_xpixel: (size.cols as u16).saturating_mul(cell_w),
             ws_ypixel: (size.rows as u16).saturating_mul(cell_h),
         };
-        // SAFETY: the fd stays open while `self.pty` holds the Pty; a failure is harmless.
+        // SAFETY: the fd stays open while `self.pty` holds it; a failure is harmless.
         unsafe {
             libc::ioctl(self.master, libc::TIOCSWINSZ, &win as *const libc::winsize);
         }
@@ -195,8 +319,8 @@ impl LocalPty {
     }
 
     /// The program's exit status once it has ended. The child is looked at, not reaped
-    /// (`WNOWAIT`): it stays a zombie until the `Pty` is dropped, which reaps it after sending
-    /// SIGHUP. Reaping it here would free its pid while that SIGHUP is still to come, and a new
+    /// (`WNOWAIT`): it stays a zombie until this `LocalPty` is dropped, which reaps it after
+    /// sending SIGHUP. Reaping it here would free its pid while that SIGHUP is still to come, and a new
     /// process given the same pid would get it.
     pub fn poll_exit(&self) -> Option<ExitInfo> {
         let mut cached = self.exit.lock();
@@ -291,25 +415,19 @@ pub fn hang_up_all(ptys: &[Arc<LocalPty>], grace: Duration) {
 
 impl Drop for LocalPty {
     fn drop(&mut self) {
-        // `Pty::drop` sends SIGHUP and then waits for the child: never on the UI thread. An
-        // adopted one gets the same.
-        match self.pty.lock().take() {
-            Some(Master::Spawned(pty)) => {
-                std::thread::spawn(move || drop(pty));
-            }
-            Some(Master::Adopted(file)) => {
-                let pid = self.pid as libc::pid_t;
-                std::thread::spawn(move || {
-                    // SAFETY: kill and waitpid on this process's own child.
-                    unsafe {
-                        libc::kill(pid, libc::SIGHUP);
-                        let mut status = 0;
-                        libc::waitpid(pid, &mut status, 0);
-                    }
-                    drop(file);
-                });
-            }
-            None => {}
+        // SIGHUP, then the program is waited for (reaped: see `poll_exit`) and the terminal
+        // closed after it. Never on the UI thread.
+        if let Some(file) = self.pty.lock().take() {
+            let pid = self.pid as libc::pid_t;
+            std::thread::spawn(move || {
+                // SAFETY: kill and waitpid on this process's own child.
+                unsafe {
+                    libc::kill(pid, libc::SIGHUP);
+                    let mut status = 0;
+                    while libc::waitpid(pid, &mut status, 0) == -1 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {}
+                }
+                drop(file);
+            });
         }
     }
 }
@@ -755,6 +873,28 @@ mod tests {
         let run = run(&rt, "trap '' HUP; sleep 3 & sleep 0.3; exit 4", GridSize { cols: 40, rows: 5 });
         assert_eq!(wait_exit(&run).0, ExitInfo::Code(4));
         assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+    }
+
+    /// SIGCHLD keeps coming for as long as the app runs (each git or language server that ends):
+    /// an open terminal must not fill up with it. alacritty's `tty::new` gave each terminal a
+    /// socket the signal handler wrote a byte to and nothing read; on macOS the 8193rd SIGCHLD
+    /// then blocked in the handler for good, and so did each thread the next ones went to.
+    #[test]
+    fn child_signals_do_not_pile_up_in_an_open_terminal() {
+        let rt = rt();
+        let run = run(&rt, "sleep 30", GridSize { cols: 40, rows: 5 });
+        let (done_tx, done_rx) = std_mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..20_000 {
+                // SAFETY: raise runs this process's SIGCHLD handlers on this thread; they only
+                // wake whoever waits for a child.
+                unsafe { libc::raise(libc::SIGCHLD) };
+            }
+            let _ = done_tx.send(());
+        });
+        assert!(done_rx.recv_timeout(Duration::from_secs(10)).is_ok(), "a SIGCHLD handler blocked");
+        run.session.pty.hang_up(Duration::from_millis(500));
+        wait_exit(&run);
     }
 
     /// A terminal handed over (as at an update) keeps its program: the new reader gets its

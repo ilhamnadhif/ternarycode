@@ -18,6 +18,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 skrifa = "0.44.0"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
 
+# Opens the PTY (as alacritty_terminal's own tty does).
+[target.'cfg(unix)'.dependencies]
+rustix-openpty = "0.2.0"
+
 # The pseudoconsole (ConPTY) and the process list for the foreground program.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes", "Win32_System_Threading"] }

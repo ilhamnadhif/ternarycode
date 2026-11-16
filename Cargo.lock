@@ -4701,6 +4701,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "parking_lot",
+ "rustix-openpty",
  "serde",
  "skrifa 0.44.0",
  "tempfile",
