@@ -112,6 +112,16 @@ _tc_deferred_init() {
             fi
         }
     fi
+    # Linux: `xdg-open https://…` likewise.
+    if [[ -n ${TERNARYCODE_HOOK-} && ! -x /usr/bin/open ]] && (( $+commands[xdg-open] && ! ${+functions[xdg-open]} && ! ${+aliases[xdg-open]} )); then
+        xdg-open() {
+            if [[ $# == 1 && ( $1 == http://* || $1 == https://* ) && -n ${TERNARYCODE_SOCK-} ]]; then
+                command "$TERNARYCODE_HOOK" browse "$1"
+            else
+                command xdg-open "$@"
+            fi
+        }
+    fi
     # This prompt's round of hooks is already running without them.
     _tc_precmd
     _tc_precmd_ps1

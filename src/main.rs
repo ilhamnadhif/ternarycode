@@ -132,6 +132,16 @@ fn native_options(saved: Option<[f32; 4]>, renderer: eframe::Renderer) -> eframe
             use winit::platform::macos::EventLoopBuilderExtMacOS as _;
             builder.with_default_menu(false);
         })),
+        // Linux: an X11 window where the desktop has one (XWayland under Wayland), so that pages
+        // show in it (the page helper lays them in the window; Wayland has no such windows).
+        // `TERNARYCODE_WAYLAND=1`, or no page helper: the desktop's own kind of window.
+        #[cfg(target_os = "linux")]
+        event_loop_builder: x11_window().then(|| -> eframe::EventLoopBuilderHook {
+            Box::new(|builder| {
+                use winit::platform::x11::EventLoopBuilderExtX11 as _;
+                builder.with_x11();
+            })
+        }),
         renderer,
         // Two drawables instead of three: a window-sized buffer less (tens of MB on a Retina
         // display) and input shown a frame sooner. Frames here take about a millisecond, so
@@ -143,6 +153,13 @@ fn native_options(saved: Option<[f32; 4]>, renderer: eframe::Renderer) -> eframe
         },
         ..Default::default()
     }
+}
+
+/// Whether the window is an X11 one under Wayland (see `native_options`).
+#[cfg(target_os = "linux")]
+fn x11_window() -> bool {
+    let var = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    var("WAYLAND_DISPLAY") && var("DISPLAY") && !var("TERNARYCODE_WAYLAND") && ternarycode::browser_linux::available()
 }
 
 /// The window and taskbar icon. On macOS the .app bundle's icon is the Dock's: an empty icon

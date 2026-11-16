@@ -32,6 +32,70 @@ pub enum Event {
     DownloadStarted(String, std::path::PathBuf),
     /// The download of this address ended (or failed).
     DownloadDone(String, bool),
+    /// A key of the app's, pressed while the page had the keyboard (Windows, Linux: the page's
+    /// window has the keys there, not the app's).
+    Key(eframe::egui::Key, eframe::egui::Modifiers),
+}
+
+/// The page's web view (wry's), and what the agents' steps act on (a page or a pop-up).
+#[cfg(target_os = "macos")]
+pub type View = wry::WebView;
+#[cfg(target_os = "macos")]
+pub type Page = objc2_web_kit::WKWebView;
+#[cfg(target_os = "macos")]
+pub type PageRc = objc2::rc::Retained<Page>;
+#[cfg(windows)]
+pub use crate::browser_win::{
+    PageRc, View, back_in, bounds, build_view, clear_data, clicked_in, css_size, dim, edit_command, has_keyboard, is_loading, loading_in, page_key, print, run_js, run_js_in,
+    snapshot_at, snapshot_view, turn_back, url_in, view_has_keyboard, web_pid, web_view_of,
+};
+#[cfg(windows)]
+pub use crate::browser_win::Page;
+#[cfg(target_os = "linux")]
+pub use crate::browser_linux::{
+    Page, PageRc, View, back_in, bounds, build_view, clear_data, clicked_in, css_size, dim, edit_command, has_keyboard, is_loading, loading_in, page_key, print, run_js, run_js_in,
+    snapshot_at, snapshot_view, turn_back, url_in, view_has_keyboard, web_pid, web_view_of,
+};
+
+/// Whether pages show in TernaryCode on this machine: on macOS always; on Windows with the
+/// WebView2 Runtime (part of Windows 11, and of Windows 10 with Edge); on Linux in an X11 window
+/// with the page helper (`ternarycode-web`) and WebKitGTK there.
+pub fn supported() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        true
+    }
+    #[cfg(windows)]
+    {
+        static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *OK.get_or_init(|| wry::webview_version().is_ok())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        crate::browser_linux::available()
+    }
+}
+
+/// Why pages do not show in TernaryCode here (`supported`).
+pub const UNSUPPORTED: &str = if cfg!(windows) {
+    "Pages need the Microsoft Edge WebView2 Runtime, which is not installed: get it from microsoft.com/edge/webview2, or the page opens in your default browser."
+} else {
+    "Pages show in TernaryCode in an X11 session with WebKitGTK 4.1 (libwebkit2gtk-4.1) installed; here they open in your default browser."
+};
+
+/// Whether a key pressed in a page is the app's (Windows, Linux): Ctrl+Shift is the app's own
+/// (as ⌘ on macOS), and a browser's Ctrl+F, Ctrl+L, Ctrl+R and zoom keys act on the page as in
+/// a browser.
+pub fn app_key(key: eframe::egui::Key, mods: eframe::egui::Modifiers) -> bool {
+    use eframe::egui::Key;
+    if !mods.ctrl {
+        return false;
+    }
+    // The page's own editing keys stay its (Ctrl+Shift+V pastes as plain text, Ctrl+Shift+Z redoes).
+    if mods.shift {
+        return !matches!(key, Key::C | Key::V | Key::X | Key::A | Key::Z);
+    }
+    !mods.alt && matches!(key, Key::F | Key::L | Key::R | Key::Equals | Key::Plus | Key::Minus | Key::Num0)
 }
 
 /// The kinds of a page's JavaScript dialog.
@@ -184,6 +248,11 @@ pub struct Sink {
 }
 
 impl Sink {
+    /// The window it wakes.
+    pub fn ctx(&self) -> &eframe::egui::Context {
+        &self.ctx
+    }
+
     pub fn push(&self, e: Event) {
         self.events.lock().push(e);
         self.ctx.request_repaint();
@@ -250,8 +319,7 @@ pub struct Browser {
     /// The page was loading in the last frame (a load that ends is checked).
     was_loading: bool,
     events: Arc<Mutex<Vec<Event>>>,
-    #[cfg(target_os = "macos")]
-    pub(crate) view: Option<wry::WebView>,
+    pub(crate) view: Option<View>,
     /// Drawn (shown on screen) after the last frame.
     pub(crate) shown: bool,
     /// Where its web view was last laid (moved only when that changes).
@@ -263,7 +331,6 @@ pub struct Browser {
     pub(crate) dimmed: bool,
     /// The zoom its page is drawn at (1: as in Focus; smaller in a Grid tile, which keeps the
     /// layout it has in Focus), and the zoom where it is drawn this frame.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) zoom: f32,
     pub zoom_want: f32,
 }
@@ -304,7 +371,6 @@ impl Browser {
             probe_due: None,
             was_loading: false,
             events: Arc::default(),
-            #[cfg(target_os = "macos")]
             view: None,
             shown: false,
             placed: None,
@@ -317,7 +383,6 @@ impl Browser {
 
     /// Asks for a picture of the page (`width` points wide, else as it shows), unless one is on
     /// its way.
-    #[cfg(target_os = "macos")]
     pub fn ask_picture(&mut self, ctx: &eframe::egui::Context, width: Option<f64>) {
         let Some(v) = &self.view else { return };
         if self.picture_asked.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
@@ -433,21 +498,18 @@ impl Browser {
         self.url = url.clone();
         self.address = url.clone();
         self.title.clear();
-        #[cfg(target_os = "macos")]
         if let Some(v) = &self.view {
             let _ = v.load_url(&url);
         }
     }
 
     pub fn back(&self) {
-        #[cfg(target_os = "macos")]
         if let Some(v) = &self.view {
             let _ = v.go_back();
         }
     }
 
     pub fn forward(&self) {
-        #[cfg(target_os = "macos")]
         if let Some(v) = &self.view {
             let _ = v.go_forward();
         }
@@ -456,7 +518,6 @@ impl Browser {
     /// Loads the page again; a view that never got its page (its server did not answer) loads
     /// the address.
     pub fn reload(&self) {
-        #[cfg(target_os = "macos")]
         if let Some(v) = &self.view {
             // The view shows the address (not the page it was on when a load of it failed).
             let shows_it = v.url().is_ok_and(|u| u.trim_end_matches('/') == self.url.trim_end_matches('/'));
@@ -488,10 +549,7 @@ impl Browser {
 
     /// Lets the page go (memory); it loads again when shown.
     pub fn sleep(&mut self) {
-        #[cfg(target_os = "macos")]
-        {
-            self.view = None;
-        }
+        self.view = None;
         self.placed = None;
         self.shown = false;
         self.offscreen = false;
@@ -507,14 +565,7 @@ impl Browser {
 
     /// The page has a web view (it is not asleep).
     pub fn live(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            self.view.is_some()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            false
-        }
+        self.view.is_some()
     }
 }
 
@@ -639,9 +690,10 @@ pub fn file_url(path: &std::path::Path) -> String {
 }
 
 /// Reports the user's click in the page (it takes the keyboard): the app then lets go of its
-/// own keyboard focus. An agent's clicks are not the user's (they are not trusted events).
-#[cfg(target_os = "macos")]
-const FOCUS_SCRIPT: &str = "window.addEventListener('pointerdown', function (e) { if (!e.isTrusted) return; try { window.ipc.postMessage('focus'); } catch (x) {} }, true);";
+/// own keyboard focus. An agent's clicks are not the user's (they are not trusted events). On
+/// Linux the page helper tells of the user's clicks itself.
+#[cfg(not(target_os = "linux"))]
+pub(crate) const FOCUS_SCRIPT: &str = "window.addEventListener('pointerdown', function (e) { if (!e.isTrusted) return; try { window.ipc.postMessage('focus'); } catch (x) {} }, true);";
 
 /// The agents' helper in the page (`browser_agent.js`), from the start of every page so that
 /// it hears the console from the first line.
@@ -809,8 +861,7 @@ pub type Picture = Arc<Mutex<Option<tc_doc::Rgba>>>;
 
 /// Takes a picture of the page into `slot` (`width` points wide, else as it shows): the
 /// snapshot on the main thread, decoding on another; the window is woken when it is there.
-#[cfg(target_os = "macos")]
-pub fn take_picture(view: &wry::WebView, width: Option<f64>, slot: Picture, ctx: eframe::egui::Context) {
+pub fn take_picture(view: &View, width: Option<f64>, slot: Picture, ctx: eframe::egui::Context) {
     snapshot_at(view, width, move |png| {
         let Some(png) = png else { return };
         let _ = std::thread::Builder::new().name("browser-picture".into()).spawn(move || {
@@ -893,6 +944,28 @@ pub fn is_loading(view: &wry::WebView) -> bool {
 pub fn web_view_of(view: &wry::WebView) -> objc2::rc::Retained<objc2_web_kit::WKWebView> {
     use wry::WebViewExtMacOS;
     objc2::rc::Retained::into_super(view.webview())
+}
+
+/// A number naming a page (for "is it the same one").
+#[cfg(target_os = "macos")]
+pub fn page_key(page: &Page) -> usize {
+    std::ptr::from_ref(page) as usize
+}
+
+/// Goes back a page.
+#[cfg(target_os = "macos")]
+pub fn back_in(page: &Page) {
+    // SAFETY: a plain WKWebView method on the main thread.
+    unsafe { page.goBack() };
+}
+
+/// The page's size in CSS pixels.
+#[cfg(target_os = "macos")]
+pub fn css_size(page: &Page) -> (f64, f64) {
+    // SAFETY: a plain WKWebView getter on the main thread.
+    let z = unsafe { page.pageZoom() }.max(0.01);
+    let b = page.bounds();
+    (b.size.width / z, b.size.height / z)
 }
 
 /// Whether a web view is loading (see [`is_loading`]).
@@ -1037,7 +1110,7 @@ pub fn dim(view: &wry::WebView, dimmed: bool) {
 /// Forgets the pages' cookies, logins, cache and storage: WebKit's default store, the one
 /// profile every browser pane shares (live or asleep). Main thread only.
 #[cfg(target_os = "macos")]
-pub fn clear_data() {
+pub fn clear_data(_views: &[&View]) {
     use objc2_foundation::NSDate;
     use objc2_web_kit::WKWebsiteDataStore;
     let Some(mtm) = objc2::MainThreadMarker::new() else { return };
@@ -1071,6 +1144,17 @@ mod tests {
         assert_eq!(f.index, 3);
         f.answered(0, false);
         assert_eq!((f.index, f.count), (0, Some(0)));
+    }
+
+    #[test]
+    fn keys_a_page_hands_to_the_app() {
+        use eframe::egui::{Key, Modifiers};
+        let ctrl = Modifiers { ctrl: true, command: true, ..Default::default() };
+        let ctrl_shift = Modifiers { shift: true, ..ctrl };
+        assert!(app_key(Key::F, ctrl) && app_key(Key::L, ctrl) && app_key(Key::Equals, ctrl));
+        assert!(app_key(Key::K, ctrl_shift) && app_key(Key::T, ctrl_shift));
+        assert!(!app_key(Key::C, ctrl) && !app_key(Key::V, ctrl_shift) && !app_key(Key::Z, ctrl_shift));
+        assert!(!app_key(Key::F, Modifiers::default()) && !app_key(Key::K, Modifiers { alt: true, ..ctrl }));
     }
 
     #[test]

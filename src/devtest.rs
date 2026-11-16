@@ -116,7 +116,12 @@ pub fn record(name: impl Into<String>, rect: Rect) {
 }
 
 pub fn rect_of(name: &str) -> Option<Rect> {
-    rects().lock().unwrap().get(name).map(|(r, _)| *r)
+    let rects = rects().lock().unwrap();
+    // `browser-ask:*`: the one of that kind drawn last.
+    if let Some(prefix) = name.strip_suffix('*') {
+        return rects.iter().filter(|(k, _)| k.starts_with(prefix)).max_by_key(|(_, (_, f))| *f).map(|(_, (r, _))| *r);
+    }
+    rects.get(name).map(|(r, _)| *r)
 }
 
 /// Input events for the next frame, added to what the window delivers (the mouse wheel: AppKit
@@ -145,7 +150,12 @@ pub fn take_injected() -> Vec<egui::Event> {
 
 /// The widget was drawn in the last frame.
 pub fn shown(name: &str) -> bool {
-    rects().lock().unwrap().get(name).is_some_and(|(_, f)| *f == FRAME.load(Ordering::Relaxed))
+    let frame = FRAME.load(Ordering::Relaxed);
+    let rects = rects().lock().unwrap();
+    match name.strip_suffix('*') {
+        Some(prefix) => rects.iter().any(|(k, (_, f))| k.starts_with(prefix) && *f == frame),
+        None => rects.get(name).is_some_and(|(_, f)| *f == frame),
+    }
 }
 
 // ----- event injection --------------------------------------------------------------------------
@@ -416,42 +426,128 @@ mod native {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn skipped(step: &str) {
-    eprintln!("DEVTEST LOG: {step}: input injection is macOS-only, skipped");
-}
+// Windows and Linux: the events go into egui's input (the next frame), not through the window
+// system. Keys reach the app's own widgets (a terminal, a field); a page's window does not get
+// them (`page-*` and `web-*` steps act on pages).
 
 #[cfg(not(target_os = "macos"))]
 pub fn bring_to_front() {}
 
 #[cfg(not(target_os = "macos"))]
-pub fn type_text(_text: &str) {
-    skipped("keys");
+fn push(events: impl IntoIterator<Item = egui::Event>) {
+    injected().lock().unwrap().extend(events);
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn key(_spec: &str) {
-    skipped("key");
+fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> [egui::Event; 2] {
+    [
+        egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers },
+        egui::Event::Key { key, physical_key: Some(key), pressed: false, repeat: false, modifiers },
+    ]
+}
+
+/// Types `text` (a line break is Enter, a tab Tab).
+#[cfg(not(target_os = "macos"))]
+pub fn type_text(text: &str) {
+    let mut buf = String::new();
+    let flush = |buf: &mut String| {
+        if !buf.is_empty() {
+            push([egui::Event::Text(std::mem::take(buf))]);
+        }
+    };
+    for c in text.chars() {
+        match c {
+            '\r' | '\n' => {
+                flush(&mut buf);
+                push(key_event(egui::Key::Enter, egui::Modifiers::NONE));
+            }
+            '\t' => {
+                flush(&mut buf);
+                push(key_event(egui::Key::Tab, egui::Modifiers::NONE));
+            }
+            c => buf.push(c),
+        }
+    }
+    flush(&mut buf);
+}
+
+/// A key combination such as `cmd+shift+d`, `ctrl+c`, `enter`, `esc`, `up`, `cmd+1` (`cmd` is
+/// Ctrl+Shift here, as the app's own keys are).
+#[cfg(not(target_os = "macos"))]
+pub fn key(spec: &str) {
+    let mut m = egui::Modifiers::NONE;
+    let mut name = "";
+    for part in spec.split('+') {
+        match part {
+            "cmd" => {
+                m.ctrl = true;
+                m.command = true;
+                m.shift = true;
+            }
+            "shift" => m.shift = true,
+            "alt" | "opt" => m.alt = true,
+            "ctrl" => {
+                m.ctrl = true;
+                m.command = true;
+            }
+            other => name = other,
+        }
+    }
+    let key = match name {
+        "enter" | "return" => Some(egui::Key::Enter),
+        "esc" | "escape" => Some(egui::Key::Escape),
+        "up" => Some(egui::Key::ArrowUp),
+        "down" => Some(egui::Key::ArrowDown),
+        "left" => Some(egui::Key::ArrowLeft),
+        "right" => Some(egui::Key::ArrowRight),
+        "pageup" => Some(egui::Key::PageUp),
+        "pagedown" => Some(egui::Key::PageDown),
+        n => egui::Key::from_name(n).or_else(|| egui::Key::from_name(&n.to_uppercase())),
+    };
+    match key {
+        Some(k) => {
+            push(key_event(k, m));
+            // A key with Ctrl or Alt types nothing; a plain character does.
+            if !m.ctrl && !m.alt && name.chars().count() == 1 {
+                push([egui::Event::Text(if m.shift { name.to_uppercase() } else { name.to_string() })]);
+            }
+        }
+        None => eprintln!("DEVTEST LOG: key {spec}: unknown key"),
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn key_in_key_window(_spec: &str) {
-    skipped("popup-key");
+    eprintln!("DEVTEST LOG: popup-key: macOS only, skipped");
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn type_in_key_window(_text: &str) {
-    skipped("popup-keys");
+    eprintln!("DEVTEST LOG: popup-keys: macOS only, skipped");
 }
 
+/// A click (`count` 2: a double click) at `pos` (egui points).
 #[cfg(not(target_os = "macos"))]
-pub fn click(_pos: egui::Pos2, _count: isize, _right: bool) {
-    skipped("click");
+pub fn click(pos: egui::Pos2, count: isize, right: bool) {
+    let button = if right { egui::PointerButton::Secondary } else { egui::PointerButton::Primary };
+    push([egui::Event::PointerMoved(pos)]);
+    for _ in 0..count.max(1) {
+        push([
+            egui::Event::PointerButton { pos, button, pressed: true, modifiers: egui::Modifiers::NONE },
+            egui::Event::PointerButton { pos, button, pressed: false, modifiers: egui::Modifiers::NONE },
+        ]);
+    }
 }
 
+/// One mouse event (`down`, `drag`, `up`) at `pos`.
 #[cfg(not(target_os = "macos"))]
-pub fn mouse(_kind: &str, _pos: egui::Pos2) {
-    skipped("mouse");
+pub fn mouse(kind: &str, pos: egui::Pos2) {
+    let button = egui::PointerButton::Primary;
+    match kind {
+        "down" => push([egui::Event::PointerMoved(pos), egui::Event::PointerButton { pos, button, pressed: true, modifiers: egui::Modifiers::NONE }]),
+        "up" => push([egui::Event::PointerMoved(pos), egui::Event::PointerButton { pos, button, pressed: false, modifiers: egui::Modifiers::NONE }]),
+        _ => push([egui::Event::PointerMoved(pos)]),
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

@@ -126,7 +126,12 @@ fn write_png(path: &std::path::Path, image: &egui::ColorImage) -> std::io::Resul
     std::fs::write(path, out)
 }
 
-const WAIT_LIMIT: Duration = Duration::from_secs(8);
+/// How long a `wait-*` step waits: 8 s, or `TERNARYCODE_DEV_WAIT` seconds (a slow machine: a
+/// virtual one running another architecture's build).
+fn wait_limit() -> Duration {
+    static LIMIT: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| Duration::from_secs(std::env::var("TERNARYCODE_DEV_WAIT").ok().and_then(|s| s.parse().ok()).unwrap_or(8)))
+}
 
 fn status_slug(s: Status) -> &'static str {
     match s {
@@ -237,7 +242,6 @@ impl App {
                 Some(f.is_some_and(|f| format!("{}/{}", f.index, f.count.unwrap_or(usize::MAX)) == arg.trim())).filter(|ok| *ok)
             }
             // The front page's Web Inspector is open.
-            #[cfg(target_os = "macos")]
             "wait-inspector" => {
                 let front = self.active_project().and_then(|p| p.panel.front);
                 Some(front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()).is_some_and(|v| v.is_devtools_open())).filter(|ok| *ok)
@@ -650,7 +654,7 @@ impl App {
                 WAIT.with(|w| {
                     *w.borrow_mut() = Some(Wait {
                         step: step.clone(),
-                        deadline: Instant::now() + WAIT_LIMIT,
+                        deadline: Instant::now() + wait_limit(),
                         started: Instant::now(),
                     })
                 });
@@ -877,14 +881,13 @@ impl App {
             "expect-shown" => self.devtest.check(devtest::shown(arg.trim()), &format!("expect-shown {arg}")),
             // `web-shot NAME`: the open project's browser page as it shows (its own picture:
             // web views are not in egui's screenshot), into the shot folder.
-            #[cfg(target_os = "macos")]
             "web-shot" => {
                 let dir = std::env::var("TERNARYCODE_SHOT_DIR").unwrap_or_else(|_| ".".into());
                 let path = format!("{dir}/{}.png", arg.trim());
                 let pid = self.active;
                 match self.browsers.values().filter(|b| Some(b.project) == pid).find_map(|b| b.view.as_ref()) {
                     Some(v) => {
-                        crate::browser::snapshot(v, move |png| {
+                        crate::browser::snapshot_at(v, None, move |png| {
                             let ok = png.is_some_and(|d| std::fs::write(&path, d).is_ok());
                             eprintln!("DEVTEST {}: web-shot {path}", if ok { "PASS" } else { "FAIL" });
                         });
@@ -892,13 +895,15 @@ impl App {
                     None => self.devtest.check(false, "web-shot: no page"),
                 }
             }
-            // `web-click EXPR`: the user's click (through the window) at the middle of the element
-            // a script finds in the open project's front page (`document.querySelector('#go')`).
-            #[cfg(target_os = "macos")]
+            // `web-click EXPR`: the user's click (through the window; on Windows and Linux a real
+            // click of the system's web view, as an agent's) at the middle of the element a script
+            // finds in the open project's front page (`document.querySelector('#go')`).
             "web-click" => {
                 let front = self.active_project().and_then(|p| p.panel.front);
                 match front.and_then(|id| self.browsers.get(&id)).and_then(|b| Some((b.view.as_ref()?, b.placed?))) {
                     Some((v, placed)) => {
+                        #[cfg(not(target_os = "macos"))]
+                        let page = crate::browser::web_view_of(v);
                         let body = format!("const el = ({}); if (!el) return ''; el.scrollIntoView({{block: 'center'}}); const r = el.getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]);", arg.trim());
                         let what = arg.trim().to_string();
                         crate::browser::run_js(v, &body, move |out| {
@@ -906,7 +911,13 @@ impl App {
                             match at {
                                 Some((x, y)) => {
                                     eprintln!("DEVTEST LOG: web-click {what} at {x},{y}");
+                                    #[cfg(target_os = "macos")]
                                     devtest::click(placed.min + egui::vec2(x, y), 1, false);
+                                    #[cfg(not(target_os = "macos"))]
+                                    {
+                                        let _ = placed;
+                                        crate::browser_input::click(&page, f64::from(x), f64::from(y), 1);
+                                    }
                                 }
                                 None => eprintln!("DEVTEST FAIL: web-click {what}: not found"),
                             }
@@ -915,8 +926,21 @@ impl App {
                     None => self.devtest.check(false, "web-click: no page"),
                 }
             }
+            // `page-focus`: the open project's front page takes the keyboard (as a click on it does).
+            "page-focus" => match self.active_project().and_then(|p| p.panel.front) {
+                Some(id) => self.browser_focus_request = Some(id),
+                None => self.devtest.check(false, "page-focus: no page"),
+            },
+            // `spawn CMD`: runs a command beside the app, not waited for (a tool that types into the
+            // window as a person does: xdotool, SendKeys).
+            "spawn" => {
+                #[cfg(unix)]
+                let started = std::process::Command::new("sh").arg("-c").arg(arg.trim()).spawn();
+                #[cfg(windows)]
+                let started = std::process::Command::new("powershell").args(["-NoProfile", "-Command", arg.trim()]).spawn();
+                self.devtest.check(started.is_ok(), &format!("spawn {arg}"));
+            }
             // `web-log EXPR`: what a script gives in the open project's front page, logged.
-            #[cfg(target_os = "macos")]
             "web-log" => {
                 let front = self.active_project().and_then(|p| p.panel.front);
                 match front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()) {
@@ -957,18 +981,20 @@ impl App {
                 None => self.devtest.check(false, "page-zoom: no page"),
             },
             // `expect-page-zoom 1.1`: the front page is drawn at this zoom (WebKit's own).
-            #[cfg(target_os = "macos")]
             "expect-page-zoom" => {
                 let front = self.active_project().and_then(|p| p.panel.front);
+                #[cfg(target_os = "macos")]
                 let got = front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()).map(|v| {
                     // SAFETY: a plain WKWebView getter on the main thread.
                     unsafe { crate::browser::web_view_of(v).pageZoom() }
                 });
+                // The zoom the page was given (the system's web view keeps it).
+                #[cfg(not(target_os = "macos"))]
+                let got = front.and_then(|id| self.browsers.get(&id)).filter(|b| b.view.is_some()).map(|b| f64::from(b.zoom));
                 let want: f64 = arg.trim().parse().unwrap_or(1.0);
                 self.devtest.check(got.is_some_and(|z| (z - want).abs() < 0.01), &format!("expect-page-zoom {arg} (got {got:?})"));
             }
             // `page-print`: the front page's print sheet opens.
-            #[cfg(target_os = "macos")]
             "page-print" => {
                 let front = self.active_project().and_then(|p| p.panel.front);
                 match front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()) {
@@ -977,7 +1003,6 @@ impl App {
                 }
             }
             // `page-inspect`: the front page's Web Inspector opens.
-            #[cfg(target_os = "macos")]
             "page-inspect" => {
                 let front = self.active_project().and_then(|p| p.panel.front);
                 match front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()) {
@@ -1015,6 +1040,16 @@ impl App {
                     let flipped = ctx.content_rect().height() - r.bottom();
                     ok = near(pos.x, r.left()) && (near(pos.y, r.top()) || near(pos.y, flipped)) && near(size.width, r.width()) && near(size.height, r.height());
                     eprintln!("DEVTEST LOG: web view {:?} {:?}, page {:?}", pos, size, r);
+                }
+                self.devtest.check(ok, "expect-web-placed");
+            }
+            // Windows, Linux: each shown page's web view was laid where its pane's page was drawn.
+            #[cfg(not(target_os = "macos"))]
+            "expect-web-placed" => {
+                let mut ok = false;
+                for b in self.browsers.values().filter(|b| b.shown) {
+                    ok = b.view.is_some() && b.placed.is_some();
+                    eprintln!("DEVTEST LOG: web view placed at {:?}", b.placed);
                 }
                 self.devtest.check(ok, "expect-web-placed");
             }

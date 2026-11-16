@@ -312,12 +312,13 @@ impl HookServer {
         if path.as_os_str().is_empty() {
             return Err(io::Error::other("no pipe name"));
         }
-        // Inbound only (clients write), local clients only. The default security of a pipe lets
-        // only its creator (and administrators) write to it.
+        // Both ways (a tool call gets its answer on its connection), local clients only. The
+        // default security of a pipe lets only its creator (and administrators) write to it, so
+        // nobody else can send a call (or a token).
         fn instance(name: &std::ffi::OsStr, first: bool) -> io::Result<NamedPipeServer> {
             ServerOptions::new()
                 .first_pipe_instance(first)
-                .access_outbound(false)
+                .access_outbound(true)
                 .reject_remote_clients(true)
                 .create(name)
         }
@@ -328,8 +329,8 @@ impl HookServer {
         };
         let tokens: Arc<Mutex<HashMap<u64, String>>> = Arc::default();
         let known = tokens.clone();
-        // The pipe takes no answers back (inbound only): calls are not served on Windows.
         let calls: Calls = Arc::default();
+        let answers = calls.clone();
         rt.spawn(async move {
             let mut server = first;
             loop {
@@ -343,7 +344,7 @@ impl HookServer {
                 };
                 let done = std::mem::replace(&mut server, next);
                 if connected.is_ok() {
-                    tokio::spawn(serve_connection(done, known.clone(), on_msg.clone(), Arc::default()));
+                    tokio::spawn(serve_connection(done, known.clone(), on_msg.clone(), answers.clone()));
                 }
             }
         });

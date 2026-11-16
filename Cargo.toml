@@ -53,6 +53,10 @@ raw-window-handle = "0.6.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "x11", "wayland"] }
+# The window (X11) the page helper lays its pages in (src/browser_linux.rs).
+raw-window-handle = "0.6.2"
+# An X11 window under Wayland (XWayland), where the page helper can lay pages (src/main.rs).
+winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 # OpenGL, and Direct3D 12 (only that wgpu backend) for machines without OpenGL 2 (virtual
 # machines, Remote Desktop, no graphics driver), as in TernaryShell. windows-sys: the Recycle
@@ -65,6 +69,18 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 getrandom = "0.4.3"
 # The window (HWND) for its rounded corners and system menu (no system caption, src/platform.rs).
 raw-window-handle = "0.6.2"
+
+[target.'cfg(windows)'.dependencies.wry]
+version = "0.57.2"
+default-features = false
+features = ["devtools", "os-webview"]
+# Browser panes on Windows: WebView2's own calls wry does not make (scripts' answers, the page's
+# picture, dialogs, an agent's input by the DevTools Protocol).
+[target.'cfg(windows)'.dependencies.webview2-com]
+version = "0.39"
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_LibraryLoader", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"]
 
 # The icon and version information of ternarycode.exe (Explorer, the taskbar, Start menu).
 [target.'cfg(windows)'.build-dependencies]

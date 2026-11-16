@@ -25,6 +25,9 @@ case "$ARCH" in
 esac
 BIN="${TERNARYCODE_BIN:-$ROOT/target/release/ternarycode}"
 HOOK="$(dirname "$BIN")/ternarycode-hook"
+# The page helper (crates/tc-web): built apart, against WebKitGTK 4.1 (CI: on Ubuntu 22.04), so
+# the app itself needs neither GTK nor WebKit. Pages show where WebKitGTK is installed.
+WEB="${TERNARYCODE_WEB:-$(dirname "$BIN")/ternarycode-web}"
 OUT="$ROOT/dist"
 WORK="$ROOT/target/linux-pkg"
 REPO="https://github.com/ilhamnadhif/ternarycode"
@@ -35,7 +38,7 @@ with their status at a glance, a grid of all projects, a code editor with langua
 changes to review, and a viewer for PDF, Word, Excel and PowerPoint files. No account, no telemetry."
 NAME="TernaryCode-$VERSION-linux"
 
-[[ -x "$BIN" && -x "$HOOK" ]] || { echo "missing $BIN or $HOOK: run cargo build --release first" >&2; exit 1; }
+[[ -x "$BIN" && -x "$HOOK" && -x "$WEB" ]] || { echo "missing $BIN, $HOOK or $WEB: run cargo build --release (and -p tc-web) first" >&2; exit 1; }
 [[ "$("$BIN" --version)" == "TernaryCode $VERSION" ]] || { echo "$BIN is not TernaryCode $VERSION" >&2; exit 1; }
 rm -rf "$WORK"
 mkdir -p "$WORK" "$OUT"
@@ -45,6 +48,8 @@ TREE="$WORK/tree"
 install -Dm755 "$BIN" "$TREE/usr/bin/ternarycode"
 # Agents run it from their hooks; the app finds it beside itself.
 install -Dm755 "$HOOK" "$TREE/usr/bin/ternarycode-hook"
+# The app finds its page helper in ../lib/ternarycode beside its bin folder.
+install -Dm755 "$WEB" "$TREE/usr/lib/ternarycode/ternarycode-web"
 install -Dm644 packaging/linux/ternarycode.desktop "$TREE/usr/share/applications/ternarycode.desktop"
 for icon in packaging/linux/icons/hicolor/*/apps/ternarycode.png; do
   install -Dm644 "$icon" "$TREE/usr/share/icons/${icon#packaging/linux/icons/}"
@@ -71,7 +76,8 @@ mkdir -p "$DEB/DEBIAN"
   echo "Installed-Size: $(du -sk "$TREE" | cut -f1)"
   # The window system and OpenGL libraries are loaded at run time; desktops have them.
   echo "Depends: libc6 (>= 2.28), libgcc-s1 | libgcc1, libxkbcommon0, libgl1 | libegl1"
-  echo "Recommends: git, xdg-utils, xdg-desktop-portal"
+  # Pages in the Browser panel (the page helper); without it they open in the default browser.
+  echo "Recommends: git, xdg-utils, xdg-desktop-portal, libwebkit2gtk-4.1-0"
   echo "Section: devel"
   echo "Priority: optional"
   echo "Homepage: $REPO"
@@ -92,6 +98,9 @@ mkdir -p "$RPM"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
   echo "URL: $REPO"
   echo "Recommends: git"
   echo "Recommends: xdg-utils"
+  echo "Recommends: (webkit2gtk4.1 or libwebkit2gtk-4_1-0)"
+  # The page helper's libraries are not required (pages then open in the default browser).
+  echo "%global __requires_exclude_from ^/usr/lib/ternarycode/.*$"
   # Prebuilt, already stripped binary: no debug package, no rebuilding.
   echo "%define debug_package %{nil}"
   echo "%define __os_install_post %{nil}"
@@ -104,6 +113,7 @@ mkdir -p "$RPM"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
   echo "%files"
   echo "/usr/bin/ternarycode"
   echo "/usr/bin/ternarycode-hook"
+  echo "/usr/lib/ternarycode/ternarycode-web"
   echo "/usr/share/applications/ternarycode.desktop"
   echo "/usr/share/icons/hicolor/*/apps/ternarycode.png"
   echo "%doc /usr/share/doc/ternarycode/README.md"

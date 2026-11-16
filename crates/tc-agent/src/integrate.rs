@@ -295,7 +295,7 @@ impl Hooks {
     pub fn pane_env(&self, integrations_dir: &Path, tools: bool, codex_config: Option<&str>) -> io::Result<Vec<(String, String)>> {
         let mut env = self.agent_env(integrations_dir, tools, codex_config)?;
         // OpenCode reads no MCP server's instructions either: its guide is a file it includes.
-        if cfg!(target_os = "macos") && tools {
+        if tools {
             let guide = integrations_dir.join("opencode-browser.md");
             if std::fs::read(&guide).ok().as_deref() != Some(CODEX_GUIDE.as_bytes()) {
                 tc_core::persist::write_private(&guide, CODEX_GUIDE.as_bytes())?;
@@ -401,22 +401,16 @@ pub fn codex_has_own_hooks(config_toml: &str) -> bool {
     })
 }
 
-/// Claude Code's flags for one launch: the browser tools (on macOS, where browser panes show
-/// pages) and the hooks. `--mcp-config` takes several files, so it goes first: the word after
+/// Claude Code's flags for one launch: the browser tools and the hooks. `--mcp-config` takes several files, so it goes first: the word after
 /// it is a flag, never a prompt typed after the command.
-/// Codex's browser tools for one launch, and that its browser is TernaryCode's, on macOS
-/// (where TernaryCode shows pages).
+/// Codex's browser tools for one launch, and that its browser is TernaryCode's.
 fn codex_mcp_flag() -> String {
-    if cfg!(target_os = "macos") { format!(" -c {} -c {}", env_ref(ENV_CODEX_MCP), env_ref(ENV_CODEX_GUIDE)) } else { String::new() }
+    format!(" -c {} -c {}", env_ref(ENV_CODEX_MCP), env_ref(ENV_CODEX_GUIDE))
 }
 
 fn claude_flags() -> String {
     let settings = format!("--settings {}", env_ref(ENV_CLAUDE_SETTINGS));
-    if cfg!(target_os = "macos") {
-        format!("--mcp-config {} {settings}", env_ref(ENV_CLAUDE_MCP))
-    } else {
-        settings
-    }
+    format!("--mcp-config {} {settings}", env_ref(ENV_CLAUDE_MCP))
 }
 
 /// The command a preset types for this launch: the user's command with the hook flags added
@@ -454,7 +448,7 @@ pub fn launch_command_with(
         (Some(AgentKind::Codex), Integration::PerLaunch) => format!("-c {}{}", env_ref(ENV_CODEX_NOTIFY), codex_mcp_flag()),
         // Installed: hooks and browser tools are in its config.toml; that its browser is
         // TernaryCode's is still said per launch.
-        (Some(AgentKind::Codex), Integration::Installed) if cfg!(target_os = "macos") => format!("-c {}", env_ref(ENV_CODEX_GUIDE)),
+        (Some(AgentKind::Codex), Integration::Installed) => format!("-c {}", env_ref(ENV_CODEX_GUIDE)),
         _ => return command.to_string(),
     };
     let program = agent.map(AgentKind::slug).unwrap_or_default();
@@ -1046,15 +1040,11 @@ mod tests {
         );
         #[cfg(unix)]
         assert_eq!(settings, "\"$TC_CLAUDE_SETTINGS\"");
-        // Claude Code: the browser tools first on macOS (`--mcp-config` takes several files).
+        // Claude Code: the browser tools first (`--mcp-config` takes several files).
         let claude = claude_flags();
         let mcp = codex_mcp_flag();
-        #[cfg(target_os = "macos")]
-        assert_eq!(mcp, " -c \"$TC_CODEX_MCP\" -c \"$TC_CODEX_GUIDE\"");
-        #[cfg(target_os = "macos")]
-        assert_eq!(claude, format!("--mcp-config \"$TC_CLAUDE_MCP\" --settings {settings}"));
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(claude, format!("--settings {settings}"));
+        assert_eq!(mcp, format!(" -c {} -c {}", env_ref("TC_CODEX_MCP"), env_ref("TC_CODEX_GUIDE")));
+        assert_eq!(claude, format!("--mcp-config {} --settings {settings}", env_ref("TC_CLAUDE_MCP")));
         assert_eq!(
             launch_command("claude", Some(AgentKind::Claude), pl, true),
             format!("claude {claude}")
@@ -1076,14 +1066,11 @@ mod tests {
             "claude"
         );
         // Codex installed (hooks and browser tools in its config.toml): only that its browser is
-        // TernaryCode's, on macOS; nothing when off.
-        #[cfg(target_os = "macos")]
+        // TernaryCode's; nothing when off.
         assert_eq!(
             launch_command("codex", Some(AgentKind::Codex), Integration::Installed, true),
             format!("codex -c {}", env_ref("TC_CODEX_GUIDE"))
         );
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(launch_command("codex", Some(AgentKind::Codex), Integration::Installed, true), "codex");
         assert_eq!(launch_command("codex", Some(AgentKind::Codex), Integration::Off, true), "codex");
         assert_eq!(launch_command("opencode", Some(AgentKind::OpenCode), pl, true), "opencode");
         // The flags follow the program, whatever its path, and come before what the line runs

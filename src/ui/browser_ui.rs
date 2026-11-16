@@ -338,8 +338,9 @@ impl App {
             let label = if url.is_empty() { t("No page yet: type an address above.").to_string() } else { tf("Loading {}…", &[&host]) };
             ui.painter().text(page.center() - vec2(0.0, 14.0), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(26.0), p.text_faint);
             ui.painter().text(page.center() + vec2(0.0, 16.0), Align2::CENTER_CENTER, label, egui::FontId::proportional(style::SMALL), p.text_muted);
-            #[cfg(not(target_os = "macos"))]
-            ui.painter().text(page.center() + vec2(0.0, 36.0), Align2::CENTER_CENTER, t("Browser panes show pages on macOS for now: ↗ opens it in your browser."), egui::FontId::proportional(style::SMALL), p.text_faint);
+            if !crate::browser::supported() {
+                ui.painter().text(page.center() + vec2(0.0, 36.0), Align2::CENTER_CENTER, t("Pages can't show in TernaryCode here: ↗ opens it in your browser."), egui::FontId::proportional(style::SMALL), p.text_faint);
+            }
         }
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser:{id}"), page);
@@ -589,12 +590,40 @@ impl App {
         }
     }
 
+    /// A key of the app's pressed while a page had the keyboard (Windows, Linux, where the page's
+    /// window gets the keys): a browser's Ctrl+F, Ctrl+L, Ctrl+R and zoom keys act on the page;
+    /// Ctrl+Shift keys are the app's, as anywhere in it.
+    pub fn page_key(&mut self, id: PaneId, key: egui::Key, mods: egui::Modifiers) {
+        use egui::Key;
+        if mods.ctrl && !mods.shift && !mods.alt {
+            match key {
+                Key::F => self.open_page_find(id),
+                Key::L => {
+                    self.release_page_keyboard();
+                    self.browser_edit = Some(id);
+                }
+                Key::R => {
+                    if let Some(b) = self.browsers.get(&id) {
+                        b.reload();
+                    }
+                }
+                Key::Equals | Key::Plus => self.zoom_page(id, 1),
+                Key::Minus => self.zoom_page(id, -1),
+                Key::Num0 => self.zoom_page(id, 0),
+                _ => {}
+            }
+            return;
+        }
+        if let Some(action) = crate::app::shortcut_for(mods, key) {
+            self.actions.push(action);
+        }
+    }
+
     /// Opens a page's find bar (or gives it the keyboard again).
     pub fn open_page_find(&mut self, id: PaneId) {
         if let Some(b) = self.browsers.get_mut(&id) {
             let f = b.find.get_or_insert_with(PageFind::default);
             f.focus = true;
-            #[cfg(target_os = "macos")]
             if let Some(v) = &b.view {
                 let _ = v.focus_parent();
             }
@@ -608,11 +637,9 @@ impl App {
     pub fn close_page_find(&mut self, id: PaneId) {
         if let Some(b) = self.browsers.get_mut(&id)
             && b.find.take().is_some()
+            && let Some(v) = &b.view
         {
-            #[cfg(target_os = "macos")]
-            if let Some(v) = &b.view {
-                crate::browser::run_js(v, "getSelection().removeAllRanges(); return '';", |_| {});
-            }
+            crate::browser::run_js(v, "getSelection().removeAllRanges(); return '';", |_| {});
         }
     }
 
@@ -626,7 +653,6 @@ impl App {
             f.count = None;
             f.index = 0;
         }
-        #[cfg(target_os = "macos")]
         if let Some(v) = &b.view {
             let slot = b.find_result.clone();
             let ctx = self.ctx.clone();
@@ -734,10 +760,7 @@ impl App {
     /// was waiting.
     pub fn answer_dialog(&mut self, id: PaneId, accept: bool) -> bool {
         let Some(d) = self.browsers.get_mut(&id).and_then(|b| b.dialog.take()) else { return false };
-        #[cfg(target_os = "macos")]
         crate::browser_dialog::answer(d.id, accept, &d.text);
-        #[cfg(not(target_os = "macos"))]
-        let _ = (d, accept);
         true
     }
 
@@ -875,14 +898,12 @@ impl App {
             ui.close();
         }
         kit::menu_sep(ui);
-        #[cfg(target_os = "macos")]
         if kit::menu_item(ui, Some(icons::CODE), t("Inspect Element"), None, true).clicked() {
             if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
                 v.open_devtools();
             }
             ui.close();
         }
-        #[cfg(target_os = "macos")]
         if kit::menu_item(ui, None, t("Print…"), None, true).clicked() {
             if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
                 crate::browser::print(v);
@@ -896,10 +917,10 @@ impl App {
         }
     }
 
-    /// Web pages open in TernaryCode (else in the default browser): browser panes show pages on
-    /// macOS, and Settings → Browser says so.
+    /// Web pages open in TernaryCode (else in the default browser): where browser panes can show
+    /// pages (`browser::supported`), and Settings → Browser says so.
     pub fn pages_here(&self) -> bool {
-        cfg!(target_os = "macos") && self.settings.browser_here
+        crate::browser::supported() && self.settings.browser_here
     }
 
     /// What the Browser button in the top bar says for the project in view.
@@ -969,11 +990,11 @@ impl App {
     pub fn show_browser(&mut self, address: bool) {
         let Some(project) = self.command_project() else { return };
         let server = self.project_servers(project).first().map(|(_, s)| s.url.clone());
-        if !cfg!(target_os = "macos") {
-            // Pages show in TernaryCode on macOS only: the default browser has the page.
+        if !crate::browser::supported() {
+            // Pages can't show in TernaryCode here: the default browser has the page.
             match server {
                 Some(url) => crate::platform::open_url(&url),
-                None => self.toast(t("Browser panes show pages on macOS for now.").to_string()),
+                None => self.toast(t("Pages can't show in TernaryCode here. They open in your default browser.").to_string()),
             }
             return;
         }
@@ -1072,19 +1093,17 @@ impl App {
 
     /// Forgets every page's cookies, logins, cache and history (one profile for all).
     pub fn clear_browsing_data(&mut self) {
-        #[cfg(target_os = "macos")]
-        crate::browser::clear_data();
+        let views: Vec<&crate::browser::View> = self.browsers.values().filter_map(|b| b.view.as_ref()).collect();
+        crate::browser::clear_data(&views);
         self.toast_ok(t("Logins, cookies and history were cleared.").to_string());
     }
 
     /// The page that has the keyboard gives it back to the app.
     pub fn release_page_keyboard(&mut self) {
-        if let Some(id) = self.browser_focus.take() {
-            #[cfg(target_os = "macos")]
-            if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
-                let _ = v.focus_parent();
-            }
-            let _ = id;
+        if let Some(id) = self.browser_focus.take()
+            && let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref())
+        {
+            let _ = v.focus_parent();
         }
     }
 
@@ -1098,30 +1117,33 @@ impl App {
             }
             Some(pids.into_iter().filter_map(tc_agent::proc::resident_bytes).sum())
         }
+        // The system's web view shares its processes (WebView2, WebKitGTK's helper).
         #[cfg(not(target_os = "macos"))]
         None
     }
 
     /// ⌘C, ⌘V, ⌘A while a page has the keyboard: sent to the page. Returns whether one has it.
     pub fn page_has_keys(&self, command: &str) -> bool {
-        #[cfg(target_os = "macos")]
         if let Some(v) = self.browser_focus.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()) {
             crate::browser::edit_command(v, command);
             return true;
         }
-        let _ = command;
         false
     }
 
     /// Takes in what the pages reported: a click in a page gives it the keyboard (and makes
     /// its pane the focused one), a new window opens in the same pane, a new address is saved.
     pub fn browser_events(&mut self, ctx: &egui::Context) {
+        // What the page helper said since the last frame (Linux).
+        #[cfg(target_os = "linux")]
+        crate::browser_linux::pump();
         let mut moved = false;
         let mut focused = None;
         // Loads that began in pages an agent uses: (page, address, the address before).
         let mut began = Vec::new();
         let mut new_tabs = Vec::new();
         let mut dialogs = Vec::new();
+        let mut keys = Vec::new();
         for b in self.browsers.values_mut() {
             // The page answered a search of its find bar.
             if let Some((n, found)) = b.find_result.lock().take()
@@ -1135,10 +1157,7 @@ impl App {
                     // Believed after a real click on the page only: a script in it can post
                     // that message too, to take the keyboard from a terminal.
                     Event::Focused => {
-                        #[cfg(target_os = "macos")]
                         let clicked = b.view.as_ref().is_some_and(crate::browser::clicked_in);
-                        #[cfg(not(target_os = "macos"))]
-                        let clicked = true;
                         if clicked {
                             focused = Some(b.id);
                         }
@@ -1154,6 +1173,7 @@ impl App {
                     }
                     e @ (Event::DownloadStarted(..) | Event::DownloadDone(..)) => b.note_download(&e),
                     Event::Loading(true) if b.driven() => began.push((b.id, b.url.clone(), before.clone())),
+                    Event::Key(key, mods) => keys.push((b.id, key, mods)),
                     _ => {}
                 }
             }
@@ -1164,15 +1184,12 @@ impl App {
         // A dialog came up: the keyboard leaves its page (blocked till it is answered) for the
         // dialog's bar, when the page had it.
         for id in dialogs {
-            #[cfg(target_os = "macos")]
             if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref())
                 && crate::browser::has_keyboard(v)
             {
                 let _ = v.focus_parent();
                 self.dialog_focus = Some(id);
             }
-            #[cfg(not(target_os = "macos"))]
-            let _ = id;
         }
         // Dialogs of pages that went away are answered (WebKit wants each answered).
         #[cfg(target_os = "macos")]
@@ -1180,12 +1197,18 @@ impl App {
             let live: Vec<objc2::rc::Retained<objc2_web_kit::WKWebView>> = self.browsers.values().filter_map(|b| b.view.as_ref()).map(crate::browser::web_view_of).collect();
             crate::browser_dialog::tidy(&live.iter().map(|w| &**w).collect::<Vec<_>>());
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(not(target_os = "macos"))]
+        {
+            let live: Vec<PaneId> = self.browsers.values().filter(|b| b.view.is_some()).map(|b| b.id).collect();
+            crate::browser_dialog::tidy(&live);
+        }
         for (id, url, before) in began {
             self.stop_unasked_load(id, &url, &before);
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = began;
+        // Keys of the app's pressed in a page (Windows, Linux): as in the app.
+        for (id, key, mods) in keys {
+            self.page_key(id, key, mods);
+        }
         // A click in a page an agent uses: the user takes it over (and the page keeps the
         // keyboard, which it may have lost in between, see `sync_browsers`).
         if let Some(id) = focused
@@ -1212,8 +1235,9 @@ impl App {
     /// not drawn or something covers it (a dialog, the palette, a menu, Review full screen);
     /// lets go of pages out of view and unused a while (asleep). Hands the keyboard between
     /// the pages and the app.
-    #[cfg(target_os = "macos")]
     pub fn sync_browsers(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        #[cfg(target_os = "linux")]
+        crate::browser_linux::note_window(frame, ctx);
         if self.browsers.is_empty() {
             self.browser_pages.clear();
             self.run_browser_jobs(ctx);
@@ -1229,6 +1253,11 @@ impl App {
         let mut wake: Option<Duration> = None;
         for b in self.browsers.values_mut() {
             b.pick_up_picture(ctx);
+            // The page helper went away (Linux): the page loads again in a new one.
+            #[cfg(target_os = "linux")]
+            if b.view.as_ref().is_some_and(crate::browser::View::dead) {
+                b.sleep();
+            }
             match pages.get(&b.id) {
                 Some(rect) if rect.width() >= 8.0 && rect.height() >= 8.0 && (!covered || b.view.is_some()) => {
                     b.last_seen = now;
@@ -1385,6 +1414,20 @@ impl App {
             ctx.request_repaint_after(d);
         }
         self.run_browser_jobs(ctx);
+        // Windows, Linux: the window comes back to the front (Alt+Tab, a click on its title):
+        // the system gives the keyboard to the app's window, not to the page inside it that had
+        // it. The page takes it again.
+        #[cfg(not(target_os = "macos"))]
+        {
+            let front = ctx.input(|i| i.raw.focused);
+            if front && !self.window_in_front
+                && let Some(id) = self.browser_focus
+                && self.browser_focus_request.is_none()
+            {
+                self.browser_focus_request = Some(id);
+            }
+            self.window_in_front = front;
+        }
         // A pane asked to be focused: its page takes the keyboard.
         if let Some(id) = self.browser_focus_request.take()
             && let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref())

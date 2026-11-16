@@ -195,6 +195,17 @@ if [[ -n ${TERNARYCODE_HOOK-} && -x /usr/bin/open ]] && ! builtin declare -F ope
         fi
     }
 fi
+# Linux: `xdg-open https://…` likewise.
+if [[ -n ${TERNARYCODE_HOOK-} && ! -x /usr/bin/open ]] && builtin type -P xdg-open >/dev/null &&
+    ! builtin declare -F xdg-open >/dev/null && ! builtin alias xdg-open >/dev/null 2>&1; then
+    xdg-open() {
+        if [[ $# == 1 && ( $1 == http://* || $1 == https://* ) && -n ${TERNARYCODE_SOCK-} ]]; then
+            command "$TERNARYCODE_HOOK" browse "$1"
+        else
+            command xdg-open "$@"
+        fi
+    }
+fi
 
 # Install. PROMPT_COMMAND can be an array from bash 5.1 on; every entry runs then.
 if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )) &&

@@ -776,6 +776,7 @@ pub fn install_for_restart(prepared: &Prepared) -> Result<PathBuf, Outcome> {
                 if hook.is_file() {
                     replace_file(&hook, &target.with_file_name("ternarycode-hook"))?;
                 }
+                replace_page_helper(&prepared.file, &target)?;
                 Ok::<(), String>(())
             })();
             replaced.map_err(Outcome::Failed)?;
@@ -870,6 +871,20 @@ fn replace_file(new: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Linux, from the .tar.gz: the page helper (`lib/ternarycode/ternarycode-web` beside `bin/`)
+/// goes in place too, when the archive has one.
+#[cfg(target_os = "linux")]
+fn replace_page_helper(new_bin: &Path, target: &Path) -> Result<(), String> {
+    let (Some(from), Some(to)) = (new_bin.parent(), target.parent()) else { return Ok(()) };
+    let helper = from.join("../lib/ternarycode/ternarycode-web");
+    if !helper.is_file() {
+        return Ok(());
+    }
+    let dest = to.join("../lib/ternarycode");
+    std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    replace_file(&helper, &dest.join("ternarycode-web"))
+}
+
 /// Linux: puts the new AppImage or binary in place of the running one (and the hook program
 /// beside a binary from the .tar.gz), then starts it once this process has quit.
 #[cfg(target_os = "linux")]
@@ -882,6 +897,7 @@ fn replace_and_relaunch(prepared: &Prepared, target: &Path) -> Result<(), String
     if hook.is_file() {
         replace_file(&hook, &target.with_file_name("ternarycode-hook"))?;
     }
+    replace_page_helper(&prepared.file, target)?;
     let _ = std::fs::remove_dir_all(&prepared.dir);
     record_pending(&prepared.version)?;
     command("/bin/sh")

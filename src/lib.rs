@@ -9,8 +9,25 @@ pub mod browser_agent;
 pub mod browser_dialog;
 #[cfg(target_os = "macos")]
 pub mod browser_input;
+#[cfg(target_os = "linux")]
+pub mod browser_linux;
 #[cfg(target_os = "macos")]
 pub mod browser_popup;
+#[cfg(windows)]
+pub use browser_win as browser_popup;
+#[cfg(windows)]
+pub mod browser_win;
+// The same calls as macOS's `browser_dialog` and `browser_input`, in each system's module.
+#[cfg(windows)]
+pub use browser_win as browser_dialog;
+#[cfg(windows)]
+pub use browser_win as browser_input;
+#[cfg(target_os = "linux")]
+pub use browser_linux as browser_dialog;
+#[cfg(target_os = "linux")]
+pub use browser_linux as browser_input;
+#[cfg(target_os = "linux")]
+pub use browser_linux as browser_popup;
 pub mod cli;
 #[cfg(debug_assertions)]
 pub mod devtest;

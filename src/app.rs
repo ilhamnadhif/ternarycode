@@ -329,6 +329,9 @@ pub struct App {
     pub browser_focus: Option<PaneId>,
     /// A browser pane whose page is to take the keyboard (it was focused).
     pub browser_focus_request: Option<PaneId>,
+    /// The window had the keyboard in the last frame (Windows, Linux: a page inside it takes it
+    /// back when the window comes to the front again).
+    pub window_in_front: bool,
     /// A page's dialog just came up and should take the keyboard (its OK button or field).
     pub dialog_focus: Option<PaneId>,
     /// A browser pane whose address field is to take the keyboard (a new, empty one).
@@ -551,7 +554,7 @@ impl App {
         }
         // Programs that open a browser (`vite --open`, Python, gh) open the page in the project's
         // browser: `$BROWSER` (unless the user set one) and `open https://…` (shell integration).
-        #[cfg(target_os = "macos")]
+        #[cfg(unix)]
         if let Some(dir) = hooks.as_ref().and_then(|h| h.path().parent())
             && let Ok(script) = integrate::write_browse_script(dir, &hook_bin)
         {
@@ -637,6 +640,7 @@ impl App {
             browser_pages: HashMap::new(),
             browser_focus: None,
             browser_focus_request: None,
+            window_in_front: true,
             dialog_focus: None,
             browser_edit: None,
             browser_jobs: Vec::new(),
@@ -3972,6 +3976,11 @@ impl App {
     }
 }
 
+/// The app's action for a key pressed with `mods` (Windows, Linux), if it has one.
+pub(crate) fn shortcut_for(mods: egui::Modifiers, key: egui::Key) -> Option<Action> {
+    shortcuts().into_iter().find(|(m, k, _)| *k == key && m.ctrl == mods.ctrl && m.shift == mods.shift && m.alt == mods.alt).map(|(_, _, a)| a)
+}
+
 /// The app's own keys on Windows and Linux: Ctrl+Shift where macOS has ⌘ (⌥ stays Alt), as
 /// `kit::keys` names them. Most specific first: `consume_shortcut` ignores an extra Shift or
 /// Alt, so Ctrl+Shift+J would also take Ctrl+Shift+Alt+J.
@@ -4105,7 +4114,6 @@ impl eframe::App for App {
         }
         // Browser panes: what their pages said, and their web views laid where they are drawn.
         self.browser_events(ui.ctx());
-        #[cfg(target_os = "macos")]
         self.sync_browsers(ui.ctx(), frame);
         #[cfg(target_os = "macos")]
         self.sync_option_as_alt(ui.ctx(), frame);

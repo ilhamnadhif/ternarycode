@@ -39,9 +39,9 @@ with macOS): the window is up in about 0.2 s, it idles at 0 % CPU, and ten open 
 70 MB.
 
 > [!NOTE]
-> **TernaryCode is young (0.x) and moves fast.** macOS is the most tested platform: it runs the
-> end-to-end tests, and the browser panel is macOS-only for now. The Windows and Linux builds are
-> newer. Bug reports and ideas are welcome in
+> **TernaryCode is young (0.x) and moves fast.** macOS is the most tested platform: it runs every
+> end-to-end test. The Windows and Linux builds are newer; their browser panel runs the same
+> browser checks (`scripts/e2e-web.sh`, `scripts/e2e-web.ps1`). Bug reports and ideas are welcome in
 > [Issues](https://github.com/ilhamnadhif/ternarycode/issues).
 
 ## Highlights
@@ -253,15 +253,18 @@ Turn automatic checks off in **Settings → General**, or use **Check for Update
 | OpenCode | the browser tools, through `$OPENCODE_CONFIG_CONTENT` in every pane | the plugin `~/.config/opencode/plugins/ternarycode.js` |
 
 Installing shows the exact change first and keeps a backup; **Uninstall** restores the file byte
-for byte when you have not edited it since. The browser tools are on macOS (`--mcp-config`, `$TC_CODEX_MCP` and `$OPENCODE_CONFIG_CONTENT`
-are added there only), with a word to Codex and OpenCode, which read no tool server's own, that
+for byte when you have not edited it since. The browser tools come on every system (`--mcp-config`, `$TC_CODEX_MCP` and
+`$OPENCODE_CONFIG_CONTENT`), with a word to Codex and OpenCode, which read no tool server's own, that
 TernaryCode's browser is yours (after your own instructions). Settings → Browser shows which
 agents have them.
 
 ### A browser for you and your agents
 
-On macOS each project has a **Browser panel** at the right of its terminals, where the Code drawer
-goes (the two take turns there). On Windows and Linux pages open in your default browser for now.
+Each project has a **Browser panel** at the right of its terminals, where the Code drawer goes (the
+two take turns there). Its pages are the system's own web view: WebKit on macOS, WebView2 (Edge's
+engine) on Windows, WebKitGTK on Linux. On Windows and Linux the keys below are `Ctrl+Shift` where
+macOS has `⌘`, and in a page `Ctrl+F`, `Ctrl+L`, `Ctrl+R`, `Ctrl+=` and `Ctrl+−` work as in a
+browser.
 
 - **Pages open there**: the globe in the top bar or `⇧⌘B` shows and hides the panel, `⌘L` types an
   address, `⌥⇧⌘B` opens a new page, `⌘R` reloads and `⌘[` `⌘]` go back and forward. Server chips,
@@ -281,7 +284,7 @@ goes (the two take turns there). On Windows and Linux pages open in your default
   title bar names the site. `alert()`, `confirm()` and `prompt()` show as a bar above their page.
   Camera and microphone ask you for each site. Downloads go to your Downloads folder and are listed
   on the page's toolbar. `⌘F` finds in the page, `⌘=` and `⌘−` zoom it, and its `⋯` menu has
-  **Inspect Element** (Safari's Web Inspector) and **Print…**. An agent is told of a dialog or a
+  **Inspect Element** (the web view's own inspector) and **Print…**. An agent is told of a dialog or a
   pop-up its click opened and acts in it (never typing your passwords: it asks you), and hears
   where a download went; it uploads only files from the project's folder or Downloads.
 - **A page per agent.** Two agents in one tab each get a page of their own, marked with the
@@ -295,6 +298,11 @@ goes (the two take turns there). On Windows and Linux pages open in your default
   **Always** or **Block**, asked in TernaryCode with the other questions waiting for you. Their own
   JavaScript (`browser_evaluate`) is off until you allow it in Settings → Browser. A page gets the
   keyboard only when you click it.
+- **On Linux** pages show through a helper, `ternarycode-web`, which needs WebKitGTK 4.1
+  (`libwebkit2gtk-4.1-0`; the `.deb` and `.rpm` recommend it). It lays pages in an X11 window: under
+  Wayland the app's window runs through XWayland so that they can show (`TERNARYCODE_WAYLAND=1`
+  keeps a Wayland window, and pages then open in your default browser, as they do without
+  WebKitGTK). `xdg-open https://…` typed in a terminal opens the page here too.
 - **In the Grid** a project's tile shows its panel beside its terminals, the page zoomed out so it
   keeps the layout it has in Focus, still live; a small tile shows a picture of the page an agent
   is using.
@@ -444,6 +452,7 @@ outside a TernaryCode pane.
 | `scripts/package-linux.sh` | Linux: `.tar.gz`, `.deb`, `.rpm`, `.AppImage` |
 | `scripts/package-windows.ps1` | Windows: Inno Setup installer and portable `.zip` |
 | `scripts/e2e.sh` | end-to-end checks of the real app on macOS (injected keyboard and mouse events) |
+| `scripts/e2e-web.sh`, `scripts/e2e-web.ps1` | the Browser panel's end-to-end checks on macOS and Linux, and on Windows |
 | `scripts/release.sh <x.y.z>` | tests, builds macOS, tags, and lets CI build Windows and Linux and publish |
 
 ### Contributing
@@ -469,7 +478,8 @@ around your change instead.
 | `crates/tc-git` | snapshots and diffs through the git CLI, never touching the index |
 | `crates/tc-lsp` | language server client: transport, server registry, positions, edits |
 | `crates/tc-doc` | PDF, Word, PowerPoint, spreadsheet, CSV and image readers |
-| `src/` | the app (egui), and its browser (WebKit through wry, on macOS) |
+| `crates/tc-web` | `ternarycode-web`, the page helper on Linux (WebKitGTK pages in the app's X11 window) |
+| `src/` | the app (egui), and its browser (wry: WebKit, WebView2; WebKitGTK through `tc-web`) |
 
 ## Built with
 

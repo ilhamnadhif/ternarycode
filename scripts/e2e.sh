@@ -194,6 +194,8 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     call ddl browser_click '{"ref":"e4","element":"Get the file link"}'
     printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\nm dnav; m drm; m dno; m dnm; m dyes; m ddl\n' "$HOOK" "$MCP" "$MCP" > "$WORK/agentdlg.sh"
     mkdir -p "$WORK/data-browser-agent-dialogs"; printf '{"presets":[{"id":"dlg","name":"Dialogs","command":"sh %s"}]}\n' "$WORK/agentdlg.sh" > "$WORK/data-browser-agent-dialogs/settings.json"
+    # The file the scenario before downloaded goes (a download onto it would fail).
+    rm -f "$DL/file.txt"
     run browser-agent-dialogs 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run dlg;; wait-screen ok-ddl;; expect-file $MCP/drm.out A dialog is open in the page (confirm;; expect-file $MCP/drm.out Remove Wool Beanie?;; expect-file $MCP/dno.out Dismissed the dialog;; expect-file $MCP/dno.out Page: Kept;; expect-file $MCP/dnm.out A dialog is open in the page (prompt;; expect-file $MCP/dyes.out Page: Name: Ada;; expect-file $MCP/ddl.out Downloaded file.txt to $DL/file.txt;; quit"
     # A page's tools: the find bar counts and steps through matches (round), the zoom steps
     # (WebKit draws the page at it; the toolbar's chip shows it and a click resets it), and the

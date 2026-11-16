@@ -151,7 +151,7 @@ fn answer(msg: &Value, env: &Option<Pane>, call: &dyn Fn(&Pane, &str, &Value) ->
         }
         "ping" => json!({}),
         "tools/list" => {
-            let available = env.is_some() && cfg!(target_os = "macos");
+            let available = env.is_some();
             json!({"tools": if available { tools() } else { json!([]) }})
         }
         "tools/call" => {
@@ -185,7 +185,6 @@ fn tool_result(reply: &Value) -> Value {
 
 /// The pane this server's agent runs in.
 #[derive(Clone)]
-#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct Pane {
     pub(crate) sock: String,
     pub(crate) pane: u64,
@@ -210,9 +209,32 @@ pub(crate) fn call_app(p: &Pane, name: &str, args: &Value) -> Value {
     result.unwrap_or_else(|_| json!({"error": "TernaryCode did not answer: is it still running?"}))
 }
 
-#[cfg(not(unix))]
-fn call_app(_p: &Pane, _name: &str, _args: &Value) -> Value {
-    json!({"error": "The browser tools run on macOS only for now."})
+/// Sends a tool call to the app over its named pipe and waits for its answer (a line).
+#[cfg(windows)]
+pub(crate) fn call_app(p: &Pane, name: &str, args: &Value) -> Value {
+    use std::io::BufRead;
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let msg = crate::protocol::CallMsg { pane: p.pane, token: p.token.clone(), agent: p.agent.clone(), call: name.to_string(), args: args.clone() };
+    let result = (|| -> std::io::Result<Value> {
+        let start = std::time::Instant::now();
+        let mut pipe = loop {
+            match std::fs::OpenOptions::new().read(true).write(true).open(&p.sock) {
+                Ok(pipe) => break pipe,
+                // Every instance busy for a moment (the app makes the next as one connects).
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && start.elapsed() < std::time::Duration::from_secs(2) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        let mut line = serde_json::to_vec(&msg)?;
+        line.push(b'\n');
+        pipe.write_all(&line)?;
+        let mut answer = String::new();
+        std::io::BufReader::new(pipe).read_line(&mut answer)?;
+        Ok(serde_json::from_str(&answer)?)
+    })();
+    result.unwrap_or_else(|_| json!({"error": "TernaryCode did not answer: is it still running?"}))
 }
 
 /// The TernaryCode pane this process runs in (from its environment), if any.
@@ -294,7 +316,7 @@ mod tests {
         let list = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"});
         assert_eq!(answer(&list, &None, &none).unwrap()["result"]["tools"], json!([]));
         let n = answer(&list, &pane(), &none).unwrap()["result"]["tools"].as_array().map(Vec::len).unwrap_or(0);
-        assert_eq!(n, if cfg!(target_os = "macos") { 18 } else { 0 });
+        assert_eq!(n, 18);
     }
 
     #[test]

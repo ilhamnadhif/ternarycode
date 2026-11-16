@@ -162,7 +162,6 @@ pub fn browse(args: &[String]) -> i32 {
         eprintln!("usage: ternarycode browse <address>");
         return 2;
     };
-    #[cfg(unix)]
     if let Some(pane) = crate::mcp::pane_from_env(None) {
         let reply = crate::mcp::call_app(&pane, "open", &serde_json::json!({ "url": url }));
         if reply["text"].is_string() {

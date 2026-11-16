@@ -34,9 +34,11 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       # The shell integration tests run each shell they find.
-      - name: Shells
+      # The shell integration tests run each shell they find; the page helper (crates/tc-web)
+      # builds against WebKitGTK.
+      - name: Shells and WebKitGTK
         if: runner.os == 'Linux'
-        run: scripts/ci-apt.sh zsh fish
+        run: scripts/ci-apt.sh zsh fish libwebkit2gtk-4.1-dev
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace --no-fail-fast
 
@@ -62,6 +64,17 @@ jobs:
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null
               . "$HOME/.cargo/env"
               cargo build --release --locked'
+      # The page helper: against WebKitGTK 4.1, on the oldest Ubuntu that has it (22.04), in its
+      # own target folder.
+      - name: Build the page helper (Ubuntu 22.04, WebKitGTK 4.1)
+        run: |
+          docker run --rm -e HOME=/tmp/home -v "$PWD:/src" -w /src ubuntu:22.04 bash -ec '
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl build-essential pkg-config libwebkit2gtk-4.1-dev >/dev/null
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null
+              . "$HOME/.cargo/env"
+              CARGO_TARGET_DIR=target/web cargo build --release --locked -p tc-web
+              chown -R '"$(id -u):$(id -g)"' target/web'
+          cp target/web/release/ternarycode-web target/release/ternarycode-web
       - run: scripts/ci-apt.sh dpkg-dev rpm
       - name: Package (.tar.gz, .deb, .rpm, .AppImage)
         run: scripts/package-linux.sh
@@ -69,7 +82,11 @@ jobs:
         run: |
           cd dist
           deb=$(ls *.deb); rpm=$(ls *.rpm); appimage=$(ls *.AppImage)
-          check='ternarycode --version && test -x /usr/bin/ternarycode-hook && for b in ternarycode ternarycode-hook; do if ldd /usr/bin/$b | grep "not found"; then exit 1; fi; done'
+          check='ternarycode --version && test -x /usr/bin/ternarycode-hook && test -x /usr/lib/ternarycode/ternarycode-web && for b in ternarycode ternarycode-hook; do if ldd /usr/bin/$b | grep "not found"; then exit 1; fi; done'
+          # With WebKitGTK (the package recommends it), the page helper starts.
+          echo "== ubuntu:24.04 with WebKitGTK"
+          docker run --rm -v "$PWD:/pkg:ro" ubuntu:24.04 bash -ec \
+            "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /pkg/$deb >/dev/null && /usr/lib/ternarycode/ternarycode-web --check"
           for image in ubuntu:22.04 ubuntu:24.04 debian:12; do
             echo "== $image"
             docker run --rm -v "$PWD:/pkg:ro" "$image" bash -ec \
@@ -81,7 +98,7 @@ jobs:
           done
           echo "== AppImage"
           chmod +x "$appimage"
-          (mkdir -p /tmp/ai && cd /tmp/ai && "$OLDPWD/$appimage" --appimage-extract >/dev/null && squashfs-root/usr/bin/ternarycode --version && test -x squashfs-root/usr/bin/ternarycode-hook)
+          (mkdir -p /tmp/ai && cd /tmp/ai && "$OLDPWD/$appimage" --appimage-extract >/dev/null && squashfs-root/usr/bin/ternarycode --version && test -x squashfs-root/usr/bin/ternarycode-hook && test -x squashfs-root/usr/lib/ternarycode/ternarycode-web)
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}

@@ -11,8 +11,6 @@
 //! user first (Allow Once, Always for the project, Block), as a question in the pane that also
 //! goes into the usual queue of things waiting for the user.
 
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -185,8 +183,8 @@ impl App {
         let fail = |reply: Reply, e: &str| {
             let _ = reply.send(json!({ "error": e }));
         };
-        if !cfg!(target_os = "macos") {
-            return fail(reply, "The browser tools run on macOS only for now.");
+        if !crate::browser::supported() {
+            return fail(reply, crate::browser::UNSUPPORTED);
         }
         let agent_pane = call.pane;
         let Some(project) = self.panes.get(&agent_pane).map(|p| p.project) else {
@@ -459,7 +457,6 @@ impl App {
     /// A load came into a page an agent uses from a site it may not open (a redirect, a
     /// script, a click the page turned into a navigation): the page goes back, and the user is
     /// asked. (A click on a link or a form to such a site is asked about before it is made.)
-    #[cfg(target_os = "macos")]
     pub fn stop_unasked_load(&mut self, id: PaneId, url: &str, before: &str) {
         let Some(project) = self.browsers.get(&id).map(|b| b.project) else { return };
         let sites = self.agent_sites(project);
@@ -485,7 +482,6 @@ impl App {
 
     /// Carries the jobs on (each frame while there are any): the first job of each browser
     /// takes its next steps; the others wait their turn.
-    #[cfg(target_os = "macos")]
     pub fn run_browser_jobs(&mut self, ctx: &eframe::egui::Context) {
         let now = Instant::now();
         // Agents that stopped using their browser: the pane says so no longer.
@@ -528,7 +524,6 @@ impl App {
 
     /// Takes job `i` as far as it goes this frame. `Some`: it is over (with an error, or
     /// `None` for its answer).
-    #[cfg(target_os = "macos")]
     fn step_job(&mut self, i: usize, now: Instant) -> Option<Option<String>> {
         loop {
             let id = self.browser_jobs[i].browser;
@@ -572,7 +567,7 @@ impl App {
             let job = &mut self.browser_jobs[i];
             // A pop-up opened (the agent's click, or the user's) or closed since the last step:
             // the agent hears of it.
-            let seen = popup.as_ref().map(|w| std::ptr::from_ref::<objc2_web_kit::WKWebView>(w) as usize);
+            let seen = popup.as_ref().map(|w| crate::browser::page_key(w));
             match job.on_popup.replace(seen) {
                 Some(before) if before != seen && seen.is_some() => {
                     let host = crate::browser::host_of(&page_url);
@@ -688,7 +683,7 @@ impl App {
                                             }
                                             // A pop-up its click opens is the agent's.
                                             crate::browser_popup::agent_acting(wk, sites.clone(), pass.clone());
-                                            job.acted = Some(std::ptr::from_ref(wk) as usize);
+                                            job.acted = Some(crate::browser::page_key(wk));
                                             let mut again = args.clone();
                                             again["force"] = json!(true);
                                             job.redo = Some(Op::Aim(again, then.clone(), line.clone()));
@@ -870,8 +865,7 @@ impl App {
                             };
                             match op {
                                 Op::Back => {
-                                    // SAFETY: a plain WKWebView method on the main thread.
-                                    unsafe { view.goBack() };
+                                    crate::browser::back_in(view);
                                     job.text.push_str("Went back.\n");
                                     job.waiting = Some(Waiting::Load { since: now, started: false, grace: Duration::from_millis(1500), quiet: 0 });
                                 }
@@ -883,7 +877,7 @@ impl App {
                                     // the agent's, to the sites it may open.
                                     if matches!(name, "click" | "press" | "type" | "select") {
                                         crate::browser_popup::agent_acting(view, sites.clone(), pass.clone());
-                                        job.acted = Some(std::ptr::from_ref(view) as usize);
+                                        job.acted = Some(crate::browser::page_key(view));
                                     }
                                     crate::browser::run_js_in(view, &helper_call(name, &args), move |r| {
                                         page(r);
@@ -900,7 +894,7 @@ impl App {
                                 }
                                 Op::Native(native, line) => {
                                     crate::browser_popup::agent_acting(view, sites.clone(), pass.clone());
-                                    job.acted = Some(std::ptr::from_ref(view) as usize);
+                                    job.acted = Some(crate::browser::page_key(view));
                                     if !matches!(native, Native::Char(_) | Native::Type(..)) {
                                         job.redo = Some(Op::Native(native.clone(), line.clone()));
                                     }
@@ -947,14 +941,8 @@ impl App {
                                 }
                                 Op::Shot => {
                                     // The page's size, for clicks at a point of the picture.
-                                    // SAFETY: a plain WKWebView getter on the main thread.
-                                    let z = unsafe { view.pageZoom() }.max(0.01);
-                                    let b = view.bounds();
-                                    job.text.push_str(&format!(
-                                        "The page shows {:.0}×{:.0} CSS pixels (browser_mouse_click_xy takes a point in those; scale from the picture's size).\n",
-                                        b.size.width / z,
-                                        b.size.height / z
-                                    ));
+                                    let (w, h) = crate::browser::css_size(view);
+                                    job.text.push_str(&format!("The page shows {w:.0}×{h:.0} CSS pixels (browser_mouse_click_xy takes a point in those; scale from the picture's size).\n"));
                                     crate::browser::snapshot_view(view, None, move |png| {
                                         page(png.map(|d| tc_agent::shell::base64(&d)).ok_or_else(|| "the page gave no picture".to_string()));
                                     });
@@ -1011,7 +999,6 @@ impl App {
         let agent = d.pane;
         b.handed_back = !take;
         if take {
-            #[cfg(target_os = "macos")]
             crate::browser_popup::agent_stopped();
             self.actions.push(crate::actions::Action::FocusPane(id));
             self.browser_focus_request = Some(id);

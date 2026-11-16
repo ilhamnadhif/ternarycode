@@ -40,8 +40,8 @@ memakai sekitar 70 MB.
 
 > [!NOTE]
 > **TernaryCode masih muda (0.x) dan berkembang cepat.** macOS adalah platform yang paling banyak
-> diuji: tes end-to-end berjalan di sana, dan panel browser untuk sementara hanya ada di macOS.
-> Build Windows dan Linux lebih baru. Laporan bug dan ide sangat diterima di
+> diuji: semua tes end-to-end berjalan di sana. Build Windows dan Linux lebih baru; panel browser-nya
+> menjalankan tes browser yang sama (`scripts/e2e-web.sh`, `scripts/e2e-web.ps1`). Laporan bug dan ide sangat diterima di
 > [Issues](https://github.com/ilhamnadhif/ternarycode/issues).
 
 ## Sorotan
@@ -261,16 +261,19 @@ App macOS, setup Windows, AppImage, dan `.tar.gz` memperbarui dirinya sendiri; `
 | OpenCode | tool browser, lewat `$OPENCODE_CONFIG_CONTENT` di setiap pane | plugin `~/.config/opencode/plugins/ternarycode.js` |
 
 Pemasangan menampilkan perubahan persisnya lebih dulu dan menyimpan backup; **Uninstall**
-mengembalikan file byte demi byte kalau Anda belum mengubahnya sejak itu. Tool browser ada di macOS
-(`--mcp-config`, `$TC_CODEX_MCP`, dan `$OPENCODE_CONFIG_CONTENT` hanya ditambahkan di sana), disertai
+mengembalikan file byte demi byte kalau Anda belum mengubahnya sejak itu. Tool browser ada di semua
+sistem (`--mcp-config`, `$TC_CODEX_MCP`, dan `$OPENCODE_CONFIG_CONTENT`), disertai
 pesan untuk Codex dan OpenCode, yang tidak membaca instruksi dari server tool, bahwa browser
 TernaryCode adalah browser Anda (setelah instruksi Anda sendiri). Settings → Browser menunjukkan
 agent mana yang sudah memilikinya.
 
 ### Browser untuk Anda dan agent Anda
 
-Di macOS setiap project punya **panel Browser** di kanan terminalnya, di tempat laci Code (keduanya
-bergantian di sana). Di Windows dan Linux, halaman untuk sementara terbuka di browser default Anda.
+Setiap project punya **panel Browser** di kanan terminalnya, di tempat laci Code (keduanya
+bergantian di sana). Halamannya memakai web view bawaan sistem: WebKit di macOS, WebView2 (mesin
+Edge) di Windows, WebKitGTK di Linux. Di Windows dan Linux, tombol-tombol di bawah memakai
+`Ctrl+Shift` di tempat `⌘` macOS, dan di dalam halaman `Ctrl+F`, `Ctrl+L`, `Ctrl+R`, `Ctrl+=`, dan
+`Ctrl+−` bekerja seperti di browser.
 
 - **Halaman terbuka di sana**: globe di top bar atau `⇧⌘B` menampilkan dan menyembunyikan panel,
   `⌘L` mengetik alamat, `⌥⇧⌘B` membuka halaman baru, `⌘R` memuat ulang, dan `⌘[` `⌘]` mundur dan
@@ -292,7 +295,7 @@ bergantian di sana). Di Windows dan Linux, halaman untuk sementara terbuka di br
   selesai; title bar-nya menyebut situsnya. `alert()`, `confirm()`, dan `prompt()` tampil sebagai bar
   di atas halamannya. Kamera dan mikrofon bertanya dulu untuk tiap situs. Download masuk folder
   Downloads dan tercantum di toolbar halaman. `⌘F` mencari di halaman, `⌘=` dan `⌘−` memperbesar dan
-  memperkecil, dan menu `⋯` halaman punya **Inspect Element** (Web Inspector Safari) dan **Print…**.
+  memperkecil, dan menu `⋯` halaman punya **Inspect Element** (inspector bawaan web view) dan **Print…**.
   Agent diberi tahu dialog atau popup yang dibuka kliknya dan bekerja di dalamnya (tidak pernah
   mengetik password Anda: ia meminta Anda), mendapat lokasi file yang diunduh, dan hanya meng-upload
   file dari folder project atau Downloads.
@@ -309,6 +312,12 @@ bergantian di sana). Di Windows dan Linux, halaman untuk sementara terbuka di br
   **Always**, atau **Block**, ditanyakan di TernaryCode bersama pertanyaan lain yang menunggu Anda.
   JavaScript milik agent sendiri (`browser_evaluate`) mati sampai Anda mengizinkannya di
   Settings → Browser. Halaman hanya mendapat keyboard saat Anda mengkliknya.
+- **Di Linux** halaman tampil lewat program pembantu, `ternarycode-web`, yang butuh WebKitGTK 4.1
+  (`libwebkit2gtk-4.1-0`; paket `.deb` dan `.rpm` menyarankannya). Ia menaruh halaman di jendela
+  X11: di Wayland, jendela app berjalan lewat XWayland supaya halaman bisa tampil
+  (`TERNARYCODE_WAYLAND=1` mempertahankan jendela Wayland, dan halaman lalu terbuka di browser
+  default Anda, seperti tanpa WebKitGTK). `xdg-open https://…` yang diketik di terminal juga membuka
+  halamannya di sini.
 - **Di Grid**, tile project menampilkan panelnya di samping terminal, halamannya diperkecil supaya
   tata letaknya sama dengan di Focus, dan tetap hidup; tile kecil menampilkan gambar halaman yang
   sedang dipakai agent.
@@ -461,6 +470,7 @@ melakukan apa-apa di luar pane TernaryCode.
 | `scripts/package-linux.sh` | Linux: `.tar.gz`, `.deb`, `.rpm`, `.AppImage` |
 | `scripts/package-windows.ps1` | Windows: installer Inno Setup dan `.zip` portabel |
 | `scripts/e2e.sh` | pengujian end-to-end app sungguhan di macOS (event keyboard dan mouse disuntikkan) |
+| `scripts/e2e-web.sh`, `scripts/e2e-web.ps1` | pengujian end-to-end panel Browser di macOS dan Linux, dan di Windows |
 | `scripts/release.sh <x.y.z>` | tes, build macOS, tag, lalu CI membangun Windows dan Linux dan mempublikasikan |
 
 ### Berkontribusi
@@ -486,7 +496,8 @@ di sekitar perubahan Anda.
 | `crates/tc-git` | snapshot dan diff lewat git CLI, tanpa menyentuh index |
 | `crates/tc-lsp` | klien language server: transport, registry server, posisi, edit |
 | `crates/tc-doc` | pembaca PDF, Word, PowerPoint, spreadsheet, CSV, dan gambar |
-| `src/` | app-nya (egui), dan browser-nya (WebKit lewat wry, di macOS) |
+| `crates/tc-web` | `ternarycode-web`, program pembantu halaman di Linux (halaman WebKitGTK di jendela X11 app) |
+| `src/` | app-nya (egui), dan browser-nya (wry: WebKit, WebView2; WebKitGTK lewat `tc-web`) |
 
 ## Dibangun dengan
 

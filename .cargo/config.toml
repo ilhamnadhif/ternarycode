@@ -1,0 +1,7 @@
+# Windows: the C runtime goes into the program (no VCRUNTIME140.dll, which a clean Windows has
+# not: without it TernaryCode would not start there).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
