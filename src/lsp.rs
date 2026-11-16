@@ -1099,7 +1099,7 @@ impl App {
             .map(|f| (crate::editor::save(f, false), f.name()));
         match result {
             Some((Ok(()), name)) => {
-                self.lsp_saved(path);
+                self.file_saved(path);
                 self.toast(match server {
                     Some(server) => tf("Saved {} without formatting: {} did not answer.", &[&name, server]),
                     None => tf("Saved {}.", &[&name]),
@@ -1274,7 +1274,7 @@ impl App {
                 match saved_name {
                     Some((Ok(()), name)) => {
                         self.toast(tf("Saved {}.", &[&name]));
-                        self.lsp_saved(&path);
+                        self.file_saved(&path);
                     }
                     Some((Err(crate::editor::SaveError::ChangedOnDisk), _)) => {
                         self.toast(t("Not saved: the file changed on disk. Choose what to keep in the editor.").into())
@@ -1350,6 +1350,21 @@ impl App {
             item.label = name.clone();
         }
         items
+    }
+
+    /// A server's place in a file (its column in the encoding it chose) as a column of
+    /// characters, from the text in the editor (else on disk).
+    pub(crate) fn lsp_char_column(&self, path: &Path, at: lt::Position, enc: Encoding) -> usize {
+        let disk;
+        let text = match open_text(&self.editors, path) {
+            Some((t, _)) => t,
+            None => {
+                disk = std::fs::read_to_string(path).unwrap_or_default();
+                disk.as_str()
+            }
+        };
+        let ix = LineIndex::new(text);
+        ix.char_index(text, at, enc).saturating_sub(ix.line_start(at.line as usize))
     }
 
     /// Locations as list items: the line's text as the label, the file and line as detail.

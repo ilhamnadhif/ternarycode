@@ -127,8 +127,10 @@ pub enum Action {
     UninstallNow(AgentKind),
     OpenFile(PathBuf, Option<usize>),
     CloseFile(usize),
-    /// Closes a file and drops its unsaved edits ("Don't Save").
-    DiscardAndCloseFile(usize),
+    /// Closes a project's file and drops its unsaved edits ("Don't Save").
+    DiscardAndCloseFile(ProjectId, PathBuf),
+    /// Saves a project's file, then closes it ("Save" when closing a file with unsaved edits).
+    SaveAndCloseFile(ProjectId, PathBuf),
     SaveFile,
     ForceSave,
     ReloadFile,

@@ -827,8 +827,9 @@ impl App {
         ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
         let root = self.project(project).map(|x| x.path.clone()).unwrap_or_default();
         let current = self.editors.get(&project).and_then(|e| e.file()).map(|f| f.path.clone());
-        let mut rows: Vec<(u8, String, std::path::PathBuf, usize, usize)> = Vec::new();
-        for (path, (_, diags)) in &self.lsp.diagnostics {
+        // Each: severity, message, file, line, and where it starts as the server counts.
+        let mut rows: Vec<(u8, String, std::path::PathBuf, usize, (lt::Position, tc_lsp::pos::Encoding))> = Vec::new();
+        for (path, (enc, diags)) in &self.lsp.diagnostics {
             let here = if self.problems_project { path.starts_with(&root) } else { Some(path) == current.as_ref() };
             if !here {
                 continue;
@@ -840,7 +841,7 @@ impl App {
                     _ => 2,
                 };
                 let msg = d.message.lines().next().unwrap_or_default().to_string();
-                rows.push((sev, msg, path.clone(), d.range.start.line as usize, d.range.start.character as usize));
+                rows.push((sev, msg, path.clone(), d.range.start.line as usize, (d.range.start, *enc)));
             }
         }
         rows.sort_by(|a, b| (a.0, &a.2, a.3).cmp(&(b.0, &b.2, b.3)));
@@ -899,7 +900,9 @@ impl App {
                 }
             });
         });
-        if let Some((path, line, col)) = go {
+        if let Some((path, line, (at, enc))) = go {
+            // The server's column counts UTF-8 bytes or UTF-16 units; the editor's, characters.
+            let col = self.lsp_char_column(&path, at, enc);
             self.actions.push(Action::GotoLocation(path, line, col));
         }
     }

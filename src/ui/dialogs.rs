@@ -317,7 +317,7 @@ impl App {
                 Dialog::WorktreeSetup { id, copy, adding, run, fresh } => {
                     keep = self.worktree_setup_dialog(ui, *id, copy, adding, run, fresh, enter);
                 }
-                Dialog::ConfirmCloseFile(i, name) => {
+                Dialog::ConfirmCloseFile(project, path, name) => {
                     ui.set_width(460.0);
                     if header(ui, icons::FLOPPY_DISK, p.warn, &tf("Save changes to {}?", &[name]), Some(t("Your changes are lost if you don’t save them."))) {
                         keep = false;
@@ -333,13 +333,12 @@ impl App {
                             keep = false;
                         }
                         if kit::button_ex(ui, kit::Kind::Ghost, None, t("Don’t Save"), false).clicked() {
-                            self.actions.push(Action::DiscardAndCloseFile(*i));
+                            self.actions.push(Action::DiscardAndCloseFile(*project, path.clone()));
                             keep = false;
                         }
                     });
                     if save {
-                        self.actions.push(Action::SaveFile);
-                        self.actions.push(Action::CloseFile(*i));
+                        self.actions.push(Action::SaveAndCloseFile(*project, path.clone()));
                         keep = false;
                     }
                 }
@@ -613,6 +612,14 @@ impl App {
                 self.actions.push(Action::Integrations);
             }
         }
+        // A dialog that opened another while it was drawn (Settings' "Clear…"): that one shows,
+        // and this one comes back after it.
+        if self.dialog.is_some() {
+            if keep {
+                self.dialog_back = Some(dialog);
+            }
+            return;
+        }
         // Run Agent's "Edit…": the worktree setup opens over it, and it comes back after.
         if let Some(id) = self.pending_setup.take() {
             self.dialog_back = Some(dialog);
@@ -628,7 +635,8 @@ impl App {
         } else if let Some(back) = self.dialog_back.take() {
             self.dialog = Some(back);
         } else {
-            self.focus_request = self.current_pane();
+            // In the Grid, the tile typed into.
+            self.focus_request = self.target_pane().or_else(|| self.current_pane());
         }
     }
 }

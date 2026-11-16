@@ -201,7 +201,8 @@ impl App {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     let (icon, color) = icons::file_icon(&name, false, false, &p);
                     ui.painter().text(pos2(rect.left() + 8.0 + 7.0, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_font(14.0), color);
-                    let folder = path.parent().and_then(|d| d.strip_prefix(root).ok()).map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                    // The list's paths are the project's (`project_files`): relative to its folder.
+                    let folder = path.parent().map(|d| d.strip_prefix(root).unwrap_or(d).to_string_lossy().into_owned()).unwrap_or_default();
                     let mut job = egui::text::LayoutJob::default();
                     job.append(&name, 0.0, egui::TextFormat::simple(egui::FontId::proportional(13.0), style::tree_text(&p)));
                     if !folder.is_empty() {
@@ -211,7 +212,7 @@ impl App {
                     let g = ui.painter().layout_job(job);
                     ui.painter().galley(pos2(rect.left() + 28.0, rect.center().y - g.size().y / 2.0), g, p.text);
                     if resp.clicked() {
-                        open = Some(path.clone());
+                        open = Some(root.join(path));
                     }
                 }
             });

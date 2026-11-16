@@ -404,7 +404,8 @@ impl App {
         #[cfg(debug_assertions)]
         crate::devtest::record("project-filter", field);
         let typing = ui.memory(|m| m.has_focus(fid));
-        let found: Vec<usize> = self.project_matches().into_iter().filter(|(_, dim)| !dim).map(|(i, _)| i).collect();
+        // The rows as they show (the search's order is not theirs: Active comes first).
+        let found = std::mem::take(&mut self.project_filter_rows);
         let n = found.len();
         let mut sel = self.project_filter_sel.min(n.saturating_sub(1));
         let mut reveal = false;
@@ -427,8 +428,8 @@ impl App {
                 sel = (sel + n - 1) % n;
                 reveal = true;
             }
-            if enter && let Some(&i) = found.get(sel) {
-                open = Some(self.projects[i].id);
+            if enter && let Some(&id) = found.get(sel) {
+                open = Some(id);
             }
             if esc || open.is_some() {
                 self.project_filter.clear();
@@ -534,6 +535,7 @@ impl App {
             lines.extend(second.into_iter().map(Line::Row));
         }
         let mut toggle_group: Option<&str> = None;
+        let mut order = Vec::new();
         ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(vec2(6.0, 0.0))), |ui| {
             ui.set_clip_rect(list);
             // The search's results scroll on their own: the whole list keeps its place.
@@ -583,6 +585,7 @@ impl App {
                         let chosen = typing && !dim && result == sel;
                         if !dim {
                             result += 1;
+                            order.push(id);
                         }
                         if chosen && reveal {
                             ui.scroll_to_rect(rect, None);
@@ -625,6 +628,7 @@ impl App {
                     }
                 });
         });
+        self.project_filter_rows = order;
         if let Some(key) = toggle_group {
             if !self.sidebar_folded.remove(key) {
                 self.sidebar_folded.insert(key.to_string());

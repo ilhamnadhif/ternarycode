@@ -644,7 +644,8 @@ impl App {
                     e.refocus = true;
                 }
             } else {
-                self.focus_request = self.current_pane();
+                // In the Grid, the tile typed into.
+                self.focus_request = self.target_pane().or_else(|| self.current_pane());
             }
         } else {
             self.palette = Some(pal);

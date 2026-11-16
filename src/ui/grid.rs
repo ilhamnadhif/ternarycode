@@ -253,6 +253,8 @@ impl App {
         let (cols0, _) = grid_shape(ids.len() + 1, self.grid_columns);
         let add_tile = self.grid_filter == GridFilter::All && !ids.len().is_multiple_of(cols0) && ids.len() > 1;
         let n = ids.len() + add_tile as usize;
+        // Projects only (the "Add Project…" tile comes last).
+        let tiles_of_projects = ids.len();
         let (cols, rows_in_view) = grid_shape(n, self.grid_columns);
         let rows = n.div_ceil(cols);
         let h = ((area.height() - GAP * (rows_in_view as f32 - 1.0)) / rows_in_view as f32).max(TILE_HEADER + 80.0);
@@ -318,8 +320,10 @@ impl App {
                     };
                     let next_row = (0..rows).find(|r| row_rect(*r).top() >= visible.bottom() - 1.0);
                     if let Some(next) = next_row {
-                        let below = n - (next * cols).min(n);
-                        self.more_below(ui, visible, below, row_rect(next));
+                        let below = tiles_of_projects - (next * cols).min(tiles_of_projects);
+                        if below > 0 {
+                            self.more_below(ui, visible, below, row_rect(next));
+                        }
                     }
                     // The keyboard was meant for a pane out of view (the project open before):
                     // it would jump there when scrolled to, after the user chose another tile.
@@ -1048,7 +1052,13 @@ impl App {
             if request {
                 self.focus_request = None;
             }
-        } else if self.grid_focus == Some(pane_id) && !ui.memory(|m| m.has_focus(widget::pane_widget_id(pane_id))) {
+        } else if self.grid_focus == Some(pane_id)
+            // The palette or a dialog has the keyboard for a while: their commands act on this
+            // tile's pane, and the keyboard comes back here after them.
+            && self.palette.is_none()
+            && self.dialog.is_none()
+            && !ui.memory(|m| m.has_focus(widget::pane_widget_id(pane_id)))
+        {
             self.grid_focus = None;
         }
     }

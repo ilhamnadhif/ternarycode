@@ -92,8 +92,9 @@ pub enum Dialog {
     /// What a new worktree of a project gets: files copied, a name being added, a command, and
     /// whether the files are still the defaults to read (the repository's ignored files).
     WorktreeSetup { id: ProjectId, copy: Vec<String>, adding: Option<String>, run: String, fresh: bool },
-    /// Closing a file with unsaved edits: its index in the editor, its name.
-    ConfirmCloseFile(usize, String),
+    /// Closing a file with unsaved edits: its project and path (not its place in the editor,
+    /// which a switch of project while the dialog shows would change), its name.
+    ConfirmCloseFile(ProjectId, PathBuf, String),
     /// Taking an agent's installed hooks out of its settings.
     ConfirmUninstall(AgentKind),
     ConfirmQuit(Vec<Busy>),
@@ -230,6 +231,8 @@ pub struct App {
     pub base_env: Vec<(String, String)>,
     /// Whether Codex may get per-launch hooks (the user has none of their own).
     pub codex_hooks: bool,
+    /// The user's Codex config has a `notify` of its own (kept for runs TernaryCode starts).
+    pub codex_own_notify: bool,
     /// The per-launch settings file was written (its variables are in `base_env`).
     per_launch: bool,
     pub settings: Settings,
@@ -268,6 +271,12 @@ pub struct App {
     /// What the sidebar's project search holds, and the row of its results the keyboard is on.
     pub project_filter: String,
     pub project_filter_sel: usize,
+    /// The rows the sidebar's list showed last frame that ↑ ↓ and Enter choose from, in the
+    /// order they show (Active first, folded groups left out).
+    pub project_filter_rows: Vec<ProjectId>,
+    /// Files to close once saved ("Save" when closing a file with unsaved edits; format on save
+    /// saves when the server's answer comes), and when that was asked.
+    pub close_after_save: Vec<(ProjectId, PathBuf, Instant)>,
     /// Each agent's earlier sessions in a project folder, for Run Agent (`None` while listed).
     pub session_lists: HashMap<(AgentKind, PathBuf), Option<Vec<tc_agent::sessions::Session>>>,
     /// Branches and ignored files of a repository, for a new worktree (`None` while read).
@@ -542,6 +551,7 @@ impl App {
             }
         }
         let codex_hooks = !codex_config.as_deref().is_some_and(integrate::codex_has_own_hooks);
+        let codex_own_notify = codex_config.as_deref().is_some_and(integrate::codex_has_own_notify);
 
         #[cfg(target_os = "macos")]
         let menu = Some((ui::menu::AppMenu::install(), ui::menu::event_channel(ctx)));
@@ -558,6 +568,7 @@ impl App {
             hook_bin,
             base_env,
             codex_hooks,
+            codex_own_notify,
             per_launch,
             scrollback_applied: settings.scrollback,
             settings,
@@ -589,6 +600,8 @@ impl App {
             inbox_rect: None,
             project_filter: String::new(),
             project_filter_sel: 0,
+            project_filter_rows: Vec::new(),
+            close_after_save: Vec::new(),
             session_lists: HashMap::new(),
             worktree_facts: HashMap::new(),
             dialog_back: None,
@@ -1466,6 +1479,8 @@ impl App {
         let mut files_changed: HashMap<ProjectId, Vec<PathBuf>> = HashMap::new();
         while let Ok(msg) = self.app_rx.try_recv() {
             match msg {
+                // (Listed for a project removed since: dropped.)
+                AppMsg::ProjectFiles(id, _) if self.project(id).is_none() => {}
                 AppMsg::ProjectFiles(id, files) => {
                     self.files_rev += 1;
                     self.project_files.insert(id, files.clone());
@@ -1642,6 +1657,22 @@ impl App {
                 )
             };
             self.toast_with(ToastKind::Warn, text, Some((t("Show").to_string(), Action::SelectProject(project))));
+        }
+    }
+
+    /// A file was saved from the editor: its language server hears, and it closes when that
+    /// was asked (`close_after_save`, a little while ago: a save that failed is not waited for).
+    pub(crate) fn file_saved(&mut self, path: &Path) {
+        self.lsp_saved(path);
+        let recent = |at: &Instant| at.elapsed() < Duration::from_secs(10);
+        let close: Vec<ProjectId> = self.close_after_save.iter().filter(|(_, p, at)| p == path && recent(at)).map(|(id, ..)| *id).collect();
+        self.close_after_save.retain(|(_, p, at)| p != path && recent(at));
+        for id in close {
+            if let Some(e) = self.editors.get_mut(&id)
+                && let Some(i) = e.files.iter().position(|f| f.path == path && !f.dirty())
+            {
+                e.close(i);
+            }
         }
     }
 
@@ -1958,6 +1989,8 @@ impl App {
         self.git_again.remove(&id);
         self.git_waiting.retain(|x| *x != id);
         self.conflict_warned.remove(&id);
+        self.project_files.remove(&id);
+        self.project_files_at.remove(&id);
         for pane in project.panes().into_iter().chain(project.panel.pages.iter().copied()) {
             self.drop_pane(pane);
         }
@@ -2175,7 +2208,7 @@ impl App {
         {
             command = format!("{command} {flag}");
         }
-        integrate::launch_command(&command, preset.agent, integration, self.codex_hooks)
+        integrate::launch_command_with(&command, preset.agent, integration, self.codex_hooks, self.codex_own_notify)
     }
 
     /// Run Agent starts this agent without its permission prompts.
@@ -2980,19 +3013,38 @@ impl App {
                     // never drops a dirty buffer silently.
                     if e.files[i].dirty() {
                         e.active = i;
-                        let name = e.files[i].name();
-                        self.dialog = Some(Dialog::ConfirmCloseFile(i, name));
+                        let (name, path) = (e.files[i].name(), e.files[i].path.clone());
+                        if let Some(project) = self.active {
+                            self.dialog = Some(Dialog::ConfirmCloseFile(project, path, name));
+                        }
                     } else {
                         e.close(i);
                     }
                 }
             }
-            Action::DiscardAndCloseFile(i) => {
-                if let Some(e) = self.editor_mut()
-                    && i < e.files.len()
+            Action::DiscardAndCloseFile(project, path) => {
+                if let Some(e) = self.editors.get_mut(&project)
+                    && let Some(i) = e.files.iter().position(|f| f.path == path)
                 {
                     e.close(i);
                 }
+            }
+            Action::SaveAndCloseFile(project, path) => {
+                // Saving acts on the file in front of the project in view: that project and
+                // file again (another project may have been opened while the dialog showed).
+                if !self.editors.get(&project).is_some_and(|e| e.files.iter().any(|f| f.path == path)) {
+                    return;
+                }
+                if self.active != Some(project) {
+                    self.dispatch(ctx, Action::SelectProject(project));
+                }
+                let Some(e) = self.editor_mut() else { return };
+                let Some(i) = e.files.iter().position(|f| f.path == path) else { return };
+                e.active = i;
+                // Closed by `file_saved` once it is saved (not saved: it stays open, edits kept).
+                self.close_after_save.retain(|(_, p, _)| *p != path);
+                self.close_after_save.push((project, path, Instant::now()));
+                self.dispatch(ctx, Action::SaveFile);
             }
             Action::SaveFile | Action::ForceSave => {
                 // A document view has nothing to save.
@@ -3006,7 +3058,7 @@ impl App {
                 }
                 let result = self.editor_mut().and_then(|e| e.file_mut()).map(|f| (crate::editor::save(f, force), f.name(), f.path.clone()));
                 if let Some((Ok(()), _, path)) = &result {
-                    self.lsp_saved(path);
+                    self.file_saved(path);
                 }
                 match result.map(|(r, n, _)| (r, n)) {
                     Some((Ok(()), name)) => self.toast_ok(tf("Saved {}.", &[&name])),

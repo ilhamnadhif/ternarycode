@@ -355,7 +355,10 @@ impl App {
         let running: Vec<String> = w.panes().iter().filter_map(|x| self.panes.get(x)).filter_map(crate::pane::Pane::busy_with).collect();
         let unmerged = ahead > 0 && !merged;
         let safe = uncommitted.is_empty() && !unmerged;
-        let delete = branch.get_or_insert(!unmerged);
+        // Until the user flips it, the switch follows what git says now (its numbers may come
+        // after the dialog opened): a branch with commits not merged is kept.
+        let mut choice = branch.unwrap_or(!unmerged);
+        let delete = &mut choice;
         let mut keep = true;
         let (mut remove, mut review) = (false, false);
         if safe {
@@ -428,8 +431,11 @@ impl App {
                 review = kit::button_ex(ui, kit::Kind::Ghost, Some(icons::GIT_DIFF), t("Review First"), false).clicked();
             });
         }
+        if choice != branch.unwrap_or(!unmerged) {
+            *branch = Some(choice);
+        }
         if remove {
-            self.actions.push(Action::RemoveWorktreeNow(id, *delete));
+            self.actions.push(Action::RemoveWorktreeNow(id, choice));
             keep = false;
         }
         if review {
