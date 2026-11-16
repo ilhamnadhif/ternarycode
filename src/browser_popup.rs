@@ -6,12 +6,14 @@
 //! (`window.close()`), on ⌘W, or with its close button. Its title bar names the site it is on, so
 //! a sign-in shows where a password goes.
 //!
-//! A link to a new tab, or a window opened by a script on its own, is not a pop-up: it opens as a
+//! An agent's click opens one too (the agent's tools then act in it until it closes), when the
+//! site it shows is one the agent may open; else the user is asked first, as for any site. A
+//! link to a new tab, or a window opened by a script on its own, is not a pop-up: it opens as a
 //! page in the panel (`Event::OpenHere`).
 
 use std::cell::RefCell;
 use std::ptr::NonNull;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
@@ -37,16 +39,32 @@ struct Popup {
     sink: Sink,
 }
 
+/// An agent acting in a page now (a click, a key): a window the page opens meanwhile is the
+/// agent's doing.
+struct AgentAct {
+    /// The page's web view (its address, as a number).
+    page: usize,
+    at: Instant,
+    /// The sites the agent may open, and the one the user let it open once.
+    sites: Vec<String>,
+    pass: Option<String>,
+}
+
 thread_local! {
     /// The pop-ups open now (main thread only, as AppKit is).
     static POPUPS: RefCell<Vec<Popup>> = const { RefCell::new(Vec::new()) };
+    static AGENT_ACT: RefCell<Option<AgentAct>> = const { RefCell::new(None) };
+    /// A pop-up an agent's step opened to a site it may not open yet, not opened: (the page,
+    /// its address). The step asks the user, then is made again.
+    static BLOCKED: RefCell<Option<(usize, String)>> = const { RefCell::new(None) };
     /// One delegate answers for every pop-up (window, page and navigation), kept for the app's
     /// life: AppKit and WebKit do not keep their delegates.
     static DELEGATE: RefCell<Option<Retained<PopupDelegate>>> = const { RefCell::new(None) };
 }
 
 /// Whether a request for a new window becomes a pop-up: the page asked for a window of a size
-/// or at a place (a link to a new tab does not), right after the user clicked in it or typed.
+/// or at a place (a link to a new tab does not), right after a click or key in it (the user's,
+/// or an agent's step).
 pub fn wanted(sized: bool, user_acted: bool) -> bool {
     sized && user_acted
 }
@@ -54,6 +72,61 @@ pub fn wanted(sized: bool, user_acted: bool) -> bool {
 /// Whether the user just clicked in this page, or typed in it, now.
 pub fn user_acted_in(page: &WKWebView) -> bool {
     crate::browser::clicked_in_view(page, USER_ACT) || (crate::browser::typed_within(USER_ACT) && crate::browser::view_has_keyboard(page))
+}
+
+fn key(web: &WKWebView) -> usize {
+    std::ptr::from_ref(web) as usize
+}
+
+/// An agent's step acts in `page` now (`sites`, `pass`: where it may go).
+pub fn agent_acting(page: &WKWebView, sites: Vec<String>, pass: Option<String>) {
+    AGENT_ACT.with_borrow_mut(|a| *a = Some(AgentAct { page: key(page), at: Instant::now(), sites, pass }));
+}
+
+/// The agent stopped acting (the user took the browser over): windows opened now are the
+/// user's.
+pub fn agent_stopped() {
+    AGENT_ACT.with_borrow_mut(|a| *a = None);
+}
+
+/// The address of a pop-up an agent's step in `page` (a web view's address, as a number)
+/// opened to a site it may not open (not opened), once.
+pub fn take_blocked(page: usize) -> Option<String> {
+    BLOCKED.with_borrow_mut(|b| b.take_if(|(p, _)| *p == page).map(|(_, url)| url))
+}
+
+/// A page's request for a new window of `url`: `None` when it is no pop-up (the caller opens a
+/// page in the panel); else the pop-up's web view, or none (an agent's, to a site it may not
+/// open yet: the agent's step asks the user).
+pub fn request(opener: &WKWebView, url: &str, config: &WKWebViewConfiguration, sized: bool, size: Option<(f64, f64)>, sink: &Sink) -> Option<Option<Retained<WKWebView>>> {
+    // An agent acting in the page now: its doing (its click may have given the page the
+    // keyboard, which with the user's typing elsewhere would pass for the user's).
+    let agent = AGENT_ACT.with_borrow(|a| a.as_ref().filter(|a| a.page == key(opener) && a.at.elapsed() <= USER_ACT).map(|a| (a.sites.clone(), a.pass.clone())));
+    let user = agent.is_none() && user_acted_in(opener);
+    if !wanted(sized, user || agent.is_some()) {
+        return None;
+    }
+    if let Some((sites, pass)) = agent
+        && !crate::browser::agent_may_open(url, &sites, pass.as_deref())
+    {
+        BLOCKED.with_borrow_mut(|b| *b = Some((key(opener), url.to_string())));
+        return Some(None);
+    }
+    open(opener, url, config, size, sink.clone(), user).map(Some)
+}
+
+/// Closes the pop-ups a page opened (and theirs).
+pub fn close_of(page: tc_core::PaneId) {
+    let windows: Vec<Retained<NSWindow>> = POPUPS.with_borrow(|p| p.iter().filter(|p| p.sink.page == page).map(|p| p.window.clone()).collect());
+    for w in windows {
+        w.close();
+    }
+}
+
+/// The newest pop-up a page opened (or one of its pop-ups did), while it is open: an agent's
+/// steps act there.
+pub fn popup_of(page: tc_core::PaneId) -> Option<Retained<WKWebView>> {
+    POPUPS.with_borrow(|p| p.iter().rev().find(|p| p.sink.page == page).map(|p| p.web.clone()))
 }
 
 /// The size of a pop-up asked for `asked` points (the page's own size when it gave none), kept
@@ -78,9 +151,10 @@ pub fn title_for(url: &str) -> String {
 }
 
 /// Opens a pop-up for `opener`'s request of `url`, `size` points (as the page asked), on the
-/// configuration WebKit handed for it (that keeps the two tied). Returns its web view for WebKit
+/// configuration WebKit handed for it (that keeps the two tied); with the keyboard when the
+/// user opened it (an agent's leaves the keyboard where it is). Returns its web view for WebKit
 /// to load the request in; `None` when there is no window to show it over.
-pub fn open(opener: &WKWebView, url: &str, config: &WKWebViewConfiguration, size: Option<(f64, f64)>, sink: Sink) -> Option<Retained<WKWebView>> {
+fn open(opener: &WKWebView, url: &str, config: &WKWebViewConfiguration, size: Option<(f64, f64)>, sink: Sink, keyboard: bool) -> Option<Retained<WKWebView>> {
     let mtm = MainThreadMarker::new()?;
     let parent = opener.window()?;
     let screen = parent.screen()?;
@@ -117,8 +191,12 @@ pub fn open(opener: &WKWebView, url: &str, config: &WKWebViewConfiguration, size
     // Over the app's window, moving with it (and in its full screen space).
     // SAFETY: both windows are alive, on the main thread.
     unsafe { parent.addChildWindow_ordered(&window, NSWindowOrderingMode::Above) };
-    window.makeKeyAndOrderFront(None);
     window.makeFirstResponder(Some(&web));
+    if keyboard {
+        window.makeKeyAndOrderFront(None);
+    } else {
+        window.orderFront(None);
+    }
     watch_keys();
     POPUPS.with_borrow_mut(|p| p.push(Popup { window, web: web.clone(), sink }));
     Some(web)
@@ -153,8 +231,7 @@ pub fn snapshot_first(done: impl FnOnce(Option<Vec<u8>>) + 'static) {
 }
 
 fn url_of(web: &WKWebView) -> String {
-    // SAFETY: a plain WKWebView getter on the main thread.
-    unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default()
+    crate::browser::url_in(web)
 }
 
 fn delegate(mtm: MainThreadMarker) -> Retained<PopupDelegate> {
@@ -317,8 +394,8 @@ fn new_window_of_popup(web: &WKWebView, config: &WKWebViewConfiguration, action:
         let url = action.request().URL().and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default();
         (size, sized, url)
     };
-    if wanted(sized, user_acted_in(web)) {
-        return open(web, &url, config, size, sink);
+    if let Some(popup) = request(web, &url, config, sized, size, &sink) {
+        return popup;
     }
     if !url.is_empty() {
         sink.push(Event::OpenHere(url));

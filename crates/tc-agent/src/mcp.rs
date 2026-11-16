@@ -28,7 +28,9 @@ in a browser (\"open YouTube\", \"check it in the browser\", a URL, a dev server
 tools, not `open <url>` in a shell and not other browser tools (Chrome, Zen, Safari, Playwright), \
 unless the user names that other browser. Start with browser_navigate: this machine's addresses \
 open at once; another site waits the first time for the user's OK, asked in TernaryCode. Then \
-act on the refs of the snapshot each tool returns.";
+act on the refs of the snapshot each tool returns. A pop-up a page opens (a sign-in such as \
+Continue with Google) shows in a window of its own; the tools act in it until it closes. Never \
+type the user's passwords or one-time codes: ask the user to type them there.";
 
 /// The tools, as `tools/list` gives them.
 pub fn tools() -> Value {
@@ -249,6 +251,7 @@ mod tests {
         // The agent is told this is the browser the user means here, unless they name another.
         let told = a["result"]["instructions"].as_str().unwrap_or("");
         assert!(told.contains("browser built in") && told.contains("unless the user names that other browser"), "{told}");
+        assert!(told.contains("pop-up") && told.contains("Never type the user's passwords"), "{told}");
         let navigate = tools().as_array().and_then(|t| t.iter().find(|x| x["name"] == "browser_navigate").cloned()).unwrap_or_default();
         assert!(navigate["description"].as_str().unwrap_or("").contains("the browser the user means in this session"));
         let newer = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2099-01-01"}});

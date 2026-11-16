@@ -82,6 +82,11 @@ pub struct Job {
     /// The page was read again after it went away once.
     reread: bool,
     seqs: Vec<u64>,
+    /// The pop-up the last step acted in (none: the page), once a step has run.
+    on_popup: Option<Option<usize>>,
+    /// The web view a click (or key) of the job acts in now: a pop-up it opens to a site the
+    /// agent may not open is asked about.
+    acted: Option<usize>,
 }
 
 /// The helper's function `name` with `args`, as the body of an async function.
@@ -221,6 +226,8 @@ impl App {
             image: None,
             reread: false,
             seqs: Vec::new(),
+            on_popup: None,
+            acted: None,
         });
         self.mark_dirty();
     }
@@ -406,16 +413,33 @@ impl App {
             if let Some(d) = b.driver.as_ref().filter(|d| d.paused) {
                 return Some(Some(format!("The user took the browser over from {} in TernaryCode. Wait until they hand it back, or ask them.", d.who)));
             }
+            // Where the steps act: the newest pop-up the page opened while one is open, else the
+            // page (it comes up out of view if need be, `sync_browsers`).
+            let popup = crate::browser_popup::popup_of(id);
+            let view = popup.clone().or_else(|| b.view.as_ref().map(crate::browser::web_view_of));
             // A page not up yet (a new browser gets its web view once it has an address) counts
             // as loading.
-            let loading = b.view.as_ref().is_none_or(crate::browser::is_loading);
+            let loading = view.as_ref().is_none_or(|w| crate::browser::loading_in(w));
             let sites = self.agent_sites(b.project);
+            let pass = b.pass.clone();
             let answer = b.ask.as_ref().and_then(|a| a.answer.map(|x| (x, a.host.clone(), a.url.clone())));
             let here = b.url.clone();
-            let page_url = b.view.as_ref().and_then(|v| v.url().ok()).unwrap_or_default();
-            // Its page comes up out of view if need be (`sync_browsers`).
-            let view = b.view.as_ref();
+            let page_url = view.as_ref().map(|w| crate::browser::url_in(w)).unwrap_or_default();
             let job = &mut self.browser_jobs[i];
+            // A pop-up opened (the agent's click, or the user's) or closed since the last step:
+            // the agent hears of it.
+            let seen = popup.as_ref().map(|w| std::ptr::from_ref::<objc2_web_kit::WKWebView>(w) as usize);
+            match job.on_popup.replace(seen) {
+                Some(before) if before != seen && seen.is_some() => {
+                    let host = crate::browser::host_of(&page_url);
+                    let on = if host.is_empty() { String::new() } else { format!(" ({host})") };
+                    job.text.push_str(&format!(
+                        "A pop-up window opened{on}. It shows over TernaryCode; your next steps act in it until it closes (browser_navigate closes it). If it asks for a password or a one-time code, ask the user to type it there themselves.\n"
+                    ));
+                }
+                Some(Some(_)) if seen.is_none() => job.text.push_str("The pop-up window closed; the steps act in the page again.\n"),
+                _ => {}
+            }
             match job.waiting.take() {
                 Some(Waiting::Page { seq, op, since, at }) => {
                     let got = self.browser_done.lock().remove(&seq);
@@ -441,7 +465,9 @@ impl App {
                                 job.text.push_str(&line);
                                 job.text.push('\n');
                             }
-                            job.ops.push_front(Op::Settle);
+                            if !matches!(job.ops.front(), Some(Op::Settle)) {
+                                job.ops.push_front(Op::Settle);
+                            }
                         }
                         (Op::Read, Err(e)) => {
                             if job.reread {
@@ -459,11 +485,14 @@ impl App {
                             }
                             match op {
                                 Op::Act(name, args, line) => {
-                                    if let Some(url) = v["leaves"].as_str() {
+                                    // A pop-up the step opened to a site the agent may not open:
+                                    // asked first, then the step is made again.
+                                    let blocked = job.acted.take().and_then(crate::browser_popup::take_blocked);
+                                    if let Some(url) = v["leaves"].as_str().map(str::to_string).or(blocked) {
                                         // A click to a site the agent may not open: asked first.
                                         let mut args = args;
                                         args["force"] = json!(true);
-                                        let (url, pane) = (url.to_string(), job.agent_pane);
+                                        let pane = job.agent_pane;
                                         job.waiting = Some(Waiting::User { then: Op::Act(name, args, line) });
                                         self.ask_site(id, pane, &url, true);
                                         return None;
@@ -478,8 +507,9 @@ impl App {
                                 }
                                 Op::Read => {
                                     job.text.push_str(&format!(
-                                        "\nPage: {}\nURL: {}\n\n{}\n",
+                                        "\nPage: {}{}\nURL: {}\n\n{}\n",
                                         v["title"].as_str().unwrap_or(""),
+                                        if popup.is_some() { " (a pop-up window)" } else { "" },
                                         v["url"].as_str().unwrap_or(""),
                                         v["text"].as_str().unwrap_or("")
                                     ));
@@ -572,6 +602,8 @@ impl App {
                             }
                             job.text.push_str(&format!("Opened {url}.\n"));
                             job.waiting = Some(Waiting::Load { since: now, started: false, grace: Duration::from_secs(3), quiet: 0 });
+                            // A new address is the page's: pop-ups it opened close.
+                            crate::browser_popup::close_of(id);
                             if let Some(b) = self.browsers.get_mut(&id) {
                                 b.navigate(&url);
                             }
@@ -581,7 +613,7 @@ impl App {
                         }
                         op => {
                             // The other steps need the page up: until then, they wait.
-                            let Some(view) = view else {
+                            let Some(view) = view.as_deref() else {
                                 job.ops.push_front(op);
                                 return None;
                             };
@@ -591,7 +623,8 @@ impl App {
                             };
                             match op {
                                 Op::Back => {
-                                    let _ = view.go_back();
+                                    // SAFETY: a plain WKWebView method on the main thread.
+                                    unsafe { view.goBack() };
                                     job.text.push_str("Went back.\n");
                                     job.waiting = Some(Waiting::Load { since: now, started: false, grace: Duration::from_millis(1500), quiet: 0 });
                                 }
@@ -599,25 +632,31 @@ impl App {
                                     if name == "click" {
                                         args["allowed"] = json!(sites);
                                     }
-                                    crate::browser::run_js(view, &helper_call(name, &args), move |r| {
+                                    // A click or key may open a pop-up (Continue with Google): as
+                                    // the agent's, to the sites it may open.
+                                    if matches!(name, "click" | "press" | "type" | "select") {
+                                        crate::browser_popup::agent_acting(view, sites.clone(), pass.clone());
+                                        job.acted = Some(std::ptr::from_ref(view) as usize);
+                                    }
+                                    crate::browser::run_js_in(view, &helper_call(name, &args), move |r| {
                                         page(r);
                                     });
                                     job.waiting = Some(Waiting::Page { seq, op: Op::Act(name, args, line), since: now, at: (page_url.clone(), loading) });
                                 }
                                 Op::Eval(src) => {
-                                    crate::browser::run_js(view, &eval_call(&src), move |r| {
+                                    crate::browser::run_js_in(view, &eval_call(&src), move |r| {
                                         page(r);
                                     });
                                     job.waiting = Some(Waiting::Page { seq, op: Op::Eval(src), since: now, at: (page_url.clone(), loading) });
                                 }
                                 Op::Read => {
-                                    crate::browser::run_js(view, &helper_call("snapshot", &json!({})), move |r| {
+                                    crate::browser::run_js_in(view, &helper_call("snapshot", &json!({})), move |r| {
                                         page(r);
                                     });
                                     job.waiting = Some(Waiting::Page { seq, op: Op::Read, since: now, at: (page_url.clone(), loading) });
                                 }
                                 Op::Shot => {
-                                    crate::browser::snapshot(view, move |png| {
+                                    crate::browser::snapshot_view(view, None, move |png| {
                                         page(png.map(|d| tc_agent::shell::base64(&d)).ok_or_else(|| "the page gave no picture".to_string()));
                                     });
                                     job.waiting = Some(Waiting::Picture { seq, since: now });
@@ -673,6 +712,8 @@ impl App {
         let agent = d.pane;
         b.handed_back = !take;
         if take {
+            #[cfg(target_os = "macos")]
+            crate::browser_popup::agent_stopped();
             self.actions.push(crate::actions::Action::FocusPane(id));
             self.browser_focus_request = Some(id);
         } else {

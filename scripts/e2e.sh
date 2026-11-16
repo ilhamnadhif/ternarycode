@@ -121,7 +121,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # terminal, where the web view sits exactly on the page's place; an address typed goes there;
 # a new page (⌥⇧⌘B) opens the project's server beside it in the panel; a page tab brings its
 # page back. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -162,6 +162,23 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     expect_saved() { grep -q "$2" "$WORK/data-$1/workspace.json" && echo "ok    $1 saved $2" || { echo "FAIL  $1 did not save $2"; FAIL=$((FAIL + 1)); }; }
     [ -z "$ONLY" ] || [[ "browser-agent" == *"$ONLY"* ]] && expect_saved browser-agent tc-e2e.invalid
 
+    # An agent's click that opens a sign-in pop-up: the pop-up opens tied to the page, the
+    # agent hears of it and its next steps act in it; its click there signs the page in and the
+    # pop-up closes, after which the steps act in the page again; browser_navigate closes an open
+    # pop-up and goes on in the page. A pop-up to a site the agent may not open is asked about
+    # first (Block: not opened).
+    printf '<!doctype html><title>Agent Popup Opener</title><button onclick="window.open(&quot;/agentsignin.html&quot;, &quot;s&quot;, &quot;width=480,height=560&quot;)">Sign in</button><button onclick="window.open(&quot;http://tc-popup.invalid/x&quot;, &quot;w&quot;, &quot;width=400,height=400&quot;)">Sign in elsewhere</button><script>window.addEventListener("message", function (e) { if (e.origin === location.origin) document.title = "Signed in: " + e.data; });</script>\n' > "$SITE/agentpop.html"
+    printf '<!doctype html><title>Agent Sign In</title><button onclick="window.opener.postMessage(&quot;agent-ok&quot;, &quot;*&quot;); window.close();">Continue</button>\n' > "$SITE/agentsignin.html"
+    call pnav browser_navigate "{\"url\":\"localhost:$WEBPORT/agentpop.html\"}"
+    call pclick browser_click '{"ref":"e1","element":"Sign in button"}'
+    call pcont browser_click '{"ref":"e1","element":"Continue button"}'
+    call pclick2 browser_click '{"ref":"e1","element":"Sign in button"}'
+    call pnav2 browser_navigate "{\"url\":\"localhost:$WEBPORT/agentpop.html\"}"
+    call pelse browser_click '{"ref":"e2","element":"Sign in elsewhere button"}'
+    # The calls run from a preset (no typing: the keyboard is not needed while the user works).
+    printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\nm pnav; m pclick; sleep 3; m pcont; m pclick2; sleep 2; m pnav2; m pelse\n' "$HOOK" "$MCP" "$MCP" > "$WORK/agentpop.sh"
+    mkdir -p "$WORK/data-browser-agent-popup"; printf '{"presets":[{"id":"popper","name":"Popper","command":"sh %s"}]}\n' "$WORK/agentpop.sh" > "$WORK/data-browser-agent-popup/settings.json"
+    run browser-agent-popup 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run popper;; wait-screen ok-pnav;; expect-file $MCP/pnav.out Page: Agent Popup Opener;; wait-screen ok-pclick;; wait-popups 1;; expect-file $MCP/pclick.out A pop-up window opened;; expect-file $MCP/pclick.out Page: Agent Sign In (a pop-up window);; wait-screen ok-pcont;; wait-popups 0;; expect-file $MCP/pcont.out The pop-up window closed;; expect-file $MCP/pcont.out Page: Signed in: agent-ok;; wait-pages 3*;; wait-screen ok-pclick2;; wait-popups 1;; wait-screen ok-pnav2;; wait-popups 0;; expect-file $MCP/pnav2.out The pop-up window closed;; expect-file $MCP/pnav2.out Page: Agent Popup Opener;; wait-shown browser-ask:3;; wait-popups 0;; click browser-block:3;; wait-screen ok-pelse;; expect-file $MCP/pelse.out Blocked by the user: tc-popup.invalid;; wait-popups 0;; quit"
     # More of the browser: $BROWSER (Python's webbrowser) opens the page beside the terminal; its
     # console's error and warning show as a chip, then in the drawer; under the palette the page
     # is a picture; `open https://…` and `ternarycode browse` go to the same browser; a link to a

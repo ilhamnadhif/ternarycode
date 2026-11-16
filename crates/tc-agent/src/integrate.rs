@@ -43,7 +43,10 @@ beside this terminal: it is the user's browser in this session, and the user see
 every click. Whenever the user asks to open, show, check or search something on a website or in a \
 browser (open YouTube, check it in the browser, a URL, a dev server), use the ternarycode tools, \
 browser_navigate first, not `open <url>` in a shell and not other browser or computer-use tools \
-(Computer Use, Chrome, Safari, Playwright), unless the user names that other browser or tool.";
+(Computer Use, Chrome, Safari, Playwright), unless the user names that other browser or tool. A \
+pop-up a page opens (a sign-in such as Continue with Google) shows in a window of its own; the \
+tools act in it until it closes. Never type the user's passwords or one-time codes: ask the user \
+to type them there.";
 
 /// The `developer_instructions` a Codex `config.toml` sets at its top level (a `-c` of the key
 /// replaces them: TernaryCode's guide keeps them first).

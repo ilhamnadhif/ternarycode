@@ -889,6 +889,26 @@ impl App {
                     None => self.devtest.check(false, "web-click: no page"),
                 }
             }
+            // `web-log EXPR`: what a script gives in the open project's front page, logged.
+            #[cfg(target_os = "macos")]
+            "web-log" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                match front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()) {
+                    Some(v) => {
+                        let body = format!("try {{ return JSON.stringify(await ({})); }} catch (e) {{ return 'error: ' + e; }}", arg.trim());
+                        crate::browser::run_js(v, &body, |out| eprintln!("DEVTEST LOG: web-log {out:?}"));
+                    }
+                    None => self.devtest.check(false, "web-log: no page"),
+                }
+            }
+            // The window with the keyboard, logged (its title).
+            #[cfg(target_os = "macos")]
+            "log-key-window" => {
+                let title = objc2::MainThreadMarker::new()
+                    .and_then(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow())
+                    .map(|w| w.title().to_string());
+                eprintln!("DEVTEST LOG: key window {title:?}");
+            }
             // `popup-key SPEC`, `popup-keys TEXT`: keys sent to the window with the keyboard (a
             // pop-up), as typed.
             "popup-key" => devtest::key_in_key_window(arg.trim()),

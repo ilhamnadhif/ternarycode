@@ -89,6 +89,8 @@ pub enum Answer {
 pub struct Sink {
     events: Arc<Mutex<Vec<Event>>>,
     ctx: eframe::egui::Context,
+    /// The page it reports for.
+    pub page: PaneId,
 }
 
 impl Sink {
@@ -275,7 +277,7 @@ impl Browser {
     }
 
     pub fn sink(&self, ctx: &eframe::egui::Context) -> Sink {
-        Sink { events: self.events.clone(), ctx: ctx.clone() }
+        Sink { events: self.events.clone(), ctx: ctx.clone(), page: self.id }
     }
 
     /// Its name in a tab: the page's title, else its host.
@@ -549,18 +551,20 @@ pub fn build_view(
             s2.push(Event::Loading(matches!(e, PageLoadEvent::Started)));
         })
         .with_new_window_req_handler(move |u, f| {
-            // A window of a size, opened by the user's click in the page (Continue with Google,
-            // Sign in with Apple): a pop-up tied to the page, which hears back from it through
-            // `window.opener`. Anything else (a link to a new tab): a new page in the panel.
+            // A window of a size, opened by a click in the page (Continue with Google, Sign in
+            // with Apple), the user's or an agent's: a pop-up tied to the page, which hears back
+            // from it through `window.opener`. Anything else (a link to a new tab): a new page in
+            // the panel.
             let sized = f.size.is_some() || f.position.is_some();
-            if crate::browser_popup::wanted(sized, crate::browser_popup::user_acted_in(&f.opener.webview)) {
-                let size = f.size.map(|s| (s.width, s.height));
-                if let Some(webview) = crate::browser_popup::open(&f.opener.webview, &u, &f.opener.target_configuration, size, s3.clone()) {
-                    return NewWindowResponse::Create { webview };
+            let size = f.size.map(|s| (s.width, s.height));
+            match crate::browser_popup::request(&f.opener.webview, &u, &f.opener.target_configuration, sized, size, &s3) {
+                Some(Some(webview)) => NewWindowResponse::Create { webview },
+                Some(None) => NewWindowResponse::Deny,
+                None => {
+                    s3.push(Event::OpenHere(u));
+                    NewWindowResponse::Deny
                 }
             }
-            s3.push(Event::OpenHere(u));
-            NewWindowResponse::Deny
         })
         .with_ipc_handler(move |req| {
             let body = req.body();
@@ -676,10 +680,16 @@ pub fn take_picture(view: &wry::WebView, width: Option<f64>, slot: Picture, ctx:
 /// page went away meanwhile (it navigated).
 #[cfg(target_os = "macos")]
 pub fn run_js(view: &wry::WebView, body: &str, done: impl FnOnce(Result<String, String>) + 'static) {
+    use wry::WebViewExtMacOS;
+    run_js_in(&view.webview(), body, done);
+}
+
+/// [`run_js`] in a web view (a page's, or a pop-up's).
+#[cfg(target_os = "macos")]
+pub fn run_js_in(wk: &objc2_web_kit::WKWebView, body: &str, done: impl FnOnce(Result<String, String>) + 'static) {
     use objc2::runtime::AnyObject;
     use objc2_foundation::{NSError, NSString};
     use objc2_web_kit::WKContentWorld;
-    use wry::WebViewExtMacOS;
     let Some(mtm) = objc2::MainThreadMarker::new() else {
         return done(Err("not on the main thread".into()));
     };
@@ -697,7 +707,6 @@ pub fn run_js(view: &wry::WebView, body: &str, done: impl FnOnce(Result<String, 
             f(out);
         }
     });
-    let wk = view.webview();
     // SAFETY: on the main thread; the page's own world (where the helper lives), the main frame,
     // no arguments; the block lives as long as WebKit keeps it.
     unsafe {
@@ -713,6 +722,27 @@ pub fn is_loading(view: &wry::WebView) -> bool {
     use wry::WebViewExtMacOS;
     // SAFETY: a plain WKWebView getter on the main thread.
     unsafe { view.webview().isLoading() }
+}
+
+/// A page's web view, as WebKit's own type (for the calls a pop-up's takes too).
+#[cfg(target_os = "macos")]
+pub fn web_view_of(view: &wry::WebView) -> objc2::rc::Retained<objc2_web_kit::WKWebView> {
+    use wry::WebViewExtMacOS;
+    objc2::rc::Retained::into_super(view.webview())
+}
+
+/// Whether a web view is loading (see [`is_loading`]).
+#[cfg(target_os = "macos")]
+pub fn loading_in(wk: &objc2_web_kit::WKWebView) -> bool {
+    // SAFETY: a plain WKWebView getter on the main thread.
+    unsafe { wk.isLoading() }
+}
+
+/// A web view's address ("" before it has one).
+#[cfg(target_os = "macos")]
+pub fn url_in(wk: &objc2_web_kit::WKWebView) -> String {
+    // SAFETY: a plain WKWebView getter on the main thread.
+    unsafe { wk.URL() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default()
 }
 
 /// Takes the page back from a site an agent may not open yet. wry tells of a load once it has
