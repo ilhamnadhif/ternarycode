@@ -17,14 +17,16 @@
 </p>
 
 <p align="center">
-  <a href="README.id.md">Bahasa Indonesia</a> ·
+  <a href="#quick-start">Quick start</a> ·
   <a href="#install">Install</a> ·
   <a href="#features">Features</a> ·
   <a href="#keyboard-shortcuts">Shortcuts</a> ·
-  <a href="#build-from-source">Build</a>
+  <a href="#troubleshooting">Troubleshooting</a> ·
+  <a href="#build-from-source">Build</a> ·
+  <a href="README.id.md">Bahasa Indonesia</a>
 </p>
 
-![TernaryCode: five projects in the sidebar, an agent asking for permission in the terminal, the editor beside it](docs/screenshots/focus.png)
+![TernaryCode: an agent checks its change in the Browser panel beside its terminal, while the sidebar lists the agents waiting in other projects](docs/screenshots/focus.png)
 
 Running Claude Code, Codex, Gemini CLI or OpenCode in five projects at once usually means five
 editor windows, each with an agent hidden in a terminal panel, and no idea which one is waiting
@@ -36,32 +38,41 @@ It is one small native binary (no Electron, no Node.js; its browser uses the Web
 with macOS): the window is up in about 0.2 s, it idles at 0 % CPU, and ten open panes take around
 70 MB.
 
+> [!NOTE]
+> **TernaryCode is young (0.x) and moves fast.** macOS is the most tested platform: it runs the
+> end-to-end tests, and the browser panel is macOS-only for now. The Windows and Linux builds are
+> newer. Bug reports and ideas are welcome in
+> [Issues](https://github.com/ilhamnadhif/ternarycode/issues).
+
 ## Highlights
 
-- **Agent status you can trust.** Every pane knows whether its agent is working, waiting for you,
-  done or failed, from the agent's own hooks, the terminal's notifications and the shell. Each
-  status says where it came from; without a reliable signal it says only that the agent is
-  *Active* instead of guessing.
-- **Jump to what needs you.** `⌘J` goes to the most urgent waiting agent and `⇧⌘J` back. The
-  status bar names it, the Dock shows a badge, and a notification arrives when the window is in
-  the background. Keyboard focus never moves by itself.
-- **The Grid** shows every project live, side by side, each terminal filling its tile: the
-  **Focus | Grid** switch at the top of the sidebar (or `⌘0`) opens it, and a project in the list
-  opens on its own. **Active**, in the middle of its header, keeps only the projects where
-  something runs or waits. A project with several tabs shows the one that needs you (or where an
-  agent works), never switching away from the one you type into; the tabs sit in the tile's
-  header, to pick one by hand.
-- **A browser beside the terminals** (macOS). A project's pages open in its **Browser panel**,
-  and agents use it through TernaryCode's own browser tools to check their work, each on a page of
-  its own: you watch every click, and take over whenever you like.
-- **An editor beside the terminal**, with language servers you already have (rust-analyzer, gopls,
-  typescript-language-server, Dart, pyright, clangd…): ⌘-click to a definition, references,
-  rename across files, code actions, completion, hover and problems.
-- **Documents open right there**: PDF, Word, PowerPoint, Excel, CSV and images, read-only and fast,
-  and `⌘F` searches them.
-- **`ternarycode my-app`** in any terminal opens that project (or folder) in the window.
-- **Review** what an agent changed since it started, or since your last commit.
-- **Updates itself** from GitHub releases, with one click.
+- **See which agent needs you.** Every pane shows *Needs input*, *Running*, *Done* or *Failed*,
+  from the agent's own hooks, never a guess. `⌘J` jumps to the most urgent one.
+- **All your projects in one window**, each with its own terminals, tabs and splits. The **Grid**
+  shows them all live, side by side.
+- **A browser your agents can use** (macOS). An agent opens your dev server beside its terminal,
+  clicks through it and reads the console. You watch every step and can take over at any time.
+- **An editor with your language servers**, a click away when you want to read the code.
+- **Documents open in place**: PDF, Word, PowerPoint, Excel, CSV and images.
+- **Review what an agent changed**, and give each agent **a git worktree of its own** when several
+  work in one repository.
+- **Works with** Claude Code, Codex, Gemini CLI and OpenCode, or any command you run in a terminal.
+
+## Quick start
+
+1. [Install TernaryCode](#install) and open it.
+2. **Add a project**: click **+** next to *Projects*, drop a folder on the sidebar, or run
+   `ternarycode .` in a terminal.
+3. Click **Run Agent** (`⇧⌘A`) and pick Claude Code, Codex, Gemini CLI or OpenCode. It starts in
+   the terminal you are in (or in a new tab when that one is busy) and reports its status to
+   TernaryCode for that run.
+4. Go on with other work. When an agent waits for you, its project shows **Needs input** and the
+   status bar names it: `⌘J` takes you there, `⇧⌘J` back.
+5. Optional: **Settings → Integrations** installs the hooks once, so agents you start by hand
+   report their status too.
+
+The agent must be installed on its own (`claude`, `codex`, `gemini` or `opencode` must work in a
+terminal); TernaryCode runs it, it does not bundle it.
 
 ## Install
 
@@ -87,6 +98,7 @@ The script downloads the latest release, checks its SHA-256 and code signature, 
 
 Or download the `.dmg`, open it and drag **TernaryCode** onto **Applications**.
 
+> [!IMPORTANT]
 > **“TernaryCode” Not Opened / “Apple could not verify…”?** Releases are not notarized by Apple
 > yet, so macOS blocks an app downloaded with a browser. Use the one-line installer above (nothing
 > downloaded with `curl` is blocked), or click **Done**, open **System Settings → Privacy &
@@ -103,9 +115,9 @@ the current folder as a project (on by default). Or unpack the portable **`.zip`
 Panes run PowerShell 7 (`pwsh`) when it is installed, otherwise Windows PowerShell, with shell
 integration loaded without touching your profile or execution policy. Agents run as they do in any
 terminal (Claude Code, Codex, Gemini CLI and OpenCode all work natively on Windows), and their
-hooks reach the app over a named pipe. On Windows 10 the console host may drop the shell's prompt
-marks; status then comes from the agents' hooks and the running program.
+hooks reach the app over a named pipe.
 
+> [!IMPORTANT]
 > **“Windows protected your PC”?** The builds are not code-signed yet, so SmartScreen warns about
 > a new download. Click **More info**, then **Run anyway**.
 
@@ -140,14 +152,31 @@ Command line**), the Linux packages install it, and the Windows setup adds it to
 TernaryCode checks GitHub for a new release when it starts and every few hours while it runs.
 When one is out, the update window shows what's new; **Install Update** downloads it, verifies its
 size and the SHA-256 GitHub publishes (and on macOS the bundle id, version and code signature),
-then restarts into the new version with your projects and tabs restored. Later checks don't
-interrupt you: an **Update** item appears in the status bar instead.
+then restarts into the new version with your projects and tabs restored (on macOS and with the
+Linux `.tar.gz`, the programs in your panes, agents included, keep running through it). Later checks don't interrupt you: an **Update** item appears in the status
+bar instead.
 
 The `.dmg`/installer copy on macOS, the Windows setup, the AppImage and the `.tar.gz` update
 themselves; the `.deb`, `.rpm` and the portable `.zip` are updated by installing the new package.
-Turn automatic checks off in **Settings → General**, or use **Check for Updates…** any time. Apart
-from the pages you and your agents open in its browser, the update check is the only network
-connection TernaryCode makes.
+Turn automatic checks off in **Settings → General**, or use **Check for Updates…** any time.
+
+### Uninstall
+
+1. If you installed agent hooks, remove them first in **Settings → Integrations** (each agent's
+   **Uninstall** restores its config file). On macOS, **Settings → Browser → Logins & cookies →
+   Clear…** forgets the browser's logins.
+2. Remove the app:
+   - **macOS**: move `/Applications/TernaryCode.app` to the Trash, and delete the `ternarycode`
+     link it made at launch (in Homebrew's `bin`, `/usr/local/bin`, `~/.local/bin` or `~/bin`).
+   - **Windows**: **Settings → Apps → Installed apps → TernaryCode → Uninstall** (or delete the
+     portable folder).
+   - **Linux**: `sudo apt remove ternarycode` or `sudo dnf remove ternarycode`; for the
+     `.tar.gz`, delete `~/.local/bin/ternarycode`, `~/.local/bin/ternarycode-hook` and
+     `~/.local/share/applications/ternarycode.desktop`; for the AppImage, delete it and the
+     `~/.local/bin/ternarycode` link.
+3. Delete the settings and workspace, if you don't want them back:
+   `~/Library/Application Support/ternarycode` (macOS), `%APPDATA%\ternarycode` (Windows) or
+   `~/.local/share/ternarycode` (Linux).
 
 ## Features
 
@@ -155,8 +184,9 @@ connection TernaryCode makes.
 
 - **A project is a folder.** Its terminals start there, its files and git changes show beside
   them, and the sidebar shows its kind (Rust, Go, TypeScript, React, Flutter, Python…), branch,
-  number of changes and what its agent is doing. Projects are listed by name, in the sidebar and
-  in the Grid alike.
+  number of changes and what its agent is doing. Projects where something runs or waits are
+  grouped under **Active** at the top of the sidebar (Settings → General turns this off); the rest
+  are listed by name.
 - **Tabs and split panes per project**, drag to rearrange, and restored when you open the app
   again. Restored shells start only when you look at them, so a workspace of twenty projects opens
   as fast as one.
@@ -173,28 +203,38 @@ connection TernaryCode makes.
 - **Links open with `⌘`-click or `Ctrl`-click** (Ctrl-click on Windows and Linux), from a Grid
   tile too. A web address opens in the project's Browser panel (with `⌥`, or on Windows and
   Linux, in your default browser), even one wrapped over several rows or in brackets, and even
-  inside a program that uses the mouse. OSC 8 hyperlinks also open. A
-  `path:line` opens in the editor. Right-click a link to open or copy it.
+  inside a program that uses the mouse. OSC 8 hyperlinks also open. A `path:line` opens in the
+  editor. Right-click a link to open or copy it.
 - **Drop a file on a terminal** and its path is typed there, so an agent can read a screenshot.
   A folder dropped on the sidebar becomes a project. **`⌘V` with an image** on the clipboard
   hands it to Claude Code, Codex, Gemini CLI or OpenCode.
 - **Local servers show up.** When a pane prints `http://localhost:5173` (Vite, Next.js, Rails,
   Django…), its address appears in the project header and on the Grid tile while the server
   answers. Click it to open the page in the Browser panel.
-- **Shell integration** (zsh, bash, fish and PowerShell) marks prompts and commands, so a command that fails or
-  finishes after a long time is noticed, and resizing never leaves prompt fragments behind.
+- **Shell integration** (zsh, bash, fish and PowerShell) marks prompts and commands, so a command
+  that fails or finishes after a long time is noticed, and resizing never leaves prompt fragments
+  behind.
 
 ### Knowing which agent needs you
 
-![The Grid: four projects side by side, two agents waiting for permission](docs/screenshots/grid.png)
+![The Grid: six projects side by side, two agents waiting for permission and one done](docs/screenshots/grid.png)
 
 - Each pane's status comes from, in order of trust: the agent's **hooks** (installed per agent in
   Settings → Integrations, or added per launch without touching your config), terminal
   notifications (OSC 9, 99 and 777), shell integration (OSC 133) and the foreground process.
+  Each status says where it came from; without a reliable signal it says only that the agent is
+  *Active* instead of guessing.
 - **Needs input**, **Running**, **Done**, **Failed** and **Idle** show in the sidebar, on tabs, in
-  Grid tiles and in the status bar; the attention list (`⌥⌘J`) shows everything waiting, oldest
-  first.
-- Desktop notifications and the Dock badge only when you are not already looking.
+  Grid tiles and in the status bar. **Waiting for you**, at the top of the sidebar (`⌥⌘J`), lists
+  the agents that wait for you or have finished.
+- `⌘J` goes to the most urgent waiting agent and `⇧⌘J` back. Keyboard focus never moves by
+  itself.
+- Desktop notifications (macOS, Linux) and the Dock badge (macOS) only when you are not already looking.
+- **The Grid** (`⌘0`, or **Focus | Grid** at the top of the sidebar) shows every project live,
+  each terminal filling its tile. **Active** and **Waiting**, in its header, keep only the
+  projects where something runs or waits. A project with several tabs shows the one that needs
+  you (or where an agent works), never switching away from the one you type into; its tabs sit in
+  the tile's header, to pick one by hand.
 
 | Agent | Per launch (no file changed) | Installed once |
 | --- | --- | --- |
@@ -204,10 +244,10 @@ connection TernaryCode makes.
 | OpenCode | the browser tools, through `$OPENCODE_CONFIG_CONTENT` in every pane | the plugin `~/.config/opencode/plugins/ternarycode.js` |
 
 Installing shows the exact change first and keeps a backup; **Uninstall** restores the file byte
-for byte when you have not edited it since. The browser tools are on macOS (`--mcp-config`,
-`$TC_CODEX_MCP` and `$OPENCODE_CONFIG_CONTENT` are added there only), with a word to Codex and
-OpenCode, which read no tool server's own, that TernaryCode's browser is yours (after your own
-instructions). Settings → Browser shows which agents have them.
+for byte when you have not edited it since. The browser tools are on macOS (`--mcp-config`, `$TC_CODEX_MCP` and `$OPENCODE_CONFIG_CONTENT`
+are added there only), with a word to Codex and OpenCode, which read no tool server's own, that
+TernaryCode's browser is yours (after your own instructions). Settings → Browser shows which
+agents have them.
 
 ### A browser for you and your agents
 
@@ -233,7 +273,8 @@ goes (the two take turns there). On Windows and Linux pages open in your default
 - **Agents stay on safe ground.** They open this machine's addresses (localhost and the like) and
   the sites you allowed, for every project or one; another site waits for **Allow Once**,
   **Always** or **Block**, asked in TernaryCode with the other questions waiting for you. Their own
-  JavaScript (`browser_evaluate`) is off until you allow it in Settings → Browser.
+  JavaScript (`browser_evaluate`) is off until you allow it in Settings → Browser. A page gets the
+  keyboard only when you click it.
 - **In the Grid** a project's tile shows its panel beside its terminals, the page zoomed out so it
   keeps the layout it has in Focus, still live; a small tile shows a picture of the page an agent
   is using.
@@ -243,12 +284,15 @@ goes (the two take turns there). On Windows and Linux pages open in your default
 
 ### Editor and language features
 
+![The Code drawer: a Rust file open beside the agent that is changing it](docs/screenshots/editor.png)
+
 - Tabs, line numbers, syntax colours, find, and safe saves: it never overwrites a file
   an agent changed under your unsaved edits (you choose).
 - With a language server installed: go to definition (`F12` or `⌘`-click), type definition,
   implementations, references (`⇧F12`), rename across files (`F2`, with one-step undo), code
   actions and quick fixes (`⌘.`), completion, hover, signature help, document and workspace
-  symbols, problems (`⇧⌘M`) and format on save.
+  symbols, problems (`⇧⌘M`) and format on save. It uses the servers you already have
+  (rust-analyzer, gopls, typescript-language-server, Dart, pyright, clangd…).
 - Servers start when you edit a file they serve or ask for a language feature, so a file you only
   read costs nothing (Settings → Editor → *Start servers only when needed*; turn it off to start
   them when a file opens). They stop ten minutes after the last one closes. A missing server is
@@ -276,6 +320,19 @@ index, so your staging area is never touched), or since the last commit. Open an
 diff in the editor. When an agent finishes, **Review** on its Grid tile and in the list of what
 waits opens it straight away. In a worktree, Review shows its branch since it left its base: its
 commits and what is not committed yet, with **Merge** and **Remove** at hand.
+
+## Platform support
+
+| | macOS | Windows | Linux |
+| --- | :---: | :---: | :---: |
+| Projects, terminals, tabs, splits | ✓ | ✓ | ✓ |
+| Agent status from hooks, `⌘J`, Grid | ✓ | ✓ | ✓ |
+| Desktop notifications | ✓ | — | ✓ (`notify-send`) |
+| Shell integration | zsh, bash, fish | PowerShell | zsh, bash, fish |
+| Browser panel and the agents' browser tools | ✓ | default browser | default browser |
+| Editor, language servers, documents, Review, worktrees | ✓ | ✓ | ✓ |
+| Updates itself | `.dmg`, `.zip`, installer | setup | AppImage, `.tar.gz` |
+| End-to-end tests of the real app | ✓ | — | — |
 
 ## Keyboard shortcuts
 
@@ -308,6 +365,28 @@ everything, with its shortcut.
 In the editor, `Ctrl+Shift+-` is Forward (`⌃⇧-` on macOS), as in VS Code; elsewhere it makes the
 text smaller.
 
+## Troubleshooting
+
+**`codex : The term 'codex' is not recognized…` or `zsh: command not found: claude`** after Run
+Agent. The agent's own CLI isn't installed, or TernaryCode can't find it on the `PATH`. Install it
+(for example `npm install -g @openai/codex`), check that `codex --version` works in a normal
+terminal, then quit and reopen TernaryCode: its panes get the `PATH` it had when it started, so a
+program installed while it ran shows up only after a restart.
+
+**An agent shows only *Active*, or the status bar says it is not connected.** It was started by
+hand without hooks. Start it with **Run Agent** (hooks for that run), or install the hooks once in
+**Settings → Integrations**.
+
+**Windows 10: commands aren't marked as finished or failed.** The Windows 10 console host may drop
+the shell's prompt marks; status then comes from the agents' hooks and the running program.
+
+**Linux: the window stays blank or doesn't open.** TernaryCode draws with OpenGL. Check that your
+graphics driver provides it; Mesa's software renderer is enough
+(`LIBGL_ALWAYS_SOFTWARE=1 ternarycode`).
+
+**Something else?** [Open an issue](https://github.com/ilhamnadhif/ternarycode/issues) with your
+TernaryCode version, your system and the steps that lead to it.
+
 ## Privacy
 
 No account, no telemetry. TernaryCode itself connects only to GitHub, for the update check, which
@@ -322,7 +401,7 @@ Settings and the workspace live in `~/Library/Application Support/ternarycode` (
 
 ## Build from source
 
-Requires a recent stable Rust toolchain (built with 1.99).
+Requires the latest stable Rust toolchain (the code uses edition 2024; CI builds with stable).
 
 ```sh
 cargo build --release      # ternarycode and ternarycode-hook, side by side in target/release
@@ -340,6 +419,19 @@ outside a TernaryCode pane.
 | `scripts/e2e.sh` | end-to-end checks of the real app on macOS (injected keyboard and mouse events) |
 | `scripts/release.sh <x.y.z>` | tests, builds macOS, tags, and lets CI build Windows and Linux and publish |
 
+### Contributing
+
+Issues and pull requests are welcome. Before you open a pull request, run what CI runs:
+
+```sh
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+scripts/e2e.sh             # macOS: opens a window and drives it; leave the Mac alone while it runs
+```
+
+The code is formatted by hand, so please don't run `cargo fmt` over whole files; match the style
+around your change instead.
+
 ### Layout
 
 | Crate | |
@@ -351,6 +443,17 @@ outside a TernaryCode pane.
 | `crates/tc-lsp` | language server client: transport, server registry, positions, edits |
 | `crates/tc-doc` | PDF, Word, PowerPoint, spreadsheet, CSV and image readers |
 | `src/` | the app (egui), and its browser (WebKit through wry, on macOS) |
+
+## Built with
+
+[egui and eframe](https://github.com/emilk/egui) (UI) on [wgpu](https://github.com/gfx-rs/wgpu)
+and OpenGL, [alacritty_terminal](https://github.com/alacritty/alacritty) (terminal emulation),
+[wry](https://github.com/tauri-apps/wry) (the browser, on the system's WebKit),
+[hayro](https://github.com/LaurenzV/hayro) (PDF), [calamine](https://github.com/tafia/calamine)
+(spreadsheets), [quick-xml](https://github.com/tafia/quick-xml) and
+[zip](https://github.com/zip-rs/zip2) (Word and PowerPoint),
+[lsp-types](https://github.com/gluon-lang/lsp-types) and [notify](https://github.com/notify-rs/notify).
+Fonts: [Inter](https://rsms.me/inter/) and [Phosphor](https://phosphoricons.com) icons.
 
 ## The Ternary family
 

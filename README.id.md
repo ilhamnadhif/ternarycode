@@ -17,14 +17,16 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> ·
+  <a href="#mulai-cepat">Mulai cepat</a> ·
   <a href="#instalasi">Instalasi</a> ·
   <a href="#fitur">Fitur</a> ·
   <a href="#shortcut-keyboard">Shortcut</a> ·
-  <a href="#build-dari-source">Build</a>
+  <a href="#kalau-ada-masalah">Kalau ada masalah</a> ·
+  <a href="#build-dari-source">Build</a> ·
+  <a href="README.md">English</a>
 </p>
 
-![TernaryCode: lima project di sidebar, agent meminta izin di terminal, editor di sampingnya](docs/screenshots/focus.png)
+![TernaryCode: agent memeriksa perubahannya di panel Browser di samping terminalnya, sementara sidebar menampilkan agent yang menunggu di project lain](docs/screenshots/focus.png)
 
 Menjalankan Claude Code, Codex, Gemini CLI, atau OpenCode di lima project sekaligus biasanya
 berarti lima jendela editor, masing-masing dengan agent tersembunyi di panel terminal, tanpa tahu
@@ -36,32 +38,44 @@ Aplikasinya satu binary native kecil (tanpa Electron atau Node.js; browser-nya m
 bawaan macOS): jendela muncul sekitar 0,2 detik, CPU 0 % saat diam, dan sepuluh pane terbuka
 memakai sekitar 70 MB.
 
+> [!NOTE]
+> **TernaryCode masih muda (0.x) dan berkembang cepat.** macOS adalah platform yang paling banyak
+> diuji: tes end-to-end berjalan di sana, dan panel browser untuk sementara hanya ada di macOS.
+> Build Windows dan Linux lebih baru. Laporan bug dan ide sangat diterima di
+> [Issues](https://github.com/ilhamnadhif/ternarycode/issues).
+
 ## Sorotan
 
-- **Status agent yang bisa dipercaya.** Setiap pane tahu apakah agent-nya sedang bekerja, menunggu
-  Anda, selesai, atau gagal, dari hook agent itu sendiri, notifikasi terminal, dan shell. Setiap
-  status menyebut sumbernya; tanpa sinyal yang bisa dipercaya, ia hanya menyebut agent-nya
-  *Aktif*, bukan menebak.
-- **Lompat ke yang butuh Anda.** `⌘J` membuka agent paling mendesak yang menunggu, `⇧⌘J`
-  kembali. Status bar menyebut namanya, Dock menampilkan badge, dan notifikasi muncul saat jendela
-  di latar belakang. Fokus keyboard tidak pernah pindah sendiri.
-- **Grid** menampilkan semua project secara live, berdampingan, dengan terminal yang memenuhi
-  kartunya: switch **Focus | Grid** di bagian atas sidebar (atau `⌘0`) membukanya, dan project di
-  daftar membuka project itu sendiri. **Aktif** di tengah header-nya hanya menampilkan project yang
-  sedang menjalankan sesuatu atau menunggu. Project dengan beberapa tab menampilkan tab yang butuh
-  Anda (atau tempat agent bekerja), tanpa pernah berpindah dari tab yang sedang Anda ketik; tab-tabnya
-  ada di header tile, untuk dipilih sendiri.
-- **Browser di samping terminal** (macOS). Halaman project terbuka di **panel Browser**-nya, dan
-  agent memakainya lewat tool browser TernaryCode sendiri untuk memeriksa hasil kerjanya, masing-masing
-  di halamannya sendiri: Anda melihat setiap kliknya, dan bisa mengambil alih kapan saja.
-- **Editor di samping terminal**, dengan language server yang sudah Anda punya (rust-analyzer,
-  gopls, typescript-language-server, Dart, pyright, clangd…): ⌘-klik ke definisi, referensi,
-  rename lintas file, code action, autocomplete, hover, dan daftar problem.
-- **Dokumen langsung terbuka**: PDF, Word, PowerPoint, Excel, CSV, dan gambar, hanya-baca dan cepat,
-  dan bisa dicari dengan `⌘F`.
-- **`ternarycode nama-project`** di terminal mana pun membuka project (atau folder) itu di jendela.
-- **Review** apa yang diubah agent sejak ia mulai, atau sejak commit terakhir.
-- **Memperbarui dirinya sendiri** dari rilis GitHub, cukup satu klik.
+- **Tahu agent mana yang butuh Anda.** Setiap pane menampilkan *Butuh input*, *Berjalan*,
+  *Selesai*, atau *Gagal*, dari hook agent itu sendiri, bukan tebakan. `⌘J` membuka yang paling
+  mendesak.
+- **Semua project di satu jendela**, masing-masing dengan terminal, tab, dan split sendiri.
+  **Grid** menampilkan semuanya secara live, berdampingan.
+- **Browser yang bisa dipakai agent** (macOS). Agent membuka dev server Anda di samping
+  terminalnya, mengklik halamannya, dan membaca console-nya. Anda melihat setiap langkahnya dan bisa
+  mengambil alih kapan saja.
+- **Editor dengan language server Anda**, sekali klik saat Anda ingin membaca kodenya.
+- **Dokumen langsung terbuka**: PDF, Word, PowerPoint, Excel, CSV, dan gambar.
+- **Review apa yang diubah agent**, dan beri setiap agent **git worktree sendiri** saat beberapa
+  agent bekerja di satu repository.
+- **Bekerja dengan** Claude Code, Codex, Gemini CLI, dan OpenCode, atau perintah apa pun yang
+  Anda jalankan di terminal.
+
+## Mulai cepat
+
+1. [Pasang TernaryCode](#instalasi) lalu buka.
+2. **Tambahkan project**: klik **+** di samping *Projects*, drop folder ke sidebar, atau jalankan
+   `ternarycode .` di terminal.
+3. Klik **Run Agent** (`⇧⌘A`) lalu pilih Claude Code, Codex, Gemini CLI, atau OpenCode. Agent
+   berjalan di terminal tempat Anda berada (atau di tab baru kalau terminal itu sedang dipakai) dan
+   melaporkan statusnya ke TernaryCode untuk sesi itu.
+4. Lanjutkan pekerjaan lain. Saat agent menunggu Anda, project-nya menampilkan **Butuh input** dan
+   status bar menyebut namanya: `⌘J` membawa Anda ke sana, `⇧⌘J` kembali.
+5. Opsional: **Settings → Integrations** memasang hook sekali, supaya agent yang Anda jalankan
+   sendiri juga melaporkan statusnya.
+
+Agent-nya harus dipasang sendiri (`claude`, `codex`, `gemini`, atau `opencode` harus bisa jalan di
+terminal); TernaryCode menjalankannya, tidak membawanya.
 
 ## Instalasi
 
@@ -87,6 +101,7 @@ versi tertentu: `… | bash -s -- v0.1.0`.
 
 Bisa juga unduh `.dmg`, buka, lalu seret **TernaryCode** ke **Applications**.
 
+> [!IMPORTANT]
 > **“TernaryCode” Not Opened / “Apple could not verify…”?** Rilis belum dinotarisasi Apple, jadi
 > macOS memblokir app yang diunduh lewat browser. Pakai installer satu baris di atas (unduhan lewat
 > `curl` tidak diblokir), atau klik **Done**, buka **System Settings → Privacy & Security**, lalu
@@ -104,9 +119,9 @@ portabel di mana saja.
 Pane menjalankan PowerShell 7 (`pwsh`) kalau terpasang, kalau tidak Windows PowerShell, dengan
 shell integration yang dimuat tanpa mengubah profil atau execution policy Anda. Agent berjalan
 seperti di terminal lain (Claude Code, Codex, Gemini CLI, dan OpenCode berjalan native di Windows),
-dan hook-nya sampai ke app lewat named pipe. Di Windows 10, console host bisa membuang penanda
-prompt dari shell; status lalu diambil dari hook agent dan program yang sedang berjalan.
+dan hook-nya sampai ke app lewat named pipe.
 
+> [!IMPORTANT]
 > **“Windows protected your PC”?** Build belum ditandatangani kode, jadi SmartScreen memperingatkan
 > unduhan baru. Klik **More info**, lalu **Run anyway**.
 
@@ -142,14 +157,32 @@ TernaryCode; untuk terminal lain, TernaryCode menaruhnya di `PATH` Anda saat dib
 TernaryCode memeriksa rilis baru di GitHub saat dibuka dan setiap beberapa jam selama berjalan.
 Kalau ada, jendela pembaruan menampilkan yang baru; **Install Update** mengunduhnya, memverifikasi
 ukuran dan SHA-256 yang dipublikasikan GitHub (dan di macOS juga bundle id, versi, dan tanda
-tangan kode), lalu memulai ulang ke versi baru dengan project dan tab Anda dipulihkan. Pemeriksaan
-berikutnya tidak mengganggu: muncul item **Update** di status bar.
+tangan kode), lalu memulai ulang ke versi baru dengan project dan tab Anda dipulihkan (di macOS dan
+dengan `.tar.gz` Linux, program di pane Anda, termasuk agent, tetap berjalan selama itu).
+Pemeriksaan berikutnya tidak mengganggu: muncul item **Update** di status bar.
 
 App macOS, setup Windows, AppImage, dan `.tar.gz` memperbarui dirinya sendiri; `.deb`, `.rpm`, dan
 `.zip` portabel diperbarui dengan memasang paket baru. Matikan pemeriksaan otomatis di
-**Settings → General**, atau pakai **Check for Updates…** kapan saja. Selain halaman yang Anda dan
-agent Anda buka di browser-nya, pemeriksaan pembaruan adalah satu-satunya koneksi jaringan yang
-dibuat TernaryCode.
+**Settings → General**, atau pakai **Check for Updates…** kapan saja.
+
+### Uninstall
+
+1. Kalau Anda memasang hook agent, hapus dulu di **Settings → Integrations** (**Uninstall** di
+   setiap agent mengembalikan file config-nya). Di macOS, **Settings → Browser → Logins &
+   cookies → Clear…** menghapus login browser.
+2. Hapus app-nya:
+   - **macOS**: pindahkan `/Applications/TernaryCode.app` ke Trash, lalu hapus link `ternarycode`
+     yang dibuatnya saat dibuka (di `bin` Homebrew, `/usr/local/bin`, `~/.local/bin`, atau
+     `~/bin`).
+   - **Windows**: **Settings → Apps → Installed apps → TernaryCode → Uninstall** (atau hapus
+     folder portabelnya).
+   - **Linux**: `sudo apt remove ternarycode` atau `sudo dnf remove ternarycode`; untuk `.tar.gz`,
+     hapus `~/.local/bin/ternarycode`, `~/.local/bin/ternarycode-hook`, dan
+     `~/.local/share/applications/ternarycode.desktop`; untuk AppImage, hapus file-nya dan link
+     `~/.local/bin/ternarycode`.
+3. Hapus pengaturan dan workspace kalau tidak ingin dipakai lagi:
+   `~/Library/Application Support/ternarycode` (macOS), `%APPDATA%\ternarycode` (Windows), atau
+   `~/.local/share/ternarycode` (Linux).
 
 ## Fitur
 
@@ -157,8 +190,9 @@ dibuat TernaryCode.
 
 - **Project adalah folder.** Terminalnya mulai di sana, file dan perubahan git-nya tampil di
   sampingnya, dan sidebar menunjukkan jenisnya (Rust, Go, TypeScript, React, Flutter, Python…),
-  branch, jumlah perubahan, dan apa yang sedang dikerjakan agent-nya. Project diurutkan menurut
-  nama, di sidebar maupun di Grid.
+  branch, jumlah perubahan, dan apa yang sedang dikerjakan agent-nya. Project yang sedang
+  menjalankan sesuatu atau menunggu dikelompokkan di bawah **Active** di atas sidebar (bisa
+  dimatikan di Settings → General); sisanya diurutkan menurut nama.
 - **Tab dan split pane per project**, bisa diseret untuk diatur ulang, dan dipulihkan saat app
   dibuka lagi. Shell yang dipulihkan baru berjalan saat Anda melihatnya, jadi workspace berisi dua
   puluh project terbuka secepat satu project.
@@ -176,28 +210,39 @@ dibuat TernaryCode.
 - **Link dibuka dengan `⌘`-klik atau `Ctrl`-klik** (Ctrl-klik di Windows dan Linux), dari tile
   Grid juga. Alamat web terbuka di panel Browser project (dengan `⌥`, atau di Windows dan Linux,
   di browser default Anda), termasuk yang terpotong ke beberapa baris, yang ada dalam tanda kurung,
-  dan yang ada di program yang memakai mouse. Hyperlink OSC 8 juga bisa
-  dibuka. `path:baris` terbuka di editor. Klik kanan link untuk membuka atau menyalinnya.
+  dan yang ada di program yang memakai mouse. Hyperlink OSC 8 juga bisa dibuka. `path:baris`
+  terbuka di editor. Klik kanan link untuk membuka atau menyalinnya.
 - **Drop file ke terminal** dan path-nya langsung terketik di sana, jadi agent bisa membaca
   screenshot. Folder yang di-drop ke sidebar menjadi project. **`⌘V` dengan gambar** di
   clipboard diteruskan ke Claude Code, Codex, Gemini CLI, atau OpenCode.
 - **Server lokal langsung kelihatan.** Kalau pane mencetak `http://localhost:5173` (Vite,
   Next.js, Rails, Django…), alamatnya muncul di header project dan tile Grid selama servernya
   menjawab. Klik untuk membuka halamannya di panel Browser.
-- **Shell integration** (zsh, bash, fish, dan PowerShell) menandai prompt dan perintah, jadi perintah yang gagal
-  atau selesai setelah lama tetap ketahuan, dan resize tidak pernah meninggalkan potongan prompt.
+- **Shell integration** (zsh, bash, fish, dan PowerShell) menandai prompt dan perintah, jadi
+  perintah yang gagal atau selesai setelah lama tetap ketahuan, dan resize tidak pernah
+  meninggalkan potongan prompt.
 
 ### Tahu agent mana yang butuh Anda
 
-![Grid: empat project berdampingan, dua agent menunggu izin](docs/screenshots/grid.png)
+![Grid: enam project berdampingan, dua agent menunggu izin dan satu selesai](docs/screenshots/grid.png)
 
 - Status tiap pane berasal dari, urut dari yang paling dipercaya: **hook** agent (dipasang per
   agent di Settings → Integrations, atau ditambahkan per peluncuran tanpa mengubah config Anda),
   notifikasi terminal (OSC 9, 99, dan 777), shell integration (OSC 133), dan proses foreground.
-- **Butuh input**, **Berjalan**, **Selesai**, **Gagal**, dan **Diam** tampil di sidebar, tab, kartu
-  Grid, dan status bar; daftar perhatian (`⌥⌘J`) menampilkan semua yang menunggu, yang paling lama
-  lebih dulu.
-- Notifikasi desktop dan badge Dock hanya muncul kalau Anda tidak sedang melihatnya.
+  Setiap status menyebut sumbernya; tanpa sinyal yang bisa dipercaya, ia hanya menyebut agent-nya
+  *Aktif*, bukan menebak.
+- **Butuh input**, **Berjalan**, **Selesai**, **Gagal**, dan **Diam** tampil di sidebar, tab, tile
+  Grid, dan status bar. **Menunggu kamu**, di atas sidebar (`⌥⌘J`), menampilkan agent yang
+  menunggu Anda atau sudah selesai.
+- `⌘J` membuka agent paling mendesak yang menunggu, `⇧⌘J` kembali. Fokus keyboard tidak pernah
+  pindah sendiri.
+- Notifikasi desktop (macOS, Linux) dan badge Dock (macOS) hanya muncul kalau Anda tidak sedang
+  melihatnya.
+- **Grid** (`⌘0`, atau **Focus | Grid** di atas sidebar) menampilkan semua project secara live,
+  dengan terminal yang memenuhi tile-nya. **Active** dan **Waiting** di header-nya hanya
+  menampilkan project yang sedang menjalankan sesuatu atau menunggu. Project dengan beberapa tab
+  menampilkan tab yang butuh Anda (atau tempat agent bekerja), tanpa pernah berpindah dari tab
+  yang sedang Anda ketik; tab-tabnya ada di header tile, untuk dipilih sendiri.
 
 | Agent | Per peluncuran (tanpa mengubah file) | Dipasang sekali |
 | --- | --- | --- |
@@ -242,7 +287,7 @@ bergantian di sana). Di Windows dan Linux, halaman untuk sementara terbuka di br
   yang Anda izinkan, untuk semua project atau satu project; situs lain menunggu **Allow Once**,
   **Always**, atau **Block**, ditanyakan di TernaryCode bersama pertanyaan lain yang menunggu Anda.
   JavaScript milik agent sendiri (`browser_evaluate`) mati sampai Anda mengizinkannya di
-  Settings → Browser.
+  Settings → Browser. Halaman hanya mendapat keyboard saat Anda mengkliknya.
 - **Di Grid**, tile project menampilkan panelnya di samping terminal, halamannya diperkecil supaya
   tata letaknya sama dengan di Focus, dan tetap hidup; tile kecil menampilkan gambar halaman yang
   sedang dipakai agent.
@@ -253,12 +298,15 @@ bergantian di sana). Di Windows dan Linux, halaman untuk sementara terbuka di br
 
 ### Editor dan fitur bahasa
 
+![Laci Code: file Rust terbuka di samping agent yang sedang mengubahnya](docs/screenshots/editor.png)
+
 - Tab, nomor baris, warna sintaks, pencarian, dan penyimpanan aman: tidak pernah menimpa file yang
   diubah agent saat Anda punya perubahan yang belum disimpan (Anda yang memilih).
 - Dengan language server terpasang: go to definition (`F12` atau `⌘`-klik), type definition,
   implementation, referensi (`⇧F12`), rename lintas file (`F2`, bisa di-undo sekali), code action
   dan quick fix (`⌘.`), autocomplete, hover, signature help, simbol dokumen dan workspace, problem
-  (`⇧⌘M`), dan format saat menyimpan.
+  (`⇧⌘M`), dan format saat menyimpan. Editor memakai server yang sudah Anda punya (rust-analyzer,
+  gopls, typescript-language-server, Dart, pyright, clangd…).
 - Server mulai saat Anda mengedit file yang dilayaninya atau memakai fitur bahasa, jadi file yang
   hanya dibaca tidak membebani apa pun (Settings → Editor → *Nyalakan server hanya saat
   dibutuhkan*; matikan agar server mulai saat file dibuka). Server berhenti sepuluh menit setelah
@@ -286,6 +334,19 @@ git, jadi staging area Anda tidak tersentuh), atau sejak commit terakhir. Buka f
 diff di editor. Saat agent selesai, tombol **Tinjau** di tile Grid dan di daftar yang menunggu
 langsung membukanya. Di worktree, Review menampilkan branch-nya sejak bercabang: commit-nya dan
 yang belum di-commit, dengan **Merge** dan **Hapus** di dekatnya.
+
+## Dukungan platform
+
+| | macOS | Windows | Linux |
+| --- | :---: | :---: | :---: |
+| Project, terminal, tab, split | ✓ | ✓ | ✓ |
+| Status agent dari hook, `⌘J`, Grid | ✓ | ✓ | ✓ |
+| Notifikasi desktop | ✓ | — | ✓ (`notify-send`) |
+| Shell integration | zsh, bash, fish | PowerShell | zsh, bash, fish |
+| Panel Browser dan tool browser untuk agent | ✓ | browser default | browser default |
+| Editor, language server, dokumen, Review, worktree | ✓ | ✓ | ✓ |
+| Memperbarui dirinya sendiri | `.dmg`, `.zip`, installer | setup | AppImage, `.tar.gz` |
+| Tes end-to-end app sungguhan | ✓ | — | — |
 
 ## Shortcut keyboard
 
@@ -318,6 +379,28 @@ semuanya, lengkap dengan shortcut-nya.
 Di editor, `Ctrl+Shift+-` adalah Maju (`⌃⇧-` di macOS), seperti di VS Code; di tempat lain
 shortcut itu memperkecil teks.
 
+## Kalau ada masalah
+
+**`codex : The term 'codex' is not recognized…` atau `zsh: command not found: claude`** setelah
+Run Agent. CLI agent-nya belum terpasang, atau TernaryCode tidak menemukannya di `PATH`. Pasang
+dulu (misalnya `npm install -g @openai/codex`), pastikan `codex --version` jalan di terminal biasa,
+lalu tutup dan buka lagi TernaryCode: pane-nya memakai `PATH` saat TernaryCode dibuka, jadi program
+yang dipasang selama app berjalan baru terlihat setelah restart.
+
+**Agent hanya menampilkan *Aktif*, atau status bar bilang belum terhubung.** Agent itu dijalankan
+sendiri tanpa hook. Jalankan lewat **Run Agent** (hook untuk sesi itu), atau pasang hook sekali di
+**Settings → Integrations**.
+
+**Windows 10: perintah tidak ditandai selesai atau gagal.** Console host Windows 10 bisa membuang
+penanda prompt dari shell; status lalu diambil dari hook agent dan program yang sedang berjalan.
+
+**Linux: jendela kosong atau tidak terbuka.** TernaryCode menggambar dengan OpenGL. Pastikan
+driver grafis Anda menyediakannya; renderer software Mesa sudah cukup
+(`LIBGL_ALWAYS_SOFTWARE=1 ternarycode`).
+
+**Masalah lain?** [Buka issue](https://github.com/ilhamnadhif/ternarycode/issues) dengan versi
+TernaryCode, sistem Anda, dan langkah-langkah yang memunculkannya.
+
 ## Privasi
 
 Tanpa akun, tanpa telemetri. TernaryCode sendiri hanya terhubung ke GitHub, untuk pemeriksaan
@@ -332,7 +415,7 @@ Pengaturan dan workspace disimpan di `~/Library/Application Support/ternarycode`
 
 ## Build dari source
 
-Butuh toolchain Rust stable yang baru (dibangun dengan 1.99).
+Butuh toolchain Rust stable terbaru (kodenya memakai edition 2024; CI membangun dengan stable).
 
 ```sh
 cargo build --release      # ternarycode dan ternarycode-hook, berdampingan di target/release
@@ -349,6 +432,42 @@ melakukan apa-apa di luar pane TernaryCode.
 | `scripts/package-windows.ps1` | Windows: installer Inno Setup dan `.zip` portabel |
 | `scripts/e2e.sh` | pengujian end-to-end app sungguhan di macOS (event keyboard dan mouse disuntikkan) |
 | `scripts/release.sh <x.y.z>` | tes, build macOS, tag, lalu CI membangun Windows dan Linux dan mempublikasikan |
+
+### Berkontribusi
+
+Issue dan pull request sangat diterima. Sebelum membuka pull request, jalankan yang dijalankan CI:
+
+```sh
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+scripts/e2e.sh             # macOS: membuka jendela dan mengendalikannya; jangan pakai Mac selama berjalan
+```
+
+Kodenya diformat manual, jadi tolong jangan jalankan `cargo fmt` ke seluruh file; ikuti gaya kode
+di sekitar perubahan Anda.
+
+### Struktur
+
+| Crate | |
+| --- | --- |
+| `crates/tc-term` | inti terminal (alacritty_terminal), PTY (Unix dan ConPTY), sinyal OSC, pencarian, widget terminal egui |
+| `crates/tc-core` | model, preset dan pengenalan agent, state machine status, antrean perhatian, file atomik |
+| `crates/tc-agent` | info proses, protokol dan server hook, `ternarycode-hook` (dan tool browser-nya, `ternarycode-hook mcp`), integrasi agent, shell integration |
+| `crates/tc-git` | snapshot dan diff lewat git CLI, tanpa menyentuh index |
+| `crates/tc-lsp` | klien language server: transport, registry server, posisi, edit |
+| `crates/tc-doc` | pembaca PDF, Word, PowerPoint, spreadsheet, CSV, dan gambar |
+| `src/` | app-nya (egui), dan browser-nya (WebKit lewat wry, di macOS) |
+
+## Dibangun dengan
+
+[egui dan eframe](https://github.com/emilk/egui) (UI) di atas [wgpu](https://github.com/gfx-rs/wgpu)
+dan OpenGL, [alacritty_terminal](https://github.com/alacritty/alacritty) (emulasi terminal),
+[wry](https://github.com/tauri-apps/wry) (browser, di atas WebKit sistem),
+[hayro](https://github.com/LaurenzV/hayro) (PDF), [calamine](https://github.com/tafia/calamine)
+(spreadsheet), [quick-xml](https://github.com/tafia/quick-xml) dan
+[zip](https://github.com/zip-rs/zip2) (Word dan PowerPoint),
+[lsp-types](https://github.com/gluon-lang/lsp-types), dan [notify](https://github.com/notify-rs/notify).
+Font: [Inter](https://rsms.me/inter/) dan ikon [Phosphor](https://phosphoricons.com).
 
 ## Keluarga Ternary
 
