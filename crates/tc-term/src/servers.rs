@@ -39,16 +39,20 @@ impl ServerScanner {
     /// The local addresses in `bytes`, in order.
     pub fn scan(&mut self, bytes: &[u8], out: &mut Vec<Found>) {
         // An address cut at the end of the last chunk: its `://` was there, but it was not
-        // complete without this one (the rest is found below).
+        // complete without this one; or its `://` is at the start of this one, its scheme
+        // (`ht` | `tp://`) in the last, which this chunk alone does not see. The rest is found
+        // below.
         if !self.tail.is_empty() {
             let mut joint = std::mem::take(&mut self.tail);
             let from_tail = joint.len();
             joint.extend_from_slice(&bytes[..bytes.len().min(TAIL)]);
             for at in scheme_end().find_iter(&joint) {
-                if at < from_tail
-                    && parse(&joint[..from_tail], at).is_none()
-                    && let Some(f) = parse(&joint, at)
-                {
+                let missed = if at < from_tail {
+                    parse(&joint[..from_tail], at).is_none()
+                } else {
+                    at < from_tail + "https".len() && parse(bytes, at - from_tail).is_none()
+                };
+                if missed && let Some(f) = parse(&joint, at) {
                     out.push(f);
                 }
             }
@@ -197,6 +201,11 @@ mod tests {
         assert_eq!(found(&[b"Local: http://local", b"host:5173/\r\n"]), vec![("http://localhost:5173/".into(), 5173)]);
         assert_eq!(found(&[b"Local: http://localhost:51", b"73/\r\n"]), vec![("http://localhost:5173/".into(), 5173)]);
         assert_eq!(found(&[b"Local: http:/", b"/localhost:5173\r\n"]), vec![("http://localhost:5173/".into(), 5173)]);
+        // Cut anywhere, in the scheme too: found once.
+        let line = b"  Local:   https://localhost:5173/\r\n";
+        for cut in 1..line.len() {
+            assert_eq!(found(&[&line[..cut], &line[cut..]]), vec![("https://localhost:5173/".into(), 5173)], "cut at {cut}");
+        }
     }
 
     #[test]

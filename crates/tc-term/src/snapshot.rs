@@ -265,6 +265,8 @@ pub fn snapshot(feeder: &mut Feeder) -> Vec<u8> {
     }
     let mut out = String::new();
     let shared = feeder.shared.clone();
+    // Where the cursor is on the screen that shows.
+    let mut cursor = String::new();
     let (alt, mode) = {
         let term = shared.term.lock();
         let mode = *term.mode();
@@ -272,6 +274,7 @@ pub fn snapshot(feeder: &mut Feeder) -> Vec<u8> {
             let mut screen = String::new();
             dump(term.grid(), false, &mut screen);
             cursor_to(&mut screen, term.grid());
+            cursor_to(&mut cursor, term.grid());
             screen
         });
         (alt, mode)
@@ -284,12 +287,20 @@ pub fn snapshot(feeder: &mut Feeder) -> Vec<u8> {
         let term = shared.term.lock();
         dump(term.grid(), true, &mut out);
         cursor_to(&mut out, term.grid());
+        if alt.is_none() {
+            cursor_to(&mut cursor, term.grid());
+        }
     }
     if let Some(screen) = alt {
         out.push_str("\x1b[?1049h\x1b[H");
         out.push_str(&screen);
     }
     modes(&mut out, mode);
+    // Origin mode, set just now, put the cursor at the top: back where it was (no scroll
+    // region is drawn again, so its positions are the screen's).
+    if mode.contains(TermMode::ORIGIN) {
+        out.push_str(&cursor);
+    }
     out.into_bytes()
 }
 

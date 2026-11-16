@@ -705,6 +705,15 @@ pub fn end_session(feeder: &mut Feeder, text: &str) {
     }
     feeder.parser = Processor::new();
     feeder.osc.reset();
+    // No shell waits at its prompt any more: a resize must not clear "its prompt" (the last
+    // output, the message under it), which nobody would draw again.
+    {
+        let mut prompt = feeder.shared.prompt.lock();
+        prompt.at_prompt = false;
+        prompt.start = None;
+        prompt.input = None;
+        prompt.cleared = None;
+    }
     // Back on the main screen first: the message goes under its last output.
     let _ = feeder.feed(b"\x1b[?1049l");
     let (line, column) = {

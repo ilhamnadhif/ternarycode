@@ -104,12 +104,33 @@ pub fn read_at_launch() -> bool {
     let ours = path.parent().is_some_and(|p| same_dir(p, &dir()));
     let text = ours.then(|| std::fs::read_to_string(&path).ok()).flatten();
     let _ = std::fs::remove_file(&path);
+    if let Some(t) = &text {
+        keep_from_children(t);
+    }
     let handoff = text
         .and_then(|t| serde_json::from_str::<Handoff>(&t).ok())
         .filter(|h| h.version == VERSION);
     let found = handoff.is_some();
     *TAKEN.lock().unwrap_or_else(|e| e.into_inner()) = handoff;
     found
+}
+
+/// The fds handed over came through `exec` open: closed on exec again at once, before this run
+/// starts anything (a login shell, git), which would get the panes' terminals otherwise and
+/// keep them open after their panes close. Taking a pane over sets it again; a handoff not taken
+/// (of another format) has them closed on exec too.
+fn keep_from_children(text: &str) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else { return };
+    let masters = v["panes"].as_array().into_iter().flatten().filter_map(|p| p["master"].as_i64());
+    for fd in masters.chain(v["hooks"]["fd"].as_i64()) {
+        // Never the standard ones (a damaged file).
+        if let Ok(fd) = i32::try_from(fd)
+            && fd > 2
+        {
+            // SAFETY: only the fd's close-on-exec flag changes.
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
+    }
 }
 
 /// The handoff [`read_at_launch`] found, once. Without one, what an unfinished restart left

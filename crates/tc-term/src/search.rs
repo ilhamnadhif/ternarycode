@@ -36,6 +36,10 @@ fn compile(query: &str) -> Option<RegexSearch> {
 }
 
 fn next(term: &Term<Listener>, regex: &mut RegexSearch, from: Option<&Match>, backward: bool) -> Option<Match> {
+    // A match kept from before may point past the grid now (the pane got narrower, the
+    // scrollback was cleared, a program switched screens): searched from the end then.
+    let inside = |p: &Point| p.line >= term.topmost_line() && p.line <= term.bottommost_line() && p.column <= term.last_column();
+    let from = from.filter(|m| inside(m.start()) && inside(m.end()));
     let origin = match (from, backward) {
         (Some(m), true) => {
             let p = *m.start();
@@ -127,5 +131,26 @@ mod tests {
         reveal(&shared, &all[2].0);
         assert!(shared.term.lock().selection.is_some());
         assert_eq!(escape("a.b*"), "a\\.b\\*");
+    }
+
+    /// The match the search bar keeps, after what it points into shrank: the next search
+    /// starts from the end (it used to index past the grid and panic).
+    #[test]
+    fn a_kept_match_outside_the_grid_is_let_go() {
+        let (shared, rx) = new_terminal(term_config(1000, Default::default(), false), GridSize { cols: 80, rows: 5 }, (&SCHEMES[0]).into());
+        let mut f = Feeder::new(shared.clone(), rx);
+        for i in 0..50 {
+            f.feed(format!("{:>40} needle {i}\r\n", "").as_bytes());
+        }
+        let far = find(&shared, "needle 3", None, true).unwrap();
+        assert!(far.start().column.0 >= 40);
+        // Narrower: the kept match's columns are past the last one.
+        crate::core::resize(&shared, GridSize { cols: 30, rows: 5 }, 8.0, 16.0);
+        let _ = find(&shared, "needle", Some(&far), true);
+        let _ = find(&shared, "needle", Some(&far), false);
+        // The scrollback cleared: its line is gone.
+        shared.term.lock().grid_mut().clear_history();
+        let _ = find(&shared, "needle", Some(&far), true);
+        let _ = find(&shared, "needle", Some(&far), false);
     }
 }
