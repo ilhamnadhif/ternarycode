@@ -137,23 +137,42 @@ impl Default for Slides {
 
 struct Package {
     zip: zip::ZipArchive<std::fs::File>,
+    /// Bytes the parts read from now on may still take, unpacked (all of them together).
+    left: u64,
 }
+
+/// A part bigger than this is not text a person wrote (or it is a zip bomb).
+const PART_MAX: u64 = 256 * 1024 * 1024;
+/// A picture bigger than this is not shown (a 50-megapixel photo is some 20 MB).
+const PICTURE_MAX: u64 = 64 * 1024 * 1024;
+/// What all the parts of one document may take, unpacked: a small file can unpack to far more
+/// (the same big picture listed again and again, parts of zeros), and its pictures are kept.
+const PACKAGE_MAX: u64 = 512 * 1024 * 1024;
 
 impl Package {
     fn open(path: &Path) -> Result<Self, String> {
         let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let zip = zip::ZipArchive::new(f).map_err(|_| "the file is not a readable Office document".to_string())?;
-        Ok(Self { zip })
+        Ok(Self { zip, left: PACKAGE_MAX })
     }
 
     fn read(&mut self, name: &str) -> Option<Vec<u8>> {
-        let mut f = self.zip.by_name(name.trim_start_matches('/')).ok()?;
-        // A part this big is not text a person wrote (or a zip bomb).
-        if f.size() > 256 * 1024 * 1024 {
+        self.read_at_most(name, PART_MAX)
+    }
+
+    fn read_at_most(&mut self, name: &str, max: u64) -> Option<Vec<u8>> {
+        let f = self.zip.by_name(name.trim_start_matches('/')).ok()?;
+        let limit = max.min(self.left);
+        if f.size() > limit {
             return None;
         }
         let mut out = Vec::with_capacity(f.size() as usize);
-        f.read_to_end(&mut out).ok()?;
+        // The size the zip says is not trusted: reading stops past the limit.
+        f.take(limit + 1).read_to_end(&mut out).ok()?;
+        if out.len() as u64 > limit {
+            return None;
+        }
+        self.left -= out.len() as u64;
         Some(out)
     }
 
@@ -245,7 +264,7 @@ impl Images {
         let ix = if self.list.len() >= MAX_IMAGES {
             None
         } else {
-            pkg.read(part).and_then(|b| {
+            pkg.read_at_most(part, PICTURE_MAX).and_then(|b| {
                 let (width, height) = crate::img::dimensions(&b)?;
                 self.list.push(Picture { bytes: std::sync::Arc::new(b), width, height });
                 Some(self.list.len() - 1)
@@ -535,8 +554,12 @@ fn word_numbering(xml: &[u8]) -> HashMap<(String, u8), Level> {
     out
 }
 
-/// A list counter as text in a Word number format.
+/// A list counter as text in a Word number format. A counter too big for letters or roman
+/// numerals (a list may start anywhere: `w:start` is the file's) is written in digits.
 fn number_text(n: usize, fmt: &str) -> String {
+    if (matches!(fmt, "lowerLetter" | "upperLetter") && n > 26 * 4) || (matches!(fmt, "lowerRoman" | "upperRoman") && n > 3999) {
+        return n.to_string();
+    }
     let letter = |n: usize, upper: bool| {
         let base = if upper { b'A' } else { b'a' };
         let mut s = String::new();
@@ -588,7 +611,7 @@ impl Counters {
             .to_string());
         }
         // Each list and level counts on from its start.
-        let n = *self.counts.entry((num.to_string(), level)).and_modify(|c| *c += 1).or_insert(start);
+        let n = *self.counts.entry((num.to_string(), level)).and_modify(|c| *c = c.saturating_add(1)).or_insert(start);
         // Deeper levels start again under a new item.
         self.counts.retain(|(k, l), _| k != num || *l <= level);
         let mut out = if text.is_empty() { format!("%{}.", level + 1) } else { text };
@@ -1398,5 +1421,9 @@ pub(crate) mod tests {
         assert_eq!(join("word", "/word/media/x.png"), "word/media/x.png");
         assert_eq!(number_text(3, "lowerLetter"), "c");
         assert_eq!(number_text(4, "upperRoman"), "IV");
+        assert_eq!(number_text(28, "lowerLetter"), "bb");
+        // A list starting at a huge number: digits, not megabytes of letters.
+        assert_eq!(number_text(100_000_000, "lowerLetter"), "100000000");
+        assert_eq!(number_text(4000, "lowerRoman"), "4000");
     }
 }

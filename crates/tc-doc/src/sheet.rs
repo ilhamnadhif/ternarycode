@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use calamine::{Data, Reader, open_workbook_auto};
+use calamine::{Data, Reader, Sheets, open_workbook_auto};
 
 /// Cells kept per sheet; the rest is cut (the viewer says so).
 pub const MAX_CELLS: usize = 2_000_000;
@@ -172,11 +172,78 @@ fn cell_of(d: &Data) -> Cell {
     }
 }
 
+/// The cells that hold something, from `next` (a sheet's cell reader), at most `MAX_CELLS` of
+/// them; and whether there were more.
+fn used_cells<E: ToString>(
+    mut next: impl FnMut() -> Result<Option<((u32, u32), Data)>, E>,
+) -> Result<(Vec<((u32, u32), Cell)>, bool), String> {
+    let mut cells = Vec::new();
+    while let Some((pos, data)) = next().map_err(|e| e.to_string())? {
+        let cell = cell_of(&data);
+        if cell == Cell::Empty {
+            continue;
+        }
+        if cells.len() == MAX_CELLS {
+            return Ok((cells, true));
+        }
+        cells.push((pos, cell));
+    }
+    Ok((cells, false))
+}
+
+/// A sheet from the cells that hold something: its rows are made one by one, as many as
+/// `from_rows` keeps (never the whole rectangle at once).
+fn sheet_of_cells(name: String, mut cells: Vec<((u32, u32), Cell)>, more: bool) -> Sheet {
+    cells.sort_by_key(|(pos, _)| *pos);
+    let (Some(first), Some(last)) = (cells.first().map(|c| c.0.0), cells.last().map(|c| c.0.0)) else {
+        return Sheet::from_rows(name, (0, 0), std::iter::empty());
+    };
+    let c0 = cells.iter().map(|c| c.0.1).min().unwrap_or(0);
+    let width = (cells.iter().map(|c| c.0.1).max().unwrap_or(0) - c0) as usize + 1;
+    let mut it = cells.into_iter().peekable();
+    let rows = (first..=last).map(move |r| {
+        let mut row = vec![Cell::Empty; width];
+        while let Some(((_, c), cell)) = it.next_if(|((row, _), _)| *row == r) {
+            row[(c - c0) as usize] = cell;
+        }
+        row
+    });
+    let mut sheet = Sheet::from_rows(name, (first, c0), rows);
+    sheet.truncated |= more;
+    sheet
+}
+
 /// Reads every sheet of a workbook (a sheet that fails says why, the others still show).
 pub fn read_workbook(path: &Path) -> Result<Workbook, String> {
     let mut book = open_workbook_auto(path).map_err(|e| e.to_string())?;
     let mut sheets = Vec::new();
     for name in book.sheet_names() {
+        // xlsx and xlsb: read cell by cell. Their range would be the whole rectangle from the
+        // first cell used to the last, every cell of it made at once (a file of a few KB with
+        // A1 and XFD1048576 filled: 17 billion cells).
+        let sparse = match &mut book {
+            Sheets::Xlsx(x) => Some(match x.worksheet_cells_reader(&name) {
+                Ok(mut r) => used_cells(|| r.next_cell().map(|c| c.map(|c| (c.get_position(), Data::from(c.get_value().clone()))))),
+                // A chart sheet: no cells (as its range would say).
+                Err(calamine::XlsxError::NotAWorksheet(_)) => Ok((Vec::new(), false)),
+                Err(e) => Err(e.to_string()),
+            }),
+            Sheets::Xlsb(x) => Some(x.worksheet_cells_reader(&name).map_err(|e| e.to_string()).and_then(|mut r| {
+                used_cells(|| r.next_cell().map(|c| c.map(|c| (c.get_position(), Data::from(c.get_value().clone())))))
+            })),
+            _ => None,
+        };
+        match sparse {
+            Some(Ok((cells, more))) => {
+                sheets.push(sheet_of_cells(name, cells, more));
+                continue;
+            }
+            Some(Err(e)) => {
+                sheets.push(Sheet { name, error: Some(e), ..Default::default() });
+                continue;
+            }
+            None => {}
+        }
         match book.worksheet_range(&name) {
             Ok(range) => {
                 let origin = range.start().unwrap_or((0, 0));

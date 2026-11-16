@@ -360,19 +360,17 @@ pub fn on_disk_change(file: &mut OpenFile) -> bool {
         file.mtime = now;
         return true;
     }
+    // Grown past what the editor edits (a log being written to): not read whole, on the UI
+    // thread, at every change. Edits are kept (in conflict); else it shows as a big file opens.
+    let grown = std::fs::metadata(&file.path).is_ok_and(|m| m.len() > SHOW_AT_MOST as u64);
+    if grown && file.dirty() {
+        file.conflict = true;
+        file.compare_diff = None;
+        return true;
+    }
     // A big file shows its first part only: read that part again, not the whole file.
-    if file.truncated || file.read_only {
-        if let Ok(fresh) = load(&file.path) {
-            file.lines = fresh.lines;
-            file.crlf = fresh.crlf;
-            file.lossy = fresh.lossy;
-            file.rev += 1;
-            file.text = fresh.text;
-            file.saved = fresh.saved;
-            file.truncated = fresh.truncated;
-            file.read_only = fresh.read_only;
-            file.mtime = fresh.mtime;
-        }
+    if file.truncated || file.read_only || grown {
+        load_again(file);
         return true;
     }
     let Ok(disk) = std::fs::read_to_string(&file.path) else {
@@ -396,9 +394,26 @@ pub fn on_disk_change(file: &mut OpenFile) -> bool {
     true
 }
 
+/// The file as `load` reads it (a big one: its first part, read-only), in place of the buffer.
+fn load_again(file: &mut OpenFile) {
+    if let Ok(fresh) = load(&file.path) {
+        file.lines = fresh.lines;
+        file.crlf = fresh.crlf;
+        file.lossy = fresh.lossy;
+        file.rev += 1;
+        file.text = fresh.text;
+        file.saved = fresh.saved;
+        file.truncated = fresh.truncated;
+        file.read_only = fresh.read_only;
+        file.mtime = fresh.mtime;
+    }
+}
+
 /// Throws the edits away and takes the file from disk.
 pub fn reload(file: &mut OpenFile) {
-    if let Ok(disk) = std::fs::read_to_string(&file.path) {
+    if file.truncated || file.read_only || std::fs::metadata(&file.path).is_ok_and(|m| m.len() > SHOW_AT_MOST as u64) {
+        load_again(file);
+    } else if let Ok(disk) = std::fs::read_to_string(&file.path) {
         file.lines = count_lines(&disk);
         file.rev += 1;
         file.crlf = disk.contains("\r\n");
@@ -910,6 +925,31 @@ mod tests {
         assert!(save(&mut f, true).is_ok());
         assert!(std::fs::read_to_string(&path).unwrap().ends_with("// mine\n"));
         assert!(!f.conflict && !f.dirty());
+    }
+
+    /// A file open in the editor that grows big on disk (a log being written): it shows as a
+    /// big file does (its first part, read-only), and edits made meanwhile are kept.
+    #[test]
+    fn a_file_grown_big_on_disk_is_not_read_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.log");
+        std::fs::write(&path, "start\n").unwrap();
+        let mut f = load(&path).ok().unwrap();
+        let big = "x".repeat(SHOW_AT_MOST + 10);
+        std::fs::write(&path, &big).unwrap();
+        assert!(on_disk_change(&mut f));
+        assert!(f.truncated && f.read_only);
+        assert_eq!(f.text.len(), SHOW_AT_MOST);
+        // Edited before it grew: kept, in conflict.
+        std::fs::write(&path, "start\n").unwrap();
+        let mut g = load(&path).ok().unwrap();
+        g.text.push_str("mine\n");
+        std::fs::write(&path, &big).unwrap();
+        assert!(on_disk_change(&mut g));
+        assert!(g.conflict && g.text.ends_with("mine\n"));
+        // Reloaded: its first part.
+        reload(&mut g);
+        assert!(g.truncated && !g.conflict && g.text.len() == SHOW_AT_MOST);
     }
 
     #[test]
