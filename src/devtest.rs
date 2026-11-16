@@ -227,7 +227,20 @@ mod native {
         }
     }
 
-    /// Sends a key press. Command shortcuts go through the main menu first, like real key presses.
+    /// Puts an event at the end of the app's event queue. AppKit hands it out after this frame,
+    /// through `-[NSApplication sendEvent:]` like a real one (menu key equivalents included).
+    ///
+    /// Not `-[NSWindow sendEvent:]` from here: a step runs inside winit's event handler, and a
+    /// mouse event sent there can spin a nested run loop (the gesture recognizers'), which runs
+    /// winit's queued events while its handler is still busy: winit panics in a callback that
+    /// cannot unwind, and the app aborts.
+    fn post(e: &NSEvent) {
+        if let Some(mtm) = MainThreadMarker::new() {
+            NSApplication::sharedApplication(mtm).postEvent_atStart(e, false);
+        }
+    }
+
+    /// Sends a key press (down, then up).
     fn press(flags: NSEventModifierFlags, chars: &str, unmod: &str, code: u16) {
         let Some(w) = window() else { return };
         let wn = w.windowNumber();
@@ -237,15 +250,8 @@ mod native {
         ) else {
             return;
         };
-        if flags.contains(NSEventModifierFlags::Command)
-            && let Some(mtm) = MainThreadMarker::new()
-            && let Some(menu) = NSApplication::sharedApplication(mtm).mainMenu()
-            && menu.performKeyEquivalent(&down)
-        {
-            return;
-        }
-        w.sendEvent(&down);
-        w.sendEvent(&up);
+        post(&down);
+        post(&up);
     }
 
     /// Types text as individual key presses.
@@ -339,7 +345,7 @@ mod native {
             )
         };
         if let Some(m) = mk(NSEventType::MouseMoved, 0) {
-            w.sendEvent(&m);
+            post(&m);
         }
         let (down, up) = if right {
             (NSEventType::RightMouseDown, NSEventType::RightMouseUp)
@@ -348,8 +354,8 @@ mod native {
         };
         for n in 1..=count {
             if let (Some(d), Some(u)) = (mk(down, n), mk(up, n)) {
-                w.sendEvent(&d);
-                w.sendEvent(&u);
+                post(&d);
+                post(&u);
             }
         }
     }
@@ -383,7 +389,7 @@ mod native {
                 1.0,
             )
         {
-            w.sendEvent(&e);
+            post(&e);
         }
     }
 }
