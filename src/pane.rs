@@ -242,6 +242,8 @@ pub struct Pane {
     pub servers_probe_at: Option<Instant>,
     /// The hook socket and this pane's token, as given to its shell.
     pub hook_env: Option<(String, String)>,
+    /// Windows: the PATH its shell started with (a program installed since is not on it).
+    pub spawn_path: Option<std::ffi::OsString>,
     /// Its shell was started by an earlier run of the app (handed over in an update): it lacks
     /// the variables this run's agent flags name (`$TC_CODEX_GUIDE`…), so no agent starts in it.
     pub adopted: bool,
@@ -316,6 +318,7 @@ impl Pane {
             servers_probe_at: None,
             last_agent: None,
             hook_env: None,
+            spawn_path: None,
             adopted: false,
             closing: false,
             started: Instant::now(),
@@ -369,6 +372,7 @@ impl Pane {
         #[cfg(windows)]
         if let Some(path) = crate::cli::pane_path() {
             env.insert("PATH".into(), path.to_string_lossy().into_owned());
+            self.spawn_path = Some(path);
         }
         self.hook_env = spawn.hook.clone();
         self.adopted = false;

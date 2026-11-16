@@ -2174,6 +2174,9 @@ impl App {
             Some(0) => self.idle_command_pane(),
             _ => self.fresh_command_pane(),
         };
+        // A shell started before the agent was installed doesn't find it (its PATH is from
+        // then): the agent starts in a new one, which reads the PATH again.
+        let here = here.filter(|id| self.pane_finds(*id, &preset));
         let pane = match (place, here) {
             (Some(0) | None, Some(id)) => {
                 if self.panes.get(&id).is_some_and(Pane::dormant) {
@@ -2227,6 +2230,14 @@ impl App {
         }
         let npm = tc_core::agent::needs_npm(install) && tc_lsp::servers::resolve("npm", &path).is_none();
         Some((program.to_string(), npm))
+    }
+
+    /// Whether a pane's shell finds the program a preset starts: false only when we know the
+    /// PATH it started with (Windows) and the program isn't on it.
+    fn pane_finds(&self, pane: PaneId, preset: &Preset) -> bool {
+        let Some(path) = self.panes.get(&pane).and_then(|p| p.spawn_path.as_ref()) else { return true };
+        let Some(program) = tc_core::agent::command_program(&preset.command) else { return true };
+        preset.agent.and_then(tc_core::agent::install_command).is_none() || tc_lsp::servers::resolve(program, path).is_some()
     }
 
     /// Types `command` in the project's shell waiting at its prompt, or in a new tab.

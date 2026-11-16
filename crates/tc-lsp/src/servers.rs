@@ -144,10 +144,16 @@ pub fn find_root(spec: &Spec, file: &Path, project: &Path) -> PathBuf {
     found.unwrap_or(project).to_path_buf()
 }
 
-/// `program` found on `path` (or as given, when it is a path). On Windows also with the
-/// extensions programs have there (`gopls.exe`, and `.cmd` for the launchers npm installs).
+/// `program` found on `path` (or as given, when it is a path). On Windows with the extensions
+/// programs have there (`gopls.exe`, and `.cmd` for the launchers npm installs); a file without
+/// one (npm's shell script beside its `.cmd`) is not a program Windows starts.
 pub fn resolve(program: &str, path: &OsString) -> Option<PathBuf> {
-    let suffixes: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ".bat", ""] } else { &[""] };
+    let named = Path::new(program).extension().is_some();
+    let suffixes: &[&str] = match (cfg!(windows), named) {
+        (true, false) => &[".exe", ".cmd", ".bat"],
+        (true, true) => &["", ".exe", ".cmd", ".bat"],
+        (false, _) => &[""],
+    };
     let with = |base: PathBuf| {
         suffixes.iter().find_map(|s| {
             let mut p = base.clone().into_os_string();
@@ -376,6 +382,20 @@ mod tests {
         let path = OsString::from("/nowhere:/bin:/usr/bin");
         assert_eq!(resolve("sh", &path), Some(PathBuf::from("/bin/sh")));
         assert_eq!(resolve("no-such-program-tc", &path), None);
+    }
+
+    /// Windows starts files with a program's extension only: npm's extensionless shell script
+    /// beside its `.cmd` is not one (PowerShell wouldn't find `codex` through it).
+    #[cfg(windows)]
+    #[test]
+    fn windows_programs_have_an_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tool"), "#!/bin/sh").unwrap();
+        std::fs::write(dir.path().join("other.cmd"), "@echo off").unwrap();
+        let path = OsString::from(dir.path());
+        assert_eq!(resolve("tool", &path), None);
+        assert_eq!(resolve("other", &path), Some(dir.path().join("other.cmd")));
+        assert_eq!(resolve("other.cmd", &path), Some(dir.path().join("other.cmd")));
     }
 
     /// A pane's PATH: the registry's folders first, then the app's own that it lacks, each folder

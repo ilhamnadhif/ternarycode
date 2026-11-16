@@ -167,7 +167,11 @@ pub fn pane_path() -> Option<std::ffi::OsString> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     let split = |p: Option<std::ffi::OsString>| p.map(|p| std::env::split_paths(&p).collect::<Vec<PathBuf>>()).unwrap_or_default();
     let fresh = split(tc_lsp::servers::registry_path());
-    tc_lsp::servers::join_paths_once(&[fresh, split(std::env::var_os("PATH")), vec![dir]])
+    // Windows: Claude Code's installer puts `claude.exe` in ~/.local/bin, which may not be on
+    // the PATH yet.
+    let local_bin = crate::paths::home_dir().join(".local").join("bin");
+    let extra = if cfg!(windows) && local_bin.is_dir() { vec![dir, local_bin] } else { vec![dir] };
+    tc_lsp::servers::join_paths_once(&[fresh, split(std::env::var_os("PATH")), extra])
 }
 
 /// Started from a terminal, with no TernaryCode running: starts the app apart from the
