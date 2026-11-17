@@ -184,8 +184,19 @@ Run "web-keys" 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action ope
 # the browser tools' server, and Run Agent starts it. Only where Codex is installed.
 if (Get-Command codex -ErrorAction SilentlyContinue) {
     $flags = '-c "$env:TC_CODEX_HOOKS" -c "$env:TC_CODEX_NOTIFY" -c "$env:TC_CODEX_MCP" -c "$env:TC_CODEX_GUIDE"'
-    Run "agent-codex" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; wait-screen PS C:;; keys codex $flags mcp list\r;; wait-screen mcp codex;; expect-screen-count invalid type 0;; keys cls\r;; sleep 1500;; action run-agent codex;; wait-screen OpenAI;; expect-screen-count invalid type 0;; expect-screen-count failed to load 0;; quit"
-} else { "skip  agent-codex (Codex is not installed)" }
+    Run "codex-flags" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; wait-screen PS C:;; keys codex $flags mcp list\r;; wait-screen mcp codex;; expect-screen-count invalid type 0;; keys cls\r;; sleep 1500;; action run-agent codex;; wait-screen OpenAI;; expect-screen-count invalid type 0;; expect-screen-count failed to load 0;; quit"
+} else { "skip  codex-flags (Codex is not installed)" }
+
+# Run Agent starts each agent and its own screen opens: the pane's program is that agent, still
+# running seconds later (it did not stop at once on an error), and nothing "not recognized". The
+# agents run as installed here, with your sign-ins; nothing is typed into them, but a first run
+# makes an agent's usual files. Only the agents installed here.
+foreach ($pair in @("claude:claude", "codex:codex", "opencode:opencode", "antigravity:agy")) {
+    $id, $program = $pair -split ":"
+    if (Get-Command $program -ErrorAction SilentlyContinue) {
+        Run "run-agent-$id" 60 "sleep 1000;; action add-project $P1;; sleep 1500;; wait-screen PS C:;; action run-agent $id;; wait-agent $id;; sleep 6000;; wait-agent $id;; expect-screen-count not recognized 0;; shot agent-$id;; quit"
+    } else { "skip  run-agent-$id ($program is not installed)" }
+}
 
 Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
 "== $($script:Pass) checks passed, $($script:Fail) failed (logs in $Work)"

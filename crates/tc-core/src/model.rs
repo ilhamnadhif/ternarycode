@@ -483,7 +483,8 @@ impl Settings {
         true
     }
 
-    /// The presets in use: built-ins (with the user's edits) followed by the user's own.
+    /// The presets in use: built-ins (with the user's edits) followed by the user's own. A
+    /// built-in the user edited that is no longer one (Gemini CLI's) stays, as their own.
     pub fn presets(&self) -> Vec<Preset> {
         let mut out = crate::agent::builtin_presets();
         for p in &self.presets {
@@ -494,7 +495,7 @@ impl Settings {
                         ..p.clone()
                     }
                 }
-                None => out.push(p.clone()),
+                None => out.push(Preset { builtin: false, ..p.clone() }),
             }
         }
         out
@@ -656,5 +657,20 @@ mod tests {
         assert_eq!(all[0].command, "claude --model opus");
         assert!(all[0].builtin);
         assert_eq!(all[4].id, "aider");
+        // An edited built-in that is no longer one (Gemini CLI's, saved before Antigravity CLI
+        // replaced it): the user's own now, so it can be deleted.
+        s.presets.push(Preset {
+            id: "gemini".into(),
+            name: "Gemini CLI".into(),
+            agent: Some(AgentKind::Gemini),
+            command: "gemini --model pro".into(),
+            resume: Some("gemini --resume latest".into()),
+            env: Default::default(),
+            builtin: true,
+        });
+        let all = s.presets();
+        assert_eq!(all.len(), 6);
+        assert!(all.iter().any(|p| p.id == "antigravity" && p.command == "agy" && p.builtin));
+        assert!(all.iter().any(|p| p.id == "gemini" && !p.builtin));
     }
 }

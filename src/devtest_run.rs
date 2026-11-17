@@ -194,6 +194,15 @@ impl App {
                 let now = self.current_status().map(status_slug).unwrap_or("");
                 Some(want.split('|').any(|w| w == now)).filter(|ok| *ok)
             }
+            // `wait-agent SLUG`: the program running in the current pane is that agent (it
+            // started, and has not ended).
+            "wait-agent" => {
+                let now = self.current_pane().and_then(|id| self.panes.get(&id)).and_then(|p| match &p.tracker.fg {
+                    tc_core::status::Foreground::Program { agent: Some(a), .. } => Some(a.slug()),
+                    _ => None,
+                });
+                Some(now == Some(arg.trim())).filter(|ok| *ok)
+            }
             "wait-queue" => {
                 Some(self.attention_queue().len().to_string() == arg.trim()).filter(|ok| *ok)
             }
@@ -647,7 +656,7 @@ impl App {
                 let want = devtest::unescape(content);
                 self.devtest.check(!disk.contains(&want), &format!("expect-not-file {path} lacks {want:?}"));
             }
-            "wait-screen" | "wait-status" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
+            "wait-screen" | "wait-status" | "wait-agent" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
             | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-dialog" | "wait-download" | "wait-page-find" | "wait-inspector" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
             | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" => {

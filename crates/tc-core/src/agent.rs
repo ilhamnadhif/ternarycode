@@ -86,7 +86,9 @@ pub struct Preset {
 }
 
 /// Presets every installation starts with. Resume commands were checked against the installed
-/// CLIs on 9 Nov 2026 (Claude Code 2.1.319, Codex 0.162.1, Gemini CLI 0.43.0, OpenCode 1.19.5).
+/// CLIs on 9 Nov 2026 (Claude Code 2.1.319, Codex 0.162.1, OpenCode 1.19.5) and Antigravity CLI's
+/// documentation on 17 Nov 2026 (`agy --continue`; Gemini CLI, which it replaced, is no longer
+/// one of them).
 pub fn builtin_presets() -> Vec<Preset> {
     let p = |id: &str, name: &str, agent, command: &str, resume: &str| Preset {
         id: id.into(),
@@ -120,11 +122,11 @@ pub fn builtin_presets() -> Vec<Preset> {
             "opencode --continue",
         ),
         p(
-            "gemini",
-            "Gemini CLI",
-            AgentKind::Gemini,
-            "gemini",
-            "gemini --resume latest",
+            "antigravity",
+            "Antigravity CLI",
+            AgentKind::Antigravity,
+            "agy",
+            "agy --continue",
         ),
     ]
 }
@@ -143,7 +145,9 @@ pub fn install_command(agent: AgentKind) -> Option<&'static str> {
         AgentKind::Gemini => "npm install -g @google/gemini-cli",
         AgentKind::OpenCode if windows => "npm.cmd install -g opencode-ai",
         AgentKind::OpenCode => "npm install -g opencode-ai",
-        AgentKind::Antigravity | AgentKind::Custom => return None,
+        AgentKind::Antigravity if windows => "irm https://antigravity.google/cli/install.ps1 | iex",
+        AgentKind::Antigravity => "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+        AgentKind::Custom => return None,
     })
 }
 
@@ -310,9 +314,15 @@ mod tests {
         for p in builtin_presets() {
             let agent = p.agent.unwrap();
             let install = install_command(agent).unwrap();
-            assert_eq!(command_program(&p.command), Some(agent.slug()));
-            assert_eq!(needs_npm(install), agent != AgentKind::Claude, "{install}");
+            // Antigravity CLI's program is `agy`.
+            let program = if agent == AgentKind::Antigravity { "agy" } else { agent.slug() };
+            assert_eq!(command_program(&p.command), Some(program));
+            assert_eq!(recognize(&[program.to_string()], None), Some(agent));
+            assert_eq!(needs_npm(install), !matches!(agent, AgentKind::Claude | AgentKind::Antigravity), "{install}");
         }
+        // Gemini CLI is no longer one of them (Antigravity CLI replaced it), but it is still
+        // recognised when typed.
+        assert!(builtin_presets().iter().all(|p| p.agent != Some(AgentKind::Gemini)));
         assert_eq!(install_command(AgentKind::Custom), None);
         assert_eq!(command_program("  codex -c x"), Some("codex"));
         assert_eq!(command_program(""), None);

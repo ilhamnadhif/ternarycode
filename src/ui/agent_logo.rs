@@ -1,8 +1,9 @@
-//! The agents' own logos (Claude Code, Codex, OpenCode, Gemini CLI) where an agent is shown in
-//! a small tile, in place of two letters. The Claude, OpenAI (for Codex) and Gemini marks are
-//! Simple Icons' (CC0), drawn white into `assets/agents/` and tinted here: Claude and Gemini in
-//! their brand colours, OpenAI in the text colour (its mark is black or white). OpenCode's mark
-//! is two rectangles, drawn as such.
+//! The agents' own logos (Claude Code, Codex, OpenCode, Antigravity CLI, Gemini CLI) where an
+//! agent is shown in a small tile, in place of two letters. The Claude, OpenAI (for Codex) and
+//! Gemini marks are Simple Icons' (CC0), drawn white into `assets/agents/` and tinted here: Claude
+//! and Gemini in their brand colours, OpenAI in the text colour (its mark is black or white).
+//! Antigravity's mark is in its own colours (a gradient), from antigravity.google's logo, scaled
+//! to 64 pixels. OpenCode's mark is two rectangles, drawn as such.
 
 use eframe::egui::{self, Color32, Rect, pos2, vec2};
 use tc_core::agent::AgentKind;
@@ -10,6 +11,7 @@ use tc_core::agent::AgentKind;
 const CLAUDE: &[u8] = include_bytes!("../../assets/agents/claude.png");
 const OPENAI: &[u8] = include_bytes!("../../assets/agents/openai.png");
 const GEMINI: &[u8] = include_bytes!("../../assets/agents/gemini.png");
+const ANTIGRAVITY: &[u8] = include_bytes!("../../assets/agents/antigravity.png");
 
 /// Claude's orange and Gemini's violet (Simple Icons' brand colours).
 const CLAUDE_COLOR: Color32 = Color32::from_rgb(0xD9, 0x77, 0x57);
@@ -17,7 +19,7 @@ const GEMINI_COLOR: Color32 = Color32::from_rgb(0x8E, 0x75, 0xB2);
 
 /// Whether the agent has a logo (else its tile shows letters).
 pub fn has(agent: AgentKind) -> bool {
-    matches!(agent, AgentKind::Claude | AgentKind::Codex | AgentKind::OpenCode | AgentKind::Gemini)
+    matches!(agent, AgentKind::Claude | AgentKind::Codex | AgentKind::OpenCode | AgentKind::Gemini | AgentKind::Antigravity)
 }
 
 /// Paints the agent's logo filling the square `r`, `ink` for the marks in the text colour;
@@ -28,6 +30,8 @@ pub fn paint(painter: &egui::Painter, r: Rect, agent: AgentKind, ink: Color32, d
         AgentKind::Claude => ("claude", CLAUDE, CLAUDE_COLOR),
         AgentKind::Codex => ("openai", OPENAI, ink),
         AgentKind::Gemini => ("gemini", GEMINI, GEMINI_COLOR),
+        // In its own colours.
+        AgentKind::Antigravity => ("antigravity", ANTIGRAVITY, Color32::WHITE),
         AgentKind::OpenCode => {
             opencode(painter, r, fade(ink));
             return true;
@@ -73,13 +77,13 @@ mod tests {
 
     #[test]
     fn logos_decode() {
-        for png in [CLAUDE, OPENAI, GEMINI] {
+        for png in [CLAUDE, OPENAI, GEMINI, ANTIGRAVITY] {
             let img = tc_doc::img::decode(png, 256).unwrap();
             assert_eq!((img.width, img.height), (64, 64));
-            // A white mark on a clear ground: some pixels drawn, some not.
+            // A mark on a clear ground: some pixels drawn, some not.
             let alpha: Vec<u8> = img.pixels.chunks(4).map(|p| p[3]).collect();
             assert!(alpha.contains(&255) && alpha.contains(&0));
         }
-        assert!(has(AgentKind::OpenCode) && !has(AgentKind::Custom));
+        assert!(has(AgentKind::OpenCode) && has(AgentKind::Antigravity) && !has(AgentKind::Custom));
     }
 }

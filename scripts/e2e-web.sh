@@ -158,5 +158,19 @@ if [ "$(uname)" = Linux ] && command -v xdotool >/dev/null; then
     run web-keys 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/keys.html;; wait-browser Keys Page;; wait-pages 3*;; sleep 1500;; spawn sh $WORK/xkeys.sh;; wait-page-focus;; wait-browser Keys: abc;; wait-shown browser-find:3;; quit"
 fi
 
+# Run Agent starts each agent and its own screen opens: the pane's program is that agent, still
+# running seconds later (it did not stop at once on an error), and no "command not found". The
+# agents run as installed here, with your sign-ins (a pane's home is yours: on macOS `login` sets
+# it); nothing is typed into them, but a first run makes an agent's usual files (Antigravity CLI's
+# ~/.gemini/antigravity-cli). Only the agents installed here.
+for pair in claude:claude codex:codex opencode:opencode antigravity:agy; do
+    id=${pair%%:*}; program=${pair#*:}
+    if command -v "$program" >/dev/null; then
+        run "run-agent-$id" 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run-agent $id;; wait-agent $id;; sleep 6000;; wait-agent $id;; expect-screen-count command not found 0;; shot agent-$id;; quit"
+    else
+        echo "skip  run-agent-$id ($program is not installed)"
+    fi
+done
+
 echo "== $PASS checks passed, $FAIL failed (logs in $WORK)"
 [ "$FAIL" -eq 0 ]

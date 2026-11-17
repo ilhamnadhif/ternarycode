@@ -28,7 +28,7 @@
 
 ![TernaryCode: agent memeriksa perubahannya di panel Browser di samping terminalnya, sementara sidebar menampilkan agent yang menunggu di project lain](docs/screenshots/focus.png)
 
-Menjalankan Claude Code, Codex, Gemini CLI, atau OpenCode di lima project sekaligus biasanya
+Menjalankan Claude Code, Codex, Antigravity CLI, atau OpenCode di lima project sekaligus biasanya
 berarti lima jendela editor, masing-masing dengan agent tersembunyi di panel terminal, tanpa tahu
 mana yang sedang menunggu Anda. TernaryCode menaruh semua project di **satu jendela**: masing-masing
 dengan terminal, tab, dan split pane sendiri, **Grid** yang menampilkan semuanya sekaligus, dan
@@ -58,7 +58,7 @@ memakai sekitar 70 MB.
 - **Dokumen langsung terbuka**: PDF, Word, PowerPoint, Excel, CSV, dan gambar.
 - **Review apa yang diubah agent**, dan beri setiap agent **git worktree sendiri** saat beberapa
   agent bekerja di satu repository.
-- **Bekerja dengan** Claude Code, Codex, Gemini CLI, dan OpenCode, atau perintah apa pun yang
+- **Bekerja dengan** Claude Code, Codex, Antigravity CLI, dan OpenCode, atau perintah apa pun yang
   Anda jalankan di terminal.
 
 ## Mulai cepat
@@ -66,7 +66,7 @@ memakai sekitar 70 MB.
 1. [Pasang TernaryCode](#instalasi) lalu buka.
 2. **Tambahkan project**: klik **+** di samping *Projects*, drop folder ke sidebar, atau jalankan
    `ternarycode .` di terminal.
-3. Klik **Run Agent** (`⇧⌘A`) lalu pilih Claude Code, Codex, Gemini CLI, atau OpenCode. Agent
+3. Klik **Run Agent** (`⇧⌘A`) lalu pilih Claude Code, Codex, Antigravity CLI, atau OpenCode. Agent
    berjalan di terminal tempat Anda berada (atau di tab baru kalau terminal itu sedang dipakai) dan
    melaporkan statusnya ke TernaryCode untuk sesi itu.
 4. Lanjutkan pekerjaan lain. Saat agent menunggu Anda, project-nya menampilkan **Butuh input** dan
@@ -74,7 +74,7 @@ memakai sekitar 70 MB.
 5. Opsional: **Settings → Integrations** memasang hook sekali, supaya agent yang Anda jalankan
    sendiri juga melaporkan statusnya.
 
-Agent-nya harus dipasang sendiri (`claude`, `codex`, `gemini`, atau `opencode`); TernaryCode
+Agent-nya harus dipasang sendiri (`claude`, `codex`, `agy`, atau `opencode`); TernaryCode
 menjalankannya, tidak membawanya. Kalau belum terpasang, Run Agent memberi tahu dan menampilkan
 perintah pemasangannya, dengan tombol **Install in Terminal**.
 
@@ -119,7 +119,7 @@ portabel di mana saja.
 
 Pane menjalankan PowerShell 7 (`pwsh`) kalau terpasang, kalau tidak Windows PowerShell, dengan
 shell integration yang dimuat tanpa mengubah profil atau execution policy Anda. Agent berjalan
-seperti di terminal lain (Claude Code, Codex, Gemini CLI, dan OpenCode berjalan native di Windows),
+seperti di terminal lain (Claude Code, Codex, Antigravity CLI, dan OpenCode berjalan native di Windows),
 dan hook-nya sampai ke app lewat named pipe.
 
 Jendelanya punya title bar TernaryCode sendiri, seperti app Windows pada umumnya: nama app dan
@@ -205,7 +205,7 @@ App macOS, setup Windows, AppImage, dan `.tar.gz` memperbarui dirinya sendiri; `
 - **Tab dan split pane per project**, bisa diseret untuk diatur ulang, dan dipulihkan saat app
   dibuka lagi. Shell yang dipulihkan baru berjalan saat Anda melihatnya, jadi workspace berisi dua
   puluh project terbuka secepat satu project.
-- **Jalankan agent** dari preset (Claude Code, Codex, Gemini CLI, OpenCode, atau perintah Anda
+- **Jalankan agent** dari preset (Claude Code, Codex, Antigravity CLI, OpenCode, atau perintah Anda
   sendiri): di terminal tempat Anda berada kalau ia sedang menunggu di prompt kosong, selain itu di
   tab baru atau split. Pane agent yang bisa melanjutkan percakapan menawarkan **Resume** setelah
   restart.
@@ -223,7 +223,7 @@ App macOS, setup Windows, AppImage, dan `.tar.gz` memperbarui dirinya sendiri; `
   terbuka di editor. Klik kanan link untuk membuka atau menyalinnya.
 - **Drop file ke terminal** dan path-nya langsung terketik di sana, jadi agent bisa membaca
   screenshot. Folder yang di-drop ke sidebar menjadi project. **`⌘V` dengan gambar** di
-  clipboard diteruskan ke Claude Code, Codex, Gemini CLI, atau OpenCode.
+  clipboard diteruskan ke Claude Code, Codex, Antigravity CLI, atau OpenCode.
 - **Server lokal langsung kelihatan.** Kalau pane mencetak `http://localhost:5173` (Vite,
   Next.js, Rails, Django…), alamatnya muncul di header project dan tile Grid selama servernya
   menjawab. Klik untuk membuka halamannya di panel Browser.
@@ -257,7 +257,7 @@ App macOS, setup Windows, AppImage, dan `.tar.gz` memperbarui dirinya sendiri; `
 | --- | --- | --- |
 | Claude Code | `claude --mcp-config "$TC_CLAUDE_MCP" --settings "$TC_CLAUDE_SETTINGS"` menambah hook dan tool browser untuk sesi itu | hook di `~/.claude/settings.json` |
 | Codex | `codex -c "$TC_CODEX_HOOKS" -c "$TC_CODEX_NOTIFY" -c "$TC_CODEX_MCP" -c "$TC_CODEX_GUIDE"` | blok terkelola di `~/.codex/config.toml`, termasuk tool browser |
-| Gemini CLI | — | hook dan tool browser di `~/.gemini/settings.json` |
+| Antigravity CLI | — | belum ada: statusnya “Aktif” (Antigravity CLI menggantikan Gemini CLI; hook Gemini di `~/.gemini/settings.json` tetap bisa dipasang selama preset `gemini` disimpan) |
 | OpenCode | tool browser, lewat `$OPENCODE_CONFIG_CONTENT` di setiap pane | plugin `~/.config/opencode/plugins/ternarycode.js` |
 
 Pemasangan menampilkan perubahan persisnya lebih dulu dan menyimpan backup; **Uninstall**
@@ -414,7 +414,7 @@ shortcut itu memperkecil teks.
 ## Kalau ada masalah
 
 **Run Agent bilang agent belum terpasang.** Run Agent mencari program agent-nya (`claude`,
-`codex`, `gemini`, `opencode`) di `PATH` yang didapat pane baru. **Install in Terminal** mengetik
+`codex`, `agy`, `opencode`) di `PATH` yang didapat pane baru. **Install in Terminal** mengetik
 perintah pemasangannya di terminal project (perintah npm butuh Node.js dulu, dan itu disebutkan);
 setelah terpasang, jalankan agent-nya lagi: tab baru langsung menemukannya tanpa restart
 TernaryCode. **Run Anyway** menjalankan perintahnya apa adanya, untuk alias atau fungsi shell yang

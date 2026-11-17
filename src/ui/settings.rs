@@ -319,7 +319,7 @@ impl App {
 
     /// Agents whose status cannot come from hooks as things are set (they show "Active").
     pub fn agents_without_hooks(&self) -> usize {
-        [AgentKind::Gemini, AgentKind::OpenCode]
+        [AgentKind::OpenCode]
             .into_iter()
             .filter(|a| self.installed(*a).is_none() && self.settings.integration(*a) != Integration::Off)
             .count()
@@ -562,7 +562,7 @@ impl App {
         let mut remove_site = None;
         let mut add_site = None;
         let mut install = None;
-        let statuses: Vec<(AgentKind, bool, String)> = [AgentKind::Claude, AgentKind::Codex, AgentKind::OpenCode, AgentKind::Gemini].into_iter().map(|a| self.browser_tools_status(a)).collect();
+        let statuses: Vec<(AgentKind, bool, String)> = [AgentKind::Claude, AgentKind::Codex, AgentKind::OpenCode, AgentKind::Antigravity].into_iter().map(|a| self.browser_tools_status(a)).collect();
         card(ui, search, &labels, |c| {
             c.row(labels[0].0, labels[0].1, |ui| {
                 tools_changed = kit::switch(ui, &mut self.settings.browser_agents).changed();
@@ -591,7 +591,7 @@ impl App {
             });
             for (agent, ok, status) in &statuses {
                 c.row_icon(icons::PLUGS_CONNECTED, if *ok { style::pal(c.ui).ok } else { style::pal(c.ui).text_faint }, agent.label(), status, |ui| {
-                    if !ok && *agent != AgentKind::Claude && kit::button_ex(ui, kit::Kind::Secondary, None, t("Install…"), true).clicked() {
+                    if !ok && !matches!(*agent, AgentKind::Claude | AgentKind::Antigravity) && kit::button_ex(ui, kit::Kind::Secondary, None, t("Install…"), true).clicked() {
                         install = Some(*agent);
                     }
                 });
@@ -661,6 +661,8 @@ impl App {
             (AgentKind::Claude, _) => (false, t("Only with Per launch (Settings → Agents)")),
             // In every pane (`OPENCODE_CONFIG_CONTENT`), whatever its hooks.
             (AgentKind::OpenCode, _) => (true, t("In every TernaryCode pane, typed by hand too")),
+            // Its MCP servers are in its own files only; it has a browser of its own.
+            (AgentKind::Antigravity, _) => (false, t("Not added for Antigravity CLI yet")),
             (_, Integration::Installed) if has_server(&installed) => (true, t("Browser tools installed")),
             (_, Integration::Installed) => (false, t("Installed before the browser tools: install again")),
             _ => (false, t("Hooks not installed")),
@@ -991,7 +993,15 @@ impl App {
                                 }
                             });
                         }
-                        if agent != AgentKind::Custom {
+                        if agent == AgentKind::Antigravity {
+                            field_row(ui, t("Status signals"), &mut |ui| {
+                                ui.label(RichText::new(t("No hooks · status shows “Active”")).size(style::SMALL).color(p.text_muted));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.add_space(110.0 + 8.0);
+                                ui.add(egui::Label::new(RichText::new(hooks_note(agent)).size(style::SMALL).color(p.text_faint).line_height(Some(17.0))).wrap());
+                            });
+                        } else if agent != AgentKind::Custom {
                             field_row(ui, t("Status signals"), &mut |ui| {
                                 self.hooks_controls(ui, agent);
                             });
@@ -1167,9 +1177,10 @@ impl Hooks {
 /// What each agent's hooks report, and how they are added.
 fn hooks_note(agent: AgentKind) -> &'static str {
     match agent {
-        AgentKind::Claude => t("Per launch adds TernaryCode's hooks (--settings) and, on macOS, its browser tools (--mcp-config) to each run, without changing your files. Installed writes the hooks into ~/.claude/settings.json, with a backup. Hooks report permission requests, questions and finished turns. Checked with Claude Code 2.1.319."),
+        AgentKind::Claude => t("Per launch adds TernaryCode's hooks (--settings) and its browser tools (--mcp-config) to each run, without changing your files. Installed writes the hooks into ~/.claude/settings.json, with a backup. Hooks report permission requests, questions and finished turns. Checked with Claude Code 2.1.319."),
         AgentKind::Codex => t("Hooks and notify. Codex asks you once to trust TernaryCode's hooks (its own security check). Checked with Codex 0.162.1."),
         AgentKind::Gemini => t("Install adds hooks to ~/.gemini/settings.json (tool permissions, finished turns). Gemini CLI has no per-launch option. Checked with Gemini CLI 0.43.0."),
+        AgentKind::Antigravity => t("Antigravity CLI replaced Gemini CLI. TernaryCode does not add hooks to it yet: while it runs, its status reads “Active”."),
         _ => t("Install adds a small plugin file to OpenCode's plugins folder (permission requests, finished turns). OpenCode has no per-launch option. Checked with OpenCode 1.19.5."),
     }
 }

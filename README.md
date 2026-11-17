@@ -28,7 +28,7 @@
 
 ![TernaryCode: an agent checks its change in the Browser panel beside its terminal, while the sidebar lists the agents waiting in other projects](docs/screenshots/focus.png)
 
-Running Claude Code, Codex, Gemini CLI or OpenCode in five projects at once usually means five
+Running Claude Code, Codex, Antigravity CLI or OpenCode in five projects at once usually means five
 editor windows, each with an agent hidden in a terminal panel, and no idea which one is waiting
 for you. TernaryCode puts every project in **one window**: each with its own terminals, tabs and
 split panes, a **Grid** that shows them all at once, and one question answered quickly and
@@ -56,14 +56,14 @@ with macOS): the window is up in about 0.2 s, it idles at 0 % CPU, and ten open 
 - **Documents open in place**: PDF, Word, PowerPoint, Excel, CSV and images.
 - **Review what an agent changed**, and give each agent **a git worktree of its own** when several
   work in one repository.
-- **Works with** Claude Code, Codex, Gemini CLI and OpenCode, or any command you run in a terminal.
+- **Works with** Claude Code, Codex, Antigravity CLI and OpenCode, or any command you run in a terminal.
 
 ## Quick start
 
 1. [Install TernaryCode](#install) and open it.
 2. **Add a project**: click **+** next to *Projects*, drop a folder on the sidebar, or run
    `ternarycode .` in a terminal.
-3. Click **Run Agent** (`⇧⌘A`) and pick Claude Code, Codex, Gemini CLI or OpenCode. It starts in
+3. Click **Run Agent** (`⇧⌘A`) and pick Claude Code, Codex, Antigravity CLI or OpenCode. It starts in
    the terminal you are in (or in a new tab when that one is busy) and reports its status to
    TernaryCode for that run.
 4. Go on with other work. When an agent waits for you, its project shows **Needs input** and the
@@ -71,7 +71,7 @@ with macOS): the window is up in about 0.2 s, it idles at 0 % CPU, and ten open 
 5. Optional: **Settings → Integrations** installs the hooks once, so agents you start by hand
    report their status too.
 
-The agent must be installed on its own (`claude`, `codex`, `gemini` or `opencode`); TernaryCode
+The agent must be installed on its own (`claude`, `codex`, `agy` or `opencode`); TernaryCode
 runs it, it does not bundle it. When one isn't installed, Run Agent says so and shows its install
 command, with **Install in Terminal**.
 
@@ -115,7 +115,7 @@ the current folder as a project (on by default). Or unpack the portable **`.zip`
 
 Panes run PowerShell 7 (`pwsh`) when it is installed, otherwise Windows PowerShell, with shell
 integration loaded without touching your profile or execution policy. Agents run as they do in any
-terminal (Claude Code, Codex, Gemini CLI and OpenCode all work natively on Windows), and their
+terminal (Claude Code, Codex, Antigravity CLI and OpenCode all work natively on Windows), and their
 hooks reach the app over a named pipe.
 
 The window has TernaryCode's own title bar, as Windows apps do: the app's name and its menus
@@ -199,7 +199,7 @@ Turn automatic checks off in **Settings → General**, or use **Check for Update
 - **Tabs and split panes per project**, drag to rearrange, and restored when you open the app
   again. Restored shells start only when you look at them, so a workspace of twenty projects opens
   as fast as one.
-- **Run an agent** from presets (Claude Code, Codex, Gemini CLI, OpenCode, or your own command):
+- **Run an agent** from presets (Claude Code, Codex, Antigravity CLI, OpenCode, or your own command):
   in the terminal you are in when it waits at an empty prompt, else in a new tab or a split.
   Panes of agents that can continue a conversation offer **Resume** after a restart.
 - **A worktree per agent**, when several work in one repository: **Run Agent → New worktree**
@@ -216,7 +216,7 @@ Turn automatic checks off in **Settings → General**, or use **Check for Update
   editor. Right-click a link to open or copy it.
 - **Drop a file on a terminal** and its path is typed there, so an agent can read a screenshot.
   A folder dropped on the sidebar becomes a project. **`⌘V` with an image** on the clipboard
-  hands it to Claude Code, Codex, Gemini CLI or OpenCode.
+  hands it to Claude Code, Codex, Antigravity CLI or OpenCode.
 - **Local servers show up.** When a pane prints `http://localhost:5173` (Vite, Next.js, Rails,
   Django…), its address appears in the project header and on the Grid tile while the server
   answers. Click it to open the page in the Browser panel.
@@ -249,7 +249,7 @@ Turn automatic checks off in **Settings → General**, or use **Check for Update
 | --- | --- | --- |
 | Claude Code | `claude --mcp-config "$TC_CLAUDE_MCP" --settings "$TC_CLAUDE_SETTINGS"` adds hooks and the browser tools for that run | hooks in `~/.claude/settings.json` |
 | Codex | `codex -c "$TC_CODEX_HOOKS" -c "$TC_CODEX_NOTIFY" -c "$TC_CODEX_MCP" -c "$TC_CODEX_GUIDE"` | a managed block in `~/.codex/config.toml`, browser tools included |
-| Gemini CLI | — | hooks and the browser tools in `~/.gemini/settings.json` |
+| Antigravity CLI | — | none yet: its status shows “Active” (Antigravity CLI replaced Gemini CLI, whose hooks in `~/.gemini/settings.json` still install where a `gemini` preset is kept) |
 | OpenCode | the browser tools, through `$OPENCODE_CONFIG_CONTENT` in every pane | the plugin `~/.config/opencode/plugins/ternarycode.js` |
 
 Installing shows the exact change first and keeps a backup; **Uninstall** restores the file byte
@@ -398,7 +398,7 @@ text smaller.
 ## Troubleshooting
 
 **Run Agent says an agent isn't installed.** It looks for the agent's program (`claude`, `codex`,
-`gemini`, `opencode`) on the `PATH` a new pane gets. **Install in Terminal** types its install
+`agy`, `opencode`) on the `PATH` a new pane gets. **Install in Terminal** types its install
 command in the project's terminal (an npm one needs Node.js first, which it says); once it is
 installed, run the agent again: a new tab finds it without restarting TernaryCode. **Run Anyway**
 starts the command as it is, for an alias or a shell function the check can't see.

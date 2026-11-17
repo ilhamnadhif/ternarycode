@@ -671,11 +671,14 @@ impl Pane {
     }
 
     /// The agent in the foreground, when it reads an image from the clipboard on Ctrl+V
-    /// (Claude Code, Codex, Gemini CLI, OpenCode).
+    /// (Claude Code, Codex, OpenCode, Antigravity CLI, Gemini CLI).
     pub fn reads_clipboard_images(&self) -> bool {
         matches!(
             &self.tracker.fg,
-            Foreground::Program { agent: Some(AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini | AgentKind::OpenCode), .. }
+            Foreground::Program {
+                agent: Some(AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini | AgentKind::OpenCode | AgentKind::Antigravity),
+                ..
+            }
         )
     }
 
@@ -870,11 +873,12 @@ impl Pane {
         }
         self.enter_at = None;
         self.last_pgid = Some(pgid);
-        // macOS starts the shell through `login`, as its child. Windows reports the shell's
-        // newest child as the foreground, and that is a program.
+        // macOS starts the shell through `login`, as its child (on Linux the shell is the pty's
+        // own process, and a child of it is a program the shell started). Windows reports the
+        // shell's newest child as the foreground, and that is a program.
         let is_shell = pgid == pty_pid
             || Some(pgid) == self.shell_pgid
-            || (cfg!(unix)
+            || (cfg!(target_os = "macos")
                 && self.shell_pgid.is_none()
                 && tc_agent::proc::ppid(pgid) == Some(pty_pid));
         if std::env::var_os("TERNARYCODE_DEBUG_FG").is_some() {

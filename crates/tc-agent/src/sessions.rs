@@ -84,12 +84,14 @@ pub fn resume_command(agent: AgentKind, command: &str, id: &str) -> Option<Strin
 }
 
 /// The option that starts the agent without asking before each action (`None` when it has
-/// none). Checked: Claude Code 2.1.323, Codex 0.166, Gemini CLI 0.43.0.
+/// none). Checked: Claude Code 2.1.323, Codex 0.166, Gemini CLI 0.43.0; Antigravity CLI from its
+/// documentation (17 Nov 2026).
 pub fn skip_permissions_flag(agent: AgentKind) -> Option<&'static str> {
     match agent {
         AgentKind::Claude => Some("--dangerously-skip-permissions"),
         AgentKind::Codex => Some("--dangerously-bypass-approvals-and-sandbox"),
         AgentKind::Gemini => Some("--yolo"),
+        AgentKind::Antigravity => Some("--dangerously-skip-permissions"),
         _ => None,
     }
 }
