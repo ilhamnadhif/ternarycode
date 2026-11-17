@@ -213,6 +213,13 @@ const CJK_FALLBACKS: &[(&str, &str)] = &[
 
 #[cfg(target_os = "macos")]
 const SYMBOLS: (&str, &str) = ("symbols", "/System/Library/Fonts/Apple Symbols.ttf");
+/// macOS: Menlo before Apple Symbols, for the dingbats agents draw (Claude Code's spinner
+/// `✢ ✳ ✻ ✽`), which neither JetBrains Mono nor Apple Symbols has; monospaced, as wide as the
+/// terminal's cells. (Segoe UI Symbol and DejaVu Sans, the other systems' symbols, have them.)
+#[cfg(target_os = "macos")]
+const DINGBATS: Option<(&str, &str)> = Some(("dingbats", "/System/Library/Fonts/Menlo.ttc"));
+#[cfg(not(target_os = "macos"))]
+const DINGBATS: Option<(&str, &str)> = None;
 #[cfg(windows)]
 const SYMBOLS: (&str, &str) = ("symbols", "seguisym.ttf");
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -416,6 +423,11 @@ pub fn definitions(choice: &FontChoice, load_cjk: bool) -> FontDefinitions {
         .collect();
 
     let mut fallbacks: Vec<String> = Vec::new();
+    if let Some((key, path)) = DINGBATS
+        && add_face(&mut defs, key, path, 0)
+    {
+        fallbacks.push(key.into());
+    }
     if add_face(&mut defs, SYMBOLS.0, SYMBOLS.1, 0) {
         fallbacks.push(SYMBOLS.0.into());
     }
