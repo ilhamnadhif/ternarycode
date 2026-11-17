@@ -298,6 +298,9 @@ pub struct Settings {
     pub window: Option<[f32; 4]>,
     pub sidebar_width: f32,
     pub sidebar_hidden: bool,
+    /// The sidebar as a narrow column of project tiles (⌥⌘B).
+    #[serde(default)]
+    pub sidebar_compact: bool,
     /// Height of the Files section of the sidebar.
     pub files_height: f32,
     pub files_hidden: bool,
@@ -431,6 +434,7 @@ impl Default for Settings {
             window: None,
             sidebar_width: 248.0,
             sidebar_hidden: false,
+            sidebar_compact: false,
             files_height: 0.0,
             files_hidden: false,
             ui_rev: UI_REV,

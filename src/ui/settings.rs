@@ -30,10 +30,9 @@ pub enum SettingsPage {
     Integrations,
 }
 
-const W: f32 = 900.0;
-const H: f32 = 640.0;
-const NAV_W: f32 = 200.0;
-const HEAD_H: f32 = 52.0;
+const W: f32 = 1040.0;
+const H: f32 = 768.0;
+const NAV_W: f32 = 236.0;
 
 /// The pages, their icons, and the rows on each (for the search).
 fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 9] {
@@ -56,22 +55,19 @@ fn hit(search: &str, label: &str, note: &str) -> bool {
     q.is_empty() || label.to_lowercase().contains(&q) || note.to_lowercase().contains(&q)
 }
 
-/// A page's title and the line under it.
+/// A page's title and the line under it: drawn by the sheet's head (`settings_ui`), which
+/// reads them from here.
 fn page_head(ui: &mut Ui, title: &str, lead: &str) {
-    let p = style::pal(ui);
-    ui.label(RichText::new(title).font(style::semibold(17.0)).color(p.text));
-    ui.add_space(4.0);
-    ui.label(RichText::new(lead).size(12.5).color(p.text_muted));
-    ui.add_space(16.0);
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("settings-head"), (title.to_string(), lead.to_string())));
 }
 
-/// A small upper-case title over a group of rows.
+/// The title over a group of rows.
 fn group(ui: &mut Ui, text: &str) {
     let p = style::pal(ui);
-    ui.add_space(18.0);
-    let g = kit::section_galley(ui.painter(), text, p.text_faint);
+    ui.add_space(16.0);
+    let g = ui.painter().layout_no_wrap(text.to_string(), style::medium(12.0), p.text_muted);
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), g.size().y), Sense::hover());
-    ui.painter().galley(r.min, g, p.text_faint);
+    ui.painter().galley(r.min + vec2(2.0, 0.0), g, p.text_muted);
     ui.add_space(8.0);
 }
 
@@ -97,6 +93,47 @@ impl Card<'_> {
         self.icon = None;
     }
 
+    /// A row of only its control (the label is for the search), with the row's padding.
+    fn bare(&mut self, label: &str, control: impl FnOnce(&mut Ui)) {
+        self.bare_hit(label, "", control);
+    }
+
+    fn bare_hit(&mut self, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
+        if !hit(&self.search, label, note) {
+            return;
+        }
+        self.divider();
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 14, top: 14, bottom: 12 }).show(self.ui, |ui| {
+            ui.set_width(ui.available_width());
+            control(ui);
+        });
+    }
+
+    /// A row without padding, shown when any of `labels` matches (rows of its own inside).
+    fn bare_hit_flush(&mut self, labels: &[(&str, &str)], control: impl FnOnce(&mut Ui)) {
+        if !labels.iter().any(|(l, n)| hit(&self.search, l, n)) {
+            return;
+        }
+        self.divider();
+        self.ui.scope(|ui| {
+            ui.set_width(ui.available_width());
+            control(ui);
+        });
+    }
+
+    /// The line between rows (none before the first).
+    fn divider(&mut self) {
+        let ui = &mut *self.ui;
+        let p = style::pal(ui);
+        if !self.first {
+            let y = ui.cursor().top();
+            let x = ui.max_rect().x_range();
+            ui.painter().hline(x, y + 0.5, Stroke::new(1.0, p.border));
+        }
+        self.first = false;
+        self.rows += 1;
+    }
+
     /// `stacked`: the control under the text (a wide one, such as a grid of schemes).
     fn row_with(&mut self, label: &str, note: &str, stacked: bool, control: impl FnOnce(&mut Ui)) {
         if !hit(&self.search, label, note) {
@@ -111,8 +148,9 @@ impl Card<'_> {
         }
         self.first = false;
         self.rows += 1;
-        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(14, 11)).show(ui, |ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 14, top: 12, bottom: 12 }).show(ui, |ui| {
             ui.set_width(ui.available_width());
+            ui.set_min_height(26.0);
             let icon = self.icon;
             let text = |ui: &mut Ui| {
                 ui.vertical(|ui| {
@@ -121,16 +159,17 @@ impl Card<'_> {
                         Some((i, c)) => {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 6.0;
-                                ui.label(RichText::new(i).font(style::icon_font(13.0)).color(c));
-                                ui.label(RichText::new(label).font(style::medium(13.0)).color(p.text));
+                                ui.label(RichText::new(i).font(style::icon_fill(13.0)).color(c));
+                                ui.label(RichText::new(label).size(13.0).color(p.text));
                             });
                         }
                         None => {
-                            ui.label(RichText::new(label).font(style::medium(13.0)).color(p.text));
+                            ui.label(RichText::new(label).size(13.0).color(p.text));
                         }
                     }
                     if !note.is_empty() {
-                        ui.add(egui::Label::new(RichText::new(note).size(style::SMALL).color(p.text_faint).line_height(Some(16.0))).wrap());
+                        ui.set_max_width(600.0);
+                        ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint).line_height(Some(17.4))).wrap());
                     }
                 });
             };
@@ -173,16 +212,18 @@ fn card(ui: &mut Ui, search: &str, labels: &[(&str, &str)], add: impl FnOnce(&mu
         return false;
     }
     let p = style::pal(ui);
-    egui::Frame::NONE
-        .fill(p.canvas)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(9))
+    let dark = ui.visuals().dark_mode;
+    let r = egui::Frame::NONE
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, if dark { p.border } else { p.border_strong }))
+        .corner_radius(CornerRadius::same(10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 0.0;
             let mut c = Card { ui, search: search.to_string(), first: true, rows: 0, icon: None };
             add(&mut c);
         });
+    kit::paint_highlight(ui.painter(), Rect::from_min_size(r.response.rect.min, vec2(r.response.rect.width(), 1.0)), 10, &p);
     true
 }
 
@@ -200,63 +241,70 @@ impl App {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let mut keep = true;
         let p = style::pal(ui);
+        let dark = ui.visuals().dark_mode;
         let full = Rect::from_min_size(ui.max_rect().min, vec2(w, h));
+        kit::paint_highlight(ui.painter(), Rect::from_min_size(full.min, vec2(w, 1.0)), style::RADIUS_DIALOG, &p);
 
-        // ----- header: title, search, close -------------------------------------------------
-        let head = Rect::from_min_size(full.min, vec2(w, HEAD_H));
-        ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
-        let g = ui.painter().layout_no_wrap(t("Settings").to_string(), style::semibold(15.5), p.text);
-        let tw = g.size().x;
-        ui.painter().galley(pos2(head.left() + 20.0, head.center().y - g.size().y / 2.0), g, p.text);
-        ui.painter().text(pos2(head.left() + 20.0 + tw + 12.0, head.center().y), Align2::LEFT_CENTER, t("Saved as you change them."), egui::FontId::proportional(style::SMALL), p.text_faint);
-        let close = Rect::from_center_size(pos2(head.right() - 12.0 - 13.0, head.center().y), vec2(26.0, 26.0));
-        if ui.scope_builder(egui::UiBuilder::new().max_rect(close), |ui| kit::icon_button_ex(ui, icons::X, t("Close"), false, 26.0)).inner.clicked() {
-            keep = false;
-        }
-        let search_rect = Rect::from_min_size(pos2(close.left() - 12.0 - 220.0, head.center().y - 13.0), vec2(220.0, 26.0));
+        // ----- the pages at the left: "Settings", the search, the pages, the version ----------
+        let nav = Rect::from_min_max(full.min, pos2(full.left() + NAV_W, full.bottom()));
+        let nav_fill = if dark { style::over(p.overlay, p.chrome, 0.45) } else { Color32::from_rgb(0xf6, 0xf6, 0xf5) };
+        ui.painter().rect_filled(nav, CornerRadius { nw: style::RADIUS_DIALOG, ne: 0, sw: style::RADIUS_DIALOG, se: 0 }, nav_fill);
+        ui.painter().vline(nav.right() - 0.5, nav.y_range(), Stroke::new(1.0, p.border));
+        let mut job = egui::text::LayoutJob::default();
+        let mut f = egui::TextFormat::simple(style::semibold(15.0), p.text);
+        f.extra_letter_spacing = -0.15;
+        job.append(t("Settings"), 0.0, f);
+        let g = ui.painter().layout_job(job);
+        ui.painter().galley(pos2(nav.left() + 18.0, nav.top() + 18.0), g, p.text);
+        let search_rect = Rect::from_min_size(pos2(nav.left() + 10.0, nav.top() + 18.0 + 22.0 + 10.0), vec2(NAV_W - 20.0, 30.0));
         let mut search = self.settings_search.clone();
         ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect), |ui| {
-            kit::field(ui, egui::Id::new("settings-search"), &mut search, Some(icons::MAGNIFYING_GLASS), t("Search settings"), 220.0, true)
+            kit::field(ui, egui::Id::new("settings-search"), &mut search, Some(icons::MAGNIFYING_GLASS), t("Search settings"), NAV_W - 20.0, false)
         });
         self.settings_search = search.clone();
-
-        // ----- the pages at the left ------------------------------------------------------------
-        let nav = Rect::from_min_max(pos2(full.left(), head.bottom()), pos2(full.left() + NAV_W, full.bottom()));
-        ui.painter().rect_filled(nav, CornerRadius { nw: 0, ne: 0, sw: style::RADIUS_LG + 2, se: 0 }, p.chrome);
-        ui.painter().vline(nav.right() - 0.5, nav.y_range(), Stroke::new(1.0, p.border));
-        let mut y = nav.top() + 14.0;
+        // ⌘F, at the right of the empty field.
+        let sid = egui::Id::new("settings-search");
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+            ui.memory_mut(|m| m.request_focus(sid));
+        }
+        if search.is_empty() && !ui.memory(|m| m.has_focus(sid)) {
+            let keys = kit::keys(&Action::Find).unwrap_or("");
+            if !keys.is_empty() {
+                let w = kit::kbd_width(ui.painter(), keys);
+                kit::paint_kbd_text(ui.painter(), pos2(search_rect.right() - 8.0 - w, search_rect.center().y), keys, &p);
+            }
+        }
+        let mut y = search_rect.bottom() + 14.0;
         for (i, (pg, icon, name, rows)) in pages().into_iter().enumerate() {
-            if i == 6 {
-                ui.painter().hline((nav.left() + 14.0)..=(nav.right() - 14.0), y + 10.0, Stroke::new(1.0, p.border));
-                y += 21.0;
+            if i == 7 {
+                ui.painter().hline((nav.left() + 18.0)..=(nav.right() - 18.0), y + 7.0, Stroke::new(1.0, p.border));
+                y += 15.0;
             }
             let label = t(name);
             let matches = !search.trim().is_empty() && rows.iter().any(|r| hit(&search, t(r), ""));
-            let item = Rect::from_min_size(pos2(nav.left() + 8.0, y), vec2(NAV_W - 16.0, 30.0));
-            y += 31.0;
+            let item = Rect::from_min_size(pos2(nav.left() + 10.0, y), vec2(NAV_W - 20.0, 31.0));
+            y += 32.0;
             let r = ui.interact(item, egui::Id::new(("settings-page", i)), Sense::click());
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("settings:{name}"), item);
             let on = *page == pg;
             if on {
-                ui.painter().rect_filled(item, CornerRadius::same(style::RADIUS), p.accent_soft);
+                ui.painter().rect(item, CornerRadius::same(7), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+                kit::paint_highlight(ui.painter(), item, 7, &p);
             } else if r.hovered() {
-                ui.painter().rect_filled(item, CornerRadius::same(style::RADIUS), p.faint_row());
+                ui.painter().rect_filled(item, CornerRadius::same(7), p.hover);
             }
-            let c = if on || r.hovered() { p.text } else { p.text_muted };
-            ui.painter().text(pos2(item.left() + 10.0 + 7.5, item.center().y), Align2::CENTER_CENTER, icon, style::icon_font(15.0), c);
-            ui.painter().text(pos2(item.left() + 10.0 + 15.0 + 9.0, item.center().y), Align2::LEFT_CENTER, label, style::medium(13.0), c);
-            // At the right: what a page has for the user (an update, an agent without hooks).
-            if pg == SettingsPage::Updates
-                && let Some(v) = self.updater.available_version()
-            {
-                let w = kit::pill_width(ui.painter(), None, &v);
-                kit::paint_pill(ui.painter(), pos2(item.right() - 8.0 - w, item.center().y), None, &v, p.accent_text, p.accent_soft);
+            let (ic, tc) = if on || r.hovered() { (p.text, p.text) } else { (p.text_faint, p.text_muted) };
+            ui.painter().text(pos2(item.left() + 10.0 + 8.0, item.center().y), Align2::CENTER_CENTER, icon, style::icon_font(15.0), ic);
+            ui.painter().text(pos2(item.left() + 10.0 + 16.0 + 10.0, item.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.0), tc);
+            // At the right: what a page has for the user (an update, agents without hooks).
+            if pg == SettingsPage::Updates && self.updater.available_version().is_some() {
+                ui.painter().circle_filled(pos2(item.right() - 10.0 - 3.0, item.center().y), 3.0, p.accent_text);
             }
             if pg == SettingsPage::Agents {
                 let n = self.agents_without_hooks();
                 if n > 0 {
-                    kit::paint_badge(ui.painter(), pos2(item.right() - 8.0, item.center().y), &n.to_string(), p.subtle, p.text_muted, 16.0);
+                    kit::paint_badge(ui.painter(), pos2(item.right() - 8.0, item.center().y), &n.to_string(), style::soft(p.warn, 0.15), p.warn, 16.0);
                 }
             }
             if matches {
@@ -266,14 +314,38 @@ impl App {
                 *page = pg;
             }
         }
+        // The version at the bottom.
+        let ver = Rect::from_min_max(pos2(nav.left() + 10.0, nav.bottom() - 12.0 - 38.0), pos2(nav.right() - 10.0, nav.bottom() - 12.0));
+        ui.painter().hline(ver.x_range(), ver.top() + 0.5, Stroke::new(1.0, p.border));
+        let logo = Rect::from_min_size(pos2(ver.left() + 8.0, ver.top() + 10.0), vec2(26.0, 26.0));
+        paint_logo(ui.painter(), logo, &p);
+        ui.painter().text(pos2(logo.right() + 10.0, logo.top() + 1.0), Align2::LEFT_TOP, "TernaryCode", style::medium(12.0), p.text_muted);
+        let version = match self.updater.available_version() {
+            Some(v) => format!("{} · {}", env!("CARGO_PKG_VERSION"), tf("{} is out", &[&v])),
+            None => env!("CARGO_PKG_VERSION").to_string(),
+        };
+        ui.painter().text(pos2(logo.right() + 10.0, logo.bottom() + 1.0), Align2::LEFT_BOTTOM, version, style::mono(10.5), p.text_faint);
 
+        // ----- the page's head: its title and line, "Saved as you change them", × -------------
+        let main_full = Rect::from_min_max(pos2(nav.right(), full.top()), full.max);
+        let head = Rect::from_min_size(main_full.min, vec2(main_full.width(), 24.0 + 26.0 + 5.0 + 18.0 + 6.0));
+        let close = Rect::from_center_size(pos2(head.right() - 18.0 - 11.0, head.top() + 24.0 + 12.0), vec2(22.0, 22.0));
+        if ui.scope_builder(egui::UiBuilder::new().max_rect(close), |ui| kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0)).inner.clicked() {
+            keep = false;
+        }
+        let saved = ui.painter().layout_no_wrap(t("Saved as you change them").to_string(), egui::FontId::proportional(11.5), p.text_faint);
+        let sx = close.left() - 12.0 - saved.size().x;
+        ui.painter().galley(pos2(sx, close.center().y - saved.size().y / 2.0), saved, p.text_faint);
+        ui.painter().text(pos2(sx - 5.0, close.center().y), Align2::RIGHT_CENTER, icons::CHECK, style::icon_font(12.0), p.ok);
         // ----- the page -------------------------------------------------------------------------
         let main = Rect::from_min_max(pos2(nav.right(), head.bottom()), full.max);
+        #[cfg(debug_assertions)]
+        crate::devtest::record("settings-body", main);
         let before = self.settings.clone();
         ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
             egui::ScrollArea::vertical().id_salt("settings-page").auto_shrink([false, false]).show(ui, |ui| {
-                egui::Frame::NONE.inner_margin(egui::Margin { left: 26, right: 26, top: 20, bottom: 24 }).show(ui, |ui| {
-                    ui.set_width(main.width() - 52.0);
+                egui::Frame::NONE.inner_margin(egui::Margin { left: 34, right: 34, top: 4, bottom: 30 }).show(ui, |ui| {
+                    ui.set_width(main.width() - 68.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
                     match *page {
                         SettingsPage::General => self.general_page(ui, &search),
@@ -289,6 +361,20 @@ impl App {
                 });
             });
         });
+        // The head's title and line, given by the page just drawn.
+        if let Some((title, lead)) = ui.ctx().data(|d| d.get_temp::<(String, String)>(egui::Id::new("settings-head"))) {
+            let mut job = egui::text::LayoutJob::default();
+            let mut f = egui::TextFormat::simple(style::semibold(21.0), p.text);
+            f.extra_letter_spacing = -0.42;
+            job.append(&title, 0.0, f);
+            let g = ui.painter().layout_job(job);
+            ui.painter().galley(pos2(head.left() + 34.0, head.top() + 24.0), g, p.text);
+            let mut job = egui::text::LayoutJob::simple_singleline(lead, egui::FontId::proportional(13.0), p.text_muted);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(sx - 20.0 - (head.left() + 34.0));
+            let g = ui.painter().layout_job(job);
+            ui.painter().galley(pos2(head.left() + 34.0, head.top() + 24.0 + 26.0 + 5.0), g, p.text_muted);
+        }
+
         ui.allocate_rect(full, Sense::hover());
         if self.settings != before {
             if self.settings.language != before.language {
@@ -412,14 +498,20 @@ impl App {
     fn appearance_page(&mut self, ui: &mut Ui, search: &str) {
         page_head(ui, t("Appearance"), t("How TernaryCode and its terminals look."));
         let labels = [(t("Theme"), ""), (t("Language"), t("System follows the language of your computer."))];
+        if labels.iter().any(|(l, n)| hit(search, l, n)) {
+            group(ui, t("Theme"));
+        }
         card(ui, search, &labels, |c| {
-            c.row(t("Theme"), "", |ui| {
+            c.bare(t("Theme"), |ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
-                for (mode, name) in [(ThemeMode::Dark, t("Dark")), (ThemeMode::Light, t("Light")), (ThemeMode::System, t("System"))] {
-                    if theme_card(ui, mode, name, self.settings.theme == mode).clicked() {
-                        self.settings.theme = mode;
+                let w = ((ui.available_width() - 28.0) / 3.0).floor();
+                ui.horizontal(|ui| {
+                    for (mode, name) in [(ThemeMode::System, t("System")), (ThemeMode::Light, t("Light")), (ThemeMode::Dark, t("Dark"))] {
+                        if theme_card(ui, mode, name, self.settings.theme == mode, w).clicked() {
+                            self.settings.theme = mode;
+                        }
                     }
-                }
+                });
             });
             c.row(t("Language"), t("System follows the language of your computer."), |ui| {
                 let system = if sys_locale::get_locales().next().is_some_and(|l| l.starts_with("id") || l.starts_with("in")) {
@@ -434,29 +526,47 @@ impl App {
                     Language::Indonesian => 2,
                 };
                 let opts: Vec<&str> = options.iter().map(String::as_str).collect();
-                if let Some(i) = kit::select(ui, "language", &options[current], &opts, 160.0) {
+                if let Some(i) = kit::select(ui, "language", &options[current], &opts, 200.0) {
                     self.settings.language = [Language::System, Language::English, Language::Indonesian][i];
                 }
             });
         });
-        let labels = [(t("With the dark theme"), ""), (t("With the light theme"), "")];
+        let labels = [(t("With the dark theme"), t("Also used in Grid tiles and previews.")), (t("With the light theme"), "")];
         if labels.iter().any(|(l, n)| hit(search, l, n)) {
             group(ui, t("Terminal colors"));
         }
         card(ui, search, &labels, |c| {
             for dark in [true, false] {
-                let label = if dark { t("With the dark theme") } else { t("With the light theme") };
-                c.row_with(label, "", true, |ui| {
-                    let current = self.scheme(dark).name;
-                    let schemes: Vec<&'static tc_term::scheme::Scheme> = tc_term::scheme::SCHEMES.iter().filter(|s| s.dark == dark).collect();
-                    let cols = 5;
-                    let gap = 10.0;
-                    let w = ((ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32).floor();
-                    for chunk in schemes.chunks(cols) {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = gap;
-                            for s in chunk {
-                                if scheme_tile(ui, s, w, s.name == current).clicked() {
+                let (label, note) = if dark { (t("With the dark theme"), t("Also used in Grid tiles and previews.")) } else { (t("With the light theme"), "") };
+                c.bare_hit(label, note, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let p = style::pal(ui);
+                        ui.vertical(|ui| {
+                            ui.set_width(190.0);
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.label(RichText::new(label).size(13.0).color(p.text));
+                            if !note.is_empty() {
+                                ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint).line_height(Some(17.4))).wrap());
+                            }
+                        });
+                        // Four schemes (the chosen one among them), the rest behind "N more".
+                        let current = self.scheme(dark).name;
+                        let schemes: Vec<&'static tc_term::scheme::Scheme> = tc_term::scheme::SCHEMES.iter().filter(|s| s.dark == dark).collect();
+                        let open_id = egui::Id::new(("schemes-open", dark));
+                        let open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+                        let mut shown: Vec<&'static tc_term::scheme::Scheme> = if open { schemes.clone() } else { schemes.iter().take(4).copied().collect() };
+                        if !open && !shown.iter().any(|s| s.name == current)
+                            && let Some(s) = schemes.iter().find(|s| s.name == current)
+                        {
+                            shown.pop();
+                            shown.push(s);
+                        }
+                        let more = schemes.len().saturating_sub(4);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(6.0, 10.0);
+                            for s in &shown {
+                                if scheme_tile(ui, s, s.name == current).clicked() {
                                     if dark {
                                         self.settings.scheme_dark = s.name.to_string();
                                     } else {
@@ -464,43 +574,71 @@ impl App {
                                     }
                                 }
                             }
+                            if more > 0 {
+                                let label = if open { t("Fewer").to_string() } else { tf("{} more", &[&more.to_string()]) };
+                                if more_tile(ui, &label).clicked() {
+                                    ui.data_mut(|d| d.insert_temp(open_id, !open));
+                                }
+                            }
                         });
-                        ui.add_space(gap);
-                    }
+                    });
                 });
             }
         });
-        let labels = [(t("Font"), t("Monospace fonts installed on this computer.")), (t("Size"), ""), (t("Cursor"), ""), (t("Blinking cursor"), "")];
+        let labels = [(t("Font"), t("Monospace fonts installed on this computer.")), (t("Size"), ""), (t("Cursor"), t("New panes take it.")), (t("Blinking cursor"), "")];
         if labels.iter().any(|(l, n)| hit(search, l, n)) {
             group(ui, t("Terminal text"));
         }
         card(ui, search, &labels, |c| {
-            c.row(t("Font"), t("Monospace fonts installed on this computer."), |ui| {
-                let fonts: Vec<&'static str> = tc_term::fonts::PRESETS.iter().filter(|f| tc_term::fonts::is_available(f)).map(|f| f.name).collect();
-                let current = tc_term::fonts::effective_choice(&tc_term::prefs::FontChoice { name: self.settings.font_name.clone(), path: self.settings.font_path.clone(), index: 0 }).name;
-                if let Some(i) = kit::select(ui, "font", &current, &fonts, 160.0) {
-                    self.settings.font_name = fonts[i].to_string();
-                    self.settings.font_path = None;
-                }
-            });
-            c.row(t("Size"), &tf("{} and {} change it too.", &[kit::keys(&Action::FontBigger).unwrap_or(""), kit::keys(&Action::FontSmaller).unwrap_or("")]), |ui| {
-                let size = self.settings.font_size;
-                let text = if size.fract() == 0.0 { format!("{size:.0}") } else { format!("{size:.1}") };
-                match kit::stepper(ui, &text) {
-                    -1 => self.settings.font_size = (size - 0.5).max(9.0),
-                    1 => self.settings.font_size = (size + 0.5).min(24.0),
-                    _ => {}
-                }
-            });
-            c.row(t("Cursor"), t("New panes take it."), |ui| {
-                let options = [kit::Seg::new(t("Block"), ""), kit::Seg::new(t("Beam"), ""), kit::Seg::new(t("Underline"), "")];
-                let on = self.settings.cursor_shape as usize;
-                if let Some(i) = kit::segmented(ui, &options, on) {
-                    self.settings.cursor_shape = [CursorShape::Block, CursorShape::Beam, CursorShape::Underline][i];
-                }
-            });
-            c.row(t("Blinking cursor"), "", |ui| {
-                kit::switch(ui, &mut self.settings.cursor_blink);
+            // The settings at the left, a live preview at the right (in the terminal's font and
+            // colours).
+            c.bare_hit_flush(&labels, |ui| {
+                let full = ui.available_width();
+                let preview_w = if full > 640.0 { 294.0 } else { 0.0 };
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let left = ui
+                        .vertical(|ui| {
+                            ui.set_width(full - preview_w - if preview_w > 0.0 { 8.0 } else { 0.0 });
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            let mut c = Card { ui, search: search.to_string(), first: true, rows: 0, icon: None };
+                            c.row(t("Font"), "", |ui| {
+                                let fonts: Vec<&'static str> = tc_term::fonts::PRESETS.iter().filter(|f| tc_term::fonts::is_available(f)).map(|f| f.name).collect();
+                                let current = tc_term::fonts::effective_choice(&tc_term::prefs::FontChoice { name: self.settings.font_name.clone(), path: self.settings.font_path.clone(), index: 0 }).name;
+                                if let Some(i) = kit::select(ui, "font", &current, &fonts, 200.0) {
+                                    self.settings.font_name = fonts[i].to_string();
+                                    self.settings.font_path = None;
+                                }
+                            });
+                            c.row(t("Size"), "", |ui| {
+                                let size = self.settings.font_size;
+                                let text = if size.fract() == 0.0 { format!("{size:.0}") } else { format!("{size:.1}") };
+                                match kit::stepper(ui, &text) {
+                                    -1 => self.settings.font_size = (size - 0.5).max(9.0),
+                                    1 => self.settings.font_size = (size + 0.5).min(24.0),
+                                    _ => {}
+                                }
+                            });
+                            c.row(t("Cursor"), t("New panes take it."), |ui| {
+                                let options = [kit::Seg::new(t("Block"), ""), kit::Seg::new(t("Beam"), ""), kit::Seg::new(t("Underline"), "")];
+                                let on = self.settings.cursor_shape as usize;
+                                if let Some(i) = kit::segmented(ui, &options, on) {
+                                    self.settings.cursor_shape = [CursorShape::Block, CursorShape::Beam, CursorShape::Underline][i];
+                                }
+                            });
+                            c.row(t("Blinking cursor"), "", |ui| {
+                                kit::switch(ui, &mut self.settings.cursor_blink);
+                            });
+                        })
+                        .response
+                        .rect;
+                    if preview_w > 0.0 {
+                        let r = Rect::from_min_size(pos2(left.right() + 0.0, left.top() + 8.0), vec2(preview_w, (left.height() - 16.0).max(150.0)));
+                        ui.allocate_rect(Rect::from_min_size(left.right_top(), vec2(preview_w + 8.0, left.height())), Sense::hover());
+                        let dark = ui.visuals().dark_mode;
+                        terminal_preview(ui, r, self.scheme(dark), self.settings.font_size, self.settings.cursor_shape);
+                    }
+                });
             });
         });
     }
@@ -909,47 +1047,56 @@ impl App {
             let agent = preset.agent.unwrap_or(AgentKind::Custom);
             let expanded = open.as_deref() == Some(preset.id.as_str());
             let hooks = self.agent_hooks(agent);
+            let dark = ui.visuals().dark_mode;
             egui::Frame::NONE
                 .fill(p.canvas)
-                .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(CornerRadius::same(9))
+                .stroke(Stroke::new(1.0, p.border_strong))
+                .corner_radius(CornerRadius::same(10))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    // Header: mark, name, how it reports; a click opens it.
-                    let (head, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+                    // Header: mark, name, how it reports, the command; at the right how many
+                    // panes run it (or Install / Uninstall), and the chevron. A click opens it.
+                    let (head, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 57.0), Sense::click());
                     #[cfg(debug_assertions)]
                     crate::devtest::record(format!("agent-card:{}", preset.id), head);
                     let cy = head.center().y;
-                    let tile = Rect::from_center_size(pos2(head.left() + 14.0 + 16.0, cy), vec2(32.0, 32.0));
-                    ui.painter().rect_filled(tile, CornerRadius::same(8), p.subtle);
+                    let tile = Rect::from_center_size(pos2(head.left() + 13.0 + 17.0, cy), vec2(34.0, 34.0));
+                    ui.painter().rect(tile, CornerRadius::same(9), if dark { p.inset } else { Color32::WHITE }, Stroke::new(1.0, p.border), StrokeKind::Inside);
                     let logo = Rect::from_center_size(tile.center(), vec2(18.0, 18.0));
                     if !preset.agent.is_some_and(|a| super::agent_logo::paint(ui.painter(), logo, a, p.text, false)) {
-                        ui.painter().text(tile.center(), Align2::CENTER_CENTER, agent_mark(preset), style::semibold(11.5), p.text_muted);
+                        ui.painter().text(tile.center(), Align2::CENTER_CENTER, agent_mark(preset), style::mono_semibold(11.0), p.text_muted);
                     }
                     let x = tile.right() + 12.0;
                     let g = ui.painter().layout_no_wrap(preset.name.clone(), style::medium(13.5), p.text);
                     let nw = g.size().x;
                     ui.painter().galley(pos2(x, cy - 9.0 - g.size().y / 2.0), g, p.text);
-                    let (icon, text, fg, bg) = hooks.pill(&p, ui.visuals().dark_mode);
+                    let (icon, text, fg, bg) = hooks.pill(&p, dark);
                     kit::paint_pill(ui.painter(), pos2(x + nw + 8.0, cy - 9.0), icon, &text, fg, bg);
-                    let sub = if expanded && hooks.active > 0 {
-                        tf("Active in {} panes", &[&hooks.active.to_string()])
-                    } else {
-                        match &preset.resume {
-                            Some(r) if !r.is_empty() => format!("{}  ·  {} {r}", preset.command, t("resume:")),
-                            _ => preset.command.clone(),
-                        }
+                    let sub = match &preset.resume {
+                        Some(r) if !r.is_empty() => format!("{}  ·  {} {r}", preset.command, t("resume:")),
+                        _ => format!("{}  ·  {} —", preset.command, t("resume:")),
                     };
-                    let font = if expanded && hooks.active > 0 { egui::FontId::proportional(style::SMALL) } else { egui::FontId::monospace(11.0) };
-                    ui.painter().text(pos2(x, cy + 10.0), Align2::LEFT_CENTER, sub, font, p.text_faint);
-                    ui.painter().text(pos2(head.right() - 14.0 - 6.0, cy), Align2::CENTER_CENTER, if expanded { icons::CARET_UP } else { icons::CARET_DOWN }, style::icon_font(12.0), p.text_faint);
+                    ui.painter().text(pos2(x, cy + 10.0), Align2::LEFT_CENTER, sub, style::mono(11.0), p.text_faint);
+                    let chevron_x = head.right() - 14.0 - 8.0;
+                    ui.painter().text(pos2(chevron_x, cy), Align2::CENTER_CENTER, if expanded { icons::CARET_UP } else { icons::CARET_DOWN }, style::icon_font(12.0), p.text_faint);
+                    let right = chevron_x - 8.0 - 14.0;
                     if !hooks.hooked && hooks.can_install && self.installed(agent).is_none() {
                         let w = kit::button_width(ui, None, t("Install…"), None, true);
-                        let br = Rect::from_center_size(pos2(head.right() - 14.0 - 22.0 - w / 2.0, cy), vec2(w, 24.0));
+                        let br = Rect::from_min_size(pos2(right - w, cy - 12.0), vec2(w, 24.0));
                         if ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| kit::button_ex(ui, kit::Kind::Primary, None, t("Install…"), true)).inner.clicked() {
                             self.actions.push(Action::PlanInstall(agent));
                         }
+                    } else if hooks.installed && !matches!(agent, AgentKind::Claude | AgentKind::Codex) && !expanded {
+                        // An agent whose hooks are only ever installed: Uninstall right here.
+                        let w = kit::button_width(ui, None, t("Uninstall"), None, true);
+                        let br = Rect::from_min_size(pos2(right - w, cy - 12.0), vec2(w, 24.0));
+                        if ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| kit::button_ex(ui, kit::Kind::Ghost, None, t("Uninstall"), true)).inner.clicked() {
+                            self.actions.push(Action::Uninstall(agent));
+                        }
+                    } else if hooks.active > 0 {
+                        let text = crate::i18n::count(hooks.active, t("Active in 1 pane"), t("Active in {} panes"));
+                        ui.painter().text(pos2(right, cy), Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), p.text_faint);
                     }
                     if resp.clicked() {
                         open = if expanded { None } else { Some(preset.id.clone()) };
@@ -957,22 +1104,28 @@ impl App {
                     if !expanded {
                         return;
                     }
-                    // Opened: the commands, the hooks, a note.
+                    // Opened: the commands, the environment, the hooks and what they report, the
+                    // browser tools.
                     let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
                     ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, p.border));
-                    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 10.0;
+                    egui::Frame::NONE.inner_margin(egui::Margin { left: 59, right: 15, top: 12, bottom: 14 }).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 8.0;
+                        const LABEL_W: f32 = 122.0;
                         let field_row = |ui: &mut Ui, label: &str, add: &mut dyn FnMut(&mut Ui)| {
-                            ui.horizontal(|ui| {
-                                let (r, _) = ui.allocate_exact_size(vec2(110.0, 26.0), Sense::hover());
+                            ui.horizontal_top(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
+                                let (r, _) = ui.allocate_exact_size(vec2(LABEL_W, 30.0), Sense::hover());
                                 ui.painter().text(r.left_center(), Align2::LEFT_CENTER, label, egui::FontId::proportional(12.5), p.text_muted);
-                                add(ui);
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 8.0;
+                                    add(ui);
+                                });
                             });
                         };
                         if !preset.builtin {
                             field_row(ui, t("Name"), &mut |ui| {
                                 let id = egui::Id::new(("preset-name", i));
-                                changed |= kit::field(ui, id, &mut preset.name, None, "", ui.available_width(), true).changed();
+                                changed |= well_field(ui, id, &mut preset.name, "", false).changed();
                             });
                         }
                         field_row(ui, t("Command"), &mut |ui| {
@@ -987,54 +1140,66 @@ impl App {
                                 changed = true;
                             }
                         });
-                        if !preset.builtin {
-                            field_row(ui, t("Environment"), &mut |ui| {
-                                let id = egui::Id::new(("preset-env", i));
-                                let mut text: String = preset.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ");
-                                if mono_field(ui, id, &mut text).changed() {
-                                    preset.env = text
-                                        .split_whitespace()
-                                        .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
-                                        .collect();
-                                    changed = true;
-                                }
-                            });
-                        }
+                        field_row(ui, t("Environment"), &mut |ui| {
+                            // KEY=value, one per line (kept as typed while the field has the
+                            // keyboard; read into the preset as it changes).
+                            let id = egui::Id::new(("preset-env", i));
+                            let typed_id = id.with("typed");
+                            let focused = ui.memory(|m| m.has_focus(id));
+                            let mut text: String = match ui.data(|d| d.get_temp::<String>(typed_id)).filter(|_| focused) {
+                                Some(t) => t,
+                                None => preset.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("\n"),
+                            };
+                            if well_field(ui, id, &mut text, t("KEY=value, one per line"), true).changed() {
+                                preset.env = text
+                                    .lines()
+                                    .filter_map(|kv| kv.trim().split_once('=').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+                                    .filter(|(k, _)| !k.is_empty())
+                                    .collect();
+                                changed = true;
+                            }
+                            ui.data_mut(|d| d.insert_temp(typed_id, text));
+                        });
                         if agent == AgentKind::Antigravity {
                             field_row(ui, t("Status signals"), &mut |ui| {
-                                ui.label(RichText::new(t("No hooks · status shows “Active”")).size(style::SMALL).color(p.text_muted));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.add_space(110.0 + 8.0);
-                                ui.add(egui::Label::new(RichText::new(hooks_note(agent)).size(style::SMALL).color(p.text_faint).line_height(Some(17.0))).wrap());
+                                ui.add_space(6.0);
+                                ui.add(egui::Label::new(RichText::new(hooks_note(agent)).size(11.5).color(p.text_faint).line_height(Some(17.0))).wrap());
                             });
                         } else if agent != AgentKind::Custom {
                             field_row(ui, t("Status signals"), &mut |ui| {
-                                self.hooks_controls(ui, agent);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.add_space(110.0 + 8.0);
-                                ui.add(egui::Label::new(RichText::new(hooks_note(agent)).size(style::SMALL).color(p.text_faint).line_height(Some(17.0))).wrap());
-                            });
-                            if hooks.unconnected > 0 {
-                                ui.add_space(6.0);
                                 ui.horizontal(|ui| {
-                                    ui.add_space(110.0 + 8.0);
+                                    self.hooks_controls(ui, agent);
+                                });
+                                ui.add(egui::Label::new(RichText::new(hooks_note(agent)).size(11.5).color(p.text_faint).line_height(Some(17.0))).wrap());
+                                // What the hooks report, and the version they were checked with.
+                                health_strip(ui, &hooks, agent, &p);
+                                if hooks.unconnected > 0 {
                                     let text = crate::i18n::count(
                                         hooks.unconnected,
                                         t("Typed by hand in 1 pane, it is not connected: Install connects it (then restart it there)."),
                                         t("Typed by hand in {} panes, it is not connected: Install connects it (then restart it there)."),
                                     );
-                                    ui.add(egui::Label::new(RichText::new(text).size(style::SMALL).color(p.warn).line_height(Some(17.0))).wrap());
+                                    ui.add(egui::Label::new(RichText::new(text).size(11.5).color(p.warn).line_height(Some(17.0))).wrap());
+                                }
+                            });
+                            // The browser tools: added to each run started with Per launch.
+                            if matches!(agent, AgentKind::Claude | AgentKind::Codex) {
+                                let per_launch = self.settings.integration(agent) == Integration::PerLaunch;
+                                field_row(ui, t("Browser tools"), &mut |ui| {
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        let (fg, bg, label) = if per_launch { (p.accent_text, p.accent_tint, t("Added to each run")) } else { (p.text_muted, p.subtle, t("Not added")) };
+                                        kit::pill(ui, Some(icons::GLOBE_SIMPLE), label, fg, bg);
+                                        let n = tc_agent::mcp::tools().as_array().map_or(0, |a| a.len());
+                                        let note = if per_launch { tf("{} tools, from presets started with Per launch", &[&n.to_string()]) } else { t("Browser tools come with Per launch.").to_string() };
+                                        ui.label(RichText::new(note).size(11.5).color(p.text_faint));
+                                    });
                                 });
                             }
                         } else {
-                            ui.horizontal(|ui| {
-                                ui.add_space(110.0 + 8.0);
-                                ui.add(egui::Label::new(RichText::new(t("A custom agent reports through ternarycode-hook with start, working, needs-input, done and end; without it, its status comes from the terminal.")).size(style::SMALL).color(p.text_faint)).wrap());
-                            });
-                            ui.horizontal(|ui| {
-                                ui.add_space(110.0 + 8.0);
+                            field_row(ui, "", &mut |ui| {
+                                ui.add(egui::Label::new(RichText::new(t("A custom agent reports through ternarycode-hook with start, working, needs-input, done and end; without it, its status comes from the terminal.")).size(11.5).color(p.text_faint).line_height(Some(17.0))).wrap());
                                 if kit::button_ex(ui, kit::Kind::Danger, Some(icons::TRASH), t("Delete Preset"), true).clicked() {
                                     remove = Some(i);
                                 }
@@ -1042,7 +1207,7 @@ impl App {
                         }
                     });
                 });
-            ui.add_space(10.0);
+            ui.add_space(8.0);
         }
         ui.data_mut(|d| d.insert_temp(open_id, open));
         if let Some(i) = remove {
@@ -1071,16 +1236,12 @@ impl App {
                 changed = true;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
                 let exists = self.hook_bin.bin.exists();
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(tf("Hook program: {}{}", &[&crate::paths::contract_tilde(&self.hook_bin.bin), if exists { "" } else { t(" (missing)") }]))
-                            .size(style::SMALL)
-                            .color(if exists { p.text_faint } else { p.err }),
-                    )
-                    .truncate(),
-                );
-                ui.label(RichText::new(if exists { icons::CHECK_CIRCLE } else { icons::WARNING }).font(style::icon_font(12.0)).color(if exists { p.ok } else { p.err }));
+                let path = format!("{}{}", crate::paths::contract_tilde(&self.hook_bin.bin), if exists { "" } else { t(" (missing)") });
+                ui.add(egui::Label::new(RichText::new(path).font(style::mono(10.5)).color(if exists { p.text_faint } else { p.err })).truncate());
+                ui.label(RichText::new(t("Hook program")).size(12.0).color(p.text_muted));
+                ui.label(RichText::new(if exists { icons::CHECK_CIRCLE } else { icons::WARNING }).font(style::icon_fill(12.0)).color(if exists { p.ok } else { p.err }));
             });
         });
         if changed {
@@ -1116,19 +1277,20 @@ impl App {
                 self.settings.integrations.insert(agent.slug().into(), m);
             }
         }
-        ui.add_space(10.0);
-        if installed.is_some() {
-            if kit::button_ex(ui, kit::Kind::Secondary, None, t("Uninstall"), true).clicked() {
-                self.actions.push(Action::Uninstall(agent));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if installed.is_some() {
+                if kit::button_ex(ui, kit::Kind::Secondary, None, t("Uninstall"), true).clicked() {
+                    self.actions.push(Action::Uninstall(agent));
+                }
+            } else {
+                let r = kit::button_ex(ui, kit::Kind::Secondary, None, t("Install…"), true);
+                #[cfg(debug_assertions)]
+                crate::devtest::record(format!("install:{}", agent.slug()), r.rect);
+                if r.clicked() {
+                    self.actions.push(Action::PlanInstall(agent));
+                }
             }
-        } else {
-            let r = kit::button_ex(ui, kit::Kind::Secondary, None, t("Install…"), true);
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("install:{}", agent.slug()), r.rect);
-            if r.clicked() {
-                self.actions.push(Action::PlanInstall(agent));
-            }
-        }
+        });
     }
 
     /// How an agent reports to TernaryCode as things are set, and in how many panes it runs with
@@ -1167,12 +1329,18 @@ impl Hooks {
             return (None, t("Custom").to_string(), p.text_muted, p.subtle);
         }
         // Per launch covers what Run Agent starts, not the agent typed by hand.
+        if self.agent == AgentKind::Antigravity {
+            return (Some(icons::CIRCLE_HALF), t("No hooks yet · status shows Active").to_string(), p.text_muted, p.subtle);
+        }
         if self.hooked && !self.installed && self.unconnected > 0 {
-            return (Some(icons::WARNING), t("Hooks · Run Agent only").to_string(), p.warn, style::tint(p.warn, dark));
+            return (Some(icons::WARNING), t("Hooks · per launch only").to_string(), p.warn, style::tint(p.warn, dark));
+        }
+        if self.hooked && self.installed && self.agent == AgentKind::OpenCode {
+            return (Some(icons::CHECK_CIRCLE), t("Plugin installed").to_string(), p.ok, style::tint(p.ok, dark));
         }
         if self.hooked {
-            let how = if self.installed { t("installed") } else { t("Run Agent only") };
-            return (Some(icons::PLUGS_CONNECTED), tf("Hooks · {}", &[how]), p.ok, style::tint(p.ok, dark));
+            let how = if self.installed { t("installed") } else { t("per launch") };
+            return (Some(icons::CHECK_CIRCLE), tf("Hooks · {}", &[how]), p.ok, style::tint(p.ok, dark));
         }
         if self.off {
             return (None, t("Hooks off").to_string(), p.text_muted, p.subtle);
@@ -1184,11 +1352,11 @@ impl Hooks {
 /// What each agent's hooks report, and how they are added.
 fn hooks_note(agent: AgentKind) -> &'static str {
     match agent {
-        AgentKind::Claude => t("Per launch adds TernaryCode's hooks (--settings) and its browser tools (--mcp-config) to each run, without changing your files. Installed writes the hooks into ~/.claude/settings.json, with a backup. Hooks report permission requests, questions and finished turns. Checked with Claude Code 2.1.319."),
-        AgentKind::Codex => t("Hooks and notify. Codex asks you once to trust TernaryCode's hooks (its own security check). Checked with Codex 0.162.1."),
-        AgentKind::Gemini => t("Install adds hooks to ~/.gemini/settings.json (tool permissions, finished turns). Gemini CLI has no per-launch option. Checked with Gemini CLI 0.43.0."),
+        AgentKind::Claude => t("Per launch adds the hooks (--settings) and browser tools (--mcp-config) to each run, without touching your files. Installed writes the hooks into ~/.claude/settings.json, with a backup."),
+        AgentKind::Codex => t("Per launch adds the hooks, notify and browser tools to each run. Codex asks you once to trust TernaryCode's hooks (its own security check)."),
+        AgentKind::Gemini => t("Install adds hooks to ~/.gemini/settings.json (tool permissions, finished turns). Gemini CLI has no per-launch option."),
         AgentKind::Antigravity => t("Antigravity CLI replaced Gemini CLI. TernaryCode does not add hooks to it yet: while it runs, its status reads “Active”."),
-        _ => t("Install adds a small plugin file to OpenCode's plugins folder (permission requests, finished turns). OpenCode has no per-launch option. Checked with OpenCode 1.19.5."),
+        _ => t("Install adds a small plugin file to OpenCode's plugins folder (permission requests, finished turns). OpenCode has no per-launch option."),
     }
 }
 
@@ -1202,17 +1370,70 @@ fn agent_mark(preset: &Preset) -> String {
 
 /// A monospace text field the width left in the row.
 fn mono_field(ui: &mut Ui, id: egui::Id, text: &mut String) -> egui::Response {
+    well_field(ui, id, text, "", false)
+}
+
+/// A field in a well (30 high, the data font): one line, or `multi`: as many lines as it has.
+fn well_field(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, multi: bool) -> egui::Response {
     let p = style::pal(ui);
+    let dark = ui.visuals().dark_mode;
     let w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
+    let lines = if multi { text.lines().count().max(1) + usize::from(text.ends_with('\n')) } else { 1 };
+    let h = 30.0 + (lines.saturating_sub(1)) as f32 * 17.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     let focused = ui.ctx().memory(|m| m.has_focus(id));
-    ui.painter().rect(rect, CornerRadius::same(style::RADIUS), p.canvas, Stroke::new(1.0, if focused { p.accent } else { p.border_strong }), StrokeKind::Inside);
-    let inner = rect.shrink2(vec2(8.0, 1.0));
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    if focused {
+        ui.painter().rect_stroke(rect.expand(3.0), CornerRadius::same(10), Stroke::new(3.0, p.accent_tint), StrokeKind::Inside);
+    }
+    let fill = if dark { p.inset } else { Color32::WHITE };
+    ui.painter().rect(rect, CornerRadius::same(7), fill, Stroke::new(1.0, if focused { p.accent } else { p.border }), StrokeKind::Inside);
+    let inner = Rect::from_min_max(pos2(rect.left() + 10.0, rect.top() + 6.5), pos2(rect.right() - 10.0, rect.bottom() - 6.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Min)));
+    let edit = if multi { egui::TextEdit::multiline(text).desired_rows(1) } else { egui::TextEdit::singleline(text) };
     child.add_sized(
         inner.size(),
-        egui::TextEdit::singleline(text).id(id).frame(egui::Frame::NONE).margin(egui::Margin::ZERO).font(egui::FontId::monospace(12.0)).vertical_align(egui::Align::Center),
+        edit.id(id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .font(style::mono(12.0))
+            .hint_text(RichText::new(hint).font(style::mono(12.0)).color(p.text_ghost)),
     )
+}
+
+/// Under an agent's status signals: what its hooks report (green when they are in use), and
+/// the version they were checked with.
+fn health_strip(ui: &mut Ui, hooks: &Hooks, agent: AgentKind, p: &style::Palette) {
+    let (icon, color, text) = if hooks.hooked {
+        (icons::CHECK_CIRCLE, p.ok, t("Reports permission requests, questions and finished turns"))
+    } else if hooks.off {
+        (icons::MINUS_CIRCLE, p.text_faint, t("Off: its status comes from the terminal"))
+    } else {
+        (icons::WARNING, p.warn, t("Not connected: its status reads “Active” only"))
+    };
+    let checked = match agent {
+        AgentKind::Claude => Some("2.1.319"),
+        AgentKind::Codex => Some("0.162.1"),
+        AgentKind::OpenCode => Some("1.19.5"),
+        AgentKind::Gemini => Some("0.43.0"),
+        _ => None,
+    };
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(w, 32.0), Sense::hover());
+    let painter = ui.painter();
+    let (fill, line) = if hooks.hooked { (style::soft(p.ok, 0.07), style::soft(p.ok, 0.28)) } else { (p.hover, p.border) };
+    painter.rect(rect, CornerRadius::same(7), fill, Stroke::new(1.0, line), StrokeKind::Inside);
+    painter.text(pos2(rect.left() + 10.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_fill(13.0), color);
+    let mut right = rect.right() - 10.0;
+    if let Some(v) = checked {
+        let g = painter.layout_no_wrap(tf("checked with {}", &[v]), style::mono(10.5), p.text_faint);
+        right -= g.size().x;
+        painter.galley(pos2(right, rect.center().y - g.size().y / 2.0), g, p.text_faint);
+        right -= 12.0;
+    }
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), egui::FontId::proportional(12.0), if hooks.hooked { p.text } else { p.text_muted });
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - rect.left() - 32.0).max(20.0));
+    let g = painter.layout_job(job);
+    painter.galley(pos2(rect.left() + 32.0, rect.center().y - g.size().y / 2.0), g, p.text);
 }
 
 /// "10,000".
@@ -1229,80 +1450,197 @@ fn group_digits(n: usize) -> String {
 }
 
 /// A theme's preview card: a miniature window (sidebar and content) in its colours.
-fn theme_card(ui: &mut Ui, mode: ThemeMode, name: &str, on: bool) -> egui::Response {
+fn theme_card(ui: &mut Ui, mode: ThemeMode, name: &str, on: bool, w: f32) -> egui::Response {
     let p = style::pal(ui);
-    let (rect, resp) = ui.allocate_exact_size(vec2(92.0, 58.0 + 6.0 + 16.0), Sense::click());
-    let card = Rect::from_min_size(rect.min, vec2(92.0, 58.0));
-    let dark = style::palette(true);
-    let light = style::palette(false);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 74.0 + 10.0 + 18.0), Sense::click());
+    let card = Rect::from_min_size(rect.min, vec2(w, 74.0));
     let painter = ui.painter();
-    let paint_half = |r: Rect, pal: &style::Palette, side: bool| {
-        if side {
-            painter.rect_filled(Rect::from_min_size(r.min, vec2(26.0_f32.min(r.width()), r.height())), CornerRadius::ZERO, pal.chrome);
+    // A tiny drawing of the window in that theme: its base, the sidebar with the queue and a row
+    // picked, two sheets with lines of text.
+    let mini = |painter: &egui::Painter, dark: bool| {
+        let pal = style::palette(dark);
+        painter.rect_filled(card, CornerRadius::same(9), pal.chrome);
+        let side = Rect::from_min_size(card.min + vec2(5.0, 6.0), vec2(card.width() * 0.31, card.height() - 12.0));
+        for (i, c) in [Color32::from_rgb(0xff, 0x5f, 0x57), Color32::from_rgb(0xfe, 0xbc, 0x2e), Color32::from_rgb(0x28, 0xc8, 0x40)].iter().enumerate() {
+            painter.circle_filled(pos2(side.left() + 4.0 + i as f32 * 6.5, side.top() + 3.0), 2.0, *c);
         }
-        let content = if side { Rect::from_min_max(pos2(r.left() + 26.0, r.top()), r.max) } else { r };
-        painter.rect_filled(content, CornerRadius::ZERO, pal.canvas);
-        let l = Rect::from_min_size(content.min + vec2(6.0, 8.0), vec2(content.width() * 0.6, 4.0));
-        painter.rect_filled(l, CornerRadius::same(2), style::soft(pal.text_muted, 0.5));
-        let l2 = Rect::from_min_size(l.min + vec2(0.0, 8.0), vec2(content.width() * 0.4, 4.0));
-        painter.rect_filled(l2, CornerRadius::same(2), style::soft(pal.text_muted, 0.35));
+        let q = Rect::from_min_size(side.min + vec2(0.0, 9.0), vec2(side.width(), 11.0));
+        painter.rect(q, CornerRadius::same(3), style::soft(pal.warn, 0.18), Stroke::new(1.0, style::soft(pal.warn, 0.35)), StrokeKind::Inside);
+        painter.circle_filled(pos2(q.left() + 6.0, q.center().y), 2.0, pal.warn);
+        painter.rect_filled(Rect::from_min_size(pos2(q.left() + 11.0, q.center().y - 1.5), vec2(q.width() * 0.5, 3.0)), CornerRadius::same(2), style::soft(pal.text_muted, 0.4));
+        for (i, (cr, cg, cb)) in [(0x9d, 0x8c, 0xf0), (0x9c, 0xbf, 0x5a), (0xe0, 0x7a, 0xa0), (0xe5, 0x8a, 0x6b)].iter().enumerate() {
+            let row = Rect::from_min_size(pos2(side.left(), q.bottom() + 3.0 + i as f32 * 12.0), vec2(side.width(), 11.0));
+            if i == 2 {
+                painter.rect(row, CornerRadius::same(3), pal.surface, Stroke::new(1.0, pal.border), StrokeKind::Inside);
+            }
+            painter.rect_filled(Rect::from_center_size(pos2(row.left() + 6.0, row.center().y), vec2(6.0, 6.0)), CornerRadius::same(2), Color32::from_rgb(*cr, *cg, *cb).gamma_multiply(0.8));
+            painter.rect_filled(Rect::from_min_size(pos2(row.left() + 12.0, row.center().y - 1.5), vec2(row.width() * [0.7, 0.55, 0.8, 0.6][i] - 14.0, 3.0)), CornerRadius::same(2), style::soft(pal.text_muted, 0.4));
+        }
+        let main = Rect::from_min_max(pos2(side.right() + 4.0, side.top()), pos2(card.right() - 6.0, side.bottom()));
+        painter.rect_filled(Rect::from_min_size(main.min + vec2(2.0, 3.0), vec2(main.width() * 0.22, 3.0)), CornerRadius::same(2), style::soft(pal.text_muted, 0.5));
+        painter.rect_filled(Rect::from_min_size(pos2(main.right() - 22.0, main.top() + 1.5), vec2(20.0, 6.0)), CornerRadius::same(2), pal.accent);
+        let sheets = Rect::from_min_max(pos2(main.left(), main.top() + 12.0), main.max);
+        let w1 = sheets.width() * 0.53;
+        for (k, r) in [Rect::from_min_size(sheets.min, vec2(w1, sheets.height())), Rect::from_min_max(pos2(sheets.left() + w1 + 3.0, sheets.top()), sheets.max)].into_iter().enumerate() {
+            painter.rect(r, CornerRadius::same(4), pal.canvas, Stroke::new(1.0, pal.border), StrokeKind::Inside);
+            for j in 0..(5 - k) {
+                let lw = r.width() * [0.72, 0.5, 0.86, 0.64, 0.4][j] - 10.0;
+                let c = if j == 1 { pal.info } else { style::soft(pal.text_muted, 0.45) };
+                painter.rect_filled(Rect::from_min_size(pos2(r.left() + 5.0, r.top() + 6.0 + j as f32 * 6.5), vec2(lw.max(4.0), 2.5)), CornerRadius::same(1), c);
+            }
+        }
     };
-    let clip = painter.with_clip_rect(card);
-    let _ = clip;
     match mode {
-        ThemeMode::Dark => paint_half(card, &dark, true),
-        ThemeMode::Light => paint_half(card, &light, true),
+        ThemeMode::Dark => mini(painter, true),
+        ThemeMode::Light => mini(painter, false),
         ThemeMode::System => {
-            let (a, b) = card.split_left_right_at_fraction(0.5);
-            painter.rect_filled(a, CornerRadius::ZERO, light.chrome);
-            painter.rect_filled(b, CornerRadius::ZERO, dark.chrome);
+            mini(painter, false);
+            let (_, right) = card.split_left_right_at_fraction(0.5);
+            mini(&painter.with_clip_rect(right), true);
         }
     }
-    let stroke = if on { Stroke::new(2.0, p.accent) } else if resp.hovered() { Stroke::new(1.0, p.text_faint) } else { Stroke::new(1.0, p.border_strong) };
-    painter.rect_stroke(card, CornerRadius::same(7), stroke, StrokeKind::Outside);
-    painter.text(pos2(card.center().x, card.bottom() + 6.0 + 8.0), Align2::CENTER_CENTER, name, egui::FontId::proportional(style::SMALL), if on { p.text } else { p.text_muted });
+    if on {
+        painter.rect_stroke(card.expand(2.0), CornerRadius::same(11), Stroke::new(2.0, p.accent), StrokeKind::Outside);
+    } else {
+        painter.rect_stroke(card, CornerRadius::same(9), Stroke::new(1.0, if resp.hovered() { p.border_heavy } else { p.border_strong }), StrokeKind::Inside);
+    }
+    // A radio and the name under it ("follows macOS" for System).
+    let ry = card.bottom() + 10.0 + 9.0;
+    let rc = pos2(card.left() + 8.0, ry);
+    if on {
+        painter.circle_filled(rc, 8.0, p.accent);
+        painter.circle_filled(rc, 3.0, Color32::WHITE);
+    } else {
+        painter.circle_stroke(rc, 7.5, Stroke::new(1.0, p.border_heavy));
+    }
+    let g = painter.layout_no_wrap(name.to_string(), if on { style::medium(12.5) } else { egui::FontId::proportional(12.5) }, if on { p.text } else { p.text_muted });
+    let gw = g.size().x;
+    painter.galley(pos2(card.left() + 8.0 + 8.0 + 8.0, ry - g.size().y / 2.0), g, if on { p.text } else { p.text_muted });
+    if mode == ThemeMode::System {
+        let os = if cfg!(target_os = "macos") { t("follows macOS") } else if cfg!(windows) { t("follows Windows") } else { t("follows the system") };
+        painter.text(pos2(card.left() + 24.0 + gw + 8.0, ry), Align2::LEFT_CENTER, os, egui::FontId::proportional(11.5), p.text_faint);
+    }
     resp
 }
 
 /// A terminal scheme's tile: its background with a prompt and its first six colours, its name.
-fn scheme_tile(ui: &mut Ui, s: &tc_term::scheme::Scheme, w: f32, on: bool) -> egui::Response {
+fn scheme_tile(ui: &mut Ui, s: &tc_term::scheme::Scheme, on: bool) -> egui::Response {
     let p = style::pal(ui);
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 44.0 + 26.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(104.0, 52.0 + 6.0 + 16.0), Sense::click());
     let painter = ui.painter();
-    let top = Rect::from_min_size(rect.min, vec2(w, 44.0));
-    let bottom = Rect::from_min_max(pos2(rect.left(), top.bottom()), rect.max);
-    painter.rect_filled(top, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, s.background);
-    painter.rect_filled(bottom, CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 }, p.surface);
-    let mono = egui::FontId::monospace(10.0);
+    let top = Rect::from_min_size(rect.min, vec2(104.0, 52.0));
+    painter.rect_filled(top, CornerRadius::same(8), s.background);
+    let stroke = if on { Stroke::new(2.0, p.accent) } else if resp.hovered() { Stroke::new(1.0, p.text_faint) } else { Stroke::new(1.0, p.border_strong) };
+    painter.rect_stroke(top, CornerRadius::same(8), stroke, if on { StrokeKind::Outside } else { StrokeKind::Inside });
+    let mono = style::mono(10.0);
     let mut job = egui::text::LayoutJob::default();
-    job.append("~/app", 0.0, egui::TextFormat::simple(mono.clone(), s.ansi[4]));
-    job.append("❯", 5.0, egui::TextFormat::simple(mono.clone(), s.ansi[8]));
-    job.append("ls", 5.0, egui::TextFormat::simple(mono, s.foreground));
+    job.append("❯", 0.0, egui::TextFormat::simple(mono.clone(), s.ansi[2]));
+    job.append("ls", 6.0, egui::TextFormat::simple(mono.clone(), s.foreground));
+    job.append("src", 6.0, egui::TextFormat::simple(mono, s.ansi[4]));
     let g = painter.layout_job(job);
-    painter.galley(top.min + vec2(8.0, 6.0), g, s.foreground);
-    for (i, c) in s.ansi[1..7].iter().enumerate() {
-        let r = Rect::from_min_size(top.min + vec2(8.0 + i as f32 * 12.0, 24.0), vec2(9.0, 9.0));
-        painter.rect_filled(r, CornerRadius::same(2), *c);
+    painter.galley(top.min + vec2(10.0, 9.0), g, s.foreground);
+    for (i, c) in [1, 2, 3, 4, 5, 6, 7].iter().map(|k| s.ansi[*k]).enumerate() {
+        let r = Rect::from_min_size(top.min + vec2(10.0 + i as f32 * 10.0, 33.0), vec2(7.0, 7.0));
+        painter.rect_filled(r, CornerRadius::same(2), c);
     }
-    let mut job = egui::text::LayoutJob::simple_singleline(s.name.to_string(), style::medium(11.0), p.text);
-    job.wrap = egui::text::TextWrapping::truncate_at_width(w - 16.0);
+    if on {
+        let c = pos2(top.right() - 11.0, top.top() + 11.0);
+        painter.circle_filled(c, 7.0, p.accent);
+        painter.text(c, Align2::CENTER_CENTER, icons::CHECK, style::icon_font(9.0), Color32::WHITE);
+    }
+    // Its name without " Dark" / " Light" (the row says which).
+    let name = s.name.trim_end_matches(" Dark").trim_end_matches(" Light");
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), egui::FontId::proportional(12.0), if on { p.text } else { p.text_faint });
+    job.wrap = egui::text::TextWrapping::truncate_at_width(104.0);
     let g = painter.layout_job(job);
-    painter.galley(pos2(bottom.left() + 8.0, bottom.center().y - g.size().y / 2.0), g, p.text);
-    let stroke = if on { Stroke::new(2.0, p.accent) } else if resp.hovered() { Stroke::new(1.0, p.text_faint) } else { Stroke::new(1.0, p.border) };
-    painter.rect_stroke(rect, CornerRadius::same(8), stroke, if on { StrokeKind::Outside } else { StrokeKind::Inside });
+    painter.galley(pos2(top.left() + 1.0, top.bottom() + 6.0), g, p.text);
     resp
 }
 
+/// "N more" (or "Fewer"): opens the rest of the schemes.
+fn more_tile(ui: &mut Ui, label: &str) -> egui::Response {
+    let p = style::pal(ui);
+    // As tall as a scheme's tile with its name, the box level with the pictures.
+    let (full, _) = ui.allocate_exact_size(vec2(72.0, 52.0 + 6.0 + 16.0), Sense::hover());
+    let rect = Rect::from_min_size(full.min, vec2(72.0, 52.0));
+    let resp = ui.interact(rect, ui.id().with(("more-schemes", label)), Sense::click());
+    let painter = ui.painter();
+    painter.rect(rect, CornerRadius::same(8), if resp.hovered() { p.hover } else { Color32::TRANSPARENT }, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
+    painter.text(rect.center() - vec2(0.0, 8.0), Align2::CENTER_CENTER, icons::DOTS_THREE, style::icon_font(12.0), p.text_ghost);
+    painter.text(rect.center() + vec2(0.0, 7.0), Align2::CENTER_CENTER, label, egui::FontId::proportional(12.0), p.text_faint);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A few lines of a terminal in `scheme`, in the terminal's own font at `size`, with its cursor:
+/// what the settings beside it look like.
+fn terminal_preview(ui: &mut Ui, r: Rect, scheme: &tc_term::scheme::Scheme, size: f32, cursor: CursorShape) {
+    let p = style::pal(ui);
+    let painter = ui.painter_at(r.expand(1.0));
+    painter.rect(r, CornerRadius::same(8), scheme.background, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
+    let head = Rect::from_min_size(r.min, vec2(r.width(), 28.0));
+    painter.hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, style::soft(scheme.foreground, 0.12)));
+    let faint = style::soft(scheme.foreground, 0.55);
+    painter.text(pos2(head.left() + 10.0 + 6.0, head.center().y), Align2::CENTER_CENTER, icons::EYE, style::icon_font(12.0), faint);
+    painter.text(pos2(head.left() + 10.0 + 12.0 + 6.0, head.center().y), Align2::LEFT_CENTER, t("Preview"), egui::FontId::proportional(11.5), faint);
+    let size_text = if size.fract() == 0.0 { format!("{size:.0}") } else { format!("{size:.1}") };
+    painter.text(pos2(head.right() - 10.0, head.center().y), Align2::RIGHT_CENTER, format!("{} · {size_text} pt", scheme.name), style::mono(10.5), faint);
+    let font = egui::FontId::new(size, egui::FontFamily::Name(tc_term::fonts::TERM_REGULAR.into()));
+    let a = scheme.ansi;
+    let fg = scheme.foreground;
+    let lines: [Vec<(&str, Color32)>; 8] = [
+        vec![("storefront", a[6]), (" on ", a[8]), (" main", a[5]), (" ❯ ", a[2]), ("git status -sb", fg)],
+        vec![("## ", a[2]), ("main", a[2]), ("...", fg), ("origin/main", a[1]), (" [ahead 2]", fg)],
+        vec![(" M ", a[1]), ("src/components/Header.tsx", fg)],
+        vec![("?? ", a[1]), ("src/components/CartBadge.tsx", fg)],
+        vec![("storefront", a[6]), (" ❯ ", a[2]), ("npm test -- --run", fg)],
+        vec![(" ✓ ", a[2]), ("CartBadge renders the count ", fg), ("12 ms", a[8])],
+        vec![(" ✕ ", a[1]), ("Header shows the badge ", fg), ("31 ms", a[8])],
+        vec![("storefront", a[6]), (" ❯ ", a[2])],
+    ];
+    let line_h = (size * 1.35).round();
+    let mut y = head.bottom() + 10.0;
+    let x0 = r.left() + 12.0;
+    let mut end = pos2(x0, y);
+    for line in &lines {
+        if y + line_h > r.bottom() - 6.0 {
+            break;
+        }
+        let mut job = egui::text::LayoutJob::default();
+        for (text, c) in line {
+            job.append(text, 0.0, egui::TextFormat::simple(font.clone(), *c));
+        }
+        let g = painter.layout_job(job);
+        end = pos2(x0 + g.size().x, y);
+        painter.galley(pos2(x0, y + (line_h - g.size().y) / 2.0), g, fg);
+        y += line_h;
+    }
+    // The cursor after the last prompt, as it is set.
+    let cw = ui.fonts_mut(|f| f.glyph_width(&font, 'M'));
+    let cell = Rect::from_min_size(end, vec2(cw, line_h));
+    match cursor {
+        CursorShape::Block => painter.rect_filled(cell, CornerRadius::ZERO, scheme.cursor),
+        CursorShape::Beam => painter.rect_filled(Rect::from_min_size(cell.min, vec2(2.0, line_h)), CornerRadius::ZERO, scheme.cursor),
+        CursorShape::Underline => painter.rect_filled(Rect::from_min_max(pos2(cell.left(), cell.bottom() - 2.0), cell.max), CornerRadius::ZERO, scheme.cursor),
+    };
+}
+
 /// The app's mark: a 3 × 3 lattice on the accent.
-pub fn paint_logo(painter: &egui::Painter, r: Rect, p: &style::Palette) {
-    painter.rect_filled(r, CornerRadius::same((r.width() * 0.25) as u8), p.accent);
-    let inner = r.shrink(r.width() * 0.2);
-    let gap = r.width() * 0.055;
-    let cell = (inner.width() - 2.0 * gap) / 3.0;
-    for i in 0..9 {
-        let (cx, cy) = ((i % 3) as f32, (i / 3) as f32);
-        let c = Rect::from_min_size(inner.min + vec2(cx * (cell + gap), cy * (cell + gap)), vec2(cell, cell));
-        let a = if i % 2 == 0 { 0.9 } else { 0.35 };
-        painter.rect_filled(c, CornerRadius::same(2), Color32::from_white_alpha((a * 255.0) as u8));
+pub fn paint_logo(painter: &egui::Painter, r: Rect, _p: &style::Palette) {
+    // The app icon (assets/icon.svg), drawn: a blue square, the "</" path through a 3 × 3
+    // lattice in cream, the lattice's other points faint.
+    let s = r.width() / 1024.0;
+    let at = |x: f32, y: f32| pos2(r.left() + x * s, r.top() + y * s);
+    let square = Rect::from_min_max(at(72.0, 72.0), at(952.0, 952.0));
+    painter.rect_filled(square, CornerRadius::same((196.0 * s).round().min(255.0) as u8), Color32::from_rgb(0x1f, 0x5f, 0xbf));
+    let cream = Color32::from_rgb(0xff, 0xf6, 0xea);
+    let stroke = Stroke::new((72.0 * s).max(1.0), cream);
+    painter.line_segment([at(512.0, 312.0), at(312.0, 512.0)], stroke);
+    painter.line_segment([at(312.0, 512.0), at(512.0, 712.0)], stroke);
+    painter.line_segment([at(712.0, 312.0), at(512.0, 712.0)], stroke);
+    for (x, y) in [(512.0, 312.0), (712.0, 312.0), (312.0, 512.0), (512.0, 712.0)] {
+        painter.circle_filled(at(x, y), 52.0 * s, cream);
+    }
+    for (x, y) in [(312.0, 312.0), (512.0, 512.0), (712.0, 512.0), (312.0, 712.0), (712.0, 712.0)] {
+        painter.circle_filled(at(x, y), 30.0 * s, cream.gamma_multiply(0.32));
     }
 }

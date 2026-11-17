@@ -49,28 +49,28 @@ pub const DEFAULT_DARK: &str = "TernaryCode Dark";
 pub const DEFAULT_LIGHT: &str = "TernaryCode Light";
 
 pub const SCHEMES: &[Scheme] = &[
-    // Neutral grey, matching TernaryCode's own dark theme.
+    // Neutral grey, matching TernaryCode's own dark theme: the background is its sheets'.
     scheme(
         "TernaryCode Dark",
         true,
-        0xd8d8d8,
-        0x232323,
-        0xd8d8d8,
-        0x3d4552,
+        0xd4d4d4,
+        0x191919,
+        0xd4d4d4,
+        0x2d3f5c,
         [
-            0x2e2e2e, 0xe06c6c, 0x98c379, 0xe0be7a, 0x6aa6e8, 0xc58ad8, 0x5fb8c2, 0xbdbdbd,
-            0x6e6e6e, 0xef7f7f, 0xa9d48a, 0xedcf8f, 0x86b8f0, 0xd49ee4, 0x74c8d1, 0xededed,
+            0x2e2e2e, 0xee7b74, 0x8fcf8f, 0xe6c07b, 0x7fb0f5, 0xc99ae8, 0x6cc7cf, 0xbdbdbd,
+            0x7d7d7d, 0xf38e88, 0xa3dba3, 0xedcf8f, 0x94bef7, 0xd6aeee, 0x82d2d9, 0xf2f2f2,
         ],
     ),
     scheme(
         "TernaryCode Light",
         false,
-        0x1f1f1f,
-        0xfbfbfb,
-        0x1f1f1f,
+        0x222222,
+        0xfcfcfc,
+        0x222222,
         0xc9daf2,
         [
-            0x1f1f1f, 0xc23b3b, 0x2f7d32, 0x8a6100, 0x2563c9, 0x8e44ad, 0x16808a, 0x8a8a8a,
+            0x1f1f1f, 0xc23b3b, 0x2f7d32, 0x8a6100, 0x1f5fbf, 0x8e44ad, 0x16808a, 0x8a8a8a,
             0x5e5e5e, 0xd94a4a, 0x3a9440, 0xa67700, 0x3b78dd, 0xa45bc4, 0x1f97a3, 0xb5b5b5,
         ],
     ),

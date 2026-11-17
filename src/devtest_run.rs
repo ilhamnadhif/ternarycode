@@ -604,6 +604,7 @@ impl App {
                     "editor" => Some(Action::ToggleEditor),
                     "files" => Some(Action::ToggleFiles),
                     "sidebar" => Some(Action::ToggleSidebar),
+                    "compact-sidebar" => Some(Action::ToggleCompactSidebar),
                     "attention" => Some(Action::ToggleAttention),
                     "rename" => self.project(self.active.unwrap_or_default()).map(|p| Action::RenamePath(p.path.join(rest.trim()))),
                     "settings" => Some(Action::Settings),

@@ -13,6 +13,9 @@ use super::{check_rev, git, parse_oid, rev_parse, run, trim_line};
 pub struct Commit {
     pub short: String,
     pub subject: String,
+    /// Who made it (its author's name) and when (Unix seconds).
+    pub author: String,
+    pub time: i64,
 }
 
 /// Creates `dir` as a new worktree of the repository at `repo`, on a new branch `branch` that
@@ -96,6 +99,29 @@ pub fn files_changed(repo: &Path, base: &str, head: &str) -> Result<usize, Strin
     Ok(out.split(|b| *b == 0).filter(|r| !r.is_empty()).count())
 }
 
+/// What the commits of `head` changed since it left `base`: files, lines added, lines removed.
+pub fn diff_stat(repo: &Path, base: &str, head: &str) -> Result<(usize, u32, u32), String> {
+    check_rev(base)?;
+    check_rev(head)?;
+    let out = run(git(repo).args(["diff", "--no-ext-diff", "--numstat", "-z", &format!("{base}...{head}"), "--"]))?;
+    let text = String::from_utf8_lossy(&out);
+    let (mut files, mut adds, mut dels) = (0, 0, 0);
+    // "<added>\t<removed>\t<path>\0" (a rename: "<added>\t<removed>\t\0<old>\0<new>\0").
+    let mut fields = text.split('\0');
+    while let Some(rec) = fields.next() {
+        let mut it = rec.splitn(3, '\t');
+        let (Some(a), Some(d), Some(path)) = (it.next(), it.next(), it.next()) else { continue };
+        if path.is_empty() {
+            fields.next();
+            fields.next();
+        }
+        files += 1;
+        adds += a.parse::<u32>().unwrap_or(0);
+        dels += d.parse::<u32>().unwrap_or(0);
+    }
+    Ok((files, adds, dels))
+}
+
 /// Whether commit `a` is in the history of `b` (merged into it).
 pub fn is_ancestor(repo: &Path, a: &str, b: &str) -> bool {
     check_rev(a).is_ok() && check_rev(b).is_ok() && run(git(repo).args(["merge-base", "--is-ancestor", a, b])).is_ok()
@@ -119,11 +145,17 @@ pub fn tree_of(repo: &Path, commit: &str) -> Result<String, String> {
 pub fn commits(repo: &Path, from: &str, to: &str) -> Result<Vec<Commit>, String> {
     check_rev(from)?;
     check_rev(to)?;
-    let out = run(git(repo).args(["log", "--max-count=100", "--format=%h%x00%s", &format!("{from}..{to}"), "--"]))?;
+    let out = run(git(repo).args(["log", "--max-count=100", "--format=%h%x00%an%x00%ct%x00%s", &format!("{from}..{to}"), "--"]))?;
     Ok(String::from_utf8_lossy(&out)
         .lines()
-        .filter_map(|l| l.split_once('\0'))
-        .map(|(short, subject)| Commit { short: short.to_string(), subject: subject.to_string() })
+        .filter_map(|l| {
+            let mut it = l.splitn(4, '\0');
+            let short = it.next()?.to_string();
+            let author = it.next()?.to_string();
+            let time = it.next()?.trim().parse().unwrap_or(0);
+            let subject = it.next()?.to_string();
+            Some(Commit { short, subject, author, time })
+        })
         .collect())
 }
 

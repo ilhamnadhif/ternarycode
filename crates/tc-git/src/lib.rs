@@ -219,6 +219,57 @@ pub fn file_diff(
     parse::file_diff(&out, path, old_path)
 }
 
+/// How a run of lines of a file on disk differs from a base, for marks beside the line numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkKind {
+    Added,
+    Modified,
+    /// Lines removed before `line` (`count` is how many).
+    Deleted,
+}
+
+/// A run of lines marked: from `line` (1-based, in the file on disk), `count` lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineMark {
+    pub line: u32,
+    pub count: u32,
+    pub kind: MarkKind,
+}
+
+/// The lines of `path` (from the repository root) on disk that differ from `base` (a commit or
+/// a tree, `HEAD` for the last commit): added, changed, and where lines were removed.
+pub fn line_marks(root: &Path, base: &str, path: &str) -> Result<Vec<LineMark>, String> {
+    check_rev(base)?;
+    let mut cmd = git(root);
+    cmd.args(DIFF_ARGS).args(["--unified=0", base, "--"]).arg(literal_pathspec(path));
+    let out = run(&mut cmd)?;
+    Ok(parse_line_marks(&String::from_utf8_lossy(&out)))
+}
+
+/// The marks of a `--unified=0` diff: each hunk header `@@ -a,b +c,d @@` (a count left out is 1).
+pub fn parse_line_marks(diff: &str) -> Vec<LineMark> {
+    let range = |s: &str| -> Option<(u32, u32)> {
+        let s = &s[1..];
+        Some(match s.split_once(',') {
+            Some((a, b)) => (a.parse().ok()?, b.parse().ok()?),
+            None => (s.parse().ok()?, 1),
+        })
+    };
+    diff.lines()
+        .filter_map(|l| l.strip_prefix("@@ "))
+        .filter_map(|h| {
+            let mut it = h.split_whitespace();
+            let (_, old_n) = range(it.next()?)?;
+            let (new_at, new_n) = range(it.next()?)?;
+            Some(match (old_n, new_n) {
+                (0, n) => LineMark { line: new_at, count: n, kind: MarkKind::Added },
+                (n, 0) => LineMark { line: new_at + 1, count: n, kind: MarkKind::Deleted },
+                (_, n) => LineMark { line: new_at, count: n, kind: MarkKind::Modified },
+            })
+        })
+        .collect()
+}
+
 /// Returns the tree of `HEAD` (`None` without commits) and a [`snapshot`] tree of the working
 /// tree now: compare them for "changes since the last commit", staged or not.
 pub fn worktree_vs_head(root: &Path) -> Result<(Option<String>, String), String> {

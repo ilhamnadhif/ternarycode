@@ -15,7 +15,7 @@ use crate::i18n::{t, tf};
 use crate::project::{Panel, PanelPlace};
 
 /// The strip of page tabs at the top of the panel.
-pub const TABS_H: f32 = 34.0;
+pub const TABS_H: f32 = 36.0;
 /// The least a terminal gets beside the panel (else they show stacked, or it floats).
 pub const MIN_COLS: usize = 60;
 pub const MIN_ROWS: usize = 12;
@@ -27,7 +27,7 @@ const MIN_ZOOM: f32 = 0.5;
 /// A page tab's width.
 const TAB_MIN: f32 = 96.0;
 const TAB_MAX: f32 = 210.0;
-const TAB_GAP: f32 = 3.0;
+const TAB_GAP: f32 = 2.0;
 
 impl App {
     pub fn panel_of(&self, project: ProjectId) -> Option<&Panel> {
@@ -218,10 +218,10 @@ impl App {
     pub fn panel_view(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, float: bool) {
         let p = style::pal(ui);
         if float {
-            let shadow = egui::epaint::Shadow { offset: [0, 6], blur: 22, spread: 0, color: egui::Color32::from_black_alpha(if ui.visuals().dark_mode { 120 } else { 40 }) };
-            ui.painter().add(shadow.as_shape(rect, CornerRadius::ZERO));
+            let shadow = egui::epaint::Shadow { offset: [0, 8], blur: 28, spread: 0, color: egui::Color32::from_black_alpha(if ui.visuals().dark_mode { 120 } else { 40 }) };
+            ui.painter().add(shadow.as_shape(rect, CornerRadius::same(style::RADIUS_LG)));
         }
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.canvas);
+        super::focus::paint_sheet(ui.painter(), rect, &p, super::focus::SheetLook::Plain);
         // Clicks on its empty parts stay with it (not the terminal under a floating panel).
         ui.interact(rect, egui::Id::new(("panel-back", project)), Sense::click());
         #[cfg(debug_assertions)]
@@ -238,9 +238,6 @@ impl App {
                 panel.focus_width = page.width();
             }
         }
-        if float {
-            ui.painter().vline(rect.left(), rect.y_range(), Stroke::new(1.0, p.border_strong));
-        }
         // Filling the window: Esc puts it back beside the terminals (unless a page has the keys).
         if self.panel_of(project).is_some_and(|x| x.max)
             && self.browser_focus.is_none()
@@ -253,9 +250,12 @@ impl App {
 
     /// The edge between the terminals and the panel, dragged to size it (after the panes, so
     /// that a terminal beside it does not take the strip along it).
-    pub fn panel_edge(&mut self, ui: &mut Ui, project: ProjectId, x: f32, full: Rect) {
+    pub fn panel_edge(&mut self, ui: &mut Ui, project: ProjectId, x: f32, full: Rect, float: bool) {
         let p = style::pal(ui);
-        let grab = Rect::from_min_max(pos2(x - super::focus::DIVIDER_GRAB, full.top()), pos2(x + super::focus::DIVIDER_GRAB, full.bottom()));
+        // Beside the terminals the edge is the gap before the panel; floating over them, its
+        // own left side.
+        let mid = if float { x } else { x - style::GAP / 2.0 };
+        let grab = Rect::from_min_max(pos2(mid - super::focus::DIVIDER_GRAB, full.top()), pos2(mid + super::focus::DIVIDER_GRAB, full.bottom()));
         let r = ui.interact(grab, egui::Id::new(("panel-edge", project)), Sense::drag());
         #[cfg(debug_assertions)]
         crate::devtest::record("panel-edge", grab);
@@ -271,47 +271,42 @@ impl App {
         if r.drag_stopped() {
             self.mark_dirty();
         }
-        let line = if r.hovered() || r.dragged() { p.accent } else { p.border };
-        ui.painter().vline(x, full.y_range(), Stroke::new(1.0, line));
+        // The gap before the panel is the edge: the accent shows on it while it is grabbed.
+        if r.hovered() || r.dragged() {
+            ui.painter().rect_filled(Rect::from_center_size(pos2(mid, full.center().y), vec2(2.0, full.height() - 16.0)), CornerRadius::same(1), p.accent);
+        }
     }
 
     /// The strip at the top of the panel: a tab per page (its agent's mark, its title, a dot
     /// while an agent uses it or it asks the user something), then New Page, Fill the Window,
     /// Hide.
     fn page_tabs(&mut self, ui: &mut Ui, project: ProjectId, strip: Rect) {
-        let p = style::pal(ui);
         let dark = ui.visuals().dark_mode;
-        ui.painter().rect_filled(strip, CornerRadius::ZERO, p.chrome);
-        ui.painter().hline(strip.x_range(), strip.bottom() - 0.5, Stroke::new(1.0, p.border));
         let Some(panel) = self.panel_of(project).cloned() else { return };
         let cy = strip.center().y;
         let mut right = strip.right() - 6.0;
         let mut button = |ui: &mut Ui, icon: &str, tip: &str, on: bool, name: &str| {
-            let r = Rect::from_center_size(pos2(right - 11.0, cy), vec2(22.0, 22.0));
-            right -= 24.0;
+            let r = Rect::from_center_size(pos2(right - 10.0, cy), vec2(20.0, 20.0));
+            right -= 22.0;
             #[cfg(debug_assertions)]
             crate::devtest::record(name, r);
             let _ = name;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, on, 22.0)).inner.clicked()
+            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, on, 20.0)).inner.clicked()
         };
         let hide = button(ui, icons::X, &kit::tip(t("Hide Browser"), Action::ShowBrowser), false, "panel-hide");
         let fill_tip = if panel.max { t("Back beside the terminals") } else { t("Fill the window") };
-        let max = button(ui, icons::ARROWS_OUT_SIMPLE, fill_tip, panel.max, "panel-max");
-        let new = button(ui, icons::PLUS, &kit::tip(t("New Browser Page"), Action::NewBrowserTab), false, "panel-new");
+        let max = button(ui, if panel.max { icons::ARROWS_IN } else { icons::ARROWS_OUT }, fill_tip, panel.max, "panel-max");
         if hide {
             self.hide_panel(project);
         }
         if max && let Some(x) = self.panel_mut(project) {
             x.max = !x.max;
         }
-        if new {
-            self.actions.push(Action::NewBrowserTab);
-        }
 
         // The tabs: as wide as there is room for (within bounds); too many, the page in front
-        // and those before it that fit, the rest in ⋯.
+        // and those before it that fit, the rest in ⋯. New Page right after them.
         let left = strip.left() + 6.0;
-        let room = (right - 6.0 - left).max(0.0);
+        let room = (right - 6.0 - 24.0 - left).max(0.0);
         let n = panel.pages.len();
         let fits = |room: f32| (((room + TAB_GAP) / (TAB_MIN + TAB_GAP)).floor() as usize).max(1);
         let (shown, more): (Vec<PaneId>, Vec<PaneId>) = if fits(room) >= n {
@@ -332,7 +327,7 @@ impl App {
         let mut front = None;
         let mut close = None;
         for id in &shown {
-            let r = Rect::from_min_size(pos2(x, cy - 12.0), vec2(width, 24.0));
+            let r = Rect::from_min_size(pos2(x, cy - 13.0), vec2(width, 26.0));
             x += width + TAB_GAP;
             let mark = marks.get(id).map(String::as_str);
             let (clicked, closed) = self.page_tab(ui, *id, r, panel.front == Some(*id), mark, dark);
@@ -344,7 +339,8 @@ impl App {
             }
         }
         if !more.is_empty() {
-            let r = Rect::from_min_size(pos2(x, cy - 11.0), vec2(26.0, 22.0));
+            let r = Rect::from_min_size(pos2(x, cy - 10.0), vec2(26.0, 20.0));
+            x += 28.0;
             let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icons::DOTS_THREE, &tf("{} more pages", &[&more.len().to_string()]), false, 22.0)).inner;
             #[cfg(debug_assertions)]
             crate::devtest::record("page-more", r);
@@ -358,6 +354,12 @@ impl App {
                     }
                 }
             });
+        }
+        let nr = Rect::from_center_size(pos2(x + 2.0 + 10.0, cy), vec2(20.0, 20.0));
+        #[cfg(debug_assertions)]
+        crate::devtest::record("panel-new", nr);
+        if ui.scope_builder(egui::UiBuilder::new().max_rect(nr), |ui| kit::icon_button_ex(ui, icons::PLUS, &kit::tip(t("New Browser Page"), Action::NewBrowserTab), false, 20.0)).inner.clicked() {
+            self.actions.push(Action::NewBrowserTab);
         }
         if let Some(id) = front
             && let Some(x) = self.panel_mut(project)
@@ -403,8 +405,10 @@ impl App {
         let painter = ui.painter();
         let radius = CornerRadius::same(style::RADIUS);
         if front {
-            painter.rect_filled(r, radius, p.canvas);
-            painter.rect_stroke(r, radius, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+            painter.rect(r, radius, p.surface, Stroke::new(1.0, if dark { p.border } else { p.border_strong }), egui::StrokeKind::Inside);
+            if dark {
+                kit::paint_highlight(painter, r, style::RADIUS, &p);
+            }
         } else if hovered {
             painter.rect_filled(r, radius, p.hover);
         }
@@ -413,8 +417,8 @@ impl App {
         let ended = owner.is_some_and(|(_, pane)| pane.is_none());
         let kind = owner.and_then(|(_, pane)| pane).and_then(|x| x.tracker.agent.or(x.last_agent));
         let who = kind.map(|k| k.label().to_string()).or_else(|| owner.and_then(|(_, pane)| pane).map(|x| x.label()));
-        let text_color = if ended { p.text_faint } else if front || hovered { p.text } else { p.text_muted };
-        let mut x = r.left() + 6.0;
+        let text_color = if ended { p.text_faint } else if front || hovered { p.text } else { p.text_faint };
+        let mut x = r.left() + 9.0;
         if owner.is_some() {
             let mark = mark.unwrap_or_else(|| kind.map_or("AI", tc_core::agent::AgentKind::mark));
             let ink = if ended { p.text_faint } else { p.text };
@@ -422,35 +426,31 @@ impl App {
                 // Its agent's logo, and its number when two agents of a kind have pages here.
                 Some(k) => {
                     let n = mark.strip_prefix(k.mark()).unwrap_or("");
-                    let g = (!n.is_empty()).then(|| painter.layout_no_wrap(n.to_string(), style::semibold(9.5), ink));
-                    let w = 11.0 + g.as_ref().map_or(0.0, |g| g.size().x + 2.0) + 5.0;
-                    let m = Rect::from_min_size(pos2(x, r.center().y - 8.0), vec2(w.max(18.0), 16.0));
-                    painter.rect_filled(m, CornerRadius::same(4), p.subtle);
-                    let left = if g.is_some() { m.left() + 2.5 } else { m.center().x - 5.5 };
-                    super::agent_logo::paint(painter, Rect::from_min_size(pos2(left, m.center().y - 5.5), vec2(11.0, 11.0)), k, p.text, ended);
-                    if let Some(g) = g {
-                        painter.galley(pos2(left + 13.0, m.center().y - g.size().y / 2.0), g, ink);
+                    super::agent_logo::paint(painter, Rect::from_min_size(pos2(x, r.center().y - 6.0), vec2(12.0, 12.0)), k, p.text, ended);
+                    x += 12.0 + 7.0;
+                    if !n.is_empty() {
+                        let g = painter.layout_no_wrap(n.to_string(), style::mono_semibold(9.5), p.text_faint);
+                        painter.galley(pos2(x - 5.0, r.center().y - g.size().y / 2.0), g.clone(), p.text_faint);
+                        x += g.size().x - 1.0;
                     }
-                    x = m.right() + 6.0;
                 }
                 None => {
-                    let g = painter.layout_no_wrap(mark.to_string(), style::semibold(9.5), ink);
-                    let m = Rect::from_min_size(pos2(x, r.center().y - 8.0), vec2(g.size().x.max(12.0) + 6.0, 16.0));
-                    painter.rect_filled(m, CornerRadius::same(4), p.subtle);
-                    painter.galley(pos2(m.center().x - g.size().x / 2.0, m.center().y - g.size().y / 2.0), g, p.text);
-                    x = m.right() + 6.0;
+                    let g = painter.layout_no_wrap(mark.to_string(), style::mono_semibold(9.5), ink);
+                    let w = g.size().x;
+                    painter.galley(pos2(x, r.center().y - g.size().y / 2.0), g, ink);
+                    x += w + 7.0;
                 }
             }
         } else {
             let icon = if b.asleep && !b.url.is_empty() { icons::MOON } else { icons::GLOBE };
             painter.text(pos2(x + 6.5, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), p.text_faint);
-            x += 19.0;
+            x += 13.0 + 7.0;
         }
         // The dot: it needs the user (a site to allow), or an agent works in it.
         let dot = if b.ask.is_some() || b.dialog.is_some() { Some(p.warn) } else if b.driven() { Some(p.info) } else { None };
         let show_x = hovered || front;
         let mut text_right = r.right() - 6.0;
-        let x_rect = Rect::from_center_size(pos2(r.right() - 12.0, r.center().y), vec2(16.0, 16.0));
+        let x_rect = Rect::from_center_size(pos2(r.right() - 8.0 - 7.0, r.center().y), vec2(16.0, 16.0));
         if show_x {
             text_right = x_rect.left() - 2.0;
         }
@@ -464,7 +464,7 @@ impl App {
             painter.circle_filled(pos2(text_right - 3.0, r.center().y), 3.0, c);
             text_right -= 10.0;
         }
-        let mut job = egui::text::LayoutJob::simple_singleline(b.label(), egui::FontId::proportional(12.0), text_color);
+        let mut job = egui::text::LayoutJob::simple_singleline(b.label(), style::medium(12.0), text_color);
         job.wrap = egui::text::TextWrapping::truncate_at_width((text_right - x).max(8.0));
         let g = painter.layout_job(job);
         painter.galley(pos2(x, r.center().y - g.size().y / 2.0), g, text_color);
@@ -489,7 +489,7 @@ impl App {
             if xr.hovered() {
                 ui.painter().rect_filled(x_rect, CornerRadius::same(4), if front { p.hover } else { p.subtle });
             }
-            ui.painter().text(x_rect.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(11.0), if xr.hovered() { p.text } else { p.text_faint });
+            ui.painter().text(x_rect.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), if xr.hovered() { p.text } else { p.text_faint });
             closed = xr.on_hover_text(t("Close Page")).clicked();
         }
         let (host, path) = crate::browser::split_url(&b.url);

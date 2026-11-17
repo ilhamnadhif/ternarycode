@@ -572,50 +572,108 @@ impl App {
         if (hover.is_some() || !diags.is_empty())
             && let Some(at) = at
         {
+            // A card: the diagnostics, the signature in syntax colours on a darker band, the
+            // documentation, then where it is and where to go from here.
+            let dark = ctx.global_style().visuals.dark_mode;
+            let syntax = crate::editor::syntax_for(path);
+            let card = egui::Frame::NONE
+                .fill(p.menu)
+                .stroke(Stroke::new(1.0, p.border_strong))
+                .corner_radius(CornerRadius::same(10))
+                .shadow(egui::epaint::Shadow { offset: [0, 10], blur: 30, spread: 0, color: Color32::from_black_alpha(if dark { 110 } else { 36 }) });
             let r = egui::Area::new(egui::Id::new("ide-hover"))
                 .order(egui::Order::Tooltip)
                 .fixed_pos(at)
                 .show(ctx, |ui| {
-                    frame.show(ui, |ui| {
-                        ui.set_max_width(540.0);
-                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                            for (c, msg) in &diags {
-                                ui.label(egui::RichText::new(msg).color(*c));
-                            }
-                            if let Some(h) = hover {
-                                if !diags.is_empty() {
-                                    ui.separator();
+                    card.show(ui, |ui| {
+                        ui.set_width(372.0);
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let section = |m: egui::Margin| egui::Frame::NONE.inner_margin(m);
+                        if !diags.is_empty() {
+                            section(egui::Margin { left: 12, right: 12, top: 9, bottom: 9 }).show(ui, |ui| {
+                                ui.set_width(372.0 - 24.0);
+                                ui.spacing_mut().item_spacing.y = 4.0;
+                                for (c, msg) in &diags {
+                                    ui.label(egui::RichText::new(msg).size(12.5).color(*c));
                                 }
-                                for b in &h.blocks {
+                            });
+                            if hover.is_some() {
+                                let y = ui.cursor().top();
+                                ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, p.border));
+                            }
+                        }
+                        if let Some(h) = hover {
+                            egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                                for (i, b) in h.blocks.iter().enumerate() {
                                     if b.code {
-                                        egui::Frame::NONE
-                                            .fill(style::soft(p.text, 0.06))
-                                            .corner_radius(CornerRadius::same(4))
-                                            .inner_margin(egui::Margin::symmetric(8, 6))
-                                            .show(ui, |ui| {
-                                                ui.label(egui::RichText::new(&b.text).font(mono.clone()).color(p.text));
-                                            });
+                                        let band = egui::Frame::NONE
+                                            .fill(style::over(p.menu, p.chrome, 0.3))
+                                            .inner_margin(egui::Margin { left: 12, right: 12, top: 10, bottom: 9 });
+                                        let resp = band.show(ui, |ui| {
+                                            ui.set_width(372.0 - 24.0);
+                                            let mut job = egui::text::LayoutJob::default();
+                                            let mono = style::mono(12.0);
+                                            for (n, line) in b.text.lines().enumerate() {
+                                                if n > 0 {
+                                                    job.append("\n", 0.0, egui::TextFormat::simple(mono.clone(), p.text));
+                                                }
+                                                for (c, piece) in crate::editor::line_colors(line, &syntax, dark, p.text) {
+                                                    job.append(&piece, 0.0, egui::TextFormat::simple(mono.clone(), c));
+                                                }
+                                            }
+                                            job.wrap.max_width = 372.0 - 24.0;
+                                            ui.label(job);
+                                        });
+                                        ui.painter().hline(resp.response.rect.x_range(), resp.response.rect.bottom(), Stroke::new(1.0, p.border));
                                     } else {
-                                        ui.label(egui::RichText::new(&b.text).size(12.5).color(p.text_muted));
+                                        section(egui::Margin { left: 12, right: 12, top: if i == 0 { 10 } else { 9 }, bottom: 10 }).show(ui, |ui| {
+                                            ui.set_width(372.0 - 24.0);
+                                            ui.label(egui::RichText::new(&b.text).size(12.5).color(p.text_muted).line_height(Some(19.0)));
+                                        });
                                     }
                                 }
-                                // Where to go from here.
-                                ui.add_space(4.0);
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 12.0;
-                                    for (label, cmd) in [(t("Go to Definition"), IdeCmd::Goto(Goto::Definition)), (t("References"), IdeCmd::References)] {
-                                        let keys = kit::keys(&crate::actions::Action::Ide(cmd.clone())).unwrap_or_default();
-                                        let r = ui.add(egui::Label::new(egui::RichText::new(format!("{label} {keys}")).size(style::SMALL).color(p.accent_text)).sense(Sense::click()));
-                                        if r.hovered() {
-                                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                        }
-                                        if r.clicked() {
-                                            cmds.push(cmd);
-                                        }
-                                    }
-                                });
+                            });
+                            // Where it is, and where to go from here.
+                            let (rect, _) = ui.allocate_exact_size(vec2(372.0, 32.0), Sense::hover());
+                            ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
+                            let line = self
+                                .editors
+                                .values()
+                                .flat_map(|e| e.files.iter())
+                                .find(|f| f.path == path)
+                                .and_then(|f| f.index.as_ref().filter(|(rev, _)| *rev == f.rev).map(|(_, ix)| ix.line_of(h.at) + 1));
+                            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            let place = match line {
+                                Some(l) => format!("{name}:{l}"),
+                                None => name,
+                            };
+                            let mut right = rect.right() - 10.0;
+                            let links = [(t("References"), IdeCmd::References), (t("Go to Definition"), IdeCmd::Goto(Goto::Definition))];
+                            for (k, (label, cmd)) in links.into_iter().enumerate() {
+                                let keys = kit::keys(&crate::actions::Action::Ide(cmd.clone())).unwrap_or_default();
+                                let kw = if keys.is_empty() { 0.0 } else { kit::kbd_width(ui.painter(), keys) + 5.0 };
+                                let g = ui.painter().layout_no_wrap(label.to_string(), style::medium(11.5), p.accent_text);
+                                let w = g.size().x + kw;
+                                let lr = Rect::from_min_max(pos2(right - w - 4.0, rect.center().y - 10.0), pos2(right + 2.0, rect.center().y + 10.0));
+                                let resp = ui.interact(lr, egui::Id::new(("ide-hover-link", k)), Sense::click());
+                                if resp.hovered() {
+                                    ui.painter().rect_filled(lr, CornerRadius::same(5), p.hover);
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                ui.painter().galley(pos2(lr.left() + 2.0, rect.center().y - g.size().y / 2.0), g, p.accent_text);
+                                if !keys.is_empty() {
+                                    kit::paint_kbd_text(ui.painter(), pos2(right - kw + 5.0, rect.center().y), keys, &p);
+                                }
+                                if resp.clicked() {
+                                    cmds.push(cmd);
+                                }
+                                right = lr.left() - 10.0;
                             }
-                        });
+                            let mut job = egui::text::LayoutJob::simple_singleline(place, style::mono(10.5), p.text_faint);
+                            job.wrap = egui::text::TextWrapping::truncate_at_width((right - rect.left() - 12.0).max(10.0));
+                            let g = ui.painter().layout_job(job);
+                            ui.painter().galley(pos2(rect.left() + 12.0, rect.center().y - g.size().y / 2.0), g, p.text_faint);
+                        }
                     });
                 });
             ide.hover_rect = Some(r.response.rect);
@@ -726,17 +784,14 @@ impl App {
         // Laid out right to left: the server, then the problems, then Undo Refactor.
         self.lsp_chip(ui, path);
         let (errors, warnings) = self.lsp.counts(path);
-        if errors + warnings > 0 {
+        // With a server: its errors and warnings, both counted (0 too).
+        if self.lsp.server_for(path).is_some() || errors + warnings > 0 {
             let mut job = egui::text::LayoutJob::default();
-            let small = egui::FontId::proportional(style::SMALL);
-            if errors > 0 {
-                job.append(icons::X_CIRCLE, 0.0, egui::TextFormat::simple(style::icon_font(12.0), p.err));
-                job.append(&errors.to_string(), 3.0, egui::TextFormat::simple(small.clone(), p.err));
-            }
-            if warnings > 0 {
-                job.append(icons::WARNING, if errors > 0 { 8.0 } else { 0.0 }, egui::TextFormat::simple(style::icon_font(12.0), p.warn));
-                job.append(&warnings.to_string(), 3.0, egui::TextFormat::simple(small, p.warn));
-            }
+            let mono = style::mono(10.5);
+            job.append(icons::X_CIRCLE, 0.0, egui::TextFormat::simple(style::icon_fill(12.0), if errors > 0 { p.err } else { p.text_faint }));
+            job.append(&errors.to_string(), 4.0, egui::TextFormat::simple(mono.clone(), if errors > 0 { p.err } else { p.text_faint }));
+            job.append(icons::WARNING, 10.0, egui::TextFormat::simple(style::icon_fill(12.0), if warnings > 0 { p.warn } else { p.text_faint }));
+            job.append(&warnings.to_string(), 4.0, egui::TextFormat::simple(mono, if warnings > 0 { p.warn } else { p.text_faint }));
             let r = ui.add(egui::Label::new(job).sense(Sense::click()));
             if r.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -761,18 +816,20 @@ impl App {
         let p = style::pal(ui);
         let chip = |ui: &mut Ui, dot: Option<Color32>, text: &str| {
             let w = 6.0 + 6.0 + style::text_width(ui, text) * (style::SMALL / style::BODY) + 6.0;
-            let g = ui.painter().layout_no_wrap(text.to_string(), egui::FontId::proportional(style::SMALL), p.text_faint);
-            let (rect, r) = ui.allocate_exact_size(vec2(6.0 + 6.0 + g.size().x, 18.0), Sense::click());
-            let c = pos2(rect.left() + 3.0, rect.center().y);
+            let g = ui.painter().layout_no_wrap(text.to_string(), egui::FontId::proportional(11.0), p.text_faint);
+            let (rect, r) = ui.allocate_exact_size(vec2(7.0 + 7.0 + g.size().x, 18.0), Sense::click());
+            let c = pos2(rect.left() + 3.5, rect.center().y);
             match dot {
                 Some(d) => {
-                    ui.painter().circle_filled(c, 3.0, d);
+                    // The dot with a soft ring round it.
+                    ui.painter().circle_filled(c, 6.5, style::soft(d, 0.18));
+                    ui.painter().circle_filled(c, 3.5, d);
                 }
                 None => {
                     ui.painter().circle_stroke(c, 2.5, Stroke::new(1.0, p.text_faint));
                 }
             }
-            ui.painter().galley(pos2(rect.left() + 12.0, rect.center().y - g.size().y / 2.0), g, p.text_faint);
+            ui.painter().galley(pos2(rect.left() + 14.0, rect.center().y - g.size().y / 2.0), g, p.text_faint);
             let _ = w;
             #[cfg(debug_assertions)]
             crate::devtest::record("ide-status", rect);

@@ -1,7 +1,7 @@
 //! How statuses look: text, icon and colour (colour and shape together, PRD section 12), and
 //! the source shown in tooltips.
 
-use eframe::egui::Color32;
+use eframe::egui::{self, Color32};
 use tc_core::status::{Source, Status, Tracker};
 
 use super::icons;
@@ -26,7 +26,7 @@ pub fn icon(s: Status) -> &'static str {
     match s {
         Status::Idle => icons::CIRCLE,
         Status::Running => icons::CIRCLE_NOTCH,
-        Status::NeedsInput => icons::BELL,
+        Status::NeedsInput => icons::BELL_RINGING,
         Status::Failed(_) => icons::X_CIRCLE,
         Status::Done | Status::CommandDone => icons::CHECK_CIRCLE,
         Status::Unknown => icons::CIRCLE_HALF,
@@ -40,8 +40,37 @@ pub fn color(s: Status, p: &Palette) -> Color32 {
         Status::NeedsInput => p.warn,
         Status::Failed(_) => p.err,
         Status::Done | Status::CommandDone => p.ok,
-        Status::Unknown => p.text_muted,
-        Status::Idle | Status::Ended => p.text_faint,
+        Status::Unknown => p.idle,
+        Status::Idle | Status::Ended => p.idle,
+    }
+}
+
+/// Whether the status has a glyph of its own (the lattice, a filled icon); Idle and Ended show
+/// the still lattice, Active (no hooks) a half circle.
+pub fn has_glyph(s: Status) -> bool {
+    !matches!(s, Status::Ended)
+}
+
+/// Paints a status's glyph centred at `center`, about `size` across (10 for the lattice, 14 for
+/// the icons; `size` below 13 draws the small icons): Running is the moving lattice, Idle the
+/// still one, Needs input a ringing bell, Done a check, Failed a cross (filled), Active a half
+/// circle.
+pub fn paint_glyph(painter: &egui::Painter, center: egui::Pos2, s: Status, p: &Palette, size: f32) {
+    let c = color(s, p);
+    match s {
+        Status::Running => super::kit::paint_lattice(painter, center, 10.0, p.info, true),
+        Status::Idle | Status::Ended => super::kit::paint_lattice(painter, center, 10.0, p.idle, false),
+        Status::Unknown => {
+            painter.text(center, egui::Align2::CENTER_CENTER, icons::CIRCLE_HALF, super::style::icon_font(size.max(12.0)), p.idle);
+        }
+        _ => {
+            let icon = match s {
+                Status::NeedsInput => icons::BELL_RINGING,
+                Status::Failed(_) => icons::X_CIRCLE,
+                _ => icons::CHECK_CIRCLE,
+            };
+            painter.text(center, egui::Align2::CENTER_CENTER, icon, super::style::icon_fill(if size < 13.0 { 12.0 } else { 14.0 }), c);
+        }
     }
 }
 

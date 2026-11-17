@@ -738,7 +738,12 @@ fn worktree_lifecycle() {
     assert_eq!(worktree::files_changed(&dir, "main", "HEAD").unwrap(), 2);
     let base = worktree::merge_base(&dir, "main", "HEAD").unwrap();
     assert_eq!(git(&repo.root, &["rev-parse", "main"]).trim(), base);
-    let subjects: Vec<String> = worktree::commits(&dir, &base, "HEAD").unwrap().into_iter().map(|c| c.subject).collect();
+    let (files, adds, _) = worktree::diff_stat(&dir, "main", "HEAD").unwrap();
+    assert_eq!(files, 2);
+    assert!(adds > 0);
+    let commits = worktree::commits(&dir, &base, "HEAD").unwrap();
+    assert!(commits.iter().all(|c| !c.author.is_empty() && c.time > 0), "who made each commit, and when");
+    let subjects: Vec<String> = commits.into_iter().map(|c| c.subject).collect();
     assert_eq!(subjects, ["parser: split >> when closing generic lists", "lexer: emit Shr as one token"]);
     let by_file = worktree::last_commit_by_file(&dir, &base, "HEAD").unwrap();
     assert_eq!(by_file.len(), 2);
@@ -769,4 +774,22 @@ fn worktree_lifecycle() {
     worktree::remove(&repo.root, &gone, false).unwrap();
     assert!(!git(&repo.root, &["worktree", "list"]).contains("gone"));
     assert!(worktree::delete_branch(&repo.root, "-D", true).is_err(), "never an option");
+}
+
+#[test]
+fn lines_changed_on_disk_are_marked() {
+    use tc_git::{LineMark, MarkKind};
+    let repo = Repo::new();
+    repo.write("a.txt", "one\ntwo\nthree\nfour\nfive\n");
+    repo.commit_all("first");
+    // "two" changed, a line added after "four", "five" removed.
+    repo.write("a.txt", "one\nTWO\nthree\nfour\nnew\n");
+    let marks = tc_git::line_marks(&repo.root, "HEAD", "a.txt").unwrap();
+    assert_eq!(marks, [LineMark { line: 2, count: 1, kind: MarkKind::Modified }, LineMark { line: 5, count: 1, kind: MarkKind::Modified }]);
+    repo.write("a.txt", "one\nthree\nfour\nfive\nsix\nseven\n");
+    let marks = tc_git::line_marks(&repo.root, "HEAD", "a.txt").unwrap();
+    assert_eq!(marks, [LineMark { line: 2, count: 1, kind: MarkKind::Deleted }, LineMark { line: 5, count: 2, kind: MarkKind::Added }]);
+    // Unchanged: no marks.
+    repo.write("a.txt", "one\ntwo\nthree\nfour\nfive\n");
+    assert!(tc_git::line_marks(&repo.root, "HEAD", "a.txt").unwrap().is_empty());
 }

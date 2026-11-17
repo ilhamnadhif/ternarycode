@@ -123,8 +123,8 @@ The window has TernaryCode's own title bar, as Windows apps do: the app's name a
 the left, minimise, maximise and close at the right. Drag it to move the window (and snap it to a
 side), double-click it to maximise, right-click it for the window menu. Every new pane reads the
 `PATH` Windows has now, so a program installed while TernaryCode runs is found without restarting
-it, as in Windows Terminal. The terminal font is Cascadia Mono when it is installed (Windows 11),
-else Consolas.
+it, as in Windows Terminal. The terminal font is JetBrains Mono, which comes with TernaryCode;
+Cascadia Mono and Consolas are in Settings → Appearance.
 
 > [!IMPORTANT]
 > **“Windows protected your PC”?** The builds are not code-signed yet, so SmartScreen warns about
@@ -195,7 +195,8 @@ Turn automatic checks off in **Settings → General**, or use **Check for Update
   them, and the sidebar shows its kind (Rust, Go, TypeScript, React, Flutter, Python…), branch,
   number of changes and what its agent is doing. Projects where something runs or waits are
   grouped under **Active** at the top of the sidebar (Settings → General turns this off); the rest
-  are listed by name.
+  are listed by name. `⌥⌘B` narrows the sidebar to a column of project tiles, a dot on each one
+  that waits for you.
 - **Tabs and split panes per project**, drag to rearrange, and restored when you open the app
   again. Restored shells start only when you look at them, so a workspace of twenty projects opens
   as fast as one.
@@ -395,7 +396,7 @@ everything, with its shortcut.
 | `⌘L` · `⌘R` · `⌘[` `⌘]` | | in the Browser panel: address · reload · back, forward (while a page has the keyboard) |
 | `⌘F` · `⌘=` `⌘−` | | in the Browser panel: find in the page · zoom in, out (while a page has the keyboard) |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | find in the pane, file or document · in all panes |
-| `⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` · `Ctrl+Shift+1`–`9` | sidebar · project 1–9 |
+| `⌘B` · `⌥⌘B` · `⌘1`–`⌘9` | `Ctrl+Shift+B` · `Ctrl+Alt+B` · `Ctrl+Shift+1`–`9` | sidebar · narrow sidebar · project 1–9 |
 | `⌘=` · `⌘-` | `Ctrl+Shift+=` · `Ctrl+Shift+-` · `Ctrl+Shift+Backspace` | bigger · smaller · actual size text |
 | `⌥⌘K` | `Ctrl+Shift+Alt+K` | clear the scrollback |
 | `F12` · `⇧F12` · `F2` · `⌘.` | `F12` · `Shift+F12` · `F2` · `Ctrl+.` | definition · references · rename · code actions |
@@ -498,7 +499,8 @@ and OpenGL, [alacritty_terminal](https://github.com/alacritty/alacritty) (termin
 (spreadsheets), [quick-xml](https://github.com/tafia/quick-xml) and
 [zip](https://github.com/zip-rs/zip2) (Word and PowerPoint),
 [lsp-types](https://github.com/gluon-lang/lsp-types) and [notify](https://github.com/notify-rs/notify).
-Fonts: [Inter](https://rsms.me/inter/) and [Phosphor](https://phosphoricons.com) icons.
+Fonts: [Inter](https://rsms.me/inter/), [JetBrains Mono](https://www.jetbrains.com/lp/mono/) and
+[Phosphor](https://phosphoricons.com) icons.
 
 ## The Ternary family
 
@@ -509,4 +511,4 @@ TernaryCode is one of four small, native Rust apps that share a look and a 3 × 
 
 ## License
 
-MIT. Fonts: Inter (SIL OFL 1.1) and Phosphor icons (MIT).
+MIT. Fonts: Inter and JetBrains Mono (SIL OFL 1.1), and Phosphor icons (MIT).

@@ -103,6 +103,8 @@ enum Pending {
     /// The file's symbols, for the file asked about (not whichever is active when they come).
     Symbols { path: PathBuf },
     WorkspaceSymbols,
+    /// The file's symbols for the breadcrumb, at a revision of its text.
+    Outline { path: PathBuf, rev: u64 },
 }
 
 /// The editor's IDE commands (the active file, at its caret unless said otherwise).
@@ -132,6 +134,17 @@ pub enum IdeCmd {
     HoverAt(usize),
     UndoRefactor,
     RestartServer,
+    /// The file's symbols for the breadcrumb (quietly: never starts a server).
+    Outline,
+}
+
+/// A symbol of a file and the lines it spans (0-based), for the breadcrumb.
+#[derive(Clone, Debug)]
+pub struct OutlineItem {
+    pub name: String,
+    pub kind: lt::SymbolKind,
+    pub start: u32,
+    pub end: u32,
 }
 
 /// A place in a file (line and char column, 0-based) for the location lists.
@@ -231,6 +244,10 @@ pub struct Lsp {
     incomplete: Option<(PathBuf, usize, u64)>,
     /// A language feature asked for while its server was starting: run once it is ready.
     deferred: Option<(PathBuf, IdeCmd)>,
+    /// Each file's symbols for the breadcrumb, with the revision they were asked for; and
+    /// when they were last asked for (asked again for a newer text a moment later).
+    pub outline: HashMap<PathBuf, (u64, Vec<OutlineItem>)>,
+    pub outline_asked: HashMap<PathBuf, (u64, Instant)>,
 }
 
 impl Lsp {
@@ -964,7 +981,7 @@ impl App {
             return;
         }
         // Asked for while typing or hovering: quiet when no server can answer.
-        let quiet = matches!(cmd, IdeCmd::HoverAt(_) | IdeCmd::Complete(false) | IdeCmd::Signature);
+        let quiet = matches!(cmd, IdeCmd::HoverAt(_) | IdeCmd::Complete(false) | IdeCmd::Signature | IdeCmd::Outline);
         if serve && !quiet {
             self.lsp_open(ctx, &path);
         }
@@ -1054,6 +1071,11 @@ impl App {
                 self.lsp_request(&key, "textDocument/formatting", p, pending)
             }
             IdeCmd::Symbols => self.lsp_request(&key, "textDocument/documentSymbol", doc, Pending::Symbols { path: path.clone() }),
+            IdeCmd::Outline => {
+                let rev = open_text(&self.editors, &path).map_or(0, |(_, r)| r);
+                self.lsp.outline_asked.insert(path.clone(), (rev, Instant::now()));
+                self.lsp_request(&key, "textDocument/documentSymbol", doc, Pending::Outline { path: path.clone(), rev })
+            }
             IdeCmd::WorkspaceSymbols => {
                 let q = word_at(&self.editors, &path, caret).unwrap_or_default();
                 self.lsp_request(&key, "workspace/symbol", json!({"query": q}), Pending::WorkspaceSymbols)
@@ -1315,6 +1337,27 @@ impl App {
                 } else {
                     self.show_locations(t("Symbols in File"), items);
                 }
+            }
+            Pending::Outline { path, rev } => {
+                let mut items = Vec::new();
+                match serde_json::from_value::<Option<lt::DocumentSymbolResponse>>(v) {
+                    Ok(Some(lt::DocumentSymbolResponse::Nested(syms))) => {
+                        fn walk(syms: &[lt::DocumentSymbol], out: &mut Vec<OutlineItem>) {
+                            for s in syms {
+                                out.push(OutlineItem { name: s.name.clone(), kind: s.kind, start: s.range.start.line, end: s.range.end.line });
+                                if let Some(c) = &s.children {
+                                    walk(c, out);
+                                }
+                            }
+                        }
+                        walk(&syms, &mut items);
+                    }
+                    Ok(Some(lt::DocumentSymbolResponse::Flat(syms))) => {
+                        items = syms.into_iter().map(|s| OutlineItem { name: s.name, kind: s.kind, start: s.location.range.start.line, end: s.location.range.end.line }).collect();
+                    }
+                    _ => {}
+                }
+                self.lsp.outline.insert(path, (rev, items));
             }
             Pending::WorkspaceSymbols => {
                 let syms: Vec<(String, lt::SymbolKind, lt::Location)> = match serde_json::from_value::<Option<lt::WorkspaceSymbolResponse>>(v) {

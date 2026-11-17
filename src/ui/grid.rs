@@ -22,10 +22,10 @@ use crate::app::{App, GridPick};
 use crate::i18n::{t, tf};
 use crate::project::{Project, Tab};
 
-const TILE_HEADER: f32 = 34.0;
-/// The resume banner in a tile (lower than Focus's).
-const TILE_BANNER_H: f32 = 36.0;
-const GAP: f32 = 8.0;
+const TILE_HEADER: f32 = 38.0;
+/// The foot of a tile that asks for something (Needs input, Done, Failed, Resume).
+const TILE_FOOT_H: f32 = 40.0;
+const GAP: f32 = style::GAP;
 /// The Grid's scroll bar, and the room between it and the tiles.
 const SCROLL_BAR: f32 = 8.0;
 const SCROLL_GAP: f32 = 4.0;
@@ -241,9 +241,8 @@ impl App {
     }
 
     pub fn grid_view(&mut self, ui: &mut Ui) {
-        // Darker than the terminals, so each tile reads as a card.
-        ui.painter().rect_filled(ui.max_rect(), CornerRadius::ZERO, style::pal(ui).chrome);
-        let area = ui.max_rect().shrink(GAP);
+        // The tiles are sheets on the window's base, as the Focus view's panes.
+        let area = super::focus::sheets_area(ui.max_rect(), self.settings.sidebar_hidden);
         let ids = self.shown_projects(ui.ctx());
         if ids.is_empty() {
             self.nothing_active(ui, area);
@@ -365,34 +364,22 @@ impl App {
         let p = style::pal(ui);
         let r = ui.interact(rect, egui::Id::new("grid-add"), Sense::click());
         let painter = ui.painter_at(rect.expand(1.0));
-        let color = if r.hovered() { p.text_muted } else { p.text_faint };
+        // A quiet slot: its outline, the folder icon, "Add Project" and its keys, the drop hint.
         if r.hovered() {
-            painter.rect_filled(rect, CornerRadius::same(style::RADIUS_LG), p.faint_row());
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        // A dashed border.
-        let rr = rect.shrink(0.5);
-        let pts = [rr.left_top() + vec2(10.0, 0.0), rr.right_top() - vec2(10.0, 0.0)];
-        let stroke = Stroke::new(1.0, p.border_strong);
-        for (a, b) in [
-            (pts[0], pts[1]),
-            (rr.right_top() + vec2(0.0, 10.0), rr.right_bottom() - vec2(0.0, 10.0)),
-            (rr.right_bottom() - vec2(10.0, 0.0), rr.left_bottom() + vec2(10.0, 0.0)),
-            (rr.left_bottom() - vec2(0.0, 10.0), rr.left_top() + vec2(0.0, 10.0)),
-        ] {
-            painter.extend(egui::Shape::dashed_line(&[a, b], stroke, 5.0, 4.0));
-        }
-        for (c, a0) in [(rr.left_top() + vec2(10.0, 10.0), 180.0_f32), (rr.right_top() + vec2(-10.0, 10.0), 270.0), (rr.right_bottom() + vec2(-10.0, -10.0), 0.0), (rr.left_bottom() + vec2(10.0, -10.0), 90.0)] {
-            let arc: Vec<egui::Pos2> = (0..=6).map(|i| {
-                let a = (a0 + i as f32 * 15.0).to_radians();
-                c + vec2(a.cos(), a.sin()) * 10.0
-            }).collect();
-            painter.add(egui::Shape::line(arc, stroke));
-        }
+        painter.rect(rect, CornerRadius::same(style::RADIUS_LG), if r.hovered() { p.hover } else { egui::Color32::TRANSPARENT }, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
         let cy = rect.center().y;
-        painter.text(pos2(rect.center().x, cy - 18.0), Align2::CENTER_CENTER, icons::PLUS, style::icon_font(16.0), color);
-        painter.text(pos2(rect.center().x, cy + 4.0), Align2::CENTER_CENTER, t("Add Project…"), egui::FontId::proportional(12.5), color);
-        painter.text(pos2(rect.center().x, cy + 21.0), Align2::CENTER_CENTER, t("or drop a folder here"), egui::FontId::proportional(style::SMALL), p.text_faint);
+        painter.text(pos2(rect.center().x, cy - 20.0), Align2::CENTER_CENTER, icons::FOLDER_SIMPLE_PLUS, style::icon_font(18.0), p.text_faint);
+        let keys = kit::keys(&Action::AddProject).unwrap_or("");
+        let mut job = egui::text::LayoutJob::default();
+        job.append(t("Add Project"), 0.0, egui::TextFormat::simple(style::medium(12.5), p.text));
+        if !keys.is_empty() {
+            job.append(keys, 6.0, egui::TextFormat::simple(style::mono(10.5), p.text_ghost));
+        }
+        let g = painter.layout_job(job);
+        painter.galley(pos2(rect.center().x - g.size().x / 2.0, cy + 2.0 - g.size().y / 2.0), g, p.text);
+        painter.text(pos2(rect.center().x, cy + 21.0), Align2::CENTER_CENTER, t("or drop a folder here"), egui::FontId::proportional(11.5), p.text_ghost);
         if r.clicked() {
             self.actions.push(Action::AddProject);
         }
@@ -455,6 +442,7 @@ impl App {
         let held = !strip.is_empty() && self.grid_pick.get(&project_id).is_some_and(|g| g.manual);
         let name = project.name.clone();
         let color = project.color32();
+        let letters = project.letters();
         let branch = project.git.as_ref().map(|g| g.branch.clone());
         // A worktree: "ternary-engine ›" before its name, its branch with commits ahead.
         let parent_name = project.parent.and_then(|x| self.project(x)).map(|x| x.name.clone());
@@ -501,24 +489,15 @@ impl App {
         let attention = pane_status.as_ref().is_some_and(|x| x.1);
         let status_now = pane_status.as_ref().map(|x| x.0);
 
-        // The card: the terminal's own background, header included, on the darker Grid.
+        // The card: a sheet in the terminal's own background, header included; amber-ringed
+        // while something in it waits for the user.
+        let painter = ui.painter_at(rect.expand(8.0));
+        let look = if attention && status_now == Some(Status::NeedsInput) { super::focus::SheetLook::Waiting } else if hovered { super::focus::SheetLook::Focused } else { super::focus::SheetLook::Plain };
+        super::focus::paint_sheet_fill(&painter, rect, scheme.background, &p, look);
         let painter = ui.painter_at(rect.expand(2.0));
-        painter.rect_filled(rect, radius, scheme.background);
         let header = Rect::from_min_size(rect.min, vec2(rect.width(), TILE_HEADER));
-        painter.hline(
-            (rect.left() + 1.0)..=(rect.right() - 1.0),
-            header.bottom() - 0.5,
-            Stroke::new(1.0, p.border.gamma_multiply(0.7)),
-        );
-        let border = if keyboard_here {
-            Stroke::new(1.5, p.accent)
-        } else if attention && status_now == Some(Status::NeedsInput) {
-            Stroke::new(1.0, style::over(p.border, p.warn, 0.55))
-        } else if hovered {
-            Stroke::new(1.0, p.border_strong)
-        } else {
-            Stroke::new(1.0, p.border)
-        };
+        // The tile typed into: an accent ring over the edges, drawn last.
+        let border = if keyboard_here { Stroke::new(1.5, p.accent) } else { Stroke::NONE };
 
         // Header.
         let hr = ui.interact(header, egui::Id::new(("tile-header", project_id)), Sense::click());
@@ -529,12 +508,12 @@ impl App {
         }
         let cy = header.center().y;
         let small = egui::FontId::proportional(style::SMALL);
-        // Right side first (open button, review, panes, branch); the left side is cut
-        // before it.
-        let open_rect = Rect::from_center_size(pos2(header.right() - 6.0 - 11.0, cy), vec2(22.0, 22.0));
+        // Right side first (open, the status, the server, the zoom, the browser); the left side
+        // (tile, name, branch, tabs) is cut before it.
+        let open_rect = Rect::from_center_size(pos2(header.right() - 8.0 - 9.0, cy), vec2(18.0, 18.0));
         let open = ui
             .scope_builder(egui::UiBuilder::new().max_rect(open_rect), |ui| {
-                kit::icon_button_ex(ui, icons::ARROW_SQUARE_OUT, &kit::tip(t("Open in Focus view"), Action::OpenGridTile), false, 22.0)
+                kit::icon_button_ex(ui, icons::ARROW_UP_RIGHT, &kit::tip(t("Open in Focus view"), Action::OpenGridTile), false, 18.0)
             })
             .inner;
         #[cfg(debug_assertions)]
@@ -543,19 +522,29 @@ impl App {
             self.actions.push(open_action.clone());
         }
         let mut right = open_rect.left() - 8.0;
-        let button = |ui: &mut Ui, icon: Option<&str>, text: &str, right: &mut f32| {
-            let w = kit::button_width(ui, icon, text, None, true);
-            let r = Rect::from_center_size(pos2(*right - w / 2.0, cy), vec2(w, 24.0));
-            *right -= w + 8.0;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::button_ex(ui, kit::Kind::Secondary, icon, text, true)).inner
-        };
-        if let Some(id) = review {
-            let b = button(ui, Some(icons::GIT_DIFF), t("Review"), &mut right);
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("tile-review:{id}"), b.rect);
-            if b.on_hover_text(kit::tip(t("Review what the agent changed"), Action::Review)).clicked() {
-                self.actions.push(Action::FocusPane(id));
-                self.actions.push(Action::ReviewAgent);
+        // The status as a pill (the tabs' chips say it when there are several tabs).
+        if strip.is_empty()
+            && let Some((s, _, _, label, said, doing)) = &pane_status
+            && !matches!(s, Status::Idle | Status::Ended)
+        {
+            let text = match s {
+                Status::Running | Status::Unknown => match progress {
+                    Some((_, Some(v))) => format!("{label} · {v}%"),
+                    _ => label.clone(),
+                },
+                Status::Failed(_) => t("Failed").to_string(),
+                Status::CommandDone => t("Finished").to_string(),
+                _ => status::text(*s),
+            };
+            let w = kit::state_pill_width(&painter, *s, &text);
+            if right - w > header.left() + 150.0 {
+                let r = kit::paint_state_pill(&painter, pos2(right - w, cy), *s, &text, &p, dark);
+                right = r.left() - 6.0;
+                let tip = match doing {
+                    Some(doing) => format!("{doing}\n{said}"),
+                    None => said.clone(),
+                };
+                ui.interact(r, egui::Id::new(("tile-status", project_id)), Sense::hover()).on_hover_text(tip);
             }
         }
         if let Some(agent) = unconnected {
@@ -571,6 +560,42 @@ impl App {
             if resp.on_hover_text(self.unconnected_tip(&[agent])).clicked() {
                 self.actions.push(Action::PlanInstall(agent.1));
             }
+        }
+        // A local server its panes started: "● :5173" opens it in the browser.
+        let servers = self.project_servers(project_id);
+        if let Some((_, first)) = servers.first() {
+            let port = format!(":{}", first.port);
+            let more = if servers.len() > 1 { format!(" +{}", servers.len() - 1) } else { String::new() };
+            let g = ui.painter().layout_no_wrap(format!("{port}{more}"), style::mono(10.5), p.text_muted);
+            let w = 6.0 + 5.0 + 6.0 + g.size().x + 6.0;
+            let r = Rect::from_center_size(pos2(right - w / 2.0, cy), vec2(w, 22.0));
+            right -= w + 6.0;
+            let resp = ui.interact(r, egui::Id::new(("tile-server", project_id)), Sense::click());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("tile-server:{name}"), r);
+            if resp.hovered() {
+                ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), p.hover);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            ui.painter().circle_filled(pos2(r.left() + 6.0 + 2.5, cy), 5.0, style::soft(p.ok, 0.18));
+            ui.painter().circle_filled(pos2(r.left() + 6.0 + 2.5, cy), 2.5, p.ok);
+            ui.painter().galley(pos2(r.left() + 6.0 + 5.0 + 6.0, cy - g.size().y / 2.0), g, p.text_muted);
+            let tip = servers.iter().map(|(_, s)| tf("Open {} in the browser", &[&s.url])).collect::<Vec<_>>().join("\n");
+            if resp.on_hover_text(tip).clicked() {
+                self.actions.push(Action::OpenWeb(first.url.clone()));
+            }
+        }
+        // Its page shown smaller than in Focus: by how much (hover says why).
+        if let Some((_, zoom)) = tile_page.filter(|(_, z)| *z < 0.995) {
+            let g = ui.painter().layout_no_wrap(format!("{}%", (zoom * 100.0).round() as i32), style::mono(10.0), p.text_ghost);
+            let wd = g.size().x + 8.0;
+            let r = Rect::from_center_size(pos2(right - wd / 2.0, cy), vec2(wd, 22.0));
+            right -= wd + 4.0;
+            let resp = ui.interact(r, egui::Id::new(("tile-zoom", project_id)), Sense::hover());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("tile-zoom:{name}"), r);
+            ui.painter().galley(pos2(r.left() + 4.0, cy - g.size().y / 2.0), g, if resp.hovered() { p.text_muted } else { p.text_ghost });
+            resp.on_hover_text(tf("Shown at {}%, laid out as in Focus. Open in Focus to see it at 100%.", &[&((zoom * 100.0).round() as i32).to_string()]));
         }
         // The browser an agent uses, on a tile too small for its picture: shows it in the tile.
         if let Some(w) = web.as_ref().filter(|_| web_small) {
@@ -590,80 +615,13 @@ impl App {
                 self.show_tile_web(project_id, w, ui.input(|i| i.modifiers.alt) || !panel_fits);
             }
         }
-        // Its page shown smaller than in Focus: by how much (hover says why).
-        if let Some((_, zoom)) = tile_page.filter(|(_, z)| *z < 0.995) {
-            let g = ui.painter().layout_no_wrap(format!("{} {}%", icons::MAGNIFYING_GLASS_MINUS, (zoom * 100.0).round() as i32), small.clone(), p.text_faint);
-            let wd = g.size().x + 10.0;
-            let r = Rect::from_center_size(pos2(right - wd / 2.0, cy), vec2(wd, 22.0));
-            right -= wd + 6.0;
-            let resp = ui.interact(r, egui::Id::new(("tile-zoom", project_id)), Sense::hover());
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("tile-zoom:{name}"), r);
-            if resp.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), p.hover);
-            }
-            ui.painter().galley(pos2(r.left() + 5.0, cy - g.size().y / 2.0), g, p.text_faint);
-            resp.on_hover_text(tf("Shown at {}%, laid out as in Focus. Open in Focus to see it at 100%.", &[&((zoom * 100.0).round() as i32).to_string()]));
-        }
-        // A local server its panes started: ":5173" opens it in the browser.
-        let servers = self.project_servers(project_id);
-        if let Some((_, first)) = servers.first() {
-            let port = format!(":{}", first.port);
-            let more = if servers.len() > 1 { format!(" +{}", servers.len() - 1) } else { String::new() };
-            let g = ui.painter().layout_no_wrap(format!("{port}{more}"), small.clone(), p.text_muted);
-            let w = 6.0 + 6.0 + 5.0 + g.size().x + 6.0;
-            let r = Rect::from_center_size(pos2(right - w / 2.0, cy), vec2(w, 22.0));
-            right -= w + 6.0;
-            let resp = ui.interact(r, egui::Id::new(("tile-server", project_id)), Sense::click());
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("tile-server:{name}"), r);
-            if resp.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), p.hover);
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            ui.painter().circle_filled(pos2(r.left() + 6.0 + 3.0, cy), 3.0, p.ok);
-            ui.painter().galley(pos2(r.left() + 6.0 + 6.0 + 5.0, cy - g.size().y / 2.0), g, p.text_muted);
-            let tip = servers.iter().map(|(_, s)| tf("Open {} in the browser", &[&s.url])).collect::<Vec<_>>().join("\n");
-            if resp.on_hover_text(tip).clicked() {
-                self.actions.push(Action::OpenWeb(first.url.clone()));
-            }
-        }
-        // Branch, how many files changed, panes (when split): only what fits.
-        let mut meta: Vec<(String, egui::FontId, egui::Color32)> = Vec::new();
-        if let Some(b) = &branch {
-            match ahead {
-                Some(n) => {
-                    meta.push((format!("{} {b}", icons::GIT_FORK), small.clone(), p.text_faint));
-                    meta.push((format!("↑{n}"), small.clone(), p.text_faint));
-                }
-                None => meta.push((b.clone(), small.clone(), p.text_faint)),
-            }
-            if changed > 0 {
-                meta.push((format!("+{changed}"), small.clone(), p.warn));
-            }
-        }
-        if count > 1 {
-            meta.push((format!("{} {count}", icons::SQUARE_SPLIT_HORIZONTAL), small.clone(), p.text_faint));
-        }
-        let mut meta_left = right;
-        let mut placed = Vec::new();
-        for (i, (text, font, color)) in meta.into_iter().rev().enumerate() {
-            let g = painter.layout_no_wrap(text, font, color);
-            if meta_left - g.size().x < header.left() + 160.0 {
-                break;
-            }
-            meta_left -= g.size().x;
-            placed.push((meta_left, g, color));
-            meta_left -= if i == 0 { 8.0 } else { 6.0 };
-        }
-        for (x, g, color) in placed {
-            painter.galley(pos2(x, cy - g.size().y / 2.0), g, color);
-        }
-        let left_limit = meta_left - 8.0;
+        let left_limit = right - 6.0;
         let left = painter.with_clip_rect(Rect::from_min_max(header.min, pos2(left_limit, header.max.y)));
-        let mut x = header.left() + 14.0;
-        left.circle_filled(pos2(x + 4.0, cy), 4.0, color);
-        x += 8.0 + 8.0;
+        // Left: the project's tile and name, its branch, then its tabs.
+        let mut x = header.left() + 10.0;
+        let tile = Rect::from_min_size(pos2(x, cy - 10.0), vec2(20.0, 20.0));
+        kit::paint_project_tile(&left, tile, &letters, color, dark);
+        x = tile.right() + 8.0;
         if let Some(parent) = &parent_name {
             let g = left.layout_no_wrap(format!("{parent} ›"), style::medium(12.0), p.text_faint);
             let gw = g.size().x;
@@ -674,112 +632,76 @@ impl App {
         let gw = g.size().x;
         left.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
         x += gw + 8.0;
-        // The strip of tabs, after the name: the chips say what each tab holds, so the status
-        // that follows needs no label.
+        // The branch (a worktree's with how far ahead), "+N" changed, panes when split.
         let with_strip = !strip.is_empty();
-        if with_strip {
-            x = self.tab_strip(ui, &left, project_id, &name, &strip, shown, held, x, cy, left_limit, scheme.background);
+        if let Some(b) = &branch {
+            let (icon, text) = match ahead {
+                Some(n) => (icons::GIT_FORK, format!("{b} ↑{n}")),
+                None => (icons::GIT_BRANCH, b.clone()),
+            };
+            let plus = (changed > 0).then(|| left.layout_no_wrap(format!("+{changed}"), style::mono(10.5), p.text_muted));
+            let room = (left_limit - x - if with_strip { 90.0 } else { 0.0 }).max(0.0);
+            if room > 40.0 {
+                left.text(pos2(x + 5.5, cy), Align2::CENTER_CENTER, icon, style::icon_font(11.0), p.text_faint);
+                let mut job = egui::text::LayoutJob::simple_singleline(text, style::mono(10.5), p.text_faint);
+                job.wrap = egui::text::TextWrapping::truncate_at_width((room - 15.0 - plus.as_ref().map_or(0.0, |g| g.size().x + 5.0)).max(10.0));
+                let bg = left.layout_job(job);
+                let bw = bg.size().x;
+                left.galley(pos2(x + 15.0, cy - bg.size().y / 2.0), bg, p.text_faint);
+                x += 15.0 + bw;
+                if let Some(pg) = plus {
+                    let pw = pg.size().x;
+                    left.galley(pos2(x + 5.0, cy - pg.size().y / 2.0), pg, p.text_muted);
+                    x += 5.0 + pw;
+                }
+                x += 8.0;
+            }
         }
-        if let Some((s, attention, message, label, said, doing)) = &pane_status {
-            // Quiet: the terminal icon and what runs there (with a strip: nothing more). Else the
-            // status as a pill, then what it asks (or what runs, and what the program says it is
-            // doing).
-            let quiet = matches!(s, Status::Idle | Status::Unknown);
-            let c = status::color(*s, &p);
-            let status_left = x;
-            let mut job;
-            if quiet {
-                if with_strip {
-                    job = egui::text::LayoutJob::default();
-                } else {
-                    left.text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, icons::TERMINAL, style::icon_font(12.5), p.text_faint);
-                    x += 17.0;
-                    job = egui::text::LayoutJob::simple_singleline(label.clone(), small.clone(), p.text_faint);
-                }
-            } else {
-                let pill_text = match s {
-                    Status::Failed(c) => tf("Failed · code {}", &[&c.to_string()]),
-                    _ => status::text(*s),
-                };
-                // The pill whole, or (no room for it) its icon.
-                if x + kit::pill_width(&left, Some(status::icon(*s)), &pill_text) <= left_limit {
-                    let r = kit::paint_pill(&left, pos2(x, cy), Some(status::icon(*s)), &pill_text, c, style::tint(c, dark));
-                    x = r.right() + 8.0;
-                } else {
-                    left.text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, status::icon(*s), style::icon_font(12.5), c);
-                    x += 17.0;
-                }
-                let (text, col) = match (s, message, with_strip) {
-                    (Status::NeedsInput, Some(m), true) => (m.clone(), p.text),
-                    (Status::NeedsInput, Some(m), false) => (format!("{label} · {m}"), p.text),
-                    (_, _, true) => (String::new(), p.text_muted),
-                    _ => (label.clone(), p.text_muted),
-                };
-                job = egui::text::LayoutJob::simple_singleline(text, small.clone(), col);
-                if let Some((_, Some(v))) = progress {
-                    let sep = if job.text.is_empty() { "" } else { " · " };
-                    job.append(&format!("{sep}{v}%"), 0.0, egui::TextFormat::simple(small.clone(), p.text_muted));
-                }
+        if count > 1 && !with_strip {
+            let g = left.layout_no_wrap(format!("{} {count}", icons::SQUARE_SPLIT_HORIZONTAL), style::mono(10.5), p.text_faint);
+            let gw = g.size().x;
+            if x + gw < left_limit {
+                left.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+                x += gw + 8.0;
             }
-            if !(quiet && with_strip)
-                && let Some(doing) = doing.as_ref().filter(|_| *s != Status::NeedsInput)
-            {
-                let sep = if job.text.is_empty() { "" } else { " · " };
-                job.append(&format!("{sep}{doing}"), 0.0, egui::TextFormat::simple(small.clone(), p.text_faint));
-            }
-            job.wrap = egui::text::TextWrapping::truncate_at_width((left_limit - x).max(0.0));
-            let sg = left.layout_job(job);
-            let status_right = (x + sg.size().x).min(left_limit);
-            left.galley(pos2(x, cy - sg.size().y / 2.0), sg, p.text_muted);
-            // Where the status came from, on hover (the header's double click still opens).
-            let status_rect = Rect::from_min_max(pos2(status_left, header.top()), pos2(status_right, header.bottom()));
-            if status_rect.width() > 0.0 {
-                let tip = match doing {
-                    Some(doing) => format!("{doing}\n{said}"),
-                    None => said.clone(),
-                };
-                ui.interact(status_rect, egui::Id::new(("tile-status", project_id)), Sense::hover())
-                    .on_hover_text(tip);
-            }
-            if *attention {
-                painter.rect_filled(
-                    Rect::from_min_size(rect.min + vec2(0.0, 10.0), vec2(3.0, rect.height() - 20.0)),
-                    CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 },
-                    c,
-                );
-            }
+        }
+        // The strip of tabs, after the branch: the chips say what each tab holds.
+        if with_strip {
+            self.tab_strip(ui, &left, project_id, &name, &strip, shown, held, x, cy, left_limit, scheme.background);
         }
         // Progress a program reports, under the header.
-        let mut body_top = header.bottom();
+        let mut body_top = header.bottom() - 6.0;
         if let Some((state, value)) = progress {
-            let line = Rect::from_min_size(pos2(rect.left() + 1.0, header.bottom()), vec2(rect.width() - 2.0, 2.0));
+            let line = Rect::from_min_size(pos2(rect.left() + 10.0, header.bottom() - 2.0), vec2(rect.width() - 20.0, 2.0));
             let c = if state == 2 { p.err } else if state == 4 { p.warn } else { p.info };
-            painter.rect_filled(line, CornerRadius::ZERO, style::soft(c, 0.18));
+            painter.rect_filled(line, CornerRadius::same(1), p.border_strong);
             let f = value.map_or(0.3, |v| v.min(100) as f32 / 100.0);
-            painter.rect_filled(Rect::from_min_size(line.min, vec2(line.width() * f, 2.0)), CornerRadius::ZERO, c);
-            body_top += 2.0;
+            painter.rect_filled(Rect::from_min_size(line.min, vec2(line.width() * f, 2.0)), CornerRadius::same(1), c);
+            body_top += 4.0;
         }
-        // An agent that finished, not seen yet: its last words (or that it finished) and Review.
-        let mut body_bottom = rect.bottom();
-        if attention && status_now == Some(Status::Done) {
-            let said = pane_status.as_ref().and_then(|x| x.2.clone());
-            let foot = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 32.0), rect.max);
-            let fill = style::over(scheme.background, p.ok, 0.07);
-            painter.rect_filled(foot, CornerRadius { nw: 0, ne: 0, sw: style::RADIUS_LG, se: style::RADIUS_LG }, fill);
-            painter.hline((foot.left() + 1.0)..=(foot.right() - 1.0), foot.top() + 0.5, Stroke::new(1.0, style::soft(p.ok, 0.22)));
-            painter.text(pos2(foot.left() + 14.0 + 7.0, foot.center().y), Align2::CENTER_CENTER, icons::CHECK_CIRCLE, style::icon_font(14.0), p.ok);
-            let text = said.map(|m| format!("“{m}”")).unwrap_or_else(|| t("Finished its turn. Review what it changed.").to_string());
-            let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(12.0), p.text);
-            job.wrap = egui::text::TextWrapping::truncate_at_width((foot.width() - 14.0 - 14.0 - 8.0 - 12.0).max(10.0));
-            let g = painter.layout_job(job);
-            painter.galley(pos2(foot.left() + 14.0 + 14.0 + 8.0, foot.center().y - g.size().y / 2.0), g, p.text);
-            body_bottom = foot.top();
+        // What the tile asks of the user, in its foot: the question, what an agent finished,
+        // what failed, or the agent that can be resumed.
+        let mut body_bottom = rect.bottom() - 5.0;
+        let resume_pane = layout.as_ref().map(|l| l.panes()).unwrap_or_default().into_iter().find(|id| self.panes.get(id).is_some_and(|x| x.resume.is_some()));
+        let foot_kind = match (attention, status_now) {
+            (true, Some(Status::NeedsInput)) => Some(Foot::Wait),
+            (true, Some(Status::Done | Status::CommandDone)) => Some(Foot::Done),
+            (true, Some(Status::Failed(_))) => Some(Foot::Fail),
+            _ => resume_pane.map(Foot::Resume),
+        };
+        if let Some(kind) = foot_kind.filter(|_| rect.height() > TILE_HEADER + TILE_FOOT_H + 60.0) {
+            let foot = Rect::from_min_max(pos2(rect.left() + 6.0, rect.bottom() - 6.0 - TILE_FOOT_H), pos2(rect.right() - 6.0, rect.bottom() - 6.0));
+            let since = pane_id.and_then(|id| self.panes.get(&id)).map(|x| x.tracker.since);
+            self.tile_foot(ui, foot, kind, pane_id, pane_status.as_ref().map(|x| (x.2.clone(), x.3.clone(), x.0)), since, review, &open_action, &name);
+            body_bottom = foot.top() - 2.0;
         }
 
         // Body: inset so the terminal's square corners stay inside the card's round ones.
-        let body = Rect::from_min_max(pos2(rect.left() + 4.0, body_top + 2.0), pos2(rect.right() - 4.0, body_bottom - 5.0));
+        let body = Rect::from_min_max(pos2(rect.left() + 4.0, body_top), pos2(rect.right() - 4.0, body_bottom));
         let Some(pane_id) = pane_id else {
-            painter.rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
+            if border != Stroke::NONE {
+                painter.rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
+            }
             return;
         };
         let style = self.term_style(ui);
@@ -817,7 +739,9 @@ impl App {
             if r.on_hover_text(t("Open in Focus view")).clicked() {
                 self.actions.push(open_action);
             }
-            ui.painter_at(rect.expand(2.0)).rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
+            if border != Stroke::NONE {
+                ui.painter_at(rect.expand(2.0)).rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
+            }
             return;
         }
         // The panel at the right as in Focus (its share of the width), the terminals beside it as
@@ -826,7 +750,9 @@ impl App {
             Some(_) => {
                 let share = self.panel_of(project_id).map_or(crate::project::PANEL_SHARE, crate::project::Panel::share);
                 let w = (body.width() * share).round();
-                (Rect::from_min_max(body.min, pos2(body.right() - w - 1.0, body.bottom())), Some(Rect::from_min_max(pos2(body.right() - w, body.top()), body.max)))
+                // The page in its own rounded frame, inside the tile's right side.
+                let page = Rect::from_min_max(pos2(body.right() - w, body.top() + 2.0), pos2(body.right() - 2.0, body.bottom() - 1.0));
+                (Rect::from_min_max(body.min, pos2(body.right() - w - 6.0, body.bottom())), Some(page))
             }
             None => (body, None),
         };
@@ -836,20 +762,7 @@ impl App {
             Some(l) => l.arrange(panes_body),
             None => (vec![(pane_id, panes_body)], Vec::new()),
         };
-        // A pane whose agent ran there before a restart: Focus's banner at its top (it is why
-        // the project counts as active), the terminal under it.
-        let mut banners = Vec::new();
-        let rects: Vec<(PaneId, Rect)> = rects
-            .into_iter()
-            .map(|(id, r)| {
-                if self.panes.get(&id).is_some_and(|x| x.resume.is_some()) && r.height() > 2.0 * TILE_BANNER_H {
-                    banners.push((id, Rect::from_min_size(r.min, vec2(r.width(), TILE_BANNER_H))));
-                    (id, Rect::from_min_max(pos2(r.left(), r.top() + TILE_BANNER_H), r.max))
-                } else {
-                    (id, r)
-                }
-            })
-            .collect();
+        // (An agent that can be resumed says so in the tile's foot.)
         // The terminals take the tile's size (before they are drawn, so a sleeping shell starts
         // at it).
         let sizes = rects.iter().map(|(id, r)| (*id, widget::grid_for(*r, cell))).collect();
@@ -858,24 +771,26 @@ impl App {
         for (id, r) in &rects {
             crate::devtest::record(format!("tile-pane:{id}"), *r);
         }
+        // Split terminals in a tile: a hairline down the middle of the gap between them.
         for d in &dividers {
-            painter.rect_filled(d.rect, CornerRadius::ZERO, p.border.gamma_multiply(0.8));
+            match d.dir {
+                tc_term::layout::SplitDir::Horizontal => painter.vline(d.rect.center().x, d.rect.y_range(), Stroke::new(1.0, p.border)),
+                tc_term::layout::SplitDir::Vertical => painter.hline(d.rect.x_range(), d.rect.center().y, Stroke::new(1.0, p.border)),
+            };
         }
         for (id, r) in rects {
             self.grid_pane(ui, id, r, &style, min_scale, input_enabled, wheel_free || keyboard_here);
         }
-        for (id, r) in banners {
-            self.resume_banner(ui, id, r, true);
-        }
         if let (Some((page, zoom)), Some(r)) = (tile_page, panel_rect) {
-            ui.painter().vline(r.left() - 0.5, r.y_range(), Stroke::new(1.0, p.border.gamma_multiply(0.8)));
             self.tile_browser(ui, page, r, zoom);
         }
         if let Some(w) = web.filter(|_| !web_small) {
             self.tile_pip(ui, project_id, body, &w);
         }
-        // The border last, over the terminals' edges.
-        ui.painter_at(rect.expand(2.0)).rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
+        // The ring of the tile typed into last, over the terminals' edges.
+        if border != Stroke::NONE {
+            ui.painter_at(rect.expand(2.0)).rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
+        }
     }
 
     /// A project's browser an agent uses (or used in the last 10 s), out of the tile's view
@@ -932,14 +847,14 @@ impl App {
         let cap = Rect::from_min_max(pos2(r.left(), r.bottom() - 24.0), r.max);
         painter.rect_filled(cap, CornerRadius { nw: 0, ne: 0, sw: style::RADIUS_LG, se: style::RADIUS_LG }, style::soft(p.surface, 0.94));
         painter.hline(cap.x_range(), cap.top() + 0.5, Stroke::new(1.0, p.border));
-        painter.text(pos2(cap.left() + 13.0, cap.center().y), Align2::CENTER_CENTER, icons::CURSOR_CLICK, style::icon_font(12.5), p.info);
+        kit::paint_lattice(&painter, pos2(cap.left() + 13.0, cap.center().y), 10.0, p.info, true);
         let mut job = egui::text::LayoutJob::simple_singleline(web.doing.clone(), egui::FontId::proportional(11.0), p.text_muted);
         job.wrap = egui::text::TextWrapping::truncate_at_width((cap.width() - 22.0 - 24.0).max(10.0));
         let g = painter.layout_job(job);
         painter.galley(pos2(cap.left() + 22.0, cap.center().y - g.size().y / 2.0), g, p.text_muted);
         painter.text(pos2(cap.right() - 12.0, cap.center().y), Align2::CENTER_CENTER, icons::ARROWS_OUT_SIMPLE, style::icon_font(12.0), if resp.hovered() { p.text } else { p.text_faint });
-        let ring = if resp.hovered() { p.info } else { style::over(p.border, p.info, 0.6) };
-        painter.rect_stroke(r, CornerRadius::same(style::RADIUS_LG), Stroke::new(if resp.hovered() { 1.5 } else { 1.0 }, ring), egui::StrokeKind::Outside);
+        // Ringed in the accent, as an agent's page is.
+        painter.rect_stroke(r, CornerRadius::same(style::RADIUS_LG), Stroke::new(if resp.hovered() { 2.0 } else { 1.5 }, p.accent), egui::StrokeKind::Outside);
         let tip = format!("{} · {}\n{}", web.address, web.who, t("Click: show the browser in this tile · ⌥-click: in Focus"));
         if resp.on_hover_text(tip).clicked() {
             let alt = ui.input(|i| i.modifiers.alt);
@@ -957,12 +872,13 @@ impl App {
         }
         let Some(b) = self.browsers.get(&id) else { return };
         let driven = b.driven();
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.canvas);
-        let mut page = rect;
+        // The page in its own rounded frame, ringed in the accent while an agent uses it (as in
+        // the Browser panel).
         if driven {
-            ui.painter().rect_stroke(rect, CornerRadius::ZERO, Stroke::new(2.0, style::soft(p.info, 0.65)), egui::StrokeKind::Inside);
-            page = rect.shrink(2.0);
+            ui.painter().rect_stroke(rect, CornerRadius::same(8), Stroke::new(3.0, style::soft(p.accent, 0.16)), egui::StrokeKind::Outside);
         }
+        ui.painter().rect(rect, CornerRadius::same(8), p.canvas, Stroke::new(if driven { 2.0 } else { 1.0 }, if driven { p.accent } else { p.border }), egui::StrokeKind::Inside);
+        let page = rect.shrink(if driven { 2.0 } else { 1.0 });
         let whole = ui.clip_rect().contains_rect(page) && page.width() >= 40.0 && page.height() >= 40.0;
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("tile-browser:{id}"), page);
@@ -1206,12 +1122,15 @@ impl App {
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("tile-tab:{name}:{i}"), rect);
             let waits = !on && tab.waits;
-            if on {
-                painter.rect(rect, CornerRadius::same(5), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+            let tab_waits = tab.waits;
+            if on && tab_waits {
+                painter.rect(rect, CornerRadius::same(6), style::over(bg, p.warn, 0.10), Stroke::new(1.0, style::soft(p.warn, 0.35)), egui::StrokeKind::Inside);
+            } else if on {
+                painter.rect(rect, CornerRadius::same(6), p.surface, Stroke::new(1.0, if ui.visuals().dark_mode { p.border } else { p.border_strong }), egui::StrokeKind::Inside);
             } else if waits {
-                painter.rect_filled(rect, CornerRadius::same(5), style::tint(p.warn, ui.visuals().dark_mode));
+                painter.rect_filled(rect, CornerRadius::same(6), style::tint(p.warn, ui.visuals().dark_mode));
             } else if resp.hovered() {
-                painter.rect_filled(rect, CornerRadius::same(5), p.hover);
+                painter.rect_filled(rect, CornerRadius::same(6), p.hover);
             }
             let (icon, mut ic) = icon_of(tab, on);
             if waits {
@@ -1220,12 +1139,12 @@ impl App {
             let icon_x = if mode == StripMode::Labels { rect.left() + 6.0 + 6.0 } else { rect.center().x };
             painter.text(pos2(icon_x, cy), Align2::CENTER_CENTER, icon, style::icon_font(12.0), ic);
             if mode == StripMode::Labels {
-                let tc = if on {
-                    p.text
-                } else if waits {
+                let tc = if tab.waits {
                     p.warn
+                } else if on {
+                    p.text
                 } else {
-                    p.text_muted
+                    p.text_faint
                 };
                 let g = labels[i].clone();
                 let lx = rect.left() + 6.0 + 12.0 + 5.0;
@@ -1259,6 +1178,206 @@ fn chip_dot(painter: &egui::Painter, rect: Rect, color: egui::Color32, ring: egu
     let c = pos2(rect.right() - 1.0, rect.top() + 1.0);
     painter.circle_filled(c, 4.5, ring);
     painter.circle_filled(c, 3.0, color);
+}
+
+/// What a tile's foot says.
+#[derive(Clone, Copy)]
+enum Foot {
+    Wait,
+    Done,
+    Fail,
+    /// The pane whose agent ran there before a restart.
+    Resume(PaneId),
+}
+
+impl App {
+    /// What a finished agent's run changed (files, added, removed): worked out once per finish,
+    /// off the UI thread, from the snapshot taken when it started. `None` until it is known.
+    fn done_stats(&mut self, pane: PaneId) -> Option<(usize, u32, u32)> {
+        let x = self.panes.get(&pane)?;
+        let since = x.tracker.since;
+        if let Some((at, stats)) = &x.done_stats
+            && *at == since
+        {
+            return *stats;
+        }
+        let (tree, _, _) = x.run_snapshot.clone()?;
+        let root = self.projects.iter().find(|p| p.panes().contains(&pane))?.path.clone();
+        if let Some(x) = self.panes.get_mut(&pane) {
+            x.done_stats = Some((since, None));
+        }
+        let tx = self.app_tx.clone();
+        let ctx = self.ctx.clone();
+        self.rt.spawn_blocking(move || {
+            let stats = tc_git::repo_root(&root).and_then(|top| {
+                let (_, now) = tc_git::worktree_vs_head(&top).ok()?;
+                let files = tc_git::changes(&top, &tree, &now).ok()?;
+                let (a, d) = files.iter().fold((0, 0), |(a, d), f| (a + f.additions.unwrap_or(0), d + f.deletions.unwrap_or(0)));
+                Some((files.len(), a, d))
+            });
+            let _ = tx.send(crate::app::AppMsg::DoneStats(pane, since, stats));
+            ctx.request_repaint();
+        });
+        None
+    }
+
+    /// A tile's foot: a tinted bar that says what the tile asks of the user, with what to do
+    /// about it. `said`: the pane's message, its name, its status.
+    #[allow(clippy::too_many_arguments)]
+    fn tile_foot(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        kind: Foot,
+        pane: Option<PaneId>,
+        said: Option<(Option<String>, String, Status)>,
+        since: Option<Instant>,
+        review: Option<PaneId>,
+        open: &Action,
+        name: &str,
+    ) {
+        let p = style::pal(ui);
+        let dark = ui.visuals().dark_mode;
+        let (c, fill, line) = match kind {
+            Foot::Wait => (p.warn, style::soft(p.warn, 0.11), style::soft(p.warn, 0.26)),
+            Foot::Done => (p.ok, style::soft(p.ok, 0.10), style::soft(p.ok, 0.24)),
+            Foot::Fail => (p.err, style::soft(p.err, 0.10), style::soft(p.err, 0.24)),
+            Foot::Resume(_) => (p.text_muted, p.surface, p.border_strong),
+        };
+        let painter = ui.painter_at(rect.expand(1.0));
+        painter.rect(rect, CornerRadius::same(8), fill, Stroke::new(1.0, line), egui::StrokeKind::Inside);
+        let _ = dark;
+        let cy = rect.center().y;
+        let (message, label, status) = said.unwrap_or((None, String::new(), Status::Idle));
+        // Buttons from the right.
+        let inner = Rect::from_min_max(pos2(rect.left() + 10.0, rect.top()), pos2(rect.right() - 6.0, rect.bottom()));
+        let (left_end, clicked) = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let mut clicked = None;
+                match kind {
+                    Foot::Wait | Foot::Fail => {
+                        let r = kit::button_keys(ui, kit::Kind::Ghost, None, t("Open"), Some("↵"), true);
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record(format!("tile-foot-open:{name}"), r.rect);
+                        if r.clicked() {
+                            clicked = Some(0);
+                        }
+                    }
+                    Foot::Done => {
+                        let r = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::GIT_DIFF), t("Review"), true);
+                        #[cfg(debug_assertions)]
+                        if let Some(id) = review {
+                            crate::devtest::record(format!("tile-review:{id}"), r.rect);
+                        }
+                        if r.on_hover_text(kit::tip(t("Review what the agent changed"), Action::Review)).clicked() {
+                            clicked = Some(1);
+                        }
+                    }
+                    Foot::Resume(id) => {
+                        let r = kit::button_ex(ui, kit::Kind::Secondary, None, t("Resume"), true);
+                        let d = kit::button_ex(ui, kit::Kind::Ghost, None, t("Dismiss"), true);
+                        #[cfg(debug_assertions)]
+                        {
+                            crate::devtest::record(format!("tile-resume:{id}"), r.rect);
+                            crate::devtest::record(format!("tile-dismiss:{id}"), d.rect);
+                        }
+                        if r.clicked() {
+                            clicked = Some(2);
+                        }
+                        if d.clicked() {
+                            clicked = Some(3);
+                        }
+                    }
+                }
+                (ui.min_rect().left(), clicked)
+            })
+            .inner;
+        // The words, before the buttons.
+        let room = (left_end - 8.0 - (rect.left() + 10.0 + 14.0 + 8.0)).max(0.0);
+        let x = rect.left() + 10.0;
+        let text_x = x + 14.0 + 8.0;
+        let mut job = egui::text::LayoutJob::default();
+        let f = |font: egui::FontId, color: egui::Color32| egui::TextFormat::simple(font, color);
+        match kind {
+            Foot::Wait => {
+                status::paint_glyph(&painter, pos2(x + 7.0, cy), Status::NeedsInput, &p, 14.0);
+                match message.as_deref().and_then(|m| m.split_once(": ")) {
+                    Some(("Bash", cmd)) => {
+                        job.append(t("Wants to run"), 0.0, f(style::medium(12.0), c));
+                        job.append(cmd, 6.0, f(style::mono(11.0), p.text));
+                    }
+                    Some((tool, what)) => {
+                        job.append(&tf("Asks to use {}", &[tool]), 0.0, f(style::medium(12.0), c));
+                        job.append(what, 6.0, f(egui::FontId::proportional(12.0), p.text));
+                    }
+                    None => job.append(message.as_deref().unwrap_or(t("Needs input")), 0.0, f(style::medium(12.0), c)),
+                }
+            }
+            Foot::Done => {
+                status::paint_glyph(&painter, pos2(x + 7.0, cy), Status::Done, &p, 14.0);
+                let head = if status == Status::CommandDone { tf("{} finished", &[&label]) } else { t("Finished its turn").to_string() };
+                job.append(&head, 0.0, f(style::medium(12.0), c));
+                // What its run changed (files, + −); else what it said last.
+                let stats = pane.filter(|_| status == Status::Done).and_then(|id| self.done_stats(id)).filter(|s| s.0 > 0);
+                match stats {
+                    Some((n, a, d)) => {
+                        job.append(&format!("· {}", crate::i18n::count(n, t("1 file"), t("{} files"))), 6.0, f(egui::FontId::proportional(12.0), p.text_muted));
+                        job.append("·", 6.0, f(egui::FontId::proportional(12.0), p.text_muted));
+                        job.append(&format!("+{a}"), 6.0, f(style::mono(11.0), p.ok));
+                        job.append(&format!("−{d}"), 5.0, f(style::mono(11.0), p.err));
+                    }
+                    None => {
+                        if let Some(m) = message.filter(|_| status == Status::Done) {
+                            job.append(&format!("· “{m}”"), 6.0, f(egui::FontId::proportional(12.0), p.text_muted));
+                        }
+                    }
+                }
+            }
+            Foot::Fail => {
+                status::paint_glyph(&painter, pos2(x + 7.0, cy), status, &p, 14.0);
+                job.append(&label, 0.0, f(style::medium(12.0), c));
+                let code = match status {
+                    Status::Failed(code) => tf("exited {}", &[&code.to_string()]),
+                    _ => t("failed").to_string(),
+                };
+                let ago = since.map(|s| format!(" · {}", tf("{} ago", &[&status::age(s)]))).unwrap_or_default();
+                job.append(&format!("{code}{ago}"), 6.0, f(egui::FontId::proportional(12.0), p.text_muted));
+            }
+            Foot::Resume(id) => {
+                painter.text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, icons::CLOCK_COUNTER_CLOCKWISE, style::icon_font(14.0), p.text_muted);
+                if let Some((agent, _)) = self.panes.get(&id).and_then(|x| x.resume.clone()) {
+                    job.append(agent.label(), 0.0, f(style::medium(12.0), p.text));
+                    job.append(t("ran here before the restart"), 5.0, f(egui::FontId::proportional(12.0), p.text_muted));
+                }
+            }
+        }
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        if room > 30.0 {
+            let g = painter.layout_job(job);
+            painter.galley(pos2(text_x, cy - g.size().y / 2.0), g, p.text);
+        }
+        match clicked {
+            Some(0) => self.actions.push(open.clone()),
+            Some(1) => {
+                if let Some(id) = review.or(pane) {
+                    self.actions.push(Action::FocusPane(id));
+                    self.actions.push(Action::ReviewAgent);
+                }
+            }
+            Some(2) => {
+                if let Foot::Resume(id) = kind {
+                    self.actions.push(Action::Resume(id));
+                }
+            }
+            Some(3) => {
+                if let Foot::Resume(id) = kind {
+                    self.actions.push(Action::DismissResume(id));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// An agent's page a tile shows in its corner (`App::tile_web`).

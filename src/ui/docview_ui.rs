@@ -15,10 +15,10 @@ use crate::app::App;
 use crate::docview::{Content, DocMatch, DocView, MAX_DOC_MATCHES, Pic, State};
 use crate::i18n::{t, tf};
 
-const BAR_H: f32 = 36.0;
-const STATUS_H: f32 = 26.0;
-const TABS_H: f32 = 30.0;
-const CELL_BAR_H: f32 = 32.0;
+const BAR_H: f32 = 32.0;
+const STATUS_H: f32 = 28.0;
+const TABS_H: f32 = 34.0;
+const CELL_BAR_H: f32 = 34.0;
 const FIND_H: f32 = 36.0;
 const ZOOMS: [f32; 13] = [0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
 
@@ -151,9 +151,8 @@ pub fn end_doc_selection_frame(ctx: &egui::Context) {
 /// (its path); at the right find, zoom, Open as Text (CSV), open in the default app, reveal.
 fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, ask: &mut Option<Ask>) {
     let p = style::pal(ui);
-    ui.painter().rect_filled(rect, CornerRadius::ZERO, p.canvas);
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
-    let inner = Rect::from_min_max(pos2(rect.left() + 12.0, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
+    let inner = Rect::from_min_max(pos2(rect.left() + 16.0, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
     // What the arrows at the left move through: a PDF's pages, or a deck's slides.
     let slides = match &view.state {
         State::Ready(Content::Slides(deck)) => deck.slides.len(),
@@ -169,7 +168,7 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
     let left_end = ui
         .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let b = |ui: &mut Ui, icon: &str, tip: &str| kit::icon_button_ex(ui, icon, tip, false, 22.0);
+            let b = |ui: &mut Ui, icon: &str, tip: &str| kit::icon_button_ex(ui, icon, tip, false, 24.0);
             if b(ui, icons::FOLDER_OPEN, reveal_label()).clicked() {
                 *ask = Some(Ask::Reveal);
             }
@@ -180,9 +179,7 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
                 *ask = Some(Ask::EditAsText);
             }
             if matches!(view.state, State::Ready(_)) {
-                kit::vdivider(ui, 16.0);
                 zoom_controls(ui, view);
-                kit::vdivider(ui, 16.0);
                 if b(ui, icons::MAGNIFYING_GLASS, &format!("{}   {}", t("Find"), kit::keys(&crate::actions::Action::Find).unwrap_or(""))).clicked() {
                     view.open_find();
                 }
@@ -236,56 +233,73 @@ fn reveal_label() -> &'static str {
     if cfg!(target_os = "macos") { t("Show in Finder") } else { t("Show in Folder") }
 }
 
+/// − 100% + in one outlined pill (added right to left): the percentage goes back to 100%.
 fn zoom_controls(ui: &mut Ui, view: &mut DocView) {
     let p = style::pal(ui);
-    if kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS_PLUS, t("Zoom In"), false, 22.0).clicked() {
+    let pct = format!("{:.0}%", view.zoom * 100.0);
+    let g = ui.painter().layout_no_wrap(pct, style::mono(10.5), p.text_muted);
+    let w = 4.0 + 18.0 + 2.0 + g.size().x + 4.0 + 2.0 + 18.0 + 4.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
+    ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+    let minus = Rect::from_center_size(pos2(rect.left() + 4.0 + 9.0, rect.center().y), vec2(18.0, 18.0));
+    let plus = Rect::from_center_size(pos2(rect.right() - 4.0 - 9.0, rect.center().y), vec2(18.0, 18.0));
+    let mid = Rect::from_min_max(pos2(minus.right() + 1.0, rect.top() + 3.0), pos2(plus.left() - 1.0, rect.bottom() - 3.0));
+    let button = |r: Rect, icon: &str, tip: &str, salt: &str| {
+        let resp = ui.interact(r, egui::Id::new(("doc-zoom", salt)), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
+        }
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, icon, style::icon_font(11.0), if resp.hovered() { p.text } else { p.text_faint });
+        resp.on_hover_text(tip).clicked()
+    };
+    if button(minus, icons::MINUS, t("Zoom Out"), "out") {
+        view.zoom = ZOOMS.iter().rev().copied().find(|z| *z < view.zoom - 0.01).unwrap_or(view.zoom);
+    }
+    if button(plus, icons::PLUS, t("Zoom In"), "in") {
         view.zoom = ZOOMS.iter().copied().find(|z| *z > view.zoom + 0.01).unwrap_or(view.zoom);
     }
-    let pct = format!("{:.0}%", view.zoom * 100.0);
-    let r = ui.add(egui::Button::new(egui::RichText::new(pct).size(style::SMALL).color(p.text_muted)).frame(false).min_size(vec2(40.0, 22.0)));
-    if r.on_hover_text(t("Actual Size")).clicked() {
-        view.zoom = 1.0;
+    let resp = ui.interact(mid, egui::Id::new(("doc-zoom", "reset")), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(mid, CornerRadius::same(4), p.hover);
     }
-    if kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS_MINUS, t("Zoom Out"), false, 22.0).clicked() {
-        view.zoom = ZOOMS.iter().rev().copied().find(|z| *z < view.zoom - 0.01).unwrap_or(view.zoom);
+    ui.painter().galley(pos2(mid.center().x - g.size().x / 2.0, mid.center().y - g.size().y / 2.0), g, p.text_muted);
+    if resp.on_hover_text(t("Actual Size")).clicked() {
+        view.zoom = 1.0;
     }
 }
 
 fn status_line(ui: &mut Ui, view: &DocView, rect: Rect) {
     let p = style::pal(ui);
-    ui.painter().rect_filled(rect, CornerRadius::ZERO, p.canvas);
     ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
     let summary = ui.painter().text(
         pos2(rect.left() + 14.0, rect.center().y),
         Align2::LEFT_CENTER,
         view.summary(),
-        egui::FontId::proportional(style::SMALL),
+        egui::FontId::proportional(11.0),
         p.text_faint,
     );
+    // A sheet: how to see a cell's whole text, at the right.
+    let hint = matches!(view.state, State::Ready(Content::Sheet(_))).then(|| t("Click a cell to see all of its text."));
+    let hint_w = hint.map_or(0.0, |h| {
+        let g = ui.painter().layout_no_wrap(h.to_string(), egui::FontId::proportional(11.0), p.text_faint);
+        let w = g.size().x;
+        if rect.width() - summary.width() - 60.0 > w {
+            ui.painter().galley(pos2(rect.right() - 14.0 - w, rect.center().y - g.size().y / 2.0), g, p.text_faint);
+            w + 14.0
+        } else {
+            0.0
+        }
+    });
     // A sheet cut short (too many cells, or a CSV record that could not be read) would look
     // complete otherwise.
     if let State::Ready(Content::Sheet(b)) = &view.state
         && let Some(s) = b.sheets.get(view.sheet).filter(|s| s.truncated)
     {
         let text = format!("{}  {}", icons::WARNING, tf("Only the first {} rows are shown.", &[&s.rows.to_string()]));
-        let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(style::SMALL), p.warn);
-        // Short of the selected cell's name at the right.
-        job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - summary.right() - 110.0).max(0.0));
+        let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(11.0), p.warn);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - summary.right() - 26.0 - hint_w).max(0.0));
         let g = ui.painter().layout_job(job);
         ui.painter().galley(pos2(summary.right() + 12.0, rect.center().y - g.size().y / 2.0), g, p.warn);
-    }
-    let right = match (&view.state, view.cell) {
-        (State::Ready(Content::Sheet(b)), Some((r, c))) => b.sheets.get(view.sheet).map(|s| cell_name(s, r, c)),
-        _ => None,
-    };
-    if let Some(right) = right {
-        ui.painter().text(
-            pos2(rect.right() - 14.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            right,
-            egui::FontId::proportional(style::SMALL),
-            p.text_faint,
-        );
     }
 }
 
@@ -1113,9 +1127,10 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
     let bar = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + CELL_BAR_H));
     let Some(sheet) = book.sheets.get(view.sheet) else { return };
     let z = view.zoom;
-    let fs = 12.5 * z;
-    let row_h = (22.0 * z).round().max(12.0);
-    let char_w = fs * 0.56;
+    let dark = ui.visuals().dark_mode;
+    let fs = 11.5 * z;
+    let row_h = (25.0 * z).round().max(12.0);
+    let char_w = fs * 0.6;
     let widths: Vec<f32> = sheet.widths.iter().map(|w| (*w as f32 * char_w + 18.0 * z).clamp(46.0 * z, 380.0 * z).round()).collect();
     let mut xs = Vec::with_capacity(widths.len() + 1);
     let mut acc = 0.0;
@@ -1126,30 +1141,50 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
     }
     let last_row = sheet.origin.0 as usize + sheet.rows;
     let rn_w = (last_row.max(1).to_string().len() as f32 * char_w + 20.0 * z).max(36.0 * z).round();
-    let head_h = row_h;
-    let font = egui::FontId::proportional(fs);
+    let head_h = (24.0 * z).round().max(12.0);
+    let font = style::mono(fs);
+    // The header row (the sheet's first) stays in view under the column letters.
+    let sticky = if sheet.rows > 1 { row_h } else { 0.0 };
+    let gutter = if dark { style::over(p.canvas, p.chrome, 0.25) } else { Color32::from_rgb(0xf6, 0xf6, 0xf5) };
 
-    // The selected cell's name and whole text.
-    ui.painter().rect_filled(bar, CornerRadius::ZERO, p.canvas);
+    // The selected cell: its name in a well, its whole text, what it is in words (its column's
+    // header, its row's first values); Copy at the right.
     ui.painter().hline(bar.x_range(), bar.bottom() - 0.5, Stroke::new(1.0, p.border));
+    let name = view.cell.map_or_else(|| "—".to_string(), |(r, c)| cell_name(sheet, r, c));
+    let ng = ui.painter().layout_no_wrap(name, style::mono(11.0), p.text_muted);
+    let nr = Rect::from_min_size(pos2(bar.left() + 10.0, bar.center().y - 11.0), vec2((ng.size().x + 14.0).max(44.0), 22.0));
+    let well = if dark { p.inset } else { Color32::from_rgb(0xf1, 0xf1, 0xf0) };
+    ui.painter().rect(nr, CornerRadius::same(5), well, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    ui.painter().galley(pos2(nr.center().x - ng.size().x / 2.0, nr.center().y - ng.size().y / 2.0), ng, p.text_muted);
     if let Some((r, c)) = view.cell {
-        let name = cell_name(sheet, r, c);
-        let nr = Rect::from_min_size(pos2(bar.left() + 10.0, bar.center().y - 11.0), vec2(56.0, 22.0));
-        ui.painter().rect(nr, CornerRadius::same(4), p.surface, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
-        ui.painter().text(nr.center(), Align2::CENTER_CENTER, name, style::medium(style::SMALL), p.text);
         let cell = sheet.cell(r, c);
-        // What kind of value it is, at the right.
-        let kind = cell.kind_label();
-        let kg = ui.painter().layout_no_wrap(kind.to_string(), egui::FontId::proportional(style::SMALL), p.text_faint);
-        let kw = kg.size().x;
-        ui.painter().galley(pos2(bar.right() - 10.0 - kw, bar.center().y - kg.size().y / 2.0), kg, p.text_faint);
+        // What kind of value it is, on the name.
+        ui.interact(nr, egui::Id::new("doc-cell-name"), Sense::hover()).on_hover_text(cell.kind_label());
+        let copy = Rect::from_center_size(pos2(bar.right() - 8.0 - 10.0, bar.center().y), vec2(20.0, 20.0));
+        let copied = ui.scope_builder(egui::UiBuilder::new().max_rect(copy), |ui| kit::icon_button_ex(ui, icons::COPY, t("Copy"), false, 20.0)).inner;
+        if copied.clicked() {
+            ui.ctx().copy_text(cell.text().to_string());
+        }
+        let mut context: Vec<String> = Vec::new();
+        if r > 0 {
+            context.push(sheet.cell(0, c).text().to_string());
+        }
+        for k in [0, 1] {
+            if k != c && k < sheet.cols && r > 0 {
+                context.push(sheet.cell(r, k).text().to_string());
+            }
+        }
+        let context: Vec<String> = context.into_iter().map(|x| x.lines().next().unwrap_or("").trim().to_string()).filter(|x| !x.is_empty()).collect();
         let text = cell.text().replace('\n', " ⏎ ");
-        let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(12.5), p.text);
-        job.wrap = egui::text::TextWrapping::truncate_at_width((bar.right() - nr.right() - 24.0 - kw - 10.0).max(10.0));
+        let room = (copy.left() - 10.0 - (nr.right() + 10.0)).max(10.0);
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&text, 0.0, egui::TextFormat::simple(style::mono(11.5), p.text));
+        if !context.is_empty() {
+            job.append(&context.join(" · "), 10.0, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.text_faint));
+        }
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
         let g = ui.painter().layout_job(job);
         ui.painter().galley(pos2(nr.right() + 10.0, bar.center().y - g.size().y / 2.0), g, p.text);
-    } else {
-        ui.painter().text(pos2(bar.left() + 12.0, bar.center().y), Align2::LEFT_CENTER, t("Click a cell to see all of its text."), egui::FontId::proportional(style::SMALL), p.text_faint);
     }
     if let Some(e) = &sheet.error {
         ui.painter().text(grid_rect.center(), Align2::CENTER_CENTER, e, egui::FontId::proportional(style::BODY), p.err);
@@ -1167,7 +1202,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
             // last (a match on another sheet may have just switched to this one).
             let id = ui.make_persistent_id(egui::IdSalt::new(&salt));
             view.sheet_scroll = egui::scroll_area::State::load(ui.ctx(), id).map_or(egui::Vec2::ZERO, |s| s.offset);
-            if let Some(target) = scroll_target(view.cell, view.sheet_scroll, &xs, row_h, head_h, rn_w, grid_rect) {
+            if let Some(target) = scroll_target(view.cell, view.sheet_scroll, &xs, row_h, head_h, sticky, rn_w, grid_rect) {
                 area = area.scroll_offset(target);
             }
         }
@@ -1198,9 +1233,11 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
                         .collect()
                 })
                 .unwrap_or_default();
-            for row in row0..row1 {
-                let y = o.y + head_h + row as f32 * row_h;
-                painter.hline(o.x + rn_w + xs[col0]..=o.x + rn_w + xs[col1], y + row_h - 0.5, grid);
+            let top = o.y + vp.min.y;
+            let left = o.x + vp.min.x;
+            let zebra = p.hover.gamma_multiply(0.5);
+            // One row's cells at `y`: a find's matches, the text (numbers at the right).
+            let paint_cells = |row: usize, y: f32| {
                 for col in col0..col1 {
                     let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[col], y), vec2(widths[col], row_h));
                     if let Some(is_current) = hits.get(&(row, col)) {
@@ -1218,63 +1255,105 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
                         _ => (p.text, false),
                     };
                     let mut job = egui::text::LayoutJob::simple_singleline(text.lines().next().unwrap_or("").to_string(), font.clone(), color);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((cr.width() - 12.0 * z).max(4.0));
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((cr.width() - 16.0 * z).max(4.0));
                     let g = painter.layout_job(job);
-                    let gx = if right { cr.right() - 6.0 * z - g.size().x } else { cr.left() + 6.0 * z };
+                    let gx = if right { cr.right() - 8.0 * z - g.size().x } else { cr.left() + 8.0 * z };
                     painter.galley(pos2(gx, cr.center().y - g.size().y / 2.0), g, color);
                 }
+            };
+            let cells_x = o.x + rn_w + xs[col0]..=o.x + rn_w + xs[col1];
+            let first = if sticky > 0.0 { row0.max(1) } else { row0 };
+            for row in first..row1 {
+                let y = o.y + head_h + row as f32 * row_h;
+                if row % 2 == 1 {
+                    painter.rect_filled(Rect::from_x_y_ranges(cells_x.clone(), y..=y + row_h), CornerRadius::ZERO, zebra);
+                }
+                painter.hline(cells_x.clone(), y + row_h - 0.5, grid);
+                paint_cells(row, y);
             }
             for x in &xs[col0..=col1.min(widths.len())] {
                 let x = o.x + rn_w + x - 0.5;
-                painter.vline(x, o.y + head_h + row0 as f32 * row_h..=o.y + head_h + row1 as f32 * row_h, grid);
+                painter.vline(x, o.y + head_h + first as f32 * row_h..=o.y + head_h + row1 as f32 * row_h, grid);
             }
-            // The selected cell.
-            if let Some((sr, sc)) = view.cell
-                && sc < widths.len()
+            let selected = |painter: &egui::Painter, row: usize, y: f32| {
+                if let Some((sr, sc)) = view.cell
+                    && sr == row
+                    && sc < widths.len()
+                {
+                    let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[sc], y), vec2(widths[sc], row_h));
+                    painter.rect_filled(cr, CornerRadius::ZERO, p.accent_tint);
+                    painter.rect_stroke(cr, CornerRadius::ZERO, Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
+                    // Its text again over the tint.
+                    let text = sheet.cell(sr, sc).text();
+                    let right = matches!(sheet.cell(sr, sc), tc_doc::sheet::Cell::Number(_) | tc_doc::sheet::Cell::Bool(_));
+                    let mut job = egui::text::LayoutJob::simple_singleline(text.lines().next().unwrap_or("").to_string(), font.clone(), p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((cr.width() - 16.0 * z).max(4.0));
+                    let g = painter.layout_job(job);
+                    let gx = if right { cr.right() - 8.0 * z - g.size().x } else { cr.left() + 8.0 * z };
+                    painter.galley(pos2(gx, cr.center().y - g.size().y / 2.0), g, p.text);
+                }
+            };
+            if let Some((sr, _)) = view.cell
+                && (sticky == 0.0 || sr > 0)
             {
-                let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[sc], o.y + head_h + sr as f32 * row_h), vec2(widths[sc], row_h));
-                painter.rect_filled(cr, CornerRadius::ZERO, style::soft(p.accent, 0.12));
-                painter.rect_stroke(cr, CornerRadius::ZERO, Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
+                selected(painter, sr, o.y + head_h + sr as f32 * row_h);
             }
-            // The header row and the row numbers stay in view.
-            let top = o.y + vp.min.y;
-            let left = o.x + vp.min.x;
+            // The header row, raised, kept under the column letters.
+            let sticky_y = top + head_h;
+            if sticky > 0.0 {
+                let band = Rect::from_x_y_ranges(cells_x.clone(), sticky_y..=sticky_y + row_h);
+                painter.rect_filled(band, CornerRadius::ZERO, p.surface);
+                paint_cells(0, sticky_y);
+                for x in &xs[col0..=col1.min(widths.len())] {
+                    painter.vline(o.x + rn_w + x - 0.5, band.y_range(), grid);
+                }
+                selected(painter, 0, sticky_y);
+                painter.hline(band.x_range(), band.bottom() - 0.5, Stroke::new(1.0, p.border_strong));
+            }
+            // The column letters and the row numbers stay in view.
             let head = Rect::from_min_size(pos2(o.x + rn_w + xs[col0], top), vec2(xs[col1] - xs[col0], head_h));
-            painter.rect_filled(head, CornerRadius::ZERO, p.chrome);
+            painter.rect_filled(head, CornerRadius::ZERO, gutter);
             for col in col0..col1 {
                 let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[col], top), vec2(widths[col], head_h));
                 let on = view.cell.is_some_and(|(_, c)| c == col);
                 if on {
-                    painter.rect_filled(cr, CornerRadius::ZERO, style::soft(p.accent, 0.18));
+                    painter.rect_filled(cr, CornerRadius::ZERO, p.accent_tint);
                 }
-                painter.text(cr.center(), Align2::CENTER_CENTER, tc_doc::sheet::column_name(sheet.origin.1 + col as u32), style::medium(fs * 0.92), if on { p.accent_text } else { p.text_muted });
+                painter.text(cr.center(), Align2::CENTER_CENTER, tc_doc::sheet::column_name(sheet.origin.1 + col as u32), style::mono(10.5 * z), if on { p.accent_text } else { p.text_ghost });
                 painter.vline(cr.right() - 0.5, cr.y_range(), grid);
             }
-            painter.hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border_strong));
+            painter.hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
             let nums = Rect::from_min_size(pos2(left, o.y + head_h + row0 as f32 * row_h), vec2(rn_w, (row1 - row0) as f32 * row_h));
-            painter.rect_filled(nums, CornerRadius::ZERO, p.chrome);
-            for row in row0..row1 {
-                let y = o.y + head_h + row as f32 * row_h;
+            painter.rect_filled(nums, CornerRadius::ZERO, gutter);
+            let number = |painter: &egui::Painter, row: usize, y: f32| {
                 let rr = Rect::from_min_size(pos2(left, y), vec2(rn_w, row_h));
-                if y + row_h < top + head_h {
+                let on = view.cell.is_some_and(|(r, _)| r == row);
+                painter.rect_filled(rr, CornerRadius::ZERO, if on { p.accent_tint } else { gutter });
+                painter.text(pos2(rr.right() - 9.0 * z, rr.center().y), Align2::RIGHT_CENTER, (sheet.origin.0 as usize + row + 1).to_string(), style::mono(10.5 * z), if on { p.accent_text } else { p.text_ghost });
+                painter.hline(rr.x_range(), rr.bottom() - 0.5, grid);
+            };
+            for row in first..row1 {
+                let y = o.y + head_h + row as f32 * row_h;
+                if y + row_h < top + head_h + sticky {
                     continue;
                 }
-                let on = view.cell.is_some_and(|(r, _)| r == row);
-                if on {
-                    painter.rect_filled(rr, CornerRadius::ZERO, style::soft(p.accent, 0.18));
-                }
-                painter.text(pos2(rr.right() - 8.0 * z, rr.center().y), Align2::RIGHT_CENTER, (sheet.origin.0 as usize + row + 1).to_string(), egui::FontId::proportional(fs * 0.9), if on { p.accent_text } else { p.text_faint });
-                painter.hline(rr.x_range(), rr.bottom() - 0.5, grid);
+                number(painter, row, y);
             }
-            painter.vline(left + rn_w - 0.5, nums.y_range(), Stroke::new(1.0, p.border_strong));
-            painter.rect_filled(Rect::from_min_size(pos2(left, top), vec2(rn_w, head_h)), CornerRadius::ZERO, p.chrome);
+            if sticky > 0.0 {
+                number(painter, 0, sticky_y);
+            }
+            painter.vline(left + rn_w - 0.5, nums.y_range(), Stroke::new(1.0, p.border));
+            painter.rect_filled(Rect::from_min_size(pos2(left, top), vec2(rn_w, head_h)), CornerRadius::ZERO, gutter);
+            painter.hline(left..=left + rn_w, top + head_h - 0.5, Stroke::new(1.0, p.border));
             // A click picks the cell under it; the arrows move from there.
             if resp.clicked()
                 && let Some(pos) = resp.interact_pointer_pos()
             {
                 let (x, y) = (pos.x - o.x - rn_w, pos.y - o.y - head_h);
+                // On the header row kept in view: that row.
+                let on_sticky = sticky > 0.0 && pos.y >= sticky_y && pos.y < sticky_y + row_h;
                 if x >= 0.0 && y >= 0.0 {
-                    let row = (y / row_h) as usize;
+                    let row = if on_sticky { 0 } else { (y / row_h) as usize };
                     let col = xs.partition_point(|v| *v <= x).saturating_sub(1);
                     if row < sheet.rows && col < widths.len() {
                         select = Some((row, col));
@@ -1347,10 +1426,12 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
 }
 
 /// Where to scroll (from `at`) so the cell the arrows moved to is in view.
-fn scroll_target(cell: Option<(usize, usize)>, at: egui::Vec2, xs: &[f32], row_h: f32, head_h: f32, rn_w: f32, area: Rect) -> Option<egui::Vec2> {
+/// `sticky`: the height of the header row kept in view (row 0, never scrolled to).
+#[allow(clippy::too_many_arguments)]
+fn scroll_target(cell: Option<(usize, usize)>, at: egui::Vec2, xs: &[f32], row_h: f32, head_h: f32, sticky: f32, rn_w: f32, area: Rect) -> Option<egui::Vec2> {
     let (r, c) = cell?;
     let (x0, x1) = (xs.get(c).copied()?, xs.get(c + 1).copied()?);
-    let (y0, y1) = (r as f32 * row_h, (r + 1) as f32 * row_h);
+    let (y0, y1) = ((r as f32 * row_h - sticky).max(0.0), (r + 1) as f32 * row_h);
     let (vw, vh) = (area.width() - rn_w - 12.0, area.height() - head_h - 12.0);
     let mut out = at;
     if x0 < at.x {
@@ -1358,7 +1439,9 @@ fn scroll_target(cell: Option<(usize, usize)>, at: egui::Vec2, xs: &[f32], row_h
     } else if x1 > at.x + vw {
         out.x = x1 - vw;
     }
-    if y0 < at.y {
+    if r == 0 && sticky > 0.0 {
+        // The header row is always in view.
+    } else if y0 < at.y {
         out.y = y0;
     } else if y1 > at.y + vh {
         out.y = y1 - vh;

@@ -13,93 +13,158 @@ use tc_term::fonts;
 use tc_core::model::ThemeMode;
 
 /// Colors of one theme.
+///
+/// Two layers carry the window: the **base** (`chrome`: the window itself, under the sidebar,
+/// the top bar and the status bar) and the **sheets** (`canvas`: panes, drawers, panels, Grid
+/// tiles, where the work is; the terminal's background). What is raised above a sheet (the
+/// selected row, the tab in front, a card, a dialog, a menu) has its own colour. Lines and
+/// hover fills are translucent, so they work over any layer.
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
-    /// Content area: the terminal's surroundings, file lists, the welcome screen.
+    /// The sheets: panes, drawers, panels, tiles (the terminal's background).
     pub canvas: Color32,
-    /// Window chrome: sidebar, tab strip, status bar.
+    /// The base: the window under the sidebar, the top bar, the status bar and between sheets.
     pub chrome: Color32,
-    /// Raised surfaces: inputs, cards, dialogs, menus.
+    /// Raised over a sheet or the base: the selected row, the tab in front, cards, fields'
+    /// buttons.
     pub surface: Color32,
-    /// Hovered rows and quiet button fills.
+    /// Dialogs and the palette.
+    pub overlay: Color32,
+    /// Menus, tooltips, toasts.
+    pub menu: Color32,
+    /// Tracks: segmented controls, switches, text fields.
+    pub inset: Color32,
+    /// Hovered rows and quiet button fills (translucent).
     pub hover: Color32,
-    /// Pressed state and subtle fills (segmented control track, count pills).
+    /// Pressed state and subtle fills (translucent).
     pub subtle: Color32,
+    /// Hairlines (translucent).
     pub border: Color32,
+    /// Lines of controls (translucent).
     pub border_strong: Color32,
+    /// The strongest line: a switch's track when off, tree guides (translucent).
+    pub border_heavy: Color32,
+    /// The 1 px light along the top edge of raised things (translucent).
+    pub highlight: Color32,
     pub text: Color32,
     pub text_muted: Color32,
     pub text_faint: Color32,
+    /// The quietest text: counts beside a title, line numbers, separators.
+    pub text_ghost: Color32,
     pub accent: Color32,
     pub accent_hover: Color32,
     /// Text on an accent fill.
     pub on_accent: Color32,
-    /// Background of selected rows and "on" toggles.
+    /// Background of selected rows and "on" toggles (neutral).
     pub accent_soft: Color32,
+    /// The accent, faint: the chosen row of a list in a dialog, a scope token.
+    pub accent_tint: Color32,
     /// Accent-colored text (readable on both the canvas and `accent_soft`).
     pub accent_text: Color32,
+    /// The ring around what has the keyboard.
+    pub ring: Color32,
+    /// Done, added.
     pub ok: Color32,
+    /// Needs input.
     pub warn: Color32,
+    /// Failed, removed.
     pub err: Color32,
+    /// Running.
     pub info: Color32,
+    /// Idle.
+    pub idle: Color32,
     /// Folder icons in file lists and the sidebar.
     pub folder: Color32,
 }
 
-// Neutral greys (no blue or violet cast), one quiet blue taken from the app icon for focus,
-// selection and the main action, and status colours a little below full saturation.
+/// White at `a`/255 opacity (premultiplied).
+const fn white(a: u8) -> Color32 {
+    Color32::from_rgba_premultiplied(a, a, a, a)
+}
+/// Black at `a`/255 opacity.
+const fn black(a: u8) -> Color32 {
+    Color32::from_rgba_premultiplied(0, 0, 0, a)
+}
+/// `rgb` at `a`/255 opacity.
+const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
+    const fn m(c: u8, a: u8) -> u8 {
+        ((c as u16 * a as u16 + 127) / 255) as u8
+    }
+    Color32::from_rgba_premultiplied(m(r, a), m(g, a), m(b, a), a)
+}
+
+// Neutral greys (no blue or violet cast), one blue taken from the app icon for focus, selection
+// and the main action, and status colours a little below full saturation.
 const LIGHT: Palette = Palette {
     // The background of the "TernaryCode Light" terminal scheme, so the terminal blends in.
-    canvas: Color32::from_rgb(0xfb, 0xfb, 0xfb),
-    chrome: Color32::from_rgb(0xf3, 0xf3, 0xf3),
+    canvas: Color32::from_rgb(0xfc, 0xfc, 0xfc),
+    chrome: Color32::from_rgb(0xec, 0xec, 0xeb),
     surface: Color32::from_rgb(0xff, 0xff, 0xff),
-    hover: Color32::from_rgb(0xea, 0xea, 0xea),
-    subtle: Color32::from_rgb(0xe3, 0xe3, 0xe3),
-    border: Color32::from_rgb(0xe0, 0xe0, 0xe0),
-    border_strong: Color32::from_rgb(0xcb, 0xcb, 0xcb),
-    text: Color32::from_rgb(0x1d, 0x1d, 0x1d),
-    text_muted: Color32::from_rgb(0x5e, 0x5e, 0x5e),
-    text_faint: Color32::from_rgb(0x8e, 0x8e, 0x8e),
-    accent: Color32::from_rgb(0x25, 0x63, 0xc9),
-    accent_hover: Color32::from_rgb(0x1d, 0x52, 0xae),
+    overlay: Color32::from_rgb(0xff, 0xff, 0xff),
+    menu: Color32::from_rgb(0xff, 0xff, 0xff),
+    inset: Color32::from_rgb(0xe4, 0xe4, 0xe3),
+    hover: black(10),
+    subtle: black(18),
+    border: black(19),
+    border_strong: black(31),
+    border_heavy: black(51),
+    highlight: white(179),
+    text: Color32::from_rgb(0x17, 0x17, 0x17),
+    text_muted: Color32::from_rgb(0x59, 0x59, 0x59),
+    text_faint: Color32::from_rgb(0x8a, 0x8a, 0x8a),
+    text_ghost: Color32::from_rgb(0xb8, 0xb8, 0xb8),
+    accent: Color32::from_rgb(0x1f, 0x5f, 0xbf),
+    accent_hover: Color32::from_rgb(0x1a, 0x52, 0xa8),
     on_accent: Color32::WHITE,
-    accent_soft: Color32::from_rgb(0xe4, 0xe4, 0xe4),
-    accent_text: Color32::from_rgb(0x1f, 0x5a, 0xbd),
-    ok: Color32::from_rgb(0x1f, 0x84, 0x4b),
-    warn: Color32::from_rgb(0xa6, 0x66, 0x00),
-    err: Color32::from_rgb(0xc8, 0x32, 0x2e),
-    info: Color32::from_rgb(0x25, 0x63, 0xc9),
+    accent_soft: black(15),
+    accent_tint: rgba(0x1f, 0x5f, 0xbf, 26),
+    accent_text: Color32::from_rgb(0x1a, 0x56, 0xb3),
+    ring: rgba(0x1f, 0x5f, 0xbf, 115),
+    ok: Color32::from_rgb(0x1a, 0x7f, 0x48),
+    warn: Color32::from_rgb(0xb0, 0x6a, 0x00),
+    err: Color32::from_rgb(0xc9, 0x37, 0x2f),
+    info: Color32::from_rgb(0x1f, 0x5f, 0xbf),
+    idle: Color32::from_rgb(0x9a, 0x9a, 0x9a),
     folder: Color32::from_rgb(0x6c, 0x78, 0x88),
 };
 
 const DARK: Palette = Palette {
     // The background of the "TernaryCode Dark" terminal scheme, so the terminal blends in.
-    canvas: Color32::from_rgb(0x23, 0x23, 0x23),
-    chrome: Color32::from_rgb(0x1c, 0x1c, 0x1c),
-    surface: Color32::from_rgb(0x2c, 0x2c, 0x2c),
-    hover: Color32::from_rgb(0x30, 0x30, 0x30),
-    subtle: Color32::from_rgb(0x37, 0x37, 0x37),
-    border: Color32::from_rgb(0x32, 0x32, 0x32),
-    border_strong: Color32::from_rgb(0x45, 0x45, 0x45),
-    text: Color32::from_rgb(0xe6, 0xe6, 0xe6),
-    text_muted: Color32::from_rgb(0xa4, 0xa4, 0xa4),
-    text_faint: Color32::from_rgb(0x76, 0x76, 0x76),
-    accent: Color32::from_rgb(0x3d, 0x7b, 0xd9),
-    accent_hover: Color32::from_rgb(0x52, 0x8c, 0xe2),
+    canvas: Color32::from_rgb(0x19, 0x19, 0x19),
+    chrome: Color32::from_rgb(0x0e, 0x0e, 0x0e),
+    surface: Color32::from_rgb(0x22, 0x22, 0x22),
+    overlay: Color32::from_rgb(0x1c, 0x1c, 0x1c),
+    menu: Color32::from_rgb(0x23, 0x23, 0x23),
+    inset: Color32::from_rgb(0x0c, 0x0c, 0x0c),
+    hover: white(11),
+    subtle: white(20),
+    border: white(18),
+    border_strong: white(29),
+    border_heavy: white(51),
+    highlight: white(15),
+    text: Color32::from_rgb(0xec, 0xec, 0xec),
+    text_muted: Color32::from_rgb(0xa3, 0xa3, 0xa3),
+    text_faint: Color32::from_rgb(0x72, 0x72, 0x72),
+    text_ghost: Color32::from_rgb(0x4e, 0x4e, 0x4e),
+    accent: Color32::from_rgb(0x2b, 0x66, 0xcc),
+    accent_hover: Color32::from_rgb(0x36, 0x73, 0xdb),
     on_accent: Color32::WHITE,
-    accent_soft: Color32::from_rgb(0x36, 0x36, 0x36),
-    accent_text: Color32::from_rgb(0x7f, 0xae, 0xec),
-    ok: Color32::from_rgb(0x5f, 0xb8, 0x7e),
-    warn: Color32::from_rgb(0xd6, 0xa2, 0x47),
-    err: Color32::from_rgb(0xe8, 0x6b, 0x61),
-    info: Color32::from_rgb(0x72, 0xa7, 0xe8),
+    accent_soft: white(19),
+    accent_tint: rgba(0x46, 0x82, 0xeb, 38),
+    accent_text: Color32::from_rgb(0x86, 0xac, 0xf0),
+    ring: rgba(0x54, 0x8c, 0xea, 140),
+    ok: Color32::from_rgb(0x55, 0xb8, 0x82),
+    warn: Color32::from_rgb(0xe8, 0xa2, 0x3c),
+    err: Color32::from_rgb(0xec, 0x62, 0x5b),
+    info: Color32::from_rgb(0x7a, 0xa7, 0xf2),
+    idle: Color32::from_rgb(0x6a, 0x6a, 0x6a),
     folder: Color32::from_rgb(0x9a, 0xa3, 0xae),
 };
 
 impl Palette {
     /// Barely visible fill for hovered list rows.
     pub fn faint_row(&self) -> Color32 {
-        soft(self.hover, 0.6)
+        self.hover
     }
 
     /// The same colours, quieter: a row shown only for what is under it (a project in the
@@ -110,6 +175,11 @@ impl Palette {
             *c = c.gamma_multiply(0.55);
         }
         d
+    }
+
+    /// The tint of a status colour behind its own text: a pill, a waiting row, a tile's foot.
+    pub fn tinted(&self, c: Color32, dark: bool) -> Color32 {
+        tint(c, dark)
     }
 }
 
@@ -127,20 +197,29 @@ pub fn pal(ui: &Ui) -> Palette {
     palette(ui.visuals().dark_mode)
 }
 
-/// A color at `alpha` (0–1) opacity, for soft fills behind colored text and icons.
+/// A color at `alpha` (0–1) opacity, for soft fills behind colored text and icons. A colour
+/// that is already translucent (a line, a hover fill) gets `alpha` of its own opacity.
 pub fn soft(c: Color32, alpha: f32) -> Color32 {
+    if c.a() < 255 {
+        return c.gamma_multiply(alpha.clamp(0.0, 1.0));
+    }
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (alpha.clamp(0.0, 1.0) * 255.0) as u8)
 }
 
-/// The soft fill behind status-coloured text (pills, icon badges): 18% in the dark theme, 12%
+/// The soft fill behind status-coloured text (pills, icon badges): 14% in the dark theme, 12%
 /// in the light one.
 pub fn tint(c: Color32, dark: bool) -> Color32 {
-    soft(c, if dark { 0.18 } else { 0.12 })
+    soft(c, if dark { 0.14 } else { 0.12 })
 }
 
 /// `c` at `alpha` laid over `base`, opaque (a tinted surface that hides what is behind it).
+/// A translucent `base` (a line) gives a colour with its opacity.
 pub fn over(base: Color32, c: Color32, alpha: f32) -> Color32 {
     let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * alpha).round() as u8;
+    if base.a() < 255 {
+        let a = base.a().max((alpha * 255.0) as u8);
+        return Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+    }
     Color32::from_rgb(mix(base.r(), c.r()), mix(base.g(), c.g()), mix(base.b(), c.b()))
 }
 
@@ -149,9 +228,13 @@ pub fn over(base: Color32, c: Color32, alpha: f32) -> Color32 {
 // ---------------------------------------------------------------------------------------------
 
 /// Body text size of the UI.
-pub const BODY: f32 = 13.5;
-/// Small text: details, hints, the status bar.
-pub const SMALL: f32 = 11.5;
+pub const BODY: f32 = 13.0;
+/// Small text: details, notes.
+pub const SMALL: f32 = 12.0;
+/// Labels: a group's title, the status bar.
+pub const LABEL: f32 = 11.5;
+/// Data in the UI's monospace (branches, times, sizes, shortcuts).
+pub const DATA: f32 = 10.5;
 
 /// Inter Medium: labels that need a little weight (tabs, buttons, row titles).
 pub fn medium(size: f32) -> FontId {
@@ -166,6 +249,31 @@ pub fn semibold(size: f32) -> FontId {
     FontId::new(size, FAMILY.clone())
 }
 
+/// JetBrains Mono, whatever the terminal's font: the UI's data (branches, times, sizes,
+/// addresses, shortcuts). Its figures line up, where Inter's (without `tnum`) don't.
+pub fn mono(size: f32) -> FontId {
+    static FAMILY: std::sync::LazyLock<FontFamily> = std::sync::LazyLock::new(|| FontFamily::Name(fonts::MONO.into()));
+    FontId::new(size, FAMILY.clone())
+}
+
+/// JetBrains Mono Medium: key caps.
+pub fn mono_medium(size: f32) -> FontId {
+    static FAMILY: std::sync::LazyLock<FontFamily> = std::sync::LazyLock::new(|| FontFamily::Name(fonts::MONO_MEDIUM.into()));
+    FontId::new(size, FAMILY.clone())
+}
+
+/// JetBrains Mono SemiBold: a project's letters, counts in badges.
+pub fn mono_semibold(size: f32) -> FontId {
+    static FAMILY: std::sync::LazyLock<FontFamily> = std::sync::LazyLock::new(|| FontFamily::Name(fonts::MONO_SEMIBOLD.into()));
+    FontId::new(size, FAMILY.clone())
+}
+
+/// The filled icons (status glyphs: Needs input, Done, Failed).
+pub fn icon_fill(size: f32) -> FontId {
+    static FAMILY: std::sync::LazyLock<FontFamily> = std::sync::LazyLock::new(|| FontFamily::Name(fonts::ICONS_FILL.into()));
+    FontId::new(size, FAMILY.clone())
+}
+
 /// The icon font alone (icons also render inside ordinary text).
 pub fn icon_font(size: f32) -> FontId {
     static FAMILY: std::sync::LazyLock<FontFamily> = std::sync::LazyLock::new(|| FontFamily::Name(fonts::ICONS.into()));
@@ -176,8 +284,18 @@ pub fn icon_font(size: f32) -> FontId {
 // Style
 // ---------------------------------------------------------------------------------------------
 
-pub const RADIUS: u8 = 6;
+/// Buttons, fields, segmented controls.
+pub const RADIUS: u8 = 7;
+/// Sheets (panes, drawers, panels, tiles) and cards.
 pub const RADIUS_LG: u8 = 10;
+/// Rows of a list (sidebar, palette, menus' items are 6).
+pub const RADIUS_ROW: u8 = 8;
+/// Dialogs and the palette.
+pub const RADIUS_DIALOG: u8 = 14;
+/// The gap between sheets, and between the window's edge and the sheets.
+pub const GAP: f32 = 6.0;
+/// The window's edge beside the sheets (right and, with the sidebar hidden, left).
+pub const EDGE: f32 = 8.0;
 
 pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
     ctx.set_theme(match mode {
@@ -212,40 +330,37 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
 
             let v = &mut style.visuals;
             v.text_cursor.blink = false; // a blinking caret would repaint twice a second
-            v.text_cursor.stroke = Stroke::new(1.5, p.accent);
+            v.text_cursor.stroke = Stroke::new(1.5, p.accent_text);
             v.panel_fill = p.canvas;
-            v.window_fill = p.surface;
-            v.extreme_bg_color = p.surface;
-            v.text_edit_bg_color = Some(p.surface);
-            v.faint_bg_color = if dark {
-                Color32::from_rgb(0x20, 0x20, 0x20)
-            } else {
-                Color32::from_rgb(0xf7, 0xf7, 0xf7)
-            };
+            // Menus, tooltips and popups; dialogs paint their own (the overlay colour).
+            v.window_fill = p.menu;
+            v.extreme_bg_color = p.inset;
+            v.text_edit_bg_color = Some(p.inset);
+            v.faint_bg_color = p.hover;
             v.code_bg_color = p.subtle;
             v.hyperlink_color = p.accent_text;
             v.warn_fg_color = p.warn;
             v.error_fg_color = p.err;
             v.override_text_color = None;
             v.weak_text_color = Some(p.text_muted);
-            v.selection.bg_fill = soft(p.accent, if dark { 0.30 } else { 0.18 });
+            v.selection.bg_fill = soft(p.accent, if dark { 0.35 } else { 0.18 });
             // The text color of selected rows and items, and egui's ring around a focused text
             // field.
             v.selection.stroke = Stroke::new(1.0, p.accent_text);
-            v.window_corner_radius = CornerRadius::same(RADIUS_LG);
-            v.menu_corner_radius = CornerRadius::same(8);
+            v.window_corner_radius = CornerRadius::same(RADIUS_DIALOG);
+            v.menu_corner_radius = CornerRadius::same(10);
             v.window_stroke = Stroke::new(1.0, p.border_strong);
             v.window_shadow = Shadow {
-                offset: [0, 10],
-                blur: 30,
+                offset: [0, 30],
+                blur: 80,
                 spread: 0,
-                color: Color32::from_black_alpha(if dark { 120 } else { 38 }),
+                color: Color32::from_black_alpha(if dark { 166 } else { 46 }),
             };
             v.popup_shadow = Shadow {
-                offset: [0, 4],
-                blur: 14,
+                offset: [0, 10],
+                blur: 28,
                 spread: 0,
-                color: Color32::from_black_alpha(if dark { 100 } else { 28 }),
+                color: Color32::from_black_alpha(if dark { 128 } else { 31 }),
             };
             v.window_highlight_topmost = false;
             v.collapsing_header_frame = false;
@@ -263,7 +378,7 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
             w.noninteractive.bg_stroke = Stroke::new(1.0, p.border);
             w.noninteractive.fg_stroke = Stroke::new(1.0, p.text);
             w.noninteractive.corner_radius = radius;
-            // Buttons, inputs, checkboxes at rest: an outlined surface.
+            // Buttons, inputs, checkboxes at rest: an outlined raised fill.
             w.inactive.bg_fill = p.subtle;
             w.inactive.weak_bg_fill = p.surface;
             w.inactive.bg_stroke = Stroke::new(1.0, p.border_strong);
@@ -272,14 +387,7 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
             w.inactive.expansion = 0.0;
             w.hovered.bg_fill = p.subtle;
             w.hovered.weak_bg_fill = p.hover;
-            w.hovered.bg_stroke = Stroke::new(
-                1.0,
-                if dark {
-                    p.border_strong
-                } else {
-                    Color32::from_rgb(0xbd, 0xbd, 0xbd)
-                },
-            );
+            w.hovered.bg_stroke = Stroke::new(1.0, p.border_heavy);
             w.hovered.fg_stroke = Stroke::new(1.0, p.text);
             w.hovered.corner_radius = radius;
             w.hovered.expansion = 0.0;
@@ -297,7 +405,7 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
 
             for (ts, font) in style.text_styles.iter_mut() {
                 *font = match ts {
-                    egui::TextStyle::Heading => semibold(18.0),
+                    egui::TextStyle::Heading => semibold(17.0),
                     egui::TextStyle::Small => FontId::proportional(SMALL),
                     egui::TextStyle::Monospace => FontId::monospace(12.5),
                     _ => FontId::proportional(BODY),

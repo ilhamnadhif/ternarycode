@@ -56,6 +56,10 @@ pub struct OpenFile {
     pub doc: Option<Box<crate::docview::DocView>>,
     /// The agent at work when the file last changed on disk under a clean buffer, and when.
     pub changed_by: Option<(String, std::time::Instant)>,
+    /// Lines on disk that differ from the agent's start (or the last commit), marked beside
+    /// the line numbers; and what they were worked out for (asked again when that changes).
+    pub marks: Vec<tc_git::LineMark>,
+    pub marks_key: Option<String>,
 }
 
 impl OpenFile {
@@ -280,6 +284,8 @@ pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
         highlight: Highlight::default(),
         doc: None,
         changed_by: None,
+        marks: Vec::new(),
+        marks_key: None,
     })
 }
 
@@ -309,6 +315,8 @@ impl OpenFile {
             syntax: String::new(),
             highlight: Highlight::default(),
             changed_by: None,
+            marks: Vec::new(),
+            marks_key: None,
         }
     }
 }

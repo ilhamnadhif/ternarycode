@@ -197,6 +197,9 @@ fn probed(servers: &mut Vec<Server>, port: u16, answers: bool) -> bool {
     was != answers
 }
 
+/// Files a run changed, and the lines it added and removed.
+pub type DiffStat = (usize, u32, u32);
+
 pub struct Pane {
     pub id: PaneId,
     pub project: ProjectId,
@@ -266,6 +269,9 @@ pub struct Pane {
     /// The tree of the working copy when the current agent run started, when it started, and
     /// the agent (FR-E4).
     pub run_snapshot: Option<(String, Instant, AgentKind)>,
+    /// What the agent's run changed when it finished (files, lines added, removed), for the
+    /// status it was worked out at (`tracker.since`); `None` inside while it is worked out.
+    pub done_stats: Option<(Instant, Option<DiffStat>)>,
     /// A new agent run may start (no agent since the last snapshot).
     pub snapshot_armed: bool,
     pub snapshot_pending: bool,
@@ -329,6 +335,7 @@ impl Pane {
             last_output: Instant::now(),
             scrollback_limit: spawn.scrollback,
             run_snapshot: None,
+            done_stats: None,
             snapshot_armed: true,
             snapshot_pending: false,
             pending_resize: None,

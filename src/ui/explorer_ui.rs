@@ -14,9 +14,8 @@ use crate::explorer::{EditKind, Entry, Row};
 use crate::i18n::t;
 use crate::project::Change;
 
-const ROW_H: f32 = 24.0;
+const ROW_H: f32 = 25.0;
 /// The Files | Changes header and the buttons at the bottom of the column.
-const HEAD_H: f32 = 36.0;
 const FOOT_H: f32 = 34.0;
 const INDENT: f32 = 12.0;
 
@@ -47,28 +46,12 @@ impl App {
     pub fn files_column(&mut self, ui: &mut Ui, area: Rect) {
         let p = style::pal(ui);
         let Some(pid) = self.active else { return };
-        ui.painter().rect_filled(area, CornerRadius::ZERO, p.chrome);
         ui.painter().vline(area.right() - 0.5, area.y_range(), egui::Stroke::new(1.0, p.border));
         let root = self.project(pid).map(|x| x.path.clone()).unwrap_or_default();
         let git = self.project(pid).and_then(|pr| pr.git.clone());
         let changed = git.as_ref().map_or(0, |g| g.changes.len());
-
-        // Header: Files | Changes.
-        let head = Rect::from_min_size(area.min, vec2(area.width(), HEAD_H));
-        ui.painter().hline(head.x_range(), head.bottom() - 0.5, egui::Stroke::new(1.0, p.border));
-        let seg = Rect::from_min_max(pos2(head.left() + 8.0, head.center().y - kit::SEGMENTED_H / 2.0), pos2(head.right() - 7.0, head.center().y + kit::SEGMENTED_H / 2.0));
-        let mut options = vec![kit::Seg::new(t("Files"), ""), kit::Seg::new(t("Changes"), "")];
-        if changed > 0 {
-            options[1] = options[1].clone().count(changed, p.warn);
-        }
-        #[cfg(debug_assertions)]
-        for (r, name) in kit::segment_rects(seg, 2).into_iter().zip(["files:files", "files:changes"]) {
-            crate::devtest::record(name, r);
-        }
-        // Changes is Review, in this drawer: what changed since the last commit, with the diff.
-        if kit::segmented_in(ui, seg, egui::Id::new(("files-mode", pid)), &options, 0) == Some(1) {
-            self.open_review(Some(super::review::Base::Head));
-        }
+        // (Files | Changes is the drawer's head.)
+        let head = Rect::from_min_size(area.min, vec2(area.width(), 0.0));
 
         // Footer: new file, new folder; collapse all, refresh.
         let foot = Rect::from_min_max(pos2(area.left(), area.bottom() - FOOT_H), area.max);
@@ -88,14 +71,43 @@ impl App {
             (icons::ARROWS_CLOCKWISE, t("Refresh").to_string(), None, true),
         ];
         let cy = foot.center().y + 0.5;
-        let mut left = foot.left() + 8.0;
-        let mut right = foot.right() - 8.0 - 22.0 * 2.0 - 2.0;
+        // At the left how many files changed; the buttons at the right.
+        if changed > 0 {
+            let painter = ui.painter();
+            let g = painter.layout_no_wrap(crate::i18n::tf("{} changed", &[&changed.to_string()]), style::mono(10.5), p.text_faint);
+            let mut x = foot.left() + 12.0 + g.size().x;
+            painter.galley(pos2(foot.left() + 12.0, cy - g.size().y / 2.0), g, p.text_faint);
+            // How many of them an agent changed (the one that changed most of them).
+            let touched: Vec<tc_core::agent::AgentKind> = self
+                .agent_touched
+                .get(&pid)
+                .map(|t| t.iter().filter(|(path, _)| git.as_ref().is_some_and(|g| g.changes.contains_key(*path))).map(|(_, k)| *k).collect())
+                .unwrap_or_default();
+            let by = touched.iter().copied().max_by_key(|k| touched.iter().filter(|x| *x == k).count());
+            let room = foot.right() - 6.0 - 20.0 * 4.0 - 2.0 * 3.0 - 8.0;
+            if let Some(k) = by {
+                let n = touched.iter().filter(|x| **x == k).count();
+                let text = crate::i18n::tf("{} by {}", &[&n.to_string(), k.label()]);
+                let tg = painter.layout_no_wrap(text, style::mono(10.5), p.text_faint);
+                if x + 18.0 + 15.0 + tg.size().x < room {
+                    painter.text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, "·", egui::FontId::proportional(11.0), p.text_ghost);
+                    x += 14.0;
+                    if super::agent_logo::has(k) {
+                        super::agent_logo::paint(painter, Rect::from_min_size(pos2(x, cy - 5.0), vec2(10.0, 10.0)), k, p.text, false);
+                        x += 10.0 + 5.0;
+                    }
+                    painter.galley(pos2(x, cy - tg.size().y / 2.0), tg, p.text_faint);
+                }
+            }
+        }
+        let mut left = foot.right() - 6.0 - 20.0 * 4.0 - 2.0 * 3.0;
+        let mut right = foot.right() - 6.0 - 20.0 * 2.0 - 2.0;
         for (i, (icon, tip, action, at_right)) in buttons.into_iter().enumerate() {
             let x = if at_right { &mut right } else { &mut left };
-            let r = Rect::from_min_size(pos2(*x, cy - 11.0), vec2(22.0, 22.0));
-            *x += 24.0;
+            let r = Rect::from_min_size(pos2(*x, cy - 10.0), vec2(20.0, 20.0));
+            *x += 22.0;
             let resp = ui
-                .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, &tip, false, 22.0))
+                .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, &tip, false, 20.0))
                 .inner;
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("files-button:{i}"), resp.rect);
@@ -119,8 +131,8 @@ impl App {
 
         let body = Rect::from_min_max(pos2(area.left(), head.bottom()), pos2(area.right(), foot.top()));
         // The filter.
-        let frow = Rect::from_min_size(body.min, vec2(body.width(), 38.0));
-        let field = Rect::from_min_size(pos2(frow.left() + 8.0, frow.top() + 6.0), vec2(frow.width() - 16.0, 26.0));
+        let frow = Rect::from_min_size(body.min, vec2(body.width(), 40.0));
+        let field = Rect::from_min_size(pos2(frow.left() + 8.0, frow.top() + 8.0), vec2(frow.width() - 16.0, 26.0));
         let mut filter = self.explorers.get(&pid).map(|e| e.filter.clone()).unwrap_or_default();
         let fid = egui::Id::new(("files-filter", pid));
         let fr = ui
@@ -232,6 +244,7 @@ impl App {
             .filter(|e| e.visible)
             .and_then(|e| e.file())
             .map(|f| f.path.clone());
+        let touched = self.agent_touched.get(&pid).cloned().unwrap_or_default();
         let Some(explorer) = self.explorer_mut(pid) else { return };
         let count = explorer.rows().len();
         let selected = editing.or_else(|| explorer.selected.clone());
@@ -307,9 +320,9 @@ impl App {
                                     .is_some_and(|e| matches!(&e.kind, EditKind::Rename(path) if *path == entry.path));
                                 let is_sel = selected.as_deref() == Some(entry.path.as_path());
                                 if is_sel {
-                                    painter.rect_filled(rect, CornerRadius::same(4), p.accent_soft);
+                                    painter.rect(rect, CornerRadius::same(6), p.accent_tint, egui::Stroke::new(1.0, style::soft(p.accent, 0.28)), egui::StrokeKind::Inside);
                                 } else if resp.hovered() {
-                                    painter.rect_filled(rect, CornerRadius::same(4), p.faint_row());
+                                    painter.rect_filled(rect, CornerRadius::same(6), p.hover);
                                 }
                                 let change = git.as_ref().and_then(|g| g.changes.get(&entry.path)).copied();
                                 let dir_changed = entry.is_dir
@@ -330,10 +343,8 @@ impl App {
                                 } else {
                                     icons::file_icon(&entry.name, false, entry.is_link, &p)
                                 };
-                                let mut name_color = if is_sel { p.text } else { style::tree_text(&p) };
-                                if let Some(c) = change {
-                                    name_color = change_color(c, &p);
-                                }
+                                // Changed files in full ink; their letter at the right says how.
+                                let mut name_color = if is_sel || change.is_some() { p.text } else { style::tree_text(&p) };
                                 if entry.dimmed {
                                     name_color = p.text_faint;
                                     icon_color = style::soft(icon_color, 0.55);
@@ -356,17 +367,16 @@ impl App {
                                 // Right: the change letter, or a dot on folders holding changes.
                                 let mut right = rect.right() - 8.0;
                                 if let Some(c) = change {
-                                    let g = painter.layout_no_wrap(
-                                        c.letter().to_string(),
-                                        style::medium(style::SMALL),
-                                        change_color(c, &p),
-                                    );
-                                    right -= g.size().x;
-                                    painter.galley(pos2(right, rect.center().y - g.size().y / 2.0), g, name_color);
-                                    right -= 6.0;
+                                    painter.text(pos2(right - 6.0, rect.center().y), Align2::CENTER_CENTER, c.letter(), style::mono_semibold(10.0), change_color(c, &p));
+                                    right -= 12.0 + 5.0;
+                                    // Changed by an agent while it worked: its logo.
+                                    if let Some(k) = touched.get(&entry.path).copied().filter(|k| super::agent_logo::has(*k)) {
+                                        super::agent_logo::paint(&painter, Rect::from_min_size(pos2(right - 11.0, rect.center().y - 5.5), vec2(11.0, 11.0)), k, p.text, false);
+                                        right -= 11.0 + 5.0;
+                                    }
                                 } else if dir_changed {
-                                    painter.circle_filled(pos2(right - 3.0, rect.center().y), 3.0, style::soft(p.warn, 0.8));
-                                    right -= 12.0;
+                                    painter.circle_filled(pos2(right - 6.0, rect.center().y), 2.5, style::soft(p.accent_text, 0.8));
+                                    right -= 12.0 + 5.0;
                                 }
                                 let mut job = egui::text::LayoutJob::simple_singleline(
                                     entry.name.clone(),
@@ -575,7 +585,8 @@ fn tree_menu(ui: &mut Ui, entry: &Entry, root: &Path, out: &mut Vec<Action>) {
 /// The colour of a changed file's name and letter.
 pub fn change_color(c: Change, p: &style::Palette) -> egui::Color32 {
     match c {
-        Change::Modified => p.warn,
+        // Modified in the accent: amber means "needs you".
+        Change::Modified => p.accent_text,
         Change::Added | Change::Untracked => p.ok,
         Change::Deleted | Change::Conflict => p.err,
         Change::Renamed => p.info,

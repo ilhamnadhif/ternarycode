@@ -133,6 +133,7 @@ impl AppMenu {
         let reload = item(t("Reload Page"), Action::BrowserReload);
         let files = item(t("Show/Hide Files"), Action::ToggleFiles);
         let sidebar = item(t("Show/Hide Sidebar"), Action::ToggleSidebar);
+        let compact = item(t("Narrow Sidebar"), Action::ToggleCompactSidebar);
         let focus = item(t("Focus View"), Action::SetView(View::Focus));
         let grid = item(t("Grid of All Projects"), Action::ToggleGrid);
         let split_right = item(t("Split Right"), Action::SplitRight);
@@ -149,6 +150,7 @@ impl AppMenu {
                 &palette,
                 &switch,
                 &sidebar,
+                &compact,
                 &editor,
                 &files,
                 &PredefinedMenuItem::separator(),

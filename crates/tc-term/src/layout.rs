@@ -33,7 +33,7 @@ pub struct Divider {
     pub parent: Rect,
 }
 
-pub const DIVIDER: f32 = 4.0;
+pub const DIVIDER: f32 = 6.0;
 
 impl Layout {
     pub fn panes(&self) -> Vec<PaneId> {

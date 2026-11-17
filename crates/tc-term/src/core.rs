@@ -768,7 +768,7 @@ mod tests {
         let reply = String::from_utf8(reply).unwrap();
         assert!(reply.contains("\x1b[1;6R"), "{reply:?}");
         assert!(reply.contains("\x1b[?6c"));
-        assert!(reply.contains("\x1b]11;rgb:2323/2323/2323"), "{reply:?}");
+        assert!(reply.contains("\x1b]11;rgb:1919/1919/1919"), "{reply:?}");
         assert_eq!(f.shared.notes.lock().title.as_deref(), Some("my title"));
     }
 

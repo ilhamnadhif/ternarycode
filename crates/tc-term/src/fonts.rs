@@ -46,8 +46,17 @@ const BUILT_IN: FontPreset = FontPreset {
     faces: [None, None, None, None],
 };
 
+/// JetBrains Mono, bundled with the app (the four faces below): the terminal's font when none
+/// was chosen, on every system, and the font of the UI's data (`MONO`).
+pub const JETBRAINS: FontPreset = FontPreset {
+    name: "JetBrains Mono (built-in)",
+    path: None,
+    faces: [None, None, None, None],
+};
+
 #[cfg(target_os = "macos")]
 pub const PRESETS: &[FontPreset] = &[
+    JETBRAINS,
     FontPreset {
         name: "Menlo",
         path: Some("/System/Library/Fonts/Menlo.ttc"),
@@ -102,6 +111,7 @@ pub const PRESETS: &[FontPreset] = &[
 
 #[cfg(windows)]
 pub const PRESETS: &[FontPreset] = &[
+    JETBRAINS,
     FontPreset {
         name: "Consolas",
         path: Some("consola.ttf"),
@@ -137,6 +147,7 @@ pub const PRESETS: &[FontPreset] = &[
 
 #[cfg(not(any(target_os = "macos", windows)))]
 pub const PRESETS: &[FontPreset] = &[
+    JETBRAINS,
     BUILT_IN,
     FontPreset {
         name: "DejaVu Sans Mono",
@@ -207,21 +218,9 @@ const SYMBOLS: (&str, &str) = ("symbols", "seguisym.ttf");
 #[cfg(not(any(target_os = "macos", windows)))]
 const SYMBOLS: (&str, &str) = ("symbols", "DejaVuSans.ttf");
 
-/// The terminal font when none was chosen: the platform's usual one. On Windows that is
-/// Cascadia Mono (Windows Terminal's font, part of Windows 11) when it is installed, else
-/// Consolas; looked up once.
+/// The terminal font when none was chosen: JetBrains Mono, bundled, the same on every system.
 fn default_font() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "Menlo"
-    } else if cfg!(windows) {
-        static PICK: OnceLock<&'static str> = OnceLock::new();
-        PICK.get_or_init(|| {
-            let cascadia = PRESETS.iter().find(|p| p.name == "Cascadia Mono");
-            if cascadia.is_some_and(is_available) { "Cascadia Mono" } else { "Consolas" }
-        })
-    } else {
-        "Hack (built-in)"
-    }
+    JETBRAINS.name
 }
 
 /// The system's font folders (Windows and Linux).
@@ -310,16 +309,31 @@ fn is_system_font(path: &Path) -> bool {
     path.starts_with("/usr/share/fonts")
 }
 
-/// The UI fonts, bundled: Inter in three weights and the Phosphor icons.
+/// The UI fonts, bundled: Inter in three weights, JetBrains Mono (the UI's data and the
+/// terminal's built-in font) and the Phosphor icons.
 const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 const INTER_MEDIUM: &[u8] = include_bytes!("../assets/fonts/Inter-Medium.ttf");
 const INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
 const PHOSPHOR: &[u8] = include_bytes!("../assets/fonts/Phosphor.ttf");
+const PHOSPHOR_FILL: &[u8] = include_bytes!("../assets/fonts/PhosphorFill.ttf");
+const JB_REGULAR: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
+const JB_MEDIUM: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf");
+const JB_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-SemiBold.ttf");
+const JB_BOLD: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");
+const JB_ITALIC: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf");
+const JB_BOLD_ITALIC: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-BoldItalic.ttf");
 
 /// Font families of the UI beyond egui's two: Inter Medium and SemiBold, and the icons alone.
 pub const MEDIUM: &str = "ui-medium";
 pub const SEMIBOLD: &str = "ui-semibold";
 pub const ICONS: &str = "ui-icons";
+/// The few filled icons (status glyphs).
+pub const ICONS_FILL: &str = "ui-icons-fill";
+/// The UI's data (branches, times, sizes, addresses, shortcuts): JetBrains Mono, whatever the
+/// terminal's font, in three weights.
+pub const MONO: &str = "ui-mono";
+pub const MONO_MEDIUM: &str = "ui-mono-medium";
+pub const MONO_SEMIBOLD: &str = "ui-mono-semibold";
 
 /// Largest font file loaded.
 const MAX_FONT_BYTES: u64 = 64 * 1024 * 1024;
@@ -418,7 +432,23 @@ pub fn definitions(choice: &FontChoice, load_cjk: bool) -> FontDefinitions {
     // and the renderer fakes bold).
     let mut faces: [Option<String>; 4] = [None, None, None, None];
     let keys = [TERM_REGULAR, TERM_BOLD, TERM_ITALIC, TERM_BOLD_ITALIC];
+    let font = |bytes: &'static [u8]| Arc::new(FontData::from_static(bytes));
+    for (key, bytes) in [
+        ("JetBrainsMono", JB_REGULAR),
+        ("JetBrainsMono-Medium", JB_MEDIUM),
+        ("JetBrainsMono-SemiBold", JB_SEMIBOLD),
+        ("JetBrainsMono-Bold", JB_BOLD),
+        ("JetBrainsMono-Italic", JB_ITALIC),
+        ("JetBrainsMono-BoldItalic", JB_BOLD_ITALIC),
+    ] {
+        defs.font_data.insert(key.into(), font(bytes));
+    }
     match (preset(choice), &choice.path) {
+        (Some(p), _) if p.name == JETBRAINS.name => {
+            for (i, key) in ["JetBrainsMono", "JetBrainsMono-Bold", "JetBrainsMono-Italic", "JetBrainsMono-BoldItalic"].iter().enumerate() {
+                faces[i] = Some(key.to_string());
+            }
+        }
         (Some(p), _) => {
             if let Some(base) = p.path {
                 for (i, face) in p.faces.iter().enumerate() {
@@ -460,7 +490,6 @@ pub fn definitions(choice: &FontChoice, load_cjk: bool) -> FontDefinitions {
     // UI: Inter, with the icon font right behind it so icons can sit inside ordinary text.
     // The icons live in the Private Use Area, like the Powerline and Nerd Font glyphs that
     // shell prompts print, so they stay out of the terminal and monospace families above.
-    let font = |bytes: &'static [u8]| Arc::new(FontData::from_static(bytes));
     defs.font_data.insert("Inter".into(), font(INTER));
     defs.font_data
         .insert("Inter-Medium".into(), font(INTER_MEDIUM));
@@ -470,6 +499,9 @@ pub fn definitions(choice: &FontChoice, load_cjk: bool) -> FontDefinitions {
     // Icons sit a little high next to Inter's x-height.
     phosphor.tweak.y_offset_factor = 0.08;
     defs.font_data.insert("Phosphor".into(), Arc::new(phosphor));
+    let mut phosphor_fill = FontData::from_static(PHOSPHOR_FILL);
+    phosphor_fill.tweak.y_offset_factor = 0.08;
+    defs.font_data.insert("PhosphorFill".into(), Arc::new(phosphor_fill));
     let ui_family = |first: &str| {
         let mut family = vec![first.to_string(), "Phosphor".to_string()];
         family.extend(fallbacks.iter().cloned());
@@ -487,6 +519,16 @@ pub fn definitions(choice: &FontChoice, load_cjk: bool) -> FontDefinitions {
         FontFamily::Name(ICONS.into()),
         vec!["Phosphor".into(), "Inter".into()],
     );
+    defs.families.insert(
+        FontFamily::Name(ICONS_FILL.into()),
+        vec!["PhosphorFill".into(), "Phosphor".into(), "Inter".into()],
+    );
+    // The UI's data: JetBrains Mono, then Inter for what it lacks (⌘, ⌥ …), then the icons.
+    for (family, first) in [(MONO, "JetBrainsMono"), (MONO_MEDIUM, "JetBrainsMono-Medium"), (MONO_SEMIBOLD, "JetBrainsMono-SemiBold")] {
+        let mut v = vec![first.to_string(), "Inter".to_string(), "Phosphor".to_string()];
+        v.extend(fallbacks.iter().cloned());
+        defs.families.insert(FontFamily::Name(family.into()), v);
+    }
     defs
 }
 
@@ -498,7 +540,7 @@ pub fn has_real_face(choice: &FontChoice, bold: bool, italic: bool) -> bool {
         (false, true) => 2,
         (true, true) => 3,
     };
-    preset(choice).is_some_and(|p| p.path.is_some() && p.faces[idx].is_some())
+    preset(choice).is_some_and(|p| p.name == JETBRAINS.name || (p.path.is_some() && p.faces[idx].is_some()))
 }
 
 /// Installs the fonts. Returns false when a font file the user picked could not be used (the
@@ -527,13 +569,14 @@ pub fn effective_choice(choice: &FontChoice) -> FontChoice {
 mod tests {
     use super::*;
 
-    /// Settings offers the presets whose files are on this computer: the platform's usual font
-    /// (Menlo, Cascadia Mono or Consolas; the built-in Hack on Linux), never one whose file is missing.
+    /// Settings offers the presets whose files are on this computer: the built-in JetBrains Mono
+    /// (the default) and Hack always, never one whose file is missing.
     #[test]
     fn presets_are_offered_when_their_file_exists() {
         let default = PRESETS.iter().find(|p| p.name == default_font()).unwrap();
         assert!(is_available(default), "{}", default.name);
         assert!(is_available(&BUILT_IN));
+        assert_eq!(default.name, JETBRAINS.name);
         for file in ["ternaryshell-no-such-font.ttf", "/no/such/dir/font.ttf"] {
             let missing = FontPreset {
                 name: "Missing",

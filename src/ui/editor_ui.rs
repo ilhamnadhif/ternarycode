@@ -12,11 +12,11 @@ use crate::actions::Action;
 use crate::app::App;
 use crate::i18n::{t, tf};
 
-pub const TAB_H: f32 = 36.0;
-const CRUMB_H: f32 = 28.0;
-const STATUS_H: f32 = 26.0;
+pub const TAB_H: f32 = 38.0;
+const CRUMB_H: f32 = 32.0;
+const STATUS_H: f32 = 28.0;
 /// The Files column of the Code drawer, and the narrowest drawer that shows it.
-pub const FILES_W: f32 = 212.0;
+pub const FILES_W: f32 = 220.0;
 pub const FILES_MIN_DRAWER: f32 = 520.0;
 
 impl App {
@@ -44,10 +44,7 @@ impl App {
     }
 
     pub fn editor_panel(&mut self, ui: &mut Ui, project: ProjectId, root: PathBuf, files_toggle: bool) {
-        let p = style::pal(ui);
         let full = ui.max_rect();
-        ui.painter().rect_filled(full, CornerRadius::ZERO, p.canvas);
-
         let tabs = Rect::from_min_size(full.min, vec2(full.width(), TAB_H));
         self.editor_tabs(ui, project, tabs, files_toggle);
         let body = Rect::from_min_max(pos2(full.left(), tabs.bottom()), full.max);
@@ -86,6 +83,7 @@ impl App {
             });
         }
         let text_rect = Rect::from_min_max(pos2(body.left(), crumb.bottom()), pos2(body.right(), problems.top()));
+        self.want_line_marks(project);
         self.editor_crumb(ui, project, &root, crumb);
         self.editor_status(ui, project, status);
         ui.scope_builder(
@@ -99,21 +97,18 @@ impl App {
         );
     }
 
+    /// The open files as tabs (the one in front raised), and at the left, when the Files
+    /// column is hidden, the button that brings it back.
     fn editor_tabs(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, files_toggle: bool) {
         let p = style::pal(ui);
-        let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::ZERO, p.chrome);
-        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
-
+        let dark = ui.visuals().dark_mode;
         // The Files column hidden (or no room for it): a button at the left brings it back.
         let mut rect = rect;
         if files_toggle {
-            let cell = Rect::from_min_size(rect.min, vec2(36.0, rect.height()));
-            ui.painter().vline(cell.right() - 0.5, cell.y_range(), Stroke::new(1.0, p.border));
-            let b = Rect::from_center_size(pos2(cell.left() + 6.0 + 13.0, cell.center().y), vec2(26.0, 26.0));
+            let b = Rect::from_center_size(pos2(rect.left() + 8.0 + 11.0, rect.center().y), vec2(22.0, 22.0));
             let r = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(b), |ui| {
-                    kit::icon_button_ex(ui, icons::SIDEBAR_SIMPLE, t("Show Files"), false, 26.0)
+                    kit::icon_button_ex(ui, icons::SIDEBAR_SIMPLE, t("Show Files"), false, 22.0)
                 })
                 .inner;
             #[cfg(debug_assertions)]
@@ -121,81 +116,59 @@ impl App {
             if r.clicked() {
                 self.actions.push(Action::ToggleFiles);
             }
-            rect.min.x = cell.right();
+            rect.min.x = b.right() + 4.0;
         }
 
-        let close = Rect::from_center_size(pos2(rect.right() - 19.0, rect.center().y), vec2(26.0, 26.0));
-        let r = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(close), |ui| {
-                kit::icon_button_ex(ui, icons::X, &kit::tip(t("Close Code"), Action::ToggleEditor), false, 26.0)
-            })
-            .inner;
-        #[cfg(debug_assertions)]
-        crate::devtest::record("editor-close", r.rect);
-        if r.clicked() {
-            self.actions.push(Action::ToggleEditor);
-        }
-
+        let git = self.project(project).and_then(|x| x.git.clone());
         let Some(editor) = self.editors.get(&project) else { return };
-        let files: Vec<(String, bool, PathBuf)> =
-            editor.files.iter().map(|f| (f.name(), f.dirty(), f.path.clone())).collect();
+        // Each file's git letter (M, A, D…) after its name.
+        let files: Vec<(String, bool, PathBuf, Option<crate::project::Change>)> =
+            editor.files.iter().map(|f| (f.name(), f.dirty(), f.path.clone(), git.as_ref().and_then(|g| g.changes.get(&f.path).copied()))).collect();
         let active = editor.active;
-        let strip = Rect::from_min_max(rect.min, pos2(close.left() - 4.0, rect.bottom()));
+        let strip = Rect::from_min_max(pos2(rect.left() + 8.0, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
         let mut select = None;
         let mut close_file = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| {
-            ui.set_clip_rect(strip);
+            ui.set_clip_rect(strip.expand2(vec2(0.0, 1.0)));
             egui::ScrollArea::horizontal()
                 .id_salt(("editor-tabs", project))
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        for (i, (name, dirty, path)) in files.iter().enumerate() {
+                    ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for (i, (name, dirty, path, changed)) in files.iter().enumerate() {
                             let on = i == active;
-                            let font = style::medium(13.0);
+                            let font = style::medium(12.5);
                             let galley = ui.painter().layout_no_wrap(name.clone(), font, egui::Color32::PLACEHOLDER);
-                            let w = 12.0 + 14.0 + 7.0 + galley.size().x + 7.0 + 18.0 + 8.0;
-                            let (r, resp) = ui.allocate_exact_size(vec2(w, TAB_H), Sense::click());
-                            let close_r = Rect::from_center_size(pos2(r.right() - 8.0 - 9.0, r.center().y), vec2(18.0, 18.0));
+                            let mark_w = if changed.is_some() { 6.0 + 8.0 } else { 0.0 };
+                            let w = 10.0 + 14.0 + 7.0 + galley.size().x + mark_w + 6.0 + 14.0 + 7.0;
+                            let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
+                            let close_r = Rect::from_center_size(pos2(r.right() - 7.0 - 7.0, r.center().y), vec2(14.0, 14.0));
                             let close_resp = ui.interact(close_r, egui::Id::new(("tab-close", project, i)), Sense::click());
                             let painter = ui.painter();
                             if on {
-                                painter.rect_filled(r, CornerRadius::ZERO, p.canvas);
-                                painter.hline(r.x_range(), r.top() + 1.0, Stroke::new(2.0, p.accent));
+                                painter.rect(r, CornerRadius::same(8), p.surface, Stroke::new(1.0, if dark { p.border } else { p.border_strong }), egui::StrokeKind::Inside);
+                                kit::paint_highlight(painter, r, 8, &p);
                             } else if resp.hovered() {
-                                painter.rect_filled(r, CornerRadius::ZERO, style::soft(p.hover, 0.6));
+                                painter.rect_filled(r, CornerRadius::same(8), p.hover);
                             }
-                            painter.vline(r.right() - 0.5, r.y_range(), Stroke::new(1.0, p.border));
                             let (icon, color) = icons::file_icon(name, false, false, &p);
-                            painter.text(
-                                pos2(r.left() + 12.0 + 7.0, r.center().y),
-                                Align2::CENTER_CENTER,
-                                icon,
-                                style::icon_font(14.0),
-                                if on { p.accent_text } else { color },
-                            );
-                            let text_color = if on { p.text } else { p.text_muted };
-                            painter.galley(
-                                pos2(r.left() + 33.0, r.center().y - galley.size().y / 2.0),
-                                galley,
-                                text_color,
-                            );
-                            // × when hovered or active; ● for unsaved edits otherwise.
+                            painter.text(pos2(r.left() + 10.0 + 7.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(14.0), if on { color } else { p.text_faint });
+                            let text_color = if on { p.text } else { p.text_faint };
+                            let gw = galley.size().x;
+                            painter.galley(pos2(r.left() + 10.0 + 14.0 + 7.0, r.center().y - galley.size().y / 2.0), galley, text_color);
+                            if let Some(c) = changed {
+                                painter.text(pos2(r.left() + 10.0 + 14.0 + 7.0 + gw + 6.0 + 4.0, r.center().y), Align2::CENTER_CENTER, c.letter(), style::mono_semibold(10.0), super::explorer_ui::change_color(*c, &p));
+                            }
+                            // × when hovered or in front; ● for unsaved edits otherwise.
                             let show_x = close_resp.hovered() || resp.hovered() || (on && !dirty);
                             if close_resp.hovered() {
-                                painter.rect_filled(close_r, CornerRadius::same(4), p.hover);
+                                painter.rect_filled(close_r, CornerRadius::same(4), p.subtle);
                             }
                             if *dirty && !close_resp.hovered() {
                                 painter.circle_filled(close_r.center(), 3.5, p.text_muted);
                             } else if show_x {
-                                painter.text(
-                                    close_r.center(),
-                                    Align2::CENTER_CENTER,
-                                    icons::X,
-                                    style::icon_font(11.0),
-                                    if close_resp.hovered() { p.text } else { p.text_faint },
-                                );
+                                painter.text(close_r.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), if close_resp.hovered() { p.text } else { p.text_faint });
                             }
                             if close_resp.clicked() || resp.middle_clicked() {
                                 close_file = Some(i);
@@ -217,27 +190,116 @@ impl App {
         }
     }
 
+    /// The open file's lines that differ from the agent's start (its run's snapshot) or else the
+    /// last commit, worked out off the UI thread when the file on disk, the base or its git
+    /// state changes: for the marks beside the line numbers.
+    fn want_line_marks(&mut self, project: ProjectId) {
+        let Some(pr) = self.project(project) else { return };
+        let Some(git) = pr.git.clone() else { return };
+        let folder = pr.path.clone();
+        let base = pr
+            .current_pane()
+            .and_then(|id| self.panes.get(&id))
+            .and_then(|x| x.run_snapshot.as_ref())
+            .map_or_else(|| "HEAD".to_string(), |(tree, ..)| tree.clone());
+        let Some(f) = self.editors.get_mut(&project).and_then(|e| e.file_mut()) else { return };
+        if f.doc.is_some() {
+            return;
+        }
+        let change = git.changes.get(&f.path).copied();
+        let key = format!("{:?}|{base}|{change:?}", f.mtime);
+        if f.marks_key.as_deref() == Some(key.as_str()) {
+            return;
+        }
+        f.marks_key = Some(key.clone());
+        let path = f.path.clone();
+        // A file git does not know yet: every line is new.
+        if matches!(change, Some(crate::project::Change::Untracked | crate::project::Change::Added)) && base == "HEAD" {
+            f.marks = vec![tc_git::LineMark { line: 1, count: f.lines.max(1) as u32, kind: tc_git::MarkKind::Added }];
+            return;
+        }
+        let tx = self.app_tx.clone();
+        let ctx = self.ctx.clone();
+        self.rt.spawn_blocking(move || {
+            let marks = (|| {
+                let top: PathBuf = tc_git::repo_root(&folder)?;
+                let rel = path.strip_prefix(&top).ok()?.to_string_lossy().replace('\\', "/");
+                tc_git::line_marks(&top, &base, &rel).ok()
+            })()
+            .unwrap_or_default();
+            let _ = tx.send(crate::app::AppMsg::LineMarks(path, key, marks));
+            ctx.request_repaint();
+        });
+    }
+
     fn editor_crumb(&mut self, ui: &mut Ui, project: ProjectId, root: &Path, rect: Rect) {
         let p = style::pal(ui);
+        // The file's symbols, asked of its server (a moment after the text last changed).
+        if let Some(f) = self.editors.get(&project).and_then(|e| e.file())
+            && self.lsp.server_for(&f.path).is_some_and(|s| s.state == crate::lsp::ServerState::Ready)
+            && self.lsp.outline.get(&f.path).is_none_or(|(rev, _)| *rev != f.rev)
+        {
+            let asked = self.lsp.outline_asked.get(&f.path).copied();
+            match asked {
+                Some((rev, _)) if rev == f.rev => {}
+                Some((_, at)) if at.elapsed() < std::time::Duration::from_millis(800) => {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(800) - at.elapsed());
+                }
+                _ => {
+                    let ctx = ui.ctx().clone();
+                    self.ide_cmd(&ctx, crate::lsp::IdeCmd::Outline);
+                }
+            }
+        }
         let Some(file) = self.editors.get(&project).and_then(|e| e.file()) else { return };
-        paint_crumb(ui, rect, root, &file.path, &p);
+        let crumb_end = paint_crumb(ui, rect, root, &file.path, &p);
+        // The symbol the caret is in (the innermost function, type or module).
+        let line = file.caret.0.saturating_sub(1) as u32;
+        let symbol = self.lsp.outline.get(&file.path).and_then(|(_, items)| {
+            use tc_lsp::types::SymbolKind as K;
+            items
+                .iter()
+                .filter(|s| s.start <= line && line <= s.end)
+                .filter(|s| !matches!(s.kind, K::VARIABLE | K::FIELD | K::CONSTANT | K::PROPERTY | K::ENUM_MEMBER | K::TYPE_PARAMETER | K::KEY | K::NULL | K::BOOLEAN | K::NUMBER | K::STRING | K::ARRAY | K::EVENT | K::OPERATOR))
+                .min_by_key(|s| s.end - s.start)
+                .map(|s| (s.name.clone(), matches!(s.kind, K::FUNCTION | K::METHOD | K::CONSTRUCTOR)))
+        });
         let dark = ui.visuals().dark_mode;
         let painter = ui.painter();
         let mut right = rect.right() - 14.0;
-        // What the file is: read-only, or just changed by an agent.
-        let mut pills: Vec<(Option<&str>, String, egui::Color32, egui::Color32)> = Vec::new();
+        if let Some((name, func)) = symbol {
+            let x = crumb_end;
+            let g = painter.layout_no_wrap(icons::CARET_RIGHT.to_string(), style::icon_font(9.0), p.text_ghost);
+            let gw = g.size().x;
+            painter.galley(pos2(x, rect.center().y - g.size().y / 2.0), g, p.text_ghost);
+            let x = x + gw + 6.0;
+            painter.text(pos2(x + 6.5, rect.center().y), Align2::CENTER_CENTER, if func { icons::FUNCTION } else { icons::CODE }, style::icon_font(13.0), p.info);
+            let mut job = egui::text::LayoutJob::simple_singleline(name, style::mono(11.5), p.text);
+            job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 160.0 - (x + 18.0)).max(30.0));
+            let g = painter.layout_job(job);
+            painter.galley(pos2(x + 18.0, rect.center().y - g.size().y / 2.0), g, p.text);
+        }
+        // What the file is: just changed by an agent (its logo), read-only.
+        let _ = dark;
+        if let Some((agent, at)) = file.changed_by.as_ref().filter(|(_, at)| at.elapsed().as_secs() < 600) {
+            let text = crate::i18n::tf("Changed by {} · {}", &[agent, &super::status::age(*at)]);
+            let kind = tc_core::agent::AgentKind::ALL.iter().copied().find(|k| k.label() == agent).filter(|k| super::agent_logo::has(*k));
+            let g = painter.layout_no_wrap(text, style::medium(11.5), p.accent_text);
+            let w = 8.0 + kind.map_or(0.0, |_| 11.0 + 6.0) + g.size().x + 8.0;
+            let r = Rect::from_min_size(pos2(right - w, rect.center().y - 10.0), vec2(w, 20.0));
+            painter.rect(r, CornerRadius::same(6), p.accent_tint, Stroke::new(1.0, style::soft(p.accent, 0.3)), egui::StrokeKind::Inside);
+            let mut x = r.left() + 8.0;
+            if let Some(k) = kind {
+                super::agent_logo::paint(painter, Rect::from_min_size(pos2(x, r.center().y - 5.5), vec2(11.0, 11.0)), k, p.text, false);
+                x += 11.0 + 6.0;
+            }
+            painter.galley(pos2(x, r.center().y - g.size().y / 2.0), g, p.accent_text);
+            right -= w + 6.0;
+        }
         if file.read_only {
             let text = if file.truncated { t("Read-only · first 2 MB") } else { t("Read-only") };
-            pills.push((None, text.to_string(), p.text_muted, p.subtle));
-        }
-        if let Some((agent, at)) = file.changed_by.as_ref().filter(|(_, at)| at.elapsed().as_secs() < 600) {
-            let text = crate::i18n::tf("Changed by {} · {} ago", &[agent, &super::status::short_age(*at)]);
-            pills.push((Some(icons::SPARKLE), text, p.ok, style::tint(p.ok, dark)));
-        }
-        for (icon, text, fg, bg) in pills {
-            let w = kit::pill_width(painter, icon, &text);
-            kit::paint_pill(painter, pos2(right - w, rect.center().y), icon, &text, fg, bg);
-            right -= w + 6.0;
+            let w = kit::pill_width(painter, None, text);
+            kit::paint_pill(painter, pos2(right - w, rect.center().y), None, text, p.text_muted, p.subtle);
         }
     }
 
@@ -256,12 +318,12 @@ impl App {
             parts.push(if file.crlf { "CRLF".into() } else { "LF".into() });
         }
         let text = parts.join("  ·  ");
-        let text_w = ui.painter().layout_no_wrap(text.clone(), egui::FontId::proportional(style::SMALL), p.text_faint).size().x;
+        let text_w = ui.painter().layout_no_wrap(text.clone(), style::mono(10.5), p.text_faint).size().x;
         ui.painter().text(
-            pos2(rect.left() + 12.0, rect.center().y),
+            pos2(rect.left() + 14.0, rect.center().y),
             Align2::LEFT_CENTER,
             text,
-            egui::FontId::proportional(style::SMALL),
+            style::mono(10.5),
             p.text_faint,
         );
         let dirty = file.dirty() && !file.read_only;
@@ -667,9 +729,35 @@ impl App {
                 }
                 ui.painter().set(marks, egui::Shape::Vec(shapes));
             }
-            // A thin line between the numbers and the text.
-            let sep_x = resp.rect.left() + gutter - 6.0;
-            ui.painter().vline(sep_x, clip.y_range(), Stroke::new(1.0, style::soft(p.border, 0.6)));
+            // Beside the numbers: what changed since the agent started (or the last commit) —
+            // a green bar for new lines, the accent for changed ones, a red notch where lines
+            // were removed.
+            let mark_x = resp.rect.left() + gutter - 8.0;
+            let last_row = galley.rows.partition_point(|r| origin.y + r.rect().top() <= clip.bottom());
+            for m in &file.marks {
+                let (l0, l1) = (m.line.saturating_sub(1) as usize, (m.line.saturating_sub(1) + m.count.max(1)) as usize);
+                // Out of view (a removal's notch at the edge of it still shows).
+                if (l1 <= first || l0 >= last_row.max(first + 1)) && !(m.kind == tc_git::MarkKind::Deleted && l0 >= first && l0 <= last_row) {
+                    continue;
+                }
+                match m.kind {
+                    tc_git::MarkKind::Deleted => {
+                        // At the top of the line after the removed ones (or under the last line).
+                        let y = match galley.rows.get(l0) {
+                            Some(row) => origin.y + row.pos.y,
+                            None => galley.rows.last().map_or(origin.y, |r| origin.y + r.pos.y + r.rect().height()),
+                        };
+                        let pts = vec![pos2(mark_x - 1.5, y - 4.0), pos2(mark_x + 3.5, y), pos2(mark_x - 1.5, y + 4.0)];
+                        ui.painter().add(egui::Shape::convex_polygon(pts, p.err, Stroke::NONE));
+                    }
+                    kind => {
+                        let (Some(a), Some(b)) = (galley.rows.get(l0), galley.rows.get(l1.min(galley.rows.len()).saturating_sub(1))) else { continue };
+                        let r = Rect::from_min_max(pos2(mark_x - 1.5, origin.y + a.pos.y), pos2(mark_x + 1.5, origin.y + b.pos.y + b.rect().height()));
+                        let c = if kind == tc_git::MarkKind::Added { p.ok } else { p.accent_text };
+                        ui.painter().rect_filled(r, CornerRadius::same(1), c);
+                    }
+                }
+            }
             // Diagnostics, ⌘-click, hover and what typing asks of the language server.
             geom = Some(super::ide_ui::overlay(ui, &output, file, diags, ide, &p, features, &triggers, &mut ide_cmds));
         });
@@ -756,24 +844,28 @@ fn line_start_char(text: &str, line: usize) -> usize {
 }
 
 /// A file's path from the project folder, its parts separated by a caret, the last brighter.
-pub fn paint_crumb(ui: &Ui, rect: Rect, root: &Path, path: &Path, p: &style::Palette) {
+/// Paints the path of `path` under `root` as a breadcrumb; returns where it ends (for what
+/// follows it, such as a symbol).
+pub fn paint_crumb(ui: &Ui, rect: Rect, root: &Path, path: &Path, p: &style::Palette) -> f32 {
     let rel = path.strip_prefix(root).unwrap_or(path);
     let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
     let painter = ui.painter();
+    painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
     let font = egui::FontId::proportional(12.0);
-    let mut x = rect.left() + 14.0;
+    let mut x = rect.left() + 16.0;
     let cy = rect.center().y;
     for (i, part) in parts.iter().enumerate() {
         let last = i + 1 == parts.len();
         if i > 0 {
-            let g = painter.layout_no_wrap(icons::CARET_RIGHT.to_string(), style::icon_font(10.0), p.text_faint);
-            painter.galley(pos2(x, cy - g.size().y / 2.0), g.clone(), p.text_faint);
+            let g = painter.layout_no_wrap(icons::CARET_RIGHT.to_string(), style::icon_font(9.0), p.text_ghost);
+            painter.galley(pos2(x, cy - g.size().y / 2.0), g.clone(), p.text_ghost);
             x += g.size().x + 6.0;
         }
-        let color = if last { p.text_muted } else { p.text_faint };
+        let color = if last { p.text } else { p.text_faint };
         let g = painter.layout_no_wrap(part.clone(), font.clone(), color);
         let w = g.size().x;
         painter.galley(pos2(x, cy - g.size().y / 2.0), g, color);
         x += w + 6.0;
     }
+    x
 }

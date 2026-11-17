@@ -12,7 +12,7 @@ use crate::app::{App, ToastKind};
 use crate::i18n::{t, tf};
 
 /// Width of the attention list.
-const LIST_W: f32 = 470.0;
+const LIST_W: f32 = 600.0;
 
 impl App {
     pub fn status_bar(&mut self, ui: &mut Ui) {
@@ -20,17 +20,19 @@ impl App {
         let queue = self.attention_queue();
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            // Left: the most urgent pane waiting for the user, or that none is.
-            match queue.first().and_then(|e| self.panes.get(&e.pane)) {
-                Some(pane) => {
+            // Left: the most urgent pane waiting for the user ("Next:" when that one is the pane
+            // in view: ⌘J goes past it), or that none is.
+            let here = if self.view == tc_core::model::View::Focus { self.current_pane() } else { None };
+            let next = queue.iter().find(|e| Some(e.pane) != here).or(queue.first());
+            match next.and_then(|e| self.panes.get(&e.pane).map(|pane| (e, pane))) {
+                Some((e, pane)) => {
                     let s = pane.tracker.status;
-                    let c = status::color(s, &p);
                     let project = self.project_label(pane.project);
-                    let what = super::sidebar::attention_what(pane);
-                    let text = format!("{project} · {}: {what}", pane.label());
-                    let more = (queue.len() > 1).then(|| tf("(+{} more)", &[&(queue.len() - 1).to_string()]));
-                    let room = (ui.available_width() * 0.6).max(120.0);
-                    let r = item(ui, Some(status::icon(s)), &text, c, more.as_deref(), kit::keys(&Action::NextAttention), room, true);
+                    let skipped = queue.first().is_some_and(|f| f.pane != e.pane);
+                    let (who, what, code) = super::sidebar::attention_sentence(pane);
+                    let more = queue.len() - 1 - usize::from(skipped);
+                    let room = (ui.available_width() * 0.62).max(160.0);
+                    let r = lead(ui, &p, s, skipped, &project, &who, &what, code.as_deref(), more, room);
                     #[cfg(debug_assertions)]
                     crate::devtest::record("attention-summary", r.rect);
                     let tip = format!("{}\n{}", status::described(&pane.tracker), t("Show everything that waits for you"));
@@ -61,7 +63,7 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let key = kit::keys(&Action::Palette).unwrap_or_default();
-                let commands = item(ui, Some(icons::MAGNIFYING_GLASS), t("Commands"), p.text_muted, None, Some(key), 200.0, true);
+                let commands = commands_item(ui, &p, key);
                 if commands.on_hover_text(t("Everything TernaryCode can do, searchable")).clicked() {
                     self.actions.push(Action::Palette);
                 }
@@ -74,15 +76,17 @@ impl App {
                 let mut mem = self.mem_bytes.0.map(|b| format!(" · {} MB", b / (1024 * 1024))).unwrap_or_default();
                 // The pages' own processes (WebKit's), when there are any.
                 if let Some(b) = self.browser_bytes.filter(|b| *b > 0) {
-                    mem.push_str(&tf(" · browsers {} MB", &[&(b / (1024 * 1024)).to_string()]));
+                    mem.push_str(&tf(" · pages {} MB", &[&(b / (1024 * 1024)).to_string()]));
                 }
                 let counts = format!(
                     "{} · {}{mem}",
                     crate::i18n::count(self.projects.iter().filter(|x| !x.is_worktree()).count(), t("1 project"), t("{} projects")),
                     crate::i18n::count(self.panes.len(), t("1 pane"), t("{} panes")),
                 );
-                item(ui, None, &counts, p.text_faint, None, None, 280.0, false)
-                    .on_hover_text(t("Memory TernaryCode uses (programs in the panes not counted)"));
+                let g = ui.painter().layout_no_wrap(counts, style::mono(10.5), p.text_faint);
+                let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 8.0, 20.0), Sense::hover());
+                ui.painter().galley(pos2(r.left() + 4.0, r.center().y - g.size().y / 2.0), g, p.text_faint);
+                resp.on_hover_text(t("Memory TernaryCode uses (programs in the panes not counted)"));
                 if let Some(target) = self.keyboard_target() {
                     dot_sep(ui, &p);
                     let keys = kit::keys(&Action::OpenGridTile);
@@ -111,7 +115,6 @@ impl App {
         }
         let queue = self.attention_queue();
         let mut close = false;
-        let screen = ctx.content_rect();
         let on_top = self.dialog.is_none() && self.palette.is_none() && !self.review_full();
         let in_sidebar = inbox.is_some();
         // The keyboard: ↑↓ choose, ↵ jump, R review, ⌫ mark as seen, Esc close.
@@ -159,158 +162,154 @@ impl App {
             return;
         }
         let sel = self.attention_sel;
-        let panel = egui::Area::new(egui::Id::new("attention-panel"))
-            .order(egui::Order::Foreground)
-            .pivot(Align2::LEFT_BOTTOM)
-            .fixed_pos(screen.left_bottom() + vec2(8.0, -super::view::STATUS_H - 4.0))
+        let dark = ctx.global_style().visuals.dark_mode;
+        let area = egui::Area::new(egui::Id::new("attention-panel")).anchor(Align2::CENTER_TOP, vec2(0.0, 96.0));
+        let modal = egui::Modal::new(egui::Id::new("attention-modal"))
+            .area(area)
+            .backdrop_color(egui::Color32::from_black_alpha(if dark { 90 } else { 40 }))
+            .frame(super::dialogs::frame(ctx).inner_margin(egui::Margin::ZERO))
             .show(ctx, |ui| {
                 let p = style::pal(ui);
-                egui::Frame::popup(ui.style())
-                    .inner_margin(egui::Margin::same(6))
-                    .corner_radius(CornerRadius::same(10))
-                    .show(ui, |ui| {
-                        ui.set_width(LIST_W - 12.0);
-                        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                        // Header.
-                        let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
-                        let painter = ui.painter();
-                        let cy = head.center().y;
-                        painter.text(pos2(head.left() + 10.0 + 6.5, cy), Align2::CENTER_CENTER, icons::TRAY, style::icon_font(13.0), p.warn);
-                        let g = painter.layout_no_wrap(t("Waiting for you").to_string(), style::semibold(13.0), p.text);
+                ui.set_width(LIST_W);
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                let top = ui.max_rect();
+                kit::paint_highlight(ui.painter(), Rect::from_min_size(top.min, vec2(LIST_W, 1.0)), style::RADIUS_DIALOG, &p);
+                // Header: the bell, "Waiting for you", how many; at the right the order and the keys.
+                let (head, _) = ui.allocate_exact_size(vec2(LIST_W, 52.0), Sense::hover());
+                let painter = ui.painter();
+                let cy = head.center().y;
+                status::paint_glyph(painter, pos2(head.left() + 18.0 + 7.0, cy), Status::NeedsInput, &p, 14.0);
+                let g = painter.layout_no_wrap(t("Waiting for you").to_string(), style::medium(14.0), p.text);
+                let gw = g.size().x;
+                painter.galley(pos2(head.left() + 18.0 + 14.0 + 10.0, cy - g.size().y / 2.0), g, p.text);
+                if n > 0 {
+                    let x = head.left() + 18.0 + 14.0 + 10.0 + gw + 8.0;
+                    let w = kit::paint_badge(painter, pos2(10_000.0, cy), &n.to_string(), egui::Color32::TRANSPARENT, egui::Color32::TRANSPARENT, 16.0).width();
+                    kit::paint_badge(painter, pos2(x + w, cy), &n.to_string(), p.warn, kit::badge_text(p.warn, &p, dark), 16.0);
+                }
+                let mut rx = head.right() - 16.0;
+                if let Some(k) = kit::keys(&Action::ToggleAttention) {
+                    let kw = kit::kbd_width(painter, k);
+                    rx -= kw;
+                    kit::paint_kbd_text(painter, pos2(rx, cy), k, &p);
+                    rx -= 8.0;
+                }
+                if n > 0 {
+                    let all = Rect::from_center_size(pos2(rx - 11.0, cy), vec2(22.0, 22.0));
+                    if ui.scope_builder(egui::UiBuilder::new().max_rect(all), |ui| kit::icon_button_ex(ui, icons::CHECK, t("Mark All Seen"), false, 22.0)).inner.clicked() {
+                        self.actions.push(Action::MarkAllSeen);
+                    }
+                    rx = all.left() - 8.0;
+                    let g = ui.painter().layout_no_wrap(t("oldest first").to_string(), egui::FontId::proportional(11.5), p.text_faint);
+                    ui.painter().galley(pos2(rx - g.size().x, cy - g.size().y / 2.0), g.clone(), p.text_faint);
+                }
+                ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
+                ui.add_space(6.0);
+                if queue.is_empty() {
+                    let (r, _) = ui.allocate_exact_size(vec2(LIST_W, 40.0), Sense::hover());
+                    ui.painter().text(pos2(r.left() + 18.0, r.center().y), Align2::LEFT_CENTER, t("No agent is waiting for you."), egui::FontId::proportional(13.0), p.text_muted);
+                }
+                // Two groups, in the queue's order: what needs the user, what finished.
+                let mut group: Option<bool> = None;
+                for (i, e) in queue.iter().enumerate() {
+                    let Some(pane) = self.panes.get(&e.pane) else { continue };
+                    let needs = matches!(e.status, Status::NeedsInput | Status::Failed(_));
+                    if group != Some(needs) {
+                        group = Some(needs);
+                        let count = queue.iter().filter(|x| matches!(x.status, Status::NeedsInput | Status::Failed(_)) == needs).count();
+                        let name = if needs { t("Needs you") } else { t("Finished") };
+                        let (r, _) = ui.allocate_exact_size(vec2(LIST_W, 28.0), Sense::hover());
+                        let g = kit::section_galley(ui.painter(), name, p.text_faint);
                         let gw = g.size().x;
-                        painter.galley(pos2(head.left() + 10.0 + 13.0 + 8.0, cy - g.size().y / 2.0), g, p.text);
-                        if n > 0 {
-                            let x = head.left() + 10.0 + 13.0 + 8.0 + gw + 8.0;
-                            let w = kit::paint_badge(painter, pos2(10_000.0, cy), &n.to_string(), egui::Color32::TRANSPARENT, egui::Color32::TRANSPARENT, 16.0).width();
-                            kit::paint_badge(painter, pos2(x + w, cy), &n.to_string(), p.warn, p.on_accent, 16.0);
+                        ui.painter().galley(pos2(r.left() + 18.0, r.bottom() - 6.0 - g.size().y), g, p.text_faint);
+                        ui.painter().text(pos2(r.left() + 18.0 + gw + 6.0, r.bottom() - 6.0), Align2::LEFT_BOTTOM, count.to_string(), style::mono(10.5), p.text_ghost);
+                    }
+                    let project = self.project_label(pane.project);
+                    let (letters, color) = self.project(pane.project).map(|pr| (pr.letters(), pr.color32())).unwrap_or_default();
+                    let what = super::sidebar::attention_short(pane);
+                    let agent = pane.tracker.agent.filter(|a| super::agent_logo::has(*a));
+                    let selected = i == sel;
+                    let (full, _) = ui.allocate_exact_size(vec2(LIST_W, 52.0 + if selected { 36.0 } else { 0.0 }), Sense::hover());
+                    let rect = Rect::from_min_size(pos2(full.left() + 8.0, full.top()), vec2(LIST_W - 16.0, 52.0));
+                    let resp = ui.interact(rect, egui::Id::new(("att-row", e.pane)), Sense::click());
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record(format!("att:{}", e.pane), rect);
+                    let painter = ui.painter();
+                    if selected {
+                        painter.rect(rect, CornerRadius::same(9), if dark { p.subtle } else { egui::Color32::WHITE }, Stroke::new(1.0, if dark { p.border } else { p.border_strong }), egui::StrokeKind::Inside);
+                    } else if resp.hovered() {
+                        painter.rect_filled(rect, CornerRadius::same(9), p.hover);
+                    }
+                    let cy = rect.center().y;
+                    status::paint_glyph(painter, pos2(rect.left() + 10.0 + 9.0, cy), e.status, &p, 14.0);
+                    kit::paint_project_tile(painter, Rect::from_min_size(pos2(rect.left() + 10.0 + 18.0 + 10.0, cy - 12.0), vec2(24.0, 24.0)), &letters, color, dark);
+                    let x = rect.left() + 10.0 + 18.0 + 10.0 + 24.0 + 10.0;
+                    let right = rect.right() - 10.0;
+                    let age = painter.layout_no_wrap(status::short_age(e.since), style::mono(10.5), p.text_faint);
+                    let aw = age.size().x;
+                    painter.galley(pos2(right - aw, cy - age.size().y / 2.0), age, p.text_faint);
+                    let mut job = egui::text::LayoutJob::simple_singleline(project, style::medium(13.0), p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((right - aw - 8.0 - x).max(10.0));
+                    let g = painter.layout_job(job);
+                    painter.galley(pos2(x, cy - 9.0 - g.size().y / 2.0), g, p.text);
+                    let mut wx = x;
+                    if let Some(a) = agent {
+                        super::agent_logo::paint(painter, Rect::from_center_size(pos2(wx + 6.0, cy + 10.0), vec2(12.0, 12.0)), a, p.text_muted, false);
+                        wx += 12.0 + 6.0;
+                    }
+                    let mut job = egui::text::LayoutJob::simple_singleline(what, egui::FontId::proportional(12.0), p.text_muted);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((right - aw - 8.0 - wx).max(10.0));
+                    let g = painter.layout_job(job);
+                    painter.galley(pos2(wx, cy + 10.0 - g.size().y / 2.0), g, p.text_muted);
+                    if selected {
+                        // What can be done with it, under the row.
+                        let by = rect.bottom() + 18.0;
+                        let mut bx = x;
+                        let mut button = |ui: &mut Ui, kind: kit::Kind, icon: Option<&str>, text: &str, keys: Option<&str>| {
+                            let w = kit::button_width(ui, icon, text, keys, true);
+                            let r = Rect::from_min_size(pos2(bx, by - 12.0), vec2(w, 24.0));
+                            bx += w + 6.0;
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::button_keys(ui, kind, icon, text, keys, true)).inner
+                        };
+                        if button(ui, kit::Kind::Primary, None, t("Jump"), Some("↵")).clicked() {
+                            chosen = Some((i, Choice::Jump));
                         }
-                        let x_rect = Rect::from_center_size(pos2(head.right() - 6.0 - 11.0, cy), vec2(22.0, 22.0));
-                        if ui.scope_builder(egui::UiBuilder::new().max_rect(x_rect), |ui| kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0)).inner.clicked() {
-                            close = true;
-                        }
-                        if n > 0 {
-                            let w = kit::button_width(ui, None, t("Mark All Seen"), None, true);
-                            let r = Rect::from_center_size(pos2(x_rect.left() - 4.0 - w / 2.0, cy), vec2(w, 24.0));
-                            if ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::button_ex(ui, kit::Kind::Ghost, None, t("Mark All Seen"), true)).inner.clicked() {
-                                self.actions.push(Action::MarkAllSeen);
-                            }
-                        }
-                        if queue.is_empty() {
-                            ui.add_space(4.0);
-                            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
-                            ui.painter().text(pos2(r.left() + 10.0, r.center().y), Align2::LEFT_CENTER, t("No agent is waiting for you."), egui::FontId::proportional(13.0), p.text_muted);
-                            ui.add_space(6.0);
-                        }
-                        // Groups, in the queue's order.
-                        let mut group: Option<u8> = None;
-                        for (i, e) in queue.iter().enumerate() {
-                            let Some(pane) = self.panes.get(&e.pane) else { continue };
-                            let rank = e.status.priority().unwrap_or(9);
-                            if group != Some(rank) {
-                                group = Some(rank);
-                                let count = queue.iter().filter(|x| x.status.priority() == Some(rank)).count();
-                                let name = match e.status {
-                                    Status::NeedsInput => t("Needs input"),
-                                    Status::Failed(_) => t("Failed"),
-                                    Status::Done => t("Done"),
-                                    _ => t("Command finished"),
-                                };
-                                let g = kit::section_galley(ui.painter(), &format!("{name} · {count}"), p.text_faint);
-                                let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), g.size().y + 14.0), Sense::hover());
-                                ui.painter().galley(pos2(r.left() + 10.0, r.top() + 10.0), g, p.text_faint);
-                            }
-                            let project = self.project_label(pane.project);
-                            let detail = super::sidebar::attention_what(pane);
-                            let detail = match e.status {
-                                Status::Failed(_) => match &pane.program_title {
-                                    Some(cmd) => format!("{cmd} · {detail}"),
-                                    None => detail,
-                                },
-                                Status::Done if pane.tracker.message.is_some() => format!("“{detail}”"),
-                                _ => detail,
-                            };
-                            let selected = i == sel;
-                            let row_h = if selected { 8.0 + 16.0 + 3.0 + 15.0 + 8.0 + 24.0 + 8.0 } else { 8.0 + 16.0 + 3.0 + 15.0 + 8.0 };
-                            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+                        if e.status == Status::Done {
+                            let r = button(ui, kit::Kind::Secondary, Some(icons::GIT_DIFF), t("Review"), Some("R"));
                             #[cfg(debug_assertions)]
-                            crate::devtest::record(format!("att:{}", e.pane), rect);
-                            let painter = ui.painter();
-                            if selected {
-                                painter.rect_filled(rect, CornerRadius::same(7), p.accent_soft);
-                            } else if resp.hovered() {
-                                painter.rect_filled(rect, CornerRadius::same(7), p.faint_row());
-                            }
-                            let c = status::color(e.status, &p);
-                            let l1 = rect.top() + 8.0 + 8.0;
-                            painter.text(pos2(rect.left() + 10.0 + 7.0, l1), Align2::CENTER_CENTER, status::icon(e.status), style::icon_font(14.0), c);
-                            let x = rect.left() + 10.0 + 14.0 + 10.0;
-                            let right = rect.right() - 10.0;
-                            let age = painter.layout_no_wrap(status::short_age(e.since), egui::FontId::proportional(style::SMALL), p.text_faint);
-                            let aw = age.size().x;
-                            painter.galley(pos2(right - aw, l1 - age.size().y / 2.0), age, p.text_faint);
-                            let mut job = egui::text::LayoutJob::default();
-                            job.append(&project, 0.0, egui::TextFormat::simple(style::medium(12.5), p.text));
-                            job.append(&format!("· {}", pane.label()), 6.0, egui::TextFormat::simple(egui::FontId::proportional(style::SMALL), p.text_faint));
-                            job.wrap = egui::text::TextWrapping::truncate_at_width((right - aw - 8.0 - x).max(10.0));
-                            let g = painter.layout_job(job);
-                            painter.galley(pos2(x, l1 - g.size().y / 2.0), g, p.text);
-                            let mut job = egui::text::LayoutJob::simple_singleline(detail, egui::FontId::proportional(style::SMALL), p.text_muted);
-                            job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(10.0));
-                            let g = painter.layout_job(job);
-                            painter.galley(pos2(x, rect.top() + 8.0 + 16.0 + 3.0), g, p.text_muted);
-                            if selected {
-                                // What can be done with it.
-                                let by = rect.bottom() - 8.0 - 12.0;
-                                let mut bx = x;
-                                let mut button = |ui: &mut Ui, kind: kit::Kind, icon: Option<&str>, text: &str, keys: Option<&str>| {
-                                    let w = kit::button_width(ui, icon, text, keys, true);
-                                    let r = Rect::from_min_size(pos2(bx, by - 12.0), vec2(w, 24.0));
-                                    bx += w + 6.0;
-                                    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::button_keys(ui, kind, icon, text, keys, true)).inner
-                                };
-                                if button(ui, kit::Kind::Primary, None, t("Jump"), Some("↵")).clicked() {
-                                    chosen = Some((i, Choice::Jump));
-                                }
-                                if e.status == Status::Done {
-                                    let r = button(ui, kit::Kind::Secondary, Some(icons::GIT_DIFF), t("Review"), None);
-                                    #[cfg(debug_assertions)]
-                                    crate::devtest::record(format!("att-review:{}", e.pane), r.rect);
-                                    if r.clicked() {
-                                        chosen = Some((i, Choice::Review));
-                                    }
-                                }
-                                if button(ui, kit::Kind::Ghost, None, t("Mark as Seen"), None).clicked() {
-                                    chosen = Some((i, Choice::Seen));
-                                }
-                            } else if resp.clicked() {
-                                chosen = Some((i, Choice::Jump));
-                            } else if resp.hovered() && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
-                                self.attention_sel = i;
+                            crate::devtest::record(format!("att-review:{}", e.pane), r.rect);
+                            if r.clicked() {
+                                chosen = Some((i, Choice::Review));
                             }
                         }
-                        // The keys.
-                        ui.add_space(6.0);
-                        let (foot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
-                        let fill = style::over(p.surface, p.chrome, 0.5);
-                        let full = Rect::from_min_max(pos2(foot.left() - 6.0, foot.top()), pos2(foot.right() + 6.0, foot.bottom() + 6.0));
-                        ui.painter().rect_filled(full, CornerRadius { nw: 0, ne: 0, sw: 10, se: 10 }, fill);
-                        ui.painter().hline(full.x_range(), full.top() + 0.5, Stroke::new(1.0, p.border));
-                        paint_key_hints(ui, Rect::from_min_max(pos2(full.left() + 14.0, full.top()), pos2(full.right() - 14.0, full.bottom() - 6.0)), &[
-                            (&["↑", "↓"], t("choose")),
-                            (&["↵"], t("jump")),
-                            (&["R"], t("review")),
-                            (&["⌫"], t("seen")),
-                        ], Some("esc"));
-                    });
-            })
-            .response;
+                        if button(ui, kit::Kind::Secondary, None, t("Mark as Seen"), Some("⌫")).clicked() {
+                            chosen = Some((i, Choice::Seen));
+                        }
+                    }
+                    if resp.clicked() {
+                        chosen = Some((i, Choice::Jump));
+                    } else if resp.hovered() && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
+                        self.attention_sel = i;
+                    }
+                }
+                // The keys.
+                ui.add_space(8.0);
+                let (foot, _) = ui.allocate_exact_size(vec2(LIST_W, 38.0), Sense::hover());
+                ui.painter().hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
+                paint_key_hints(ui, Rect::from_min_max(pos2(foot.left() + 14.0, foot.top()), pos2(foot.right() - 14.0, foot.bottom())), &[
+                    (&["↑", "↓"], t("choose")),
+                    (&["↵"], t("open")),
+                    (&["R"], t("review")),
+                    (&["⌫"], t("mark as seen")),
+                ], Some("esc"));
+            });
         if let Some(i) = chosen {
             self.attention_choose(&queue, i, &mut close);
         }
         // A click anywhere else closes it, but for what toggles it (that click, queued this
         // frame, closes it already).
         let toggled = self.actions.iter().any(|a| matches!(a, Action::ToggleAttention));
-        if panel.clicked_elsewhere() && !toggled {
+        if modal.should_close() && !toggled {
             close = true;
         }
         if close {
@@ -336,21 +335,24 @@ impl App {
             .interactable(toast.action.is_some())
             .show(ctx, |ui| {
                 let p = style::pal(ui);
-                egui::Frame::popup(ui.style())
+                let r = egui::Frame::popup(ui.style())
+                    .fill(p.menu)
+                    .stroke(Stroke::new(1.0, p.border_strong))
                     .inner_margin(egui::Margin { left: 12, right: if toast.action.is_some() { 8 } else { 14 }, top: 8, bottom: 8 })
-                    .corner_radius(CornerRadius::same(9))
+                    .corner_radius(CornerRadius::same(11))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 10.0;
-                            let (icon, c) = match toast.kind {
-                                ToastKind::Info => (icons::INFO, p.text_faint),
-                                ToastKind::Ok => (icons::CHECK_CIRCLE, p.ok),
-                                ToastKind::Warn => (icons::WARNING, p.warn),
-                                ToastKind::Err => (icons::X_CIRCLE, p.err),
-                                ToastKind::Worktree => (icons::GIT_FORK, p.ok),
+                            let (icon, c, filled) = match toast.kind {
+                                ToastKind::Info => (icons::INFO, p.text_muted, true),
+                                ToastKind::Ok => (icons::CHECK_CIRCLE, p.ok, true),
+                                ToastKind::Warn => (icons::WARNING, p.warn, true),
+                                ToastKind::Err => (icons::X_CIRCLE, p.err, true),
+                                ToastKind::Worktree => (icons::GIT_MERGE, p.ok, true),
                             };
-                            ui.label(RichText::new(icon).font(style::icon_font(15.0)).color(c));
-                            ui.add(egui::Label::new(RichText::new(&toast.text).size(13.0).color(p.text)).wrap_mode(egui::TextWrapMode::Extend));
+                            let font = if filled { style::icon_fill(15.0) } else { style::icon_font(15.0) };
+                            ui.label(RichText::new(icon).font(font).color(c));
+                            ui.add(egui::Label::new(RichText::new(&toast.text).size(12.5).color(p.text)).wrap_mode(egui::TextWrapMode::Extend));
                             if let Some((label, action)) = &toast.action
                                 && kit::button_ex(ui, kit::Kind::Ghost, None, label, true).clicked()
                             {
@@ -358,6 +360,7 @@ impl App {
                             }
                         });
                     });
+                kit::paint_highlight(ui.painter(), Rect::from_min_size(r.response.rect.min, vec2(r.response.rect.width(), 1.0)), 11, &p);
             });
         if let Some(a) = act {
             self.actions.push(a);
@@ -403,7 +406,7 @@ pub fn key_hints_width(ui: &Ui, hints: &[(&[&str], &str)]) -> f32 {
         for k in *keys {
             w += kit::kbd_width(painter, k) + 4.0;
         }
-        w += painter.layout_no_wrap(what.to_string(), egui::FontId::proportional(style::SMALL), p.text_faint).size().x + 14.0;
+        w += painter.layout_no_wrap(what.to_string(), egui::FontId::proportional(11.5), p.text_faint).size().x + 14.0;
     }
     (w - 14.0).max(0.0)
 }
@@ -417,15 +420,18 @@ pub fn paint_key_hints(ui: &Ui, rect: Rect, hints: &[(&[&str], &str)], right: Op
         for k in *keys {
             x += kit::paint_kbd_text(painter, pos2(x, cy), k, &p) + 4.0;
         }
-        let g = painter.layout_no_wrap(what.to_string(), egui::FontId::proportional(style::SMALL), p.text_faint);
+        let g = painter.layout_no_wrap(what.to_string(), egui::FontId::proportional(11.5), p.text_faint);
         let w = g.size().x;
         painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
         x += w + 14.0;
     }
     if let Some(k) = right {
-        let g = painter.layout_no_wrap(k.to_string(), style::medium(10.5), p.text_muted);
-        let w = g.size().x + 12.0;
-        kit::paint_kbd_text(painter, pos2(rect.right() - w, cy), k, &p);
+        // "esc close" at the right.
+        let g = painter.layout_no_wrap(t("close").to_string(), egui::FontId::proportional(11.5), p.text_faint);
+        let gw = g.size().x;
+        painter.galley(pos2(rect.right() - gw, cy - g.size().y / 2.0), g, p.text_faint);
+        let w = kit::kbd_width(painter, k);
+        kit::paint_kbd_text(painter, pos2(rect.right() - gw - 5.0 - w, cy), k, &p);
     }
 }
 
@@ -436,8 +442,8 @@ fn item(ui: &mut Ui, icon: Option<&str>, text: &str, color: egui::Color32, extra
     let p = style::pal(ui);
     let pad = 6.0;
     let gap = 5.0;
-    let small = egui::FontId::proportional(style::SMALL);
-    let icon_g = icon.map(|i| ui.painter().layout_no_wrap(i.to_string(), style::icon_font(12.5), color));
+    let small = egui::FontId::proportional(style::LABEL);
+    let icon_g = icon.map(|i| ui.painter().layout_no_wrap(i.to_string(), style::icon_font(12.0), color));
     let extra_g = extra.map(|e| ui.painter().layout_no_wrap(e.to_string(), small.clone(), p.text_faint));
     let key_g = key.filter(|k| !k.is_empty()).map(|k| ui.painter().layout_no_wrap(k.to_string(), small.clone(), p.text_faint));
     let fixed = icon_g.as_ref().map_or(0.0, |g| g.size().x + gap)
@@ -469,9 +475,80 @@ fn item(ui: &mut Ui, icon: Option<&str>, text: &str, color: egui::Color32, extra
     resp
 }
 
-/// A small dot between groups of the status bar.
+/// A quiet "·" between groups of the status bar.
 fn dot_sep(ui: &mut Ui, p: &style::Palette) {
-    let (rect, _) = ui.allocate_exact_size(vec2(9.0, 20.0), Sense::hover());
-    ui.painter().circle_filled(rect.center(), 1.5, p.text_faint.gamma_multiply(0.7));
+    let (rect, _) = ui.allocate_exact_size(vec2(12.0, 20.0), Sense::hover());
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "·", egui::FontId::proportional(style::LABEL), p.text_ghost);
+}
+
+/// "⌕ Commands ⌘K" at the right end of the status bar.
+fn commands_item(ui: &mut Ui, p: &style::Palette, key: &str) -> egui::Response {
+    let font = egui::FontId::proportional(style::LABEL);
+    let label = ui.painter().layout_no_wrap(t("Commands").to_string(), font, p.text_muted);
+    let kw = if key.is_empty() { 0.0 } else { kit::kbd_width(ui.painter(), key).max(16.0) + 6.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(6.0 + 12.0 + 6.0 + label.size().x + kw + 6.0, 20.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let cy = rect.center().y;
+    ui.painter().text(pos2(rect.left() + 6.0 + 6.0, cy), Align2::CENTER_CENTER, icons::MAGNIFYING_GLASS, style::icon_font(12.0), p.text_muted);
+    let lw = label.size().x;
+    ui.painter().galley(pos2(rect.left() + 24.0, cy - label.size().y / 2.0), label, if resp.hovered() { p.text } else { p.text_muted });
+    if !key.is_empty() {
+        kit::paint_kbd_sized(ui.painter(), pos2(rect.left() + 24.0 + lw + 6.0, cy), key, p, 16.0);
+    }
+    resp
+}
+
+/// The status bar's lead: the status glyph, the project, what waits there ("Claude Code wants to
+/// run `flutter test`"), how many more, and ⌘J (with "Next:" and ⇧⌘J when the pane in view was
+/// skipped).
+#[allow(clippy::too_many_arguments)]
+fn lead(ui: &mut Ui, p: &style::Palette, s: Status, next: bool, project: &str, who: &str, what: &str, code: Option<&str>, more: usize, max: f32) -> egui::Response {
+    let font = egui::FontId::proportional(style::LABEL);
+    let mut job = egui::text::LayoutJob::default();
+    let fmt = |f: egui::FontId, c: egui::Color32| egui::TextFormat::simple(f, c);
+    if next {
+        job.append(t("Next:"), 0.0, fmt(font.clone(), p.text_faint));
+        job.append(project, 6.0, fmt(style::medium(style::LABEL), p.text));
+    } else {
+        job.append(project, 0.0, fmt(style::medium(style::LABEL), p.text));
+    }
+    job.append("·", 6.0, fmt(font.clone(), p.text_faint));
+    job.append(&format!("{who} {what}"), 6.0, fmt(font.clone(), p.text_muted));
+    if let Some(code) = code {
+        job.append(code, 5.0, fmt(style::mono(10.5), p.text));
+    }
+    if more > 0 {
+        job.append(&crate::i18n::tf("+{} more", &[&more.to_string()]), 6.0, fmt(font.clone(), p.text_faint));
+    }
+    let keys = kit::keys(&Action::NextAttention).unwrap_or_default();
+    let back = if next { kit::keys(&Action::BackAttention) } else { None };
+    let kw = |k: &str| kit::kbd_width(ui.painter(), k).max(16.0);
+    let tail = if keys.is_empty() { 0.0 } else { 6.0 + kw(keys) } + back.map_or(0.0, |b| 8.0 + kw(b) + 4.0 + ui.painter().layout_no_wrap(t("back").to_string(), font.clone(), p.text_ghost).size().x);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((max - 18.0 - tail - 8.0).max(40.0));
+    let g = ui.painter().layout_job(job);
+    let (rect, resp) = ui.allocate_exact_size(vec2(4.0 + 12.0 + 6.0 + g.size().x + tail + 6.0, 20.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let cy = rect.center().y;
+    super::status::paint_glyph(ui.painter(), pos2(rect.left() + 4.0 + 6.0, cy), s, p, 12.0);
+    let mut x = rect.left() + 4.0 + 12.0 + 6.0;
+    let gw = g.size().x;
+    ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
+    x += gw;
+    if !keys.is_empty() {
+        x += 6.0;
+        x += kit::paint_kbd_sized(ui.painter(), pos2(x, cy), keys, p, 16.0);
+    }
+    if let Some(b) = back {
+        x += 8.0;
+        x += kit::paint_kbd_sized(ui.painter(), pos2(x, cy), b, p, 16.0) + 4.0;
+        ui.painter().text(pos2(x, cy), Align2::LEFT_CENTER, t("back"), font, p.text_ghost);
+    }
+    resp
 }
 

@@ -43,6 +43,7 @@ pub mod instance;
 pub mod lsp;
 #[cfg(target_os = "macos")]
 pub mod notify_native;
+pub mod onboarding;
 pub mod pane;
 pub mod paths;
 pub mod platform;

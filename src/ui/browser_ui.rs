@@ -15,15 +15,15 @@ use crate::browser::{Answer, Ask, Browser, Dialog, DialogKind, Driver, Event, Pa
 use crate::i18n::{t, tf};
 
 /// The toolbar at the top of a browser pane (its header, also in a split).
-pub const BAR_H: f32 = 36.0;
+pub const BAR_H: f32 = 40.0;
 /// How far a page's web view keeps from its pane's sides and foot (see `browser_pane`).
 const WEB_INSET: f32 = 3.0;
 /// The bar under it while an agent uses the page.
-const AGENT_H: f32 = 34.0;
+const AGENT_H: f32 = 44.0;
 /// The question about a site an agent's step would open.
-const ASK_H: f32 = 84.0;
+const ASK_H: f32 = 14.0 + 16.0 + 8.0 + 30.0 + 8.0 + 16.0 + 10.0 + 24.0 + 14.0 + 6.0;
 /// The find bar's height.
-const FIND_H: f32 = 34.0;
+const FIND_H: f32 = 34.0 + 6.0;
 
 impl App {
     /// What a pane is called (a tab, a tile): a terminal's label, or a browser's page.
@@ -46,12 +46,7 @@ impl App {
         let dialog = b.dialog.clone();
         let bar = Rect::from_min_size(rect.min, vec2(rect.width(), BAR_H));
         let mut top = bar.bottom();
-        let painter = ui.painter();
-        painter.rect_filled(bar, CornerRadius::ZERO, if focused && !single { p.surface } else { p.chrome });
-        painter.hline(bar.x_range(), bar.bottom() - 0.5, Stroke::new(1.0, p.border));
-        if focused && !single && self.window_focused {
-            painter.hline(bar.x_range(), bar.top() + 1.0, Stroke::new(2.0, p.accent));
-        }
+        let _ = single;
         // A click on the bar makes the pane the focused one (⌘W closes it, splits go beside it).
         let bar_resp = ui.interact(bar, egui::Id::new(("browser-bar", id)), Sense::click());
         if bar_resp.clicked() && !focused {
@@ -67,9 +62,10 @@ impl App {
 
         // Right side first: what is left goes to the address. In a narrow pane the address keeps
         // its room: the terminal serving the page, the console's chip and ↗ (also in ⋯) go first.
-        let inner = bar.shrink2(vec2(6.0, 0.0));
+        // The bar's controls sit a little above its middle (its foot is the page's margin).
+        let inner = Rect::from_min_max(pos2(bar.left() + 6.0, bar.top()), pos2(bar.right() - 8.0, bar.bottom() - 4.0));
         const MIN_FIELD: f32 = 90.0;
-        let field_left = inner.left() + 3.0 * 24.0 + 4.0;
+        let field_left = inner.left() + 3.0 * 24.0 + 6.0;
         let fits = |right: f32, w: f32| right - w - 4.0 - field_left >= MIN_FIELD;
         let mut right = inner.right();
         let more = Rect::from_center_size(pos2(right - 11.0, inner.center().y), vec2(22.0, 22.0));
@@ -85,10 +81,10 @@ impl App {
         let console_open = self.browsers.get(&id).is_some_and(|b| b.console_open);
         let cons_rect = (errors + warnings > 0 || console_open).then(|| {
             let n = if errors + warnings > 0 { (errors + warnings).to_string() } else { String::new() };
-            let g = ui.painter().layout_no_wrap(n, egui::FontId::proportional(style::SMALL), p.text);
+            let g = ui.painter().layout_no_wrap(n, style::mono_medium(10.5), p.text);
             let w = if g.size().x > 0.0 { g.size().x + 30.0 } else { 26.0 };
             fits(right, w).then(|| {
-                let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
+                let r = Rect::from_min_max(pos2(right - w, inner.center().y - 12.0), pos2(right, inner.center().y + 12.0));
                 right = r.left() - 4.0;
                 r
             })
@@ -109,7 +105,7 @@ impl App {
             (b.downloads.len(), b.downloads.iter().any(|d| d.done.is_none()), b.downloads.last().is_some_and(|d| d.done == Some(false)))
         });
         let dl_rect = (dl_count > 0).then(|| {
-            let g = ui.painter().layout_no_wrap(dl_count.to_string(), egui::FontId::proportional(style::SMALL), p.text);
+            let g = ui.painter().layout_no_wrap(dl_count.to_string(), style::mono_medium(10.5), p.text);
             let w = g.size().x + 30.0;
             fits(right, w).then(|| {
                 let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
@@ -128,14 +124,14 @@ impl App {
         });
         let mut x = inner.left();
         let mut nav = |icon: &str, tip: &str| {
-            let r = Rect::from_center_size(pos2(x + 11.0, inner.center().y), vec2(22.0, 22.0));
+            let r = Rect::from_center_size(pos2(x + 12.0, inner.center().y), vec2(24.0, 24.0));
             x += 24.0;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, 22.0)).inner.clicked()
+            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, 24.0)).inner.clicked()
         };
         let back = nav(icons::ARROW_LEFT, t("Back"));
         let forward = nav(icons::ARROW_RIGHT, t("Forward"));
-        let reload = nav(icons::ARROWS_CLOCKWISE, t("Reload"));
-        let field = Rect::from_min_max(pos2(x + 4.0, inner.center().y - 13.0), pos2(right.max(x + 60.0), inner.center().y + 13.0));
+        let reload = nav(icons::ARROW_CLOCKWISE, t("Reload"));
+        let field = Rect::from_min_max(pos2(x + 6.0, inner.center().y - 15.0), pos2(right.max(x + 60.0), inner.center().y + 15.0));
         let fid = egui::Id::new(("browser-address", id));
         let typing = ui.memory(|m| m.has_focus(fid));
         // Asked for (⌘L, the Browser button, a new empty browser): the address as shown, all of
@@ -155,12 +151,8 @@ impl App {
             Some(b) => b.url.trim_end_matches('/').trim_start_matches("http://").to_string(),
             None => String::new(),
         };
-        let icon = if url.starts_with("https://") { icons::LOCK_SIMPLE } else { icons::GLOBE };
-        let resp = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
-                kit::field(ui, fid, &mut text, Some(icon), t("Search or enter an address"), field.width(), true)
-            })
-            .inner;
+        let icon = if url.starts_with("https://") { icons::LOCK_SIMPLE } else { icons::GLOBE_SIMPLE };
+        let resp = address_field(ui, fid, &mut text, icon, field, typing);
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser-address:{id}"), field);
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -169,7 +161,7 @@ impl App {
             let w = bar.width() * 0.35;
             let t0 = ui.input(|i| i.time) as f32;
             let x0 = bar.left() + (t0 * 420.0) % (bar.width() + w) - w;
-            ui.painter().with_clip_rect(bar).hline(x0..=x0 + w, bar.bottom() - 1.0, Stroke::new(2.0, p.accent));
+            ui.painter().with_clip_rect(field.shrink2(vec2(6.0, 0.0))).hline(x0..=x0 + w, field.bottom() - 1.5, Stroke::new(2.0, p.accent));
             ui.ctx().request_repaint_after(Duration::from_millis(33));
         }
         if let Some((pane, _)) = &from
@@ -202,8 +194,8 @@ impl App {
         egui::Popup::menu(&more).align(egui::RectAlign::BOTTOM_END).width(230.0).show(|ui| self.browser_menu(ui, id));
         if let Some(r) = zoom_rect {
             let resp = ui.interact(r, egui::Id::new(("browser-zoom", id)), Sense::click());
-            ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), if resp.hovered() { p.hover } else { p.subtle });
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, format!("{:.0}%", user_zoom * 100.0), style::medium(style::SMALL), p.text_muted);
+            ui.painter().rect(r, CornerRadius::same(6), if resp.hovered() { p.hover } else { egui::Color32::TRANSPARENT }, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, format!("{:.0}%", user_zoom * 100.0), style::mono_medium(10.5), p.text);
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("browser-zoom:{id}"), r);
             if resp.on_hover_text(t("Actual Size")).clicked()
@@ -216,9 +208,9 @@ impl App {
             let resp = ui.interact(r, egui::Id::new(("browser-downloads", id)), Sense::click());
             let c = if dl_running { p.info } else if dl_failed { p.err } else { p.ok };
             let dark = ui.visuals().dark_mode;
-            ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), if resp.hovered() { style::tint(c, dark).gamma_multiply(1.6) } else { style::tint(c, dark) });
-            ui.painter().text(pos2(r.left() + 13.0, r.center().y), Align2::CENTER_CENTER, icons::DOWNLOAD_SIMPLE, style::icon_font(12.0), c);
-            ui.painter().text(pos2(r.left() + 23.0, r.center().y), Align2::LEFT_CENTER, dl_count.to_string(), style::medium(style::SMALL), c);
+            ui.painter().rect_filled(r, CornerRadius::same(6), if resp.hovered() { style::tint(c, dark).gamma_multiply(1.6) } else { style::tint(c, dark) });
+            ui.painter().text(pos2(r.left() + 13.0, r.center().y), Align2::CENTER_CENTER, icons::TRAY_ARROW_DOWN, style::icon_font(12.0), c);
+            ui.painter().text(pos2(r.left() + 23.0, r.center().y), Align2::LEFT_CENTER, dl_count.to_string(), style::mono_medium(10.5), c);
             if dl_running {
                 ui.ctx().request_repaint_after(Duration::from_millis(250));
             }
@@ -286,12 +278,12 @@ impl App {
         if let Some(r) = cons_rect {
             let resp = ui.interact(r, egui::Id::new(("browser-console", id)), Sense::click());
             let c = if errors > 0 { p.err } else if warnings > 0 { p.warn } else { p.text_muted };
-            let fill = if resp.hovered() || console_open { style::tint(c, ui.visuals().dark_mode).gamma_multiply(1.6) } else { style::tint(c, ui.visuals().dark_mode) };
-            ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), fill);
+            let fill = if resp.hovered() || console_open { p.hover } else { egui::Color32::TRANSPARENT };
+            ui.painter().rect(r, CornerRadius::same(6), fill, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
             let icon = if errors > 0 { icons::WARNING_CIRCLE } else if warnings > 0 { icons::WARNING } else { icons::TERMINAL_WINDOW };
-            ui.painter().text(pos2(r.left() + 13.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(12.0), c);
+            ui.painter().text(pos2(r.left() + 13.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_fill(12.0), c);
             if errors + warnings > 0 {
-                ui.painter().text(pos2(r.left() + 23.0, r.center().y), Align2::LEFT_CENTER, (errors + warnings).to_string(), style::medium(style::SMALL), c);
+                ui.painter().text(pos2(r.left() + 23.0, r.center().y), Align2::LEFT_CENTER, (errors + warnings).to_string(), style::mono_medium(10.5), c);
             }
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("browser-console:{id}"), r);
@@ -310,15 +302,15 @@ impl App {
                 bottom = r.top();
             }
         }
-        let mut page = Rect::from_min_max(pos2(rect.left(), top.min(bottom)), pos2(rect.right(), bottom));
-
-        // The page: the web view goes here. Until then, or without one, what it is.
-        ui.painter().rect_filled(page, CornerRadius::ZERO, p.canvas);
-        // A 2px info frame while an agent has it (the web view sits inside).
-        if driver.as_ref().is_some_and(|d| !d.paused) {
-            ui.painter().rect_stroke(page, CornerRadius::ZERO, Stroke::new(2.0, style::soft(p.info, 0.65)), egui::StrokeKind::Inside);
-            page = page.shrink(2.0);
+        // The page: inset in the sheet, rounded, a hairline round it; ringed in the accent while
+        // an agent has it (the web view sits inside).
+        let frame = Rect::from_min_max(pos2(rect.left() + 8.0, top.min(bottom)), pos2(rect.right() - 8.0, (bottom - 8.0).max(top.min(bottom))));
+        let agent_on = driver.as_ref().is_some_and(|d| !d.paused);
+        if agent_on {
+            ui.painter().rect_stroke(frame, CornerRadius::same(8), Stroke::new(3.0, style::soft(p.accent, 0.16)), egui::StrokeKind::Outside);
         }
+        ui.painter().rect(frame, CornerRadius::same(8), p.canvas, Stroke::new(if agent_on { 2.0 } else { 1.0 }, if agent_on { p.accent } else { p.border }), egui::StrokeKind::Inside);
+        let page = frame.shrink(if agent_on { 2.0 } else { 1.0 });
         // Its server does not answer: which terminal served it, and Reload.
         if self.browsers.get(&id).is_some_and(|b| b.down) {
             self.down_card(ui, id, page, &host);
@@ -369,25 +361,25 @@ impl App {
         };
         let c = page.center();
         let painter = ui.painter();
-        painter.text(c - vec2(0.0, 52.0), Align2::CENTER_CENTER, icons::PLUGS, style::icon_font(30.0), p.text_faint);
-        painter.text(c - vec2(0.0, 16.0), Align2::CENTER_CENTER, tf("{} is not answering", &[host]), style::semibold(14.0), p.text);
+        painter.text(c - vec2(0.0, 50.0), Align2::CENTER_CENTER, icons::PLUG, style::icon_font(26.0), p.text_ghost);
+        painter.text(c - vec2(0.0, 16.0), Align2::CENTER_CENTER, tf("{} isn’t answering", &[host]), style::semibold(13.5), p.text);
         let mut job = egui::text::LayoutJob::simple(format!("{why} {}", t("The page loads again once it answers.")), egui::FontId::proportional(12.5), p.text_muted, (page.width() - 48.0).clamp(120.0, 380.0));
         job.halign = egui::Align::Center;
         let g = painter.layout_job(job);
         let text_h = g.size().y;
         painter.galley(pos2(c.x, c.y + 4.0), g, p.text_muted);
         // The buttons, centred: their row is exactly as wide as they are.
-        let go_w = if served.is_some() { kit::button_width(ui, Some(icons::TERMINAL), t("Go to Pane"), None, true) + 6.0 } else { 0.0 };
-        let w = go_w + kit::button_width(ui, None, t("Reload"), None, true);
+        let go_w = if served.is_some() { kit::button_width(ui, Some(icons::TERMINAL_WINDOW), t("Show Terminal"), None, true) + 6.0 } else { 0.0 };
+        let w = go_w + kit::button_width(ui, Some(icons::ARROW_CLOCKWISE), t("Reload"), None, true);
         let row = Rect::from_center_size(pos2(c.x, c.y + 4.0 + text_h + 24.0), vec2(w, 28.0));
         let mut go = false;
         let mut reload = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             if served.is_some() {
-                go = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::TERMINAL), t("Go to Pane"), true).clicked();
+                go = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::TERMINAL_WINDOW), t("Show Terminal"), true).clicked();
             }
-            reload = kit::button_ex(ui, kit::Kind::Ghost, None, t("Reload"), true).clicked();
+            reload = kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_CLOCKWISE), t("Reload"), true).clicked();
         });
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser-down:{id}"), page);
@@ -485,47 +477,72 @@ impl App {
 
     /// The bar saying which agent uses the page and what it does, with Take Over; once the
     /// user took it, Hand Back.
+    /// The card above a page an agent uses: the agent at work and what it does, Take Over; once
+    /// the user took it over, a quiet card with Hand Back.
     fn agent_bar(&mut self, ui: &mut Ui, id: PaneId, r: Rect, d: &Driver) {
         let p = style::pal(ui);
+        let card = Rect::from_min_max(pos2(r.left() + 8.0, r.top()), pos2(r.right() - 8.0, r.bottom() - 6.0));
         let painter = ui.painter_at(r);
-        let (fill, line) = if d.paused { (p.surface, p.border) } else { (style::over(p.surface, p.info, 0.09), style::over(p.surface, p.info, 0.3)) };
-        painter.rect_filled(r, CornerRadius::ZERO, fill);
-        painter.hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, line));
-        let (icon, color) = if d.paused { (icons::HAND_POINTING, p.text_muted) } else { (icons::CURSOR_CLICK, p.info) };
-        painter.text(pos2(r.left() + 20.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(15.0), color);
+        let radius = CornerRadius::same(9);
+        if d.paused {
+            painter.rect(card, radius, p.surface, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+            kit::paint_highlight(&painter, card, 9, &p);
+        } else {
+            painter.rect(card, radius, style::over(p.canvas, p.accent, 0.13), Stroke::new(1.0, style::soft(p.accent, 0.38)), egui::StrokeKind::Inside);
+        }
+        let cy = card.center().y;
+        let mut x = card.left() + 11.0;
+        let kind = self.panes.get(&d.pane).and_then(|x| x.tracker.agent.or(x.last_agent));
+        if d.paused {
+            painter.text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, icons::HAND_POINTING, style::icon_font(14.0), p.accent_text);
+            x += 14.0 + 8.0;
+        } else {
+            kit::paint_lattice(&painter, pos2(x + 6.0, cy), 12.0, p.info, true);
+            x += 12.0 + 8.0;
+            if let Some(k) = kind.filter(|k| super::agent_logo::has(*k)) {
+                super::agent_logo::paint(&painter, Rect::from_min_size(pos2(x, cy - 6.5), vec2(13.0, 13.0)), k, p.text, false);
+                x += 13.0 + 8.0;
+            }
+        }
         // The button at the right, then the words in what is left.
-        let label = if d.paused { tf("Hand Back to {}", &[&d.who]) } else { t("Take Over").to_string() };
-        let bicon = if d.paused { icons::PLAY } else { icons::HAND_POINTING };
-        let area = Rect::from_min_max(pos2(r.left() + 36.0, r.top()), pos2(r.right() - 8.0, r.bottom()));
+        let (label, bicon, bkind) = if d.paused {
+            (t("Hand Back").to_string(), icons::ARROW_U_UP_LEFT, kit::Kind::Primary)
+        } else {
+            (t("Take Over").to_string(), icons::HAND_POINTING, kit::Kind::Secondary)
+        };
+        let area = Rect::from_min_max(pos2(x, card.top()), pos2(card.right() - 5.0, card.bottom()));
         let clicked = ui
             .scope_builder(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-                let b = kit::button_ex(ui, kit::Kind::Secondary, Some(bicon), &label, true);
+                let b = kit::button_ex(ui, bkind, Some(bicon), &label, true);
                 #[cfg(debug_assertions)]
                 crate::devtest::record(format!("browser-take-over:{id}"), b.rect);
+                let b = if d.paused { b.on_hover_text(tf("Hand Back to {}", &[&d.who])) } else { b };
                 (b.clicked(), b.rect.left())
             })
             .inner;
-        let font = egui::FontId::proportional(12.5);
+        let font = egui::FontId::proportional(12.0);
         let mut job = egui::text::LayoutJob::default();
         let mut add = |text: &str, font: egui::FontId, color: egui::Color32| {
             job.append(text, 0.0, egui::TextFormat { font_id: font, color, ..Default::default() });
         };
         if d.paused {
-            add(t("You have the browser."), style::medium(12.5), p.text);
-            add("  ", font.clone(), p.text);
-            add(&tf("{} is paused.", &[&d.who]), font, p.text_muted);
-        } else {
-            add(&d.who, style::semibold(12.5), p.text);
-            add(" ", font.clone(), p.text);
-            add(t("is using this browser"), font.clone(), p.text_muted);
+            add(t("You"), style::semibold(12.0), p.text);
+            add(&format!(" {}", t("have this page")), font.clone(), p.text);
             add("  ·  ", font.clone(), p.text_faint);
-            add(&d.doing, font, p.text_muted);
+            add(&tf("{} waits", &[&d.who]), font, p.text_faint);
+        } else {
+            add(&d.who, style::semibold(12.0), p.text);
+            add(&format!(" {}", t("is using this page")), font.clone(), p.text);
+            if !d.doing.is_empty() {
+                add("  ·  ", font.clone(), p.text_faint);
+                add(&d.doing, font, p.text_muted);
+            }
         }
-        job.wrap = egui::text::TextWrapping::truncate_at_width((clicked.1 - 10.0 - (r.left() + 36.0)).max(20.0));
+        job.wrap = egui::text::TextWrapping::truncate_at_width((clicked.1 - 10.0 - x).max(20.0));
         let g = painter.layout_job(job);
-        painter.galley(pos2(r.left() + 36.0, r.center().y - g.size().y / 2.0), g, p.text);
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
         #[cfg(debug_assertions)]
-        crate::devtest::record(format!("browser-agent:{id}"), r);
+        crate::devtest::record(format!("browser-agent:{id}"), card);
         if clicked.0 {
             self.take_over_browser(id, !d.paused);
         }
@@ -535,9 +552,11 @@ impl App {
     /// many matches, ↑ ↓ and ×.
     fn page_find_bar(&mut self, ui: &mut Ui, id: PaneId, r: Rect, f: &PageFind) {
         let p = style::pal(ui);
-        let painter = ui.painter_at(r);
-        painter.rect_filled(r, CornerRadius::ZERO, p.surface);
-        painter.hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, p.border));
+        // A card above the page: the field, how many matches, ↑ ↓ ×.
+        let r = Rect::from_min_max(pos2(r.left() + 8.0, r.top()), pos2(r.right() - 8.0, r.bottom() - 6.0));
+        let painter = ui.painter_at(r.expand(1.0));
+        painter.rect(r, CornerRadius::same(9), p.menu, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+        kit::paint_highlight(&painter, r, 9, &p);
         let fid = egui::Id::new(("browser-find", id));
         let count = match f.count {
             _ if f.query.is_empty() => String::new(),
@@ -545,13 +564,28 @@ impl App {
             Some(0) => t("No matches").to_string(),
             Some(n) => tf("{} of {}", &[&f.index.to_string(), &n.to_string()]),
         };
-        let cg = painter.layout_no_wrap(count, egui::FontId::proportional(style::SMALL), if f.count == Some(0) { p.err } else { p.text_muted });
-        let x_close = Rect::from_center_size(pos2(r.right() - 17.0, r.center().y), vec2(22.0, 22.0));
-        let down = Rect::from_center_size(pos2(x_close.left() - 13.0, r.center().y), vec2(22.0, 22.0));
-        let up = Rect::from_center_size(pos2(down.left() - 13.0, r.center().y), vec2(22.0, 22.0));
-        let field = Rect::from_min_max(pos2(r.left() + 10.0, r.center().y - 12.0), pos2((up.left() - 8.0 - cg.size().x - 8.0).max(r.left() + 80.0), r.center().y + 12.0));
+        let cg = painter.layout_no_wrap(count, style::mono(10.5), if f.count == Some(0) { p.err } else { p.text_faint });
+        let x_close = Rect::from_center_size(pos2(r.right() - 4.0 - 10.0, r.center().y), vec2(20.0, 20.0));
+        let down = Rect::from_center_size(pos2(x_close.left() - 2.0 - 10.0, r.center().y), vec2(20.0, 20.0));
+        let up = Rect::from_center_size(pos2(down.left() - 2.0 - 10.0, r.center().y), vec2(20.0, 20.0));
+        let sep_x = up.left() - 6.0;
+        painter.vline(sep_x, (r.center().y - 8.0)..=(r.center().y + 8.0), Stroke::new(1.0, p.border_strong));
+        painter.text(pos2(r.left() + 10.0 + 6.5, r.center().y), Align2::CENTER_CENTER, icons::MAGNIFYING_GLASS, style::icon_font(13.0), p.text_faint);
+        let cw = cg.size().x;
+        painter.galley(pos2(sep_x - 8.0 - cw, r.center().y - cg.size().y / 2.0), cg, p.text_faint);
+        let field = Rect::from_min_max(pos2(r.left() + 10.0 + 13.0 + 8.0, r.top() + 4.0), pos2((sep_x - 8.0 - cw - 8.0).max(r.left() + 80.0), r.bottom() - 4.0));
         let mut text = f.query.clone();
-        let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(field), |ui| kit::field(ui, fid, &mut text, Some(icons::MAGNIFYING_GLASS), t("Find in page"), field.width(), true)).inner;
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let resp = child.add_sized(
+            field.size(),
+            egui::TextEdit::singleline(&mut text)
+                .id(fid)
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .font(egui::FontId::proportional(12.5))
+                .hint_text(egui::RichText::new(t("Find in page")).color(p.text_faint))
+                .vertical_align(egui::Align::Center),
+        );
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser-find:{id}"), field);
         if f.focus {
@@ -562,7 +596,6 @@ impl App {
                 ff.focus = false;
             }
         }
-        ui.painter().galley(pos2(field.right() + 8.0, r.center().y - cg.size().y / 2.0), cg, p.text_muted);
         let mut step = None;
         if resp.changed() {
             if let Some(ff) = self.browsers.get_mut(&id).and_then(|b| b.find.as_mut()) {
@@ -575,7 +608,7 @@ impl App {
             step = Some(if ui.input(|i| i.modifiers.shift) { -1 } else { 1 });
             resp.request_focus();
         }
-        let clicked = |ui: &mut Ui, r: Rect, icon: &str, tip: &str| ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, 22.0)).inner.clicked();
+        let clicked = |ui: &mut Ui, r: Rect, icon: &str, tip: &str| ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, 20.0)).inner.clicked();
         if clicked(ui, up, icons::CARET_UP, t("Previous")) {
             step = Some(-1);
         }
@@ -682,30 +715,39 @@ impl App {
     /// Enter answers OK, Esc Cancel. Returns its height.
     fn dialog_bar(&mut self, ui: &mut Ui, id: PaneId, at: egui::Pos2, width: f32, d: &Dialog) -> f32 {
         let p = style::pal(ui);
-        let x = at.x + 40.0;
-        let text_w = (width - 52.0).max(60.0);
-        let mut job = egui::text::LayoutJob::simple(d.message.clone(), egui::FontId::proportional(12.5), p.text, text_w);
+        let prompt = d.kind == DialogKind::Prompt;
+        // A card above the page: the icon, who asks and what, Cancel and OK at the right.
+        let card_l = at.x + 8.0;
+        let card_r = at.x + width - 8.0;
+        let ok_w = kit::button_width(ui, None, t("OK"), Some("↵"), true);
+        let cancel_w = if d.kind != DialogKind::Alert { kit::button_width(ui, None, t("Cancel"), None, true) + 6.0 } else { 0.0 };
+        let buttons_w = ok_w + cancel_w;
+        let x = card_l + 10.0 + 30.0 + 10.0;
+        let text_w = (card_r - 8.0 - buttons_w - 10.0 - x).max(60.0);
+        let mut job = egui::text::LayoutJob::simple(d.message.clone(), style::medium(12.5), p.text, text_w);
         job.wrap.max_rows = 8;
         let msg = ui.painter().layout_job(job);
-        let prompt = d.kind == DialogKind::Prompt;
-        let h = 10.0 + 18.0 + msg.size().y + 10.0 + if prompt { 34.0 } else { 0.0 } + 26.0 + 12.0;
-        let r = Rect::from_min_size(at, vec2(width, h));
-        let painter = ui.painter_at(r);
-        painter.rect_filled(r, CornerRadius::ZERO, style::over(p.surface, p.info, 0.07));
-        painter.hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, style::over(p.surface, p.info, 0.3)));
-        painter.text(pos2(r.left() + 22.0, r.top() + 19.0), Align2::CENTER_CENTER, icons::INFO, style::icon_font(17.0), p.info);
-        let who = if prompt { tf("{} asks:", &[&d.host]) } else { tf("{} says:", &[&d.host]) };
-        painter.text(pos2(x, r.top() + 10.0), Align2::LEFT_TOP, who, style::medium(12.5), p.text_muted);
-        painter.galley(pos2(x, r.top() + 28.0), msg.clone(), p.text);
-        let mut y = r.top() + 28.0 + msg.size().y + 10.0;
+        let who = if prompt { tf("{} asks", &[&d.host]) } else { tf("{} says", &[&d.host]) };
+        let content_h = 15.0 + 2.0 + msg.size().y + if prompt { 8.0 + 26.0 } else { 0.0 };
+        let card_h = (content_h + 16.0).max(52.0);
+        let r = Rect::from_min_max(pos2(card_l, at.y), pos2(card_r, at.y + card_h));
+        let painter = ui.painter_at(r.expand(1.0));
+        painter.rect(r, CornerRadius::same(10), p.menu, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+        kit::paint_highlight(&painter, r, 10, &p);
+        let icon = Rect::from_min_size(pos2(r.left() + 10.0, r.center().y - 15.0), vec2(30.0, 30.0));
+        painter.rect(icon, CornerRadius::same(8), p.hover, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+        painter.text(icon.center(), Align2::CENTER_CENTER, icons::CHAT_CENTERED_TEXT, style::icon_font(15.0), p.text_muted);
+        let top = r.center().y - content_h / 2.0;
+        painter.text(pos2(x, top), Align2::LEFT_TOP, who, egui::FontId::proportional(11.0), p.text_faint);
+        painter.galley(pos2(x, top + 17.0), msg.clone(), p.text);
         let mut answer = None;
         let mut has_keys = false;
         let fid = egui::Id::new(("browser-dialog-field", id));
         let focus = std::mem::take(&mut self.dialog_focus) == Some(id);
         if prompt {
-            let field = Rect::from_min_size(pos2(x, y), vec2((r.right() - 12.0 - x).min(360.0), 26.0));
+            let field = Rect::from_min_size(pos2(x, top + 17.0 + msg.size().y + 8.0), vec2(text_w.min(360.0), 26.0));
             let mut text = d.text.clone();
-            let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(field), |ui| kit::field(ui, fid, &mut text, None, "", field.width(), false)).inner;
+            let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(field), |ui| kit::field(ui, fid, &mut text, None, "", field.width(), true)).inner;
             if focus {
                 resp.request_focus();
             }
@@ -719,12 +761,11 @@ impl App {
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 answer = Some(true);
             }
-            y += 34.0;
         }
-        let row = Rect::from_min_max(pos2(x, y), pos2(r.right() - 12.0, y + 26.0));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+        let row = Rect::from_min_max(pos2(card_r - 8.0 - buttons_w - 2.0, r.center().y - 12.0), pos2(card_r - 8.0, r.center().y + 12.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            let ok = kit::button_ex(ui, kit::Kind::Primary, None, t("OK"), true);
+            let ok = kit::button_keys(ui, kit::Kind::Primary, None, t("OK"), Some("↵"), true);
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("browser-dialog-ok:{id}"), ok.rect);
             if focus && !prompt {
@@ -735,7 +776,7 @@ impl App {
                 answer = Some(true);
             }
             if d.kind != DialogKind::Alert {
-                let cancel = kit::button_ex(ui, kit::Kind::Secondary, None, t("Cancel"), true);
+                let cancel = kit::button_ex(ui, kit::Kind::Ghost, None, t("Cancel"), true);
                 #[cfg(debug_assertions)]
                 crate::devtest::record(format!("browser-dialog-cancel:{id}"), cancel.rect);
                 has_keys |= cancel.has_focus();
@@ -753,7 +794,7 @@ impl App {
         if let Some(accept) = answer {
             self.answer_dialog(id, accept);
         }
-        h
+        card_h + 6.0
     }
 
     /// Answers a page's dialog (OK or Cancel; a prompt's field with OK). Returns whether one
@@ -809,47 +850,53 @@ impl App {
     /// project, Block.
     fn ask_card(&mut self, ui: &mut Ui, id: PaneId, r: Rect, a: &Ask, who: &str, project: &str) {
         let p = style::pal(ui);
-        let painter = ui.painter_at(r);
-        painter.rect_filled(r, CornerRadius::ZERO, style::over(p.surface, p.warn, 0.09));
-        painter.hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, style::over(p.surface, p.warn, 0.32)));
-        painter.text(pos2(r.left() + 22.0, r.top() + 20.0), Align2::CENTER_CENTER, icons::SHIELD_WARNING, style::icon_font(17.0), p.warn);
-        let x = r.left() + 40.0;
-        let note = t("not on this project’s list");
-        let note_w = if r.width() > 560.0 {
-            let g = painter.layout_no_wrap(note.to_string(), egui::FontId::proportional(style::SMALL), p.text_faint);
-            let w = g.size().x;
-            painter.galley(pos2(r.right() - 12.0 - w, r.top() + 12.0), g, p.text_faint);
-            w + 20.0
-        } else {
-            0.0
-        };
-        // The question, the site in bold.
-        let q = if a.click { tf("{}’s click goes to {}", &[who, &a.host]) } else { tf("{} wants to open {}", &[who, &a.host]) };
-        let mut job = egui::text::LayoutJob::default();
-        let font = style::medium(12.5);
-        match q.rfind(&a.host) {
-            Some(at) => {
-                job.append(&q[..at], 0.0, egui::TextFormat { font_id: font.clone(), color: p.text, ..Default::default() });
-                job.append(&a.host, 0.0, egui::TextFormat { font_id: style::semibold(12.5), color: p.text, ..Default::default() });
-                job.append(&q[at + a.host.len()..], 0.0, egui::TextFormat { font_id: font, color: p.text, ..Default::default() });
-            }
-            None => job.append(&q, 0.0, egui::TextFormat { font_id: font, color: p.text, ..Default::default() }),
+        let dark = ui.visuals().dark_mode;
+        // An amber card above the page: who wants to open what, why it asks, the three answers.
+        let card = Rect::from_min_max(pos2(r.left() + 8.0, r.top()), pos2(r.right() - 8.0, r.bottom() - 6.0));
+        let painter = ui.painter_at(card.expand(1.0));
+        painter.rect(card, CornerRadius::same(10), style::over(p.canvas, p.warn, 0.08), Stroke::new(1.0, style::soft(p.warn, 0.30)), egui::StrokeKind::Inside);
+        let x = card.left() + 14.0;
+        let mut y = card.top() + 14.0;
+        // Who: its logo, its name, what it wants.
+        let kind = self.browsers.get(&id).and_then(|b| b.driver.as_ref()).and_then(|d| self.panes.get(&d.pane)).and_then(|x| x.tracker.agent.or(x.last_agent));
+        let mut tx = x;
+        if let Some(k) = kind.filter(|k| super::agent_logo::has(*k)) {
+            super::agent_logo::paint(&painter, Rect::from_min_size(pos2(x, y + 1.0), vec2(14.0, 14.0)), k, p.text, false);
+            tx += 14.0 + 8.0;
         }
-        job.wrap = egui::text::TextWrapping::truncate_at_width((r.right() - 12.0 - note_w - x).max(40.0));
+        let mut job = egui::text::LayoutJob::default();
+        job.append(who, 0.0, egui::TextFormat::simple(style::medium(12.5), p.text));
+        let wants = if a.click { t("’s click goes to") } else { t("wants to open") };
+        job.append(wants, if a.click { 0.0 } else { 4.0 }, egui::TextFormat::simple(egui::FontId::proportional(12.5), p.text));
+        job.wrap = egui::text::TextWrapping::truncate_at_width((card.right() - 14.0 - tx).max(40.0));
         let g = painter.layout_job(job);
-        painter.galley(pos2(x, r.top() + 11.0), g, p.text);
-        let mut url = egui::text::LayoutJob::simple_singleline(a.url.clone(), egui::FontId::monospace(11.5), p.text_muted);
-        url.wrap = egui::text::TextWrapping::truncate_at_width((r.right() - 12.0 - x).max(40.0));
-        let g = painter.layout_job(url);
-        painter.galley(pos2(x, r.top() + 30.0), g, p.text_muted);
-        let row = Rect::from_min_max(pos2(x, r.top() + 48.0), pos2(r.right() - 12.0, r.top() + 76.0));
+        painter.galley(pos2(tx, y + 8.0 - g.size().y / 2.0), g, p.text);
+        y += 16.0 + 8.0;
+        // The site, in a well.
+        let site = Rect::from_min_max(pos2(x, y), pos2(card.right() - 14.0, y + 30.0));
+        painter.rect(site, CornerRadius::same(7), if dark { p.inset } else { egui::Color32::WHITE }, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+        painter.text(pos2(site.left() + 10.0 + 6.5, site.center().y), Align2::CENTER_CENTER, icons::GLOBE_SIMPLE, style::icon_font(13.0), p.text_faint);
+        let (host, path) = crate::browser::split_url(&a.url);
+        let host = if host.is_empty() { a.host.clone() } else { host.to_string() };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&host, 0.0, egui::TextFormat::simple(style::mono(11.5), p.text));
+        job.append(&path, 0.0, egui::TextFormat::simple(style::mono(11.5), p.text_faint));
+        job.wrap = egui::text::TextWrapping::truncate_at_width((site.width() - 36.0).max(40.0));
+        let g = painter.layout_job(job);
+        painter.galley(pos2(site.left() + 10.0 + 13.0 + 6.0, site.center().y - g.size().y / 2.0), g, p.text);
+        y = site.bottom() + 8.0;
+        let mut job = egui::text::LayoutJob::simple_singleline(tf("{} · it isn’t on your list of sites agents may open.", &[project]), egui::FontId::proportional(11.5), p.text_faint);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((card.right() - 14.0 - x).max(40.0));
+        let g = painter.layout_job(job);
+        painter.galley(pos2(x, y), g, p.text_faint);
+        y += 16.0 + 10.0;
+        let row = Rect::from_min_max(pos2(x, y), pos2(card.right() - 14.0, y + 24.0));
         let mut answer = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let buttons = [
                 (kit::Kind::Primary, t("Allow Once").to_string(), Answer::Once, "allow"),
                 (kit::Kind::Secondary, tf("Always for {}", &[project]), Answer::Always, "always"),
-                (kit::Kind::Ghost, t("Block").to_string(), Answer::Block, "block"),
             ];
             for (kind, label, ans, name) in buttons {
                 let b = kit::button_ex(ui, kind, None, &label, true);
@@ -860,9 +907,17 @@ impl App {
                     answer = Some(ans);
                 }
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let b = kit::button_ex(ui, kit::Kind::Danger, None, t("Block"), true);
+                #[cfg(debug_assertions)]
+                crate::devtest::record(format!("browser-block:{id}"), b.rect);
+                if b.clicked() {
+                    answer = Some(Answer::Block);
+                }
+            });
         });
         #[cfg(debug_assertions)]
-        crate::devtest::record(format!("browser-ask:{id}"), r);
+        crate::devtest::record(format!("browser-ask:{id}"), card);
         if let Some(ans) = answer {
             self.answer_site(id, ans);
         }
@@ -1497,4 +1552,47 @@ pub enum WebButton {
     InView,
     /// An agent uses it (who; whether the panel shows).
     Agent(String, bool),
+}
+
+/// The address field of a page's bar: a well (inset, 30 high) with the lock or globe, the
+/// address in the data font, its path quieter than its host while it is not being typed in.
+fn address_field(ui: &mut Ui, id: egui::Id, text: &mut String, icon: &str, rect: Rect, typing: bool) -> egui::Response {
+    let p = style::pal(ui);
+    let painter = ui.painter();
+    let radius = CornerRadius::same(8);
+    if typing {
+        painter.rect_stroke(rect.expand(3.0), CornerRadius::same(11), Stroke::new(3.0, p.accent_tint), egui::StrokeKind::Inside);
+    }
+    let fill = if ui.visuals().dark_mode { p.inset } else { egui::Color32::from_rgb(0xf1, 0xf1, 0xf0) };
+    painter.rect(rect, radius, fill, Stroke::new(1.0, if typing { p.accent } else { p.border }), egui::StrokeKind::Inside);
+    painter.text(pos2(rect.left() + 10.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), p.text_faint);
+    let inner = Rect::from_min_max(pos2(rect.left() + 10.0 + 13.0 + 7.0, rect.top() + 1.0), pos2(rect.right() - 10.0, rect.bottom() - 1.0));
+    let (host_c, path_c) = (p.text, p.text_ghost);
+    let mut layouter = move |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+        let s = buf.as_str();
+        let font = style::mono(11.5);
+        let mut job = egui::text::LayoutJob::default();
+        // Host, then path (from the first "/" after the scheme) in a quieter ink.
+        let start = s.find("://").map_or(0, |i| i + 3);
+        let cut = if typing { s.len() } else { s[start..].find('/').map_or(s.len(), |i| start + i) };
+        job.append(&s[..cut], 0.0, egui::TextFormat::simple(font.clone(), host_c));
+        if cut < s.len() {
+            job.append(&s[cut..], 0.0, egui::TextFormat::simple(font, path_c));
+        }
+        job.wrap.max_width = wrap;
+        job.wrap.max_rows = 1;
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.add_sized(
+        inner.size(),
+        egui::TextEdit::singleline(text)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .font(style::mono(11.5))
+            .hint_text(egui::RichText::new(t("Search or enter an address")).font(egui::FontId::proportional(12.0)).color(p.text_faint))
+            .layouter(&mut layouter)
+            .vertical_align(egui::Align::Center),
+    )
 }

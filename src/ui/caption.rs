@@ -10,8 +10,8 @@ use crate::app::App;
 use crate::i18n::t;
 use tc_core::model::View;
 
-/// The title bar's height (the system's is 32 px at 100 %).
-pub const TITLE_H: f32 = 32.0;
+/// The title bar's height.
+pub const TITLE_H: f32 = 34.0;
 /// One window button: as wide as Windows makes them.
 const BUTTON_W: f32 = 46.0;
 /// The three buttons, at the right end of the title bar.
@@ -44,7 +44,7 @@ impl App {
         let text = if self.window_focused { p.text } else { p.text_faint };
         let mark = Rect::from_center_size(pos2(bar.left() + 12.0 + 8.0, bar.center().y), vec2(16.0, 16.0));
         super::settings::paint_logo(ui.painter(), mark, &p);
-        let name = ui.painter().layout_no_wrap("TernaryCode".to_string(), style::semibold(12.5), text);
+        let name = ui.painter().layout_no_wrap("TernaryCode".to_string(), style::medium(12.5), text);
         let name_at = pos2(mark.right() + 8.0, bar.center().y - name.size().y / 2.0);
         let name_w = name.size().x;
         ui.painter().galley(name_at, name, text);
@@ -55,6 +55,23 @@ impl App {
         let chosen = ui
             .scope_builder(egui::UiBuilder::new().max_rect(menus).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
                 ui.set_clip_rect(menus.intersect(ui.clip_rect()));
+                // The menus' names: quiet, 26 high, rounded 5; the open one pressed.
+                let st = ui.style_mut();
+                st.spacing.button_padding = vec2(9.0, 5.0);
+                st.spacing.item_spacing.x = 2.0;
+                for (w, fill) in [
+                    (&mut st.visuals.widgets.inactive, Color32::TRANSPARENT),
+                    (&mut st.visuals.widgets.hovered, p.hover),
+                    (&mut st.visuals.widgets.active, p.subtle),
+                    (&mut st.visuals.widgets.open, p.subtle),
+                ] {
+                    w.weak_bg_fill = fill;
+                    w.bg_fill = fill;
+                    w.bg_stroke = Stroke::NONE;
+                    w.corner_radius = egui::CornerRadius::same(5);
+                    w.fg_stroke = Stroke::new(1.0, if fill == Color32::TRANSPARENT { p.text_muted } else { p.text });
+                    w.expansion = 0.0;
+                }
                 egui::MenuBar::new().ui(ui, |ui| self.title_menus(ui)).inner
             })
             .inner;
@@ -103,6 +120,7 @@ impl App {
                 Some((t("Command Palette…"), A::Palette)),
                 Some((t("Switch Project…"), A::SwitchProject)),
                 Some((t("Show/Hide Sidebar"), A::ToggleSidebar)),
+                Some((t("Narrow Sidebar"), A::ToggleCompactSidebar)),
                 Some((t("Show/Hide Code"), A::ToggleEditor)),
                 Some((t("Show/Hide Files"), A::ToggleFiles)),
                 None,

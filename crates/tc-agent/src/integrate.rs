@@ -141,6 +141,31 @@ pub fn env_ref(name: &str) -> String {
     }
 }
 
+/// `command` with a preset's environment variables set for it, as the pane's shell reads it:
+/// `KEY='value' command` (zsh, bash, fish), `$env:KEY='value'; command` in PowerShell (where
+/// they stay set in that shell). Names that are not variable names are left out.
+pub fn with_env(command: &str, env: &std::collections::BTreeMap<String, String>) -> String {
+    with_env_for(command, env, cfg!(windows))
+}
+
+fn with_env_for(command: &str, env: &std::collections::BTreeMap<String, String>, powershell: bool) -> String {
+    let name_ok = |k: &str| k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let vars: Vec<(&String, &String)> = env.iter().filter(|(k, _)| name_ok(k)).collect();
+    if vars.is_empty() {
+        return command.to_string();
+    }
+    // Single quotes: nothing in them is expanded; a quote in the value is written as the
+    // shell wants it.
+    let quote = |v: &str| if powershell { format!("'{}'", v.replace('\'', "''")) } else { format!("'{}'", v.replace('\'', "'\\''")) };
+    if powershell {
+        let sets: Vec<String> = vars.iter().map(|(k, v)| format!("$env:{k}={}", quote(v))).collect();
+        format!("{}; {command}", sets.join("; "))
+    } else {
+        let sets: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
+        format!("{} {command}", sets.join(" "))
+    }
+}
+
 /// The hook program and the commands that run it.
 #[derive(Clone, Debug)]
 pub struct Hooks {
@@ -1209,6 +1234,17 @@ mod tests {
 
     /// Each `codex -c` value as Windows PowerShell hands it over: no `"` (5.1 drops them), and
     /// what Codex reads from it (`_x_ = <value>`, as its `-c` does) is what was meant.
+    #[test]
+    fn preset_environment_is_set_for_the_command() {
+        let mut env = std::collections::BTreeMap::new();
+        assert_eq!(with_env_for("claude", &env, false), "claude");
+        env.insert("ANTHROPIC_MODEL".to_string(), "opus".to_string());
+        env.insert("NOTE".to_string(), "it's here".to_string());
+        env.insert("bad name".to_string(), "x".to_string());
+        assert_eq!(with_env_for("claude", &env, false), "ANTHROPIC_MODEL='opus' NOTE='it'\\''s here' claude");
+        assert_eq!(with_env_for("claude", &env, true), "$env:ANTHROPIC_MODEL='opus'; $env:NOTE='it''s here'; claude");
+    }
+
     #[test]
     fn codex_values_get_through_windows_powershell() {
         let bin = r"C:\Users\ilham\AppData\Local\Programs\TernaryCode\ternarycode-hook.exe";

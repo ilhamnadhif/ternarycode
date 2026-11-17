@@ -13,48 +13,79 @@ use crate::app::{App, Busy, Dialog};
 use crate::i18n::{t, tf};
 
 /// Space between the dialog's edge and its content.
-const PAD: i8 = 22;
+const PAD: i8 = 20;
 
-/// The card every dialog sits on (its parts add their own margins).
+/// The card every dialog sits on (its parts add their own margins): the overlay colour, a
+/// line, rounded 14, a deep shadow.
 pub fn frame(ctx: &egui::Context) -> egui::Frame {
-    let p = style::palette(ctx.global_style().visuals.dark_mode);
+    let dark = ctx.global_style().visuals.dark_mode;
+    let p = style::palette(dark);
     egui::Frame::NONE
-        .fill(p.surface)
+        .fill(p.overlay)
         .stroke(Stroke::new(1.0, p.border_strong))
-        .corner_radius(CornerRadius::same(style::RADIUS_LG + 2))
+        .corner_radius(CornerRadius::same(style::RADIUS_DIALOG))
         .shadow(egui::epaint::Shadow {
-            offset: [0, 16],
-            blur: 48,
+            offset: [0, 30],
+            blur: 80,
             spread: 0,
-            color: Color32::from_black_alpha(if ctx.global_style().visuals.dark_mode { 140 } else { 50 }),
+            color: Color32::from_black_alpha(if dark { 166 } else { 46 }),
         })
+}
+
+/// The dimming behind a dialog.
+pub fn scrim(dark: bool) -> Color32 {
+    if dark { Color32::from_black_alpha(128) } else { Color32::from_rgba_premultiplied(4, 4, 4, 56) }
+}
+
+/// The square an icon sits in at the head of a dialog: 34, rounded 10, tinted by its colour
+/// (neutral for the text colour).
+pub fn paint_dialog_icon(ui: &mut Ui, icon: &str, color: Color32) -> egui::Response {
+    let p = style::pal(ui);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
+    let neutral = color == p.text || color == p.text_muted;
+    let (fill, line, ink) = if neutral {
+        (p.surface, p.border_strong, p.text_muted)
+    } else {
+        (style::soft(color, 0.12), style::soft(color, 0.25), color)
+    };
+    ui.painter().rect(rect, CornerRadius::same(10), fill, Stroke::new(1.0, line), egui::StrokeKind::Inside);
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, style::icon_font(17.0), ink);
+    resp
 }
 
 /// A dialog's header. Returns whether its close button was clicked.
 pub fn header(ui: &mut Ui, icon: &str, color: Color32, title: &str, sub: Option<&str>) -> bool {
     let p = style::pal(ui);
     let mut close = false;
+    // The light along the dialog's top edge.
+    let top = ui.max_rect();
+    kit::paint_highlight(ui.painter(), egui::Rect::from_min_size(top.min, egui::vec2(top.width(), 1.0)), style::RADIUS_DIALOG, &p);
     egui::Frame::NONE
         .inner_margin(Margin { left: PAD, right: 14, top: 18, bottom: 6 })
         .show(ui, |ui| {
             ui.horizontal_top(|ui| {
-                kit::icon_badge(ui, icon, color, 36.0);
-                ui.add_space(12.0);
-                let text_w = (ui.available_width() - 40.0).max(120.0);
+                paint_dialog_icon(ui, icon, color);
+                ui.add_space(14.0);
+                let text_w = (ui.available_width() - 36.0).max(120.0);
                 ui.vertical(|ui| {
                     ui.set_width(text_w);
-                    ui.add_space(if sub.is_some() { 0.0 } else { 8.0 });
-                    ui.add(egui::Label::new(RichText::new(title).font(style::semibold(15.5)).color(p.text)).wrap());
+                    ui.add_space(if sub.is_some() { 1.0 } else { 8.0 });
+                    let mut job = egui::text::LayoutJob::default();
+                    let mut f = egui::TextFormat::simple(style::semibold(15.0), p.text);
+                    f.extra_letter_spacing = -0.15;
+                    job.append(title, 0.0, f);
+                    job.wrap.max_width = text_w;
+                    ui.label(job);
                     if let Some(sub) = sub {
-                        ui.add_space(3.0);
+                        ui.add_space(4.0);
                         ui.spacing_mut().item_spacing.y = 2.0;
                         ui.add(
-                            egui::Label::new(RichText::new(sub).size(13.0).color(p.text_muted).line_height(Some(18.5))).wrap(),
+                            egui::Label::new(RichText::new(sub).size(12.5).color(p.text_muted).line_height(Some(18.75))).wrap(),
                         );
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    close = kit::icon_button_ex(ui, icons::X, t("Close"), false, 26.0).clicked();
+                    close = kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0).clicked();
                 });
             });
         });
@@ -67,10 +98,10 @@ pub fn body<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
         .inner_margin(Margin { left: PAD, right: PAD, top: 12, bottom: 18 })
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
-            // Fields sit a shade below the card, so they read as places to type.
+            // Fields sit below the card (sunken), so they read as places to type.
             let p = style::pal(ui);
-            ui.visuals_mut().text_edit_bg_color = Some(p.canvas);
-            ui.visuals_mut().extreme_bg_color = p.canvas;
+            ui.visuals_mut().text_edit_bg_color = Some(p.inset);
+            ui.visuals_mut().extreme_bg_color = p.inset;
             add(ui)
         })
         .inner
@@ -89,12 +120,30 @@ fn text_field(ui: &mut Ui, text: &mut String, hint: &str, leave: f32) -> egui::R
     kit::field(ui, id, text, None, hint, w, false)
 }
 
-/// The same with a folder icon.
-fn folder_field(ui: &mut Ui, text: &mut String, hint: &str, leave: f32) -> egui::Response {
-    let id = ui.next_auto_id();
-    let w = (ui.available_width() - leave).max(80.0);
-    kit::field(ui, id, text, Some(icons::FOLDER), hint, w, false)
+/// A field in the data font (a folder, a command), `w` wide.
+fn mono_field(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, w: f32) -> egui::Response {
+    let p = style::pal(ui);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 30.0), egui::Sense::hover());
+    let focused = ui.ctx().memory(|m| m.has_focus(id));
+    if focused {
+        ui.painter().rect_stroke(rect.expand(3.0), CornerRadius::same(10), Stroke::new(3.0, p.accent_tint), egui::StrokeKind::Inside);
+    }
+    let fill = if ui.visuals().dark_mode { p.inset } else { Color32::WHITE };
+    ui.painter().rect(rect, CornerRadius::same(7), fill, Stroke::new(1.0, if focused { p.accent } else { p.border_strong }), egui::StrokeKind::Inside);
+    let inner = rect.shrink2(egui::vec2(10.0, 1.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.add_sized(
+        inner.size(),
+        egui::TextEdit::singleline(text)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .margin(Margin::ZERO)
+            .font(style::mono(12.0))
+            .hint_text(RichText::new(hint).font(style::mono(12.0)).color(p.text_ghost))
+            .vertical_align(egui::Align::Center),
+    )
 }
+
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Confirm {
@@ -104,50 +153,85 @@ enum Confirm {
 
 /// The footer: a line, `hint` at the left, Cancel and the main button at the right. Returns
 /// (cancel, ok).
+/// The main button asks: ↵ on it, Cancel quiet. It destroys something: no ↵ (Enter does
+/// nothing), Cancel outlined as the safe choice, and "esc cancel" at the left unless `hint`.
 fn footer(ui: &mut Ui, hint: Option<&str>, ok: &str, kind: Confirm, enabled: bool) -> (bool, bool) {
     let mut out = (false, false);
-    footer_with(ui, hint, |ui| {
-        let okr = ui
-            .add_enabled_ui(enabled, |ui| {
-                let k = match kind {
-                    Confirm::Primary => kit::Kind::Primary,
-                    Confirm::Danger => kit::Kind::DangerFilled,
-                };
-                kit::button_ex(ui, k, None, ok, false)
-            })
-            .inner;
-        #[cfg(debug_assertions)]
-        crate::devtest::record("dialog-ok", okr.rect);
-        out.1 = okr.clicked();
-        out.0 = kit::secondary(ui, None, t("Cancel")).clicked();
-    });
+    let esc = kind == Confirm::Danger && hint.is_none();
+    footer_left(
+        ui,
+        |ui| {
+            if esc {
+                esc_hint(ui);
+            } else if let Some(hint) = hint {
+                let p = style::pal(ui);
+                ui.label(RichText::new(hint).size(style::LABEL).color(p.text_faint));
+            }
+        },
+        |ui| {
+            let okr = ui
+                .add_enabled_ui(enabled, |ui| match kind {
+                    Confirm::Primary => kit::button_keys(ui, kit::Kind::Primary, None, ok, Some("↵"), false),
+                    Confirm::Danger => kit::button_ex(ui, kit::Kind::DangerFilled, None, ok, false),
+                })
+                .inner;
+            #[cfg(debug_assertions)]
+            crate::devtest::record("dialog-ok", okr.rect);
+            out.1 = okr.clicked();
+            let cancel = if kind == Confirm::Danger { kit::Kind::Secondary } else { kit::Kind::Ghost };
+            out.0 = kit::button_ex(ui, cancel, None, t("Cancel"), false).clicked();
+        },
+    );
     out
+}
+
+/// "esc cancel" at a footer's left: the key, then the word.
+pub fn esc_hint(ui: &mut Ui) {
+    let p = style::pal(ui);
+    ui.spacing_mut().item_spacing.x = 6.0;
+    kit::kbd(ui, "esc");
+    ui.label(RichText::new(t("cancel")).size(style::LABEL).color(p.text_faint));
 }
 
 /// A footer with its own buttons: a line, `hint` at the left, and what `buttons` adds at the
 /// right (right to left: the main button first).
 pub fn footer_with(ui: &mut Ui, hint: Option<&str>, buttons: impl FnOnce(&mut Ui)) {
+    footer_left(
+        ui,
+        |ui| {
+            if let Some(hint) = hint {
+                let p = style::pal(ui);
+                ui.label(RichText::new(hint).size(style::LABEL).color(p.text_faint));
+            }
+        },
+        buttons,
+    );
+}
+
+/// A footer with what `left` adds at its left (a hint, a secondary choice) and `buttons` at
+/// its right (right to left: the main button first).
+pub fn footer_left(ui: &mut Ui, left: impl FnOnce(&mut Ui), buttons: impl FnOnce(&mut Ui)) {
     let p = style::pal(ui);
     let full = ui.max_rect();
     let y = ui.cursor().top();
+    let dark = ui.visuals().dark_mode;
     ui.painter().hline(full.x_range(), y, Stroke::new(1.0, p.border));
     egui::Frame::NONE
-        .fill(style::over(p.surface, p.chrome, 0.6))
+        .fill(if dark { style::over(p.overlay, p.chrome, 0.35) } else { Color32::from_rgb(0xfa, 0xfa, 0xfa) })
         .corner_radius(CornerRadius {
             nw: 0,
             ne: 0,
-            sw: style::RADIUS_LG + 2,
-            se: style::RADIUS_LG + 2,
+            sw: style::RADIUS_DIALOG - 1,
+            se: style::RADIUS_DIALOG - 1,
         })
-        .inner_margin(Margin { left: PAD, right: 16, top: 12, bottom: 12 })
+        .inner_margin(Margin { left: PAD, right: 14, top: 12, bottom: 12 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                if let Some(hint) = hint {
-                    ui.label(RichText::new(hint).size(style::SMALL).color(p.text_faint));
-                }
+                left(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
                     buttons(ui);
                 });
             });
@@ -178,10 +262,6 @@ fn busy_list(ui: &mut Ui, items: &[Busy]) {
         });
 }
 
-/// "↵ to confirm · Esc to cancel".
-fn keys_hint(ok: &str) -> String {
-    tf("↵ {} · Esc to cancel", &[ok])
-}
 
 impl App {
     pub fn dialogs(&mut self, ctx: &egui::Context) {
@@ -191,78 +271,98 @@ impl App {
         let p = style::palette(ctx.global_style().visuals.dark_mode);
         let modal = egui::Modal::new(egui::Id::new("dialog"))
             .frame(frame(ctx))
-            .backdrop_color(Color32::from_black_alpha(if ctx.global_style().visuals.dark_mode { 130 } else { 70 }))
+            .backdrop_color(scrim(ctx.global_style().visuals.dark_mode))
             .show(ctx, |ui| match &mut dialog {
                 Dialog::AddProject { path, name, then, found } => {
                     ui.set_width(520.0);
-                    if header(
-                        ui,
-                        icons::FOLDER_PLUS,
-                        p.accent,
-                        t("Add Project"),
-                        Some(t("A project is a folder: its terminals start there, and its files and changes show beside it.")),
-                    ) {
+                    if header(ui, icons::FOLDER_PLUS, p.accent, t("Add Project"), Some(t("Its terminals start in this folder."))) {
                         keep = false;
                     }
                     let presets = self.presets();
+                    let next_color = {
+                        let (r, g, b) = crate::project::COLORS[self.projects.len() % crate::project::COLORS.len()];
+                        Color32::from_rgb(r, g, b)
+                    };
                     body(ui, |ui| {
-                        field_label(ui, t("Folder"));
-                        ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.y = 10.0;
+                        // Label at the left, the field at the right.
+                        let row = |ui: &mut Ui, label: &str, add: &mut dyn FnMut(&mut Ui)| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(82.0, 30.0), egui::Sense::hover());
+                                ui.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(12.5), p.text_muted);
+                                add(ui);
+                            });
+                        };
+                        row(ui, t("Folder"), &mut |ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
                             let choose_w = kit::button_width(ui, Some(icons::FOLDER_OPEN), t("Choose…"), None, false);
-                            let r = folder_field(ui, path, "~/Developments/app", choose_w + 8.0);
+                            let w = (ui.available_width() - choose_w - 8.0).max(80.0);
+                            let id = egui::Id::new("add-project-folder");
+                            let r = mono_field(ui, id, path, "~/code/app", w);
                             if path.is_empty() && !r.has_focus() && !r.lost_focus() {
                                 r.request_focus();
                             }
-                            if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::FOLDER_OPEN), t("Choose…"), false)
-                                .clicked()
+                            if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::FOLDER_OPEN), t("Choose…"), false).clicked()
                                 && let Some(dir) = rfd::FileDialog::new().pick_folder()
                             {
                                 *path = dir.display().to_string();
                             }
                         });
-                        // What is at that folder (looked at again when the path changes).
+                        row(ui, t("Name"), &mut |ui| {
+                            let folder_name = std::path::Path::new(path.trim()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            let hint = if folder_name.is_empty() { t("The folder's name").to_string() } else { folder_name };
+                            text_field(ui, name, &hint, 0.0);
+                        });
+                        // What is at that folder (looked at again when the path changes): its
+                        // kind and branch, in a quiet band under the name.
                         let typed = path.trim().to_string();
                         if found.as_ref().is_none_or(|(checked, _)| *checked != typed) {
                             *found = Some((typed.clone(), folder_summary(&typed)));
                         }
-                        if let Some((_, Some(line))) = found {
-                            ui.add_space(2.0);
+                        if let Some((_, Some(line))) = found.as_ref() {
                             ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 5.0;
-                                ui.label(RichText::new(icons::CHECK_CIRCLE).font(style::icon_font(12.0)).color(p.ok));
-                                ui.label(RichText::new(line.as_str()).size(style::SMALL).color(p.text_faint));
+                                ui.add_space(82.0);
+                                let w = ui.available_width();
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(w, 34.0), egui::Sense::hover());
+                                let dark = ui.visuals().dark_mode;
+                                ui.painter().rect_filled(r, CornerRadius::same(7), if dark { p.hover } else { Color32::from_rgb(0xf4, 0xf4, 0xf3) });
+                                let dir = crate::app::absolute(&typed);
+                                let kind = crate::project::Kind::detect(&dir);
+                                let tile = egui::Rect::from_min_size(egui::pos2(r.left() + 9.0, r.center().y - 9.0), egui::vec2(18.0, 18.0));
+                                let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                let letters = kind.letters().map(str::to_string).unwrap_or_else(|| crate::project::initials(&folder));
+                                kit::paint_project_tile(ui.painter(), tile, &letters, next_color, dark);
+                                let mut job = egui::text::LayoutJob::default();
+                                let parts: Vec<&str> = line.split(" · ").collect();
+                                job.append(parts.first().copied().unwrap_or(""), 0.0, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.text_muted));
+                                if let Some(branch) = parts.get(1) {
+                                    job.append("·", 6.0, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.text_ghost));
+                                    job.append(icons::GIT_BRANCH, 6.0, egui::TextFormat::simple(style::icon_font(11.0), p.text_faint));
+                                    job.append(branch, 4.0, egui::TextFormat::simple(style::mono(11.0), p.text_faint));
+                                }
+                                job.wrap = egui::text::TextWrapping::truncate_at_width(w - 46.0);
+                                let g = ui.painter().layout_job(job);
+                                ui.painter().galley(egui::pos2(tile.right() + 9.0, r.center().y - g.size().y / 2.0), g, p.text_muted);
                             });
                         }
-                        ui.add_space(8.0);
-                        field_label(ui, t("Name"));
-                        let folder_name = std::path::Path::new(path.trim())
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        let hint = if folder_name.is_empty() { t("The folder's name").to_string() } else { folder_name };
-                        text_field(ui, name, &hint, 0.0);
                         // An agent to start in it once added.
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(t("Then run")).size(style::SMALL).color(p.text_muted));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let mut options = vec![kit::Seg::new(t("Nothing"), "")];
-                                options.extend(presets.iter().take(3).map(|x| kit::Seg::new(x.name.as_str(), x.command.as_str())));
-                                if let Some(i) = kit::segmented(ui, &options, *then) {
-                                    *then = i;
+                        row(ui, t("Then run"), &mut |ui| {
+                            let mut options = vec![kit::Seg::new(t("Nothing"), "")];
+                            options.extend(presets.iter().take(3).map(|x| {
+                                let s = kit::Seg::new(x.name.as_str(), x.command.as_str());
+                                match x.agent.filter(|a| *a != tc_core::agent::AgentKind::Custom) {
+                                    Some(a) => s.agent(a),
+                                    None => s.icon(icons::TERMINAL_WINDOW),
                                 }
-                            });
+                            }));
+                            if let Some(i) = kit::segmented(ui, &options, *then) {
+                                *then = i;
+                            }
                         });
-                        ui.add_space(10.0);
-                        ui.label(
-                            RichText::new(tf("Tip: drop a folder on the window, or type {} in any terminal.", &["ternarycode ."]))
-                                .size(style::SMALL)
-                                .color(p.text_faint),
-                        );
                     });
                     let ready = !path.trim().is_empty();
-                    let (cancel, ok) = footer(ui, Some(&keys_hint(t("Add"))), t("Add Project"), Confirm::Primary, ready);
+                    let (cancel, ok) = footer(ui, None, t("Add Project"), Confirm::Primary, ready);
                     if cancel {
                         keep = false;
                     }
@@ -294,12 +394,12 @@ impl App {
                         self.actions.push(Action::Integrations);
                     }
                     ui.add_space(12.0);
-                    let (cancel, ok) = footer(ui, Some(&keys_hint(t("Uninstall"))), t("Uninstall"), Confirm::Danger, true);
+                    let (cancel, ok) = footer(ui, None, t("Uninstall"), Confirm::Danger, true);
                     if cancel {
                         keep = false;
                         self.actions.push(Action::Integrations);
                     }
-                    if ok || enter {
+                    if ok {
                         self.actions.push(Action::UninstallNow(*agent));
                         self.actions.push(Action::Integrations);
                         keep = false;
@@ -325,21 +425,61 @@ impl App {
                     if header(ui, icons::FLOPPY_DISK, p.warn, &tf("Save changes to {}?", &[name]), Some(t("Your changes are lost if you don’t save them."))) {
                         keep = false;
                     }
-                    ui.add_space(12.0);
-                    let mut save = enter;
-                    footer_with(ui, Some(&tf("↵ {}", &[t("Save")])), |ui| {
-                        let okr = kit::button_ex(ui, kit::Kind::Primary, None, t("Save"), false);
-                        #[cfg(debug_assertions)]
-                        crate::devtest::record("dialog-ok", okr.rect);
-                        save |= okr.clicked();
-                        if kit::secondary(ui, None, t("Cancel")).clicked() {
-                            keep = false;
-                        }
-                        if kit::button_ex(ui, kit::Kind::Ghost, None, t("Don’t Save"), false).clicked() {
-                            self.actions.push(Action::DiscardAndCloseFile(*project, path.clone()));
-                            keep = false;
-                        }
+                    // The file: its path in the project, and how many lines were edited.
+                    let root = self.project(*project).map(|x| (x.path.clone(), x.name.clone()));
+                    let edited = self.editors.get(project).and_then(|e| e.files.iter().find(|f| f.path == *path)).map(|f| {
+                        let (a, b): (Vec<&str>, Vec<&str>) = (f.saved.lines().collect(), f.text.lines().collect());
+                        (0..a.len().max(b.len())).filter(|i| a.get(*i) != b.get(*i)).count()
                     });
+                    body(ui, |ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
+                        let dark = ui.visuals().dark_mode;
+                        ui.painter().rect(r, CornerRadius::same(8), if dark { p.inset } else { Color32::WHITE }, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+                        ui.painter().text(egui::pos2(r.left() + 12.0 + 6.5, r.center().y), egui::Align2::CENTER_CENTER, icons::FILE_TEXT, style::icon_font(13.0), p.text_faint);
+                        let rel = root.as_ref().and_then(|(dir, _)| path.strip_prefix(dir).ok()).map_or_else(|| path.display().to_string(), |r| r.display().to_string());
+                        let mut right = r.right() - 12.0;
+                        let mut what = Vec::new();
+                        if let Some((_, pname)) = &root {
+                            what.push(pname.clone());
+                        }
+                        if let Some(n) = edited.filter(|n| *n > 0) {
+                            what.push(crate::i18n::count(n, t("1 line edited"), t("{} lines edited")));
+                        }
+                        if !what.is_empty() {
+                            let g = ui.painter().layout_no_wrap(what.join(" · "), style::mono(10.5), p.text_faint);
+                            right -= g.size().x;
+                            ui.painter().galley(egui::pos2(right, r.center().y - g.size().y / 2.0), g, p.text_faint);
+                            right -= 12.0;
+                        }
+                        let x = r.left() + 12.0 + 13.0 + 10.0;
+                        let mut job = egui::text::LayoutJob::simple_singleline(rel, style::mono(12.0), p.text);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(20.0));
+                        let g = ui.painter().layout_job(job);
+                        ui.painter().galley(egui::pos2(x, r.center().y - g.size().y / 2.0), g, p.text);
+                    });
+                    let mut save = enter;
+                    let (mut discard, mut cancel) = (false, false);
+                    footer_left(
+                        ui,
+                        |ui| {
+                            discard = kit::button_ex(ui, kit::Kind::Ghost, None, t("Don’t Save"), false).clicked();
+                        },
+                        |ui| {
+                            let okr = kit::button_keys(ui, kit::Kind::Primary, None, t("Save"), Some("↵"), false);
+                            #[cfg(debug_assertions)]
+                            crate::devtest::record("dialog-ok", okr.rect);
+                            save |= okr.clicked();
+                            cancel = kit::secondary(ui, None, t("Cancel")).clicked();
+                        },
+                    );
+                    if cancel {
+                        keep = false;
+                    }
+                    if discard {
+                        self.actions.push(Action::DiscardAndCloseFile(*project, path.clone()));
+                        keep = false;
+                        save = false;
+                    }
                     if save {
                         self.actions.push(Action::SaveAndCloseFile(*project, path.clone()));
                         keep = false;
@@ -473,19 +613,42 @@ impl App {
                     ui.set_width(440.0);
                     if header(
                         ui,
-                        icons::X_CIRCLE,
-                        p.warn,
+                        icons::WARNING,
+                        p.err,
                         t("Close this pane?"),
                         Some(&tf("{} is still running in it and will be stopped.", &[what])),
                     ) {
                         keep = false;
                     }
-                    ui.add_space(12.0);
-                    let (cancel, ok) = footer(ui, Some(&keys_hint(t("Close Pane"))), t("Close Pane"), Confirm::Danger, true);
+                    // What runs: its name, its process group, since when, the project.
+                    let pane = self.panes.get(id);
+                    let pgid = pane.and_then(|x| x.session.as_ref()).and_then(|s| s.pty.foreground_pgid());
+                    let since = pane.map(|x| super::status::age(x.tracker.since));
+                    let project = self.projects.iter().find(|x| x.panes().contains(id)).map(|x| x.name.clone());
+                    body(ui, |ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 46.0), egui::Sense::hover());
+                        let dark = ui.visuals().dark_mode;
+                        ui.painter().rect(r, CornerRadius::same(8), if dark { p.inset } else { Color32::WHITE }, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+                        kit::paint_lattice(ui.painter(), egui::pos2(r.left() + 12.0 + 5.0, r.center().y), 10.0, p.info, true);
+                        let x = r.left() + 12.0 + 10.0 + 12.0;
+                        ui.painter().text(egui::pos2(x, r.top() + 9.0), egui::Align2::LEFT_TOP, what.as_str(), style::mono(12.0), p.text);
+                        let mut parts = Vec::new();
+                        if let Some(g) = pgid {
+                            parts.push(tf("pid {}", &[&g.to_string()]));
+                        }
+                        if let Some(a) = since {
+                            parts.push(tf("running {}", &[&a]));
+                        }
+                        if let Some(n) = project {
+                            parts.push(n);
+                        }
+                        ui.painter().text(egui::pos2(x, r.bottom() - 9.0), egui::Align2::LEFT_BOTTOM, parts.join(" · "), style::mono(10.5), p.text_faint);
+                    });
+                    let (cancel, ok) = footer(ui, None, t("Close Pane"), Confirm::Danger, true);
                     if cancel {
                         keep = false;
                     }
-                    if ok || enter {
+                    if ok {
                         self.actions.push(Action::ClosePaneId(*id));
                         keep = false;
                     }
@@ -524,7 +687,7 @@ impl App {
                         }
                     });
                     let ready = !name.trim().is_empty();
-                    let (cancel, ok) = footer(ui, Some(&keys_hint(t("Rename"))), t("Rename"), Confirm::Primary, ready);
+                    let (cancel, ok) = footer(ui, None, t("Rename"), Confirm::Primary, ready);
                     if cancel {
                         keep = false;
                     }
@@ -550,7 +713,7 @@ impl App {
                             r.request_focus();
                         }
                     });
-                    let (cancel, ok) = footer(ui, Some(&keys_hint(t("Rename"))), t("Rename"), Confirm::Primary, true);
+                    let (cancel, ok) = footer(ui, None, t("Rename"), Confirm::Primary, true);
                     if cancel {
                         keep = false;
                     }
@@ -560,19 +723,38 @@ impl App {
                     }
                 }
                 Dialog::Install(plan, diff) => {
-                    ui.set_width(680.0);
+                    ui.set_width(760.0);
                     if header(
                         ui,
                         icons::PLUGS_CONNECTED,
                         p.accent,
                         &tf("Install hooks for {}?", &[plan.agent.label()]),
-                        Some(&tf("TernaryCode will add its hooks to your {} settings.", &[plan.agent.label()])),
+                        Some(&tf("TernaryCode adds its hooks to your {} settings, so agents you start by hand report Needs input, Done and Failed too.", &[plan.agent.label()])),
                     ) {
                         keep = false;
                         self.actions.push(Action::Integrations);
                     }
-                    body(ui, |ui| install_preview(ui, &plan.path, diff));
-                    let (cancel, ok) = footer(ui, Some(t("Review the change, then Install")), t("Install"), Confirm::Primary, true);
+                    body(ui, |ui| install_preview(ui, &plan.path, plan.before.as_deref(), diff));
+                    // Where the original is kept.
+                    let backup = crate::paths::contract_tilde(&crate::paths::integrations_dir().join("backup").join(format!("{}-original", plan.agent.slug())));
+                    let mut cancel = false;
+                    let mut ok = false;
+                    footer_left(
+                        ui,
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.label(RichText::new(icons::INFO).font(style::icon_font(12.0)).color(p.text_faint));
+                            ui.label(RichText::new(t("Backup in")).size(style::LABEL).color(p.text_faint));
+                            ui.add(egui::Label::new(RichText::new(backup).font(style::mono(10.5)).color(p.text_faint)).truncate());
+                        },
+                        |ui| {
+                            let okr = kit::button_keys(ui, kit::Kind::Primary, None, t("Install"), Some("↵"), false);
+                            #[cfg(debug_assertions)]
+                            crate::devtest::record("dialog-ok", okr.rect);
+                            ok = okr.clicked();
+                            cancel = kit::button_ex(ui, kit::Kind::Ghost, None, t("Cancel"), false).clicked();
+                        },
+                    );
                     if cancel {
                         keep = false;
                         self.actions.push(Action::Integrations);
@@ -658,43 +840,95 @@ fn folder_summary(typed: &str) -> Option<String> {
     let branch = std::fs::read_to_string(dir.join(".git").join("HEAD"))
         .ok()
         .and_then(|h| h.trim().strip_prefix("ref: refs/heads/").map(str::to_string));
-    let git = branch.map(|b| tf("git, branch {}", &[&b]));
-    let parts: Vec<String> = [Some(kind.to_string()).filter(|k| !k.is_empty()), git].into_iter().flatten().collect();
-    Some(if parts.is_empty() { t("A folder").to_string() } else { parts.join(" · ") })
+    // "Go module · main" (its kind, then its branch when it is a git repository).
+    let kind = if kind.is_empty() { t("A folder").to_string() } else { kind.to_string() };
+    Some(match branch {
+        Some(b) => format!("{kind} · {b}"),
+        None => kind,
+    })
 }
 
 /// The change Install makes: the file, how many lines it adds and removes, and the lines
 /// themselves with their numbers (long runs of unchanged lines folded).
-fn install_preview(ui: &mut Ui, path: &std::path::Path, diff: &str) {
+fn install_preview(ui: &mut Ui, path: &std::path::Path, before: Option<&str>, diff: &str) {
     let p = style::pal(ui);
+    let dark = ui.visuals().dark_mode;
     let lines: Vec<&str> = diff.lines().collect();
     let added = lines.iter().filter(|l| l.starts_with("+ ")).count();
     let removed = lines.iter().filter(|l| l.starts_with("- ")).count();
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(RichText::new(icons::FILE_CODE).font(style::icon_font(13.0)).color(p.text_muted));
-        ui.label(RichText::new(crate::paths::contract_tilde(path)).size(style::SMALL).color(p.text_muted));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let what = if removed == 0 { t("nothing removed").to_string() } else { tf("−{} lines", &[&removed.to_string()]) };
-            ui.label(RichText::new(format!("· {what}")).size(style::SMALL).color(p.text_faint));
-            ui.label(RichText::new(tf("+{} lines", &[&added.to_string()])).size(style::SMALL).color(p.ok));
-        });
-    });
-    ui.add_space(4.0);
-    // Unchanged lines more than three away from a change are folded.
+    let w = ui.available_width();
+    // The file: where, whether it is there, and how much changes.
+    let (head, _) = ui.allocate_exact_size(egui::vec2(w, 38.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect(head, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+    painter.text(egui::pos2(head.left() + 12.0 + 7.5, head.center().y), egui::Align2::CENTER_CENTER, icons::FILE_CODE, style::icon_font(15.0), p.text_faint);
+    let mut right = head.right() - 12.0 - super::review::SHARE_W;
+    super::review::paint_share(painter, egui::pos2(right, head.center().y), added as u32, removed as u32, &p);
+    let mut cjob = egui::text::LayoutJob::default();
+    cjob.append(&format!("+{added}"), 0.0, egui::TextFormat::simple(style::mono(11.5), p.ok));
+    cjob.append(&format!("−{removed}"), 6.0, egui::TextFormat::simple(style::mono(11.5), p.err));
+    let cg = painter.layout_job(cjob);
+    right -= 10.0 + cg.size().x;
+    painter.galley(egui::pos2(right, head.center().y - cg.size().y / 2.0), cg, p.text);
+    let state = match before {
+        Some(text) => tf("exists, {} lines", &[&text.lines().count().to_string()]),
+        None => t("a new file").to_string(),
+    };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&crate::paths::contract_tilde(path), 0.0, egui::TextFormat::simple(style::mono(11.5), p.text));
+    job.append("·", 8.0, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.text_ghost));
+    job.append(&state, 8.0, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.text_faint));
+    let x = head.left() + 12.0 + 15.0 + 8.0;
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - 12.0 - x).max(40.0));
+    let g = painter.layout_job(job);
+    painter.galley(egui::pos2(x, head.center().y - g.size().y / 2.0), g, p.text);
+    // What it does, in three.
+    let (sum, _) = ui.allocate_exact_size(egui::vec2(w, 52.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect(sum, CornerRadius::ZERO, if dark { style::over(p.canvas, p.chrome, 0.3) } else { Color32::from_rgb(0xfa, 0xfa, 0xf9) }, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+    let items = [
+        (icons::PLUS_CIRCLE, p.ok, crate::i18n::count(added, t("Adds 1 line"), t("Adds {} lines")), t("Its hooks, after yours").to_string()),
+        (icons::CHECK_CIRCLE, p.ok, t("Keeps what is there").to_string(), if removed == 0 { t("Nothing is removed").to_string() } else { crate::i18n::count(removed, t("1 line is rewritten"), t("{} lines are rewritten")) }),
+        (icons::CLOCK_COUNTER_CLOCKWISE, p.text_muted, t("Keeps a backup").to_string(), t("Uninstall restores it byte for byte").to_string()),
+    ];
+    let cw = sum.width() / 3.0;
+    for (i, (icon, c, title, sub)) in items.iter().enumerate() {
+        let cell = egui::Rect::from_min_size(egui::pos2(sum.left() + i as f32 * cw, sum.top()), egui::vec2(cw, sum.height()));
+        if i > 0 {
+            painter.vline(cell.left(), (cell.top() + 10.0)..=(cell.bottom() - 10.0), Stroke::new(1.0, p.border));
+        }
+        painter.text(egui::pos2(cell.left() + 14.0 + 7.0, cell.center().y - 7.0), egui::Align2::CENTER_CENTER, *icon, style::icon_fill(14.0), *c);
+        let tx = cell.left() + 14.0 + 14.0 + 9.0;
+        let mut job = egui::text::LayoutJob::simple_singleline(title.clone(), style::medium(12.0), p.text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((cell.right() - 10.0 - tx).max(20.0));
+        let g = painter.layout_job(job);
+        painter.galley(egui::pos2(tx, cell.center().y - 15.0), g, p.text);
+        let mut job = egui::text::LayoutJob::simple_singleline(sub.clone(), egui::FontId::proportional(11.0), p.text_faint);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((cell.right() - 10.0 - tx).max(20.0));
+        let g = painter.layout_job(job);
+        painter.galley(egui::pos2(tx, cell.center().y + 2.0), g, p.text_faint);
+    }
+    // The change, unchanged lines more than three away from it folded.
+    let syntax = crate::editor::syntax_for(path);
     let near = |i: usize| lines[i.saturating_sub(3)..(i + 4).min(lines.len())].iter().any(|l| l.starts_with("+ ") || l.starts_with("- "));
     egui::Frame::NONE
         .fill(p.canvas)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(7))
-        .inner_margin(Margin::symmetric(0, 6))
+        .stroke(Stroke::new(1.0, p.border_strong))
+        .corner_radius(CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 })
+        .inner_margin(Margin { left: 0, right: 0, top: 4, bottom: 4 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                let font = egui::FontId::monospace(12.0);
+                let font = style::mono(11.0);
                 let mut number = 0;
                 let mut folded = 0;
+                let fold_row = |ui: &mut Ui, n: usize| {
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::hover());
+                    ui.painter().rect_filled(r, CornerRadius::ZERO, style::over(p.canvas, p.accent, 0.06));
+                    ui.painter().text(egui::pos2(r.left() + 44.0 + 9.0, r.center().y), egui::Align2::CENTER_CENTER, icons::CARET_UP_DOWN, style::icon_font(12.0), p.text_faint);
+                    ui.painter().text(egui::pos2(r.left() + 62.0, r.center().y), egui::Align2::LEFT_CENTER, tf("{} unchanged lines", &[&n.to_string()]), style::mono(10.5), p.text_faint);
+                };
                 for (i, line) in lines.iter().enumerate() {
                     let (sign, text) = line.split_at(line.len().min(2));
                     let add = sign == "+ ";
@@ -707,38 +941,35 @@ fn install_preview(ui: &mut Ui, path: &std::path::Path, diff: &str) {
                         continue;
                     }
                     if folded > 0 {
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 19.0), egui::Sense::hover());
-                        ui.painter().text(egui::pos2(r.left() + 62.0, r.center().y), egui::Align2::LEFT_CENTER, tf("⋯ {} unchanged lines", &[&folded.to_string()]), egui::FontId::proportional(11.5), p.text_faint);
+                        fold_row(ui, folded);
                         folded = 0;
                     }
-                    let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 19.0), egui::Sense::hover());
-                    let (bg, sc) = if add { (style::soft(p.ok, 0.10), p.ok) } else if del { (style::soft(p.err, 0.10), p.err) } else { (Color32::TRANSPARENT, p.text_faint) };
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
+                    let (bg, sc, nc) = if add {
+                        (style::soft(p.ok, if dark { 0.10 } else { 0.08 }), p.ok, style::soft(p.ok, 0.6))
+                    } else if del {
+                        (style::soft(p.err, if dark { 0.10 } else { 0.07 }), p.err, style::soft(p.err, 0.6))
+                    } else {
+                        (Color32::TRANSPARENT, p.text_ghost, p.text_ghost)
+                    };
                     ui.painter().rect_filled(r, CornerRadius::ZERO, bg);
                     if !del {
-                        ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y), egui::Align2::RIGHT_CENTER, number.to_string(), font.clone(), p.text_faint);
+                        ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y), egui::Align2::RIGHT_CENTER, number.to_string(), style::mono(10.5), nc);
                     }
                     ui.painter().text(egui::pos2(r.left() + 44.0 + 9.0, r.center().y), egui::Align2::CENTER_CENTER, if add { "+" } else if del { "−" } else { "" }, font.clone(), sc);
-                    ui.painter().text(egui::pos2(r.left() + 62.0, r.center().y), egui::Align2::LEFT_CENTER, text, font.clone(), if add || del { p.text } else { p.text_muted });
+                    let mut job = egui::text::LayoutJob::default();
+                    for (c, piece) in crate::editor::line_colors(text, &syntax, dark, if add || del { p.text } else { p.text_muted }) {
+                        job.append(&piece, 0.0, egui::TextFormat::simple(font.clone(), c));
+                    }
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((r.width() - 70.0).max(40.0));
+                    let g = ui.painter().layout_job(job);
+                    ui.painter().galley(egui::pos2(r.left() + 62.0, r.center().y - g.size().y / 2.0), g, p.text);
                 }
                 if folded > 0 {
-                    let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 19.0), egui::Sense::hover());
-                    ui.painter().text(egui::pos2(r.left() + 62.0, r.center().y), egui::Align2::LEFT_CENTER, tf("⋯ {} unchanged lines", &[&folded.to_string()]), egui::FontId::proportional(11.5), p.text_faint);
+                    fold_row(ui, folded);
                 }
             });
         });
-    ui.add_space(8.0);
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        ui.label(RichText::new(icons::INFO).font(style::icon_font(14.0)).color(p.text_faint));
-        ui.add(
-            egui::Label::new(
-                RichText::new(t("A backup is kept, and Uninstall puts the file back exactly as it is now. The hooks do nothing when the agent runs outside TernaryCode."))
-                    .size(12.5)
-                    .color(p.text_muted),
-            )
-            .wrap(),
-        );
-    });
 }
 
 impl App {
@@ -751,16 +982,11 @@ impl App {
         let p = style::pal(ui);
         let presets = self.presets();
         let here = self.idle_command_pane().is_some();
-        let project = self.active_project().map(|x| (x.name.clone(), crate::paths::contract_tilde(&x.path), x.path.clone()));
-        ui.set_width(560.0);
+        let project = self.active_project().map(|x| (x.name.clone(), crate::paths::contract_tilde(&x.path), x.path.clone(), x.letters(), x.color32()));
+        ui.set_width(RUN_AGENT_W);
+        ui.set_max_width(RUN_AGENT_W);
         let mut keep = true;
-        if header(
-            ui,
-            icons::PLAY,
-            p.accent,
-            t("Run an agent"),
-            Some(&project.as_ref().map(|x| tf("in {} · {}", &[&x.0, &x.1])).unwrap_or_default()),
-        ) {
+        if run_agent_header(ui, project.as_ref().map(|x| (x.0.as_str(), x.1.as_str(), x.3.as_str(), x.4))) {
             keep = false;
         }
         // A new worktree is made of the project (of a worktree: of its project), a git one.
@@ -849,72 +1075,106 @@ impl App {
         let mut edit_setup = false;
 
         let mut run = enter;
-        body(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (i, preset) in presets.iter().enumerate() {
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), if wt.on { 46.0 } else { 52.0 }), egui::Sense::click());
-                #[cfg(debug_assertions)]
-                crate::devtest::record(format!("agent:{}", preset.id), rect);
-                let on = i == *selected;
-                let painter = ui.painter();
-                if on {
-                    painter.rect_filled(rect, CornerRadius::same(8), p.accent_soft);
-                } else if resp.hovered() {
-                    painter.rect_filled(rect, CornerRadius::same(8), p.faint_row());
+        // Two columns under a line: the agents at the left, what to run at the right.
+        let top = ui.cursor().top();
+        ui.painter().hline(ui.max_rect().x_range(), top, Stroke::new(1.0, p.border));
+        let left_bg = ui.painter().add(egui::Shape::Noop);
+        let left_line = ui.painter().add(egui::Shape::Noop);
+        let columns = ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            // ----- the agents ---------------------------------------------------------------
+            egui::Frame::NONE.inner_margin(Margin::same(10)).show(ui, |ui| ui.vertical(|ui| {
+                ui.set_width(RUN_AGENT_LIST_W - 20.0);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for (i, preset) in presets.iter().enumerate() {
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 50.0), egui::Sense::click());
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record(format!("agent:{}", preset.id), rect);
+                    let on = i == *selected;
+                    let painter = ui.painter();
+                    if on {
+                        painter.rect(rect, CornerRadius::same(9), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+                        kit::paint_highlight(painter, rect, 9, &p);
+                    } else if resp.hovered() {
+                        painter.rect_filled(rect, CornerRadius::same(9), p.hover);
+                    }
+                    let cy = rect.center().y;
+                    let tile = egui::Rect::from_center_size(egui::pos2(rect.left() + 8.0 + 16.0, cy), egui::vec2(32.0, 32.0));
+                    painter.rect(tile, CornerRadius::same(9), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+                    let logo = egui::Rect::from_center_size(tile.center(), egui::vec2(18.0, 18.0));
+                    if !preset.agent.is_some_and(|a| super::agent_logo::paint(painter, logo, a, p.text, false)) {
+                        painter.text(tile.center(), egui::Align2::CENTER_CENTER, initials(&preset.name), style::mono_semibold(11.0), p.text_muted);
+                    }
+                    let x = tile.right() + 11.0;
+                    let key = (i + 1).to_string();
+                    let kw = if i < 9 { kit::kbd_width(painter, &key) } else { 0.0 };
+                    let mut job = egui::text::LayoutJob::simple_singleline(preset.name.clone(), style::medium(13.0), p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 10.0 - kw - 8.0 - x).max(20.0));
+                    let g = painter.layout_job(job);
+                    painter.galley(egui::pos2(x, cy - 8.0 - g.size().y / 2.0), g, p.text);
+                    let mut job = egui::text::LayoutJob::simple_singleline(preset.command.clone(), style::mono(10.5), p.text_faint);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 10.0 - kw - 8.0 - x).max(20.0));
+                    let g = painter.layout_job(job);
+                    painter.galley(egui::pos2(x, cy + 9.0 - g.size().y / 2.0), g, p.text_faint);
+                    if i < 9 {
+                        kit::paint_kbd_text(painter, egui::pos2(rect.right() - 10.0 - kw, cy), &key, &p);
+                    }
+                    if resp.clicked() && *selected != i {
+                        *selected = i;
+                        *session = 0;
+                    }
+                    if resp.double_clicked() {
+                        run = true;
+                    }
                 }
-                let cy = rect.center().y;
-                painter.text(egui::pos2(rect.left() + 12.0 + 5.0, cy), egui::Align2::CENTER_CENTER, (i + 1).to_string(), egui::FontId::proportional(11.0), p.text_faint);
-                let tile = egui::Rect::from_center_size(egui::pos2(rect.left() + 12.0 + 10.0 + 12.0 + 15.0, cy), egui::vec2(30.0, 30.0));
-                painter.rect_filled(tile, CornerRadius::same(8), p.subtle);
-                let logo = egui::Rect::from_center_size(tile.center(), egui::vec2(17.0, 17.0));
-                if !preset.agent.is_some_and(|a| super::agent_logo::paint(painter, logo, a, p.text, false)) {
-                    painter.text(tile.center(), egui::Align2::CENTER_CENTER, initials(&preset.name), style::semibold(11.5), p.text_muted);
+                // A preset of your own: Settings → Agents.
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), egui::Sense::click());
+                if resp.hovered() {
+                    ui.painter().rect_filled(rect, CornerRadius::same(9), p.hover);
                 }
-                let x = tile.right() + 12.0;
-                painter.text(egui::pos2(x, cy - 8.0), egui::Align2::LEFT_CENTER, &preset.name, style::medium(13.5), p.text);
-                painter.text(egui::pos2(x, cy + 9.0), egui::Align2::LEFT_CENTER, &preset.command, egui::FontId::monospace(11.0), p.text_faint);
-                // How its status reaches TernaryCode.
-                let agent = preset.agent.unwrap_or(AgentKind::Custom);
-                let note = self.hooks_note(agent);
-                let hooked = self.installed(agent).is_some()
-                    || (matches!(agent, AgentKind::Claude | AgentKind::Codex)
-                        && self.settings.integrations.get(agent.slug()).copied().unwrap_or_default() == tc_core::model::Integration::PerLaunch);
-                let (icon, text, fg, bg) = if hooked {
-                    (icons::PLUGS_CONNECTED, tf("Hooks · {}", &[note.trim_start_matches("hooks · ")]), p.ok, style::tint(p.ok, ui.visuals().dark_mode))
-                } else if agent == AgentKind::Custom {
-                    (icons::CIRCLE_HALF, t("Custom").to_string(), p.text_muted, p.subtle)
-                } else {
-                    (icons::CIRCLE_HALF, t("No hooks · shows “Active”").to_string(), p.text_muted, p.subtle)
+                let c = if resp.hovered() { p.text_muted } else { p.text_faint };
+                ui.painter().text(egui::pos2(rect.left() + 14.0 + 7.0, rect.center().y), egui::Align2::CENTER_CENTER, icons::PLUS, style::icon_font(13.0), c);
+                ui.painter().text(egui::pos2(rect.left() + 14.0 + 14.0 + 9.0, rect.center().y), egui::Align2::LEFT_CENTER, t("Add preset…"), egui::FontId::proportional(12.5), c);
+                if resp.clicked() {
+                    self.actions.push(Action::Integrations);
+                    keep = false;
+                }
+            }));
+            // ----- what to run ----------------------------------------------------------------
+            egui::Frame::NONE.inner_margin(Margin { left: 20, right: 20, top: 8, bottom: 10 }).show(ui, |ui| ui.vertical(|ui| {
+                let w = RUN_AGENT_W - RUN_AGENT_LIST_W - 40.0;
+                ui.set_width(w);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let mut first_row = true;
+                let mut option_row = |ui: &mut Ui, label: &str, top_aligned: bool, add: &mut dyn FnMut(&mut Ui)| {
+                    if !first_row {
+                        let y = ui.cursor().top();
+                        ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, p.border));
+                    }
+                    first_row = false;
+                    egui::Frame::NONE.inner_margin(Margin::symmetric(0, 8)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let row = |ui: &mut Ui| {
+                            ui.spacing_mut().item_spacing.x = 14.0;
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(92.0, if top_aligned { 32.0 } else { 28.0 }), egui::Sense::hover());
+                            ui.painter().text(egui::pos2(r.left(), r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(12.5), p.text_muted);
+                            ui.vertical(|ui| add(ui));
+                        };
+                        if top_aligned {
+                            ui.horizontal_top(row);
+                        } else {
+                            ui.horizontal(row);
+                        }
+                    });
                 };
-                let w = kit::pill_width(painter, Some(icon), &text);
-                kit::paint_pill(painter, egui::pos2(rect.right() - 12.0 - w, cy), Some(icon), &text, fg, bg);
-                let resp = if hooked { resp } else { resp.on_hover_text(t("Without hooks the status comes from the terminal: Settings → Agents")) };
-                if resp.clicked() && *selected != i {
-                    *selected = i;
-                    *session = 0;
-                }
-                if resp.double_clicked() {
-                    run = true;
-                }
-            }
-            let rect = ui.available_rect_before_wrap();
-            ui.add_space(10.0);
-            ui.painter().hline(rect.x_range(), ui.cursor().top(), Stroke::new(1.0, p.border));
-            ui.add_space(12.0);
-
-            // Where it works: the project's folder, or a new worktree (git projects).
-            if let Some(r) = &root {
-                ui.horizontal(|ui| {
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(t("Work in")).font(style::medium(13.0)).color(p.text));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(4.0);
+                // Where it works: the project's folder, or a new worktree (git projects).
+                if let Some(r) = &root {
+                    option_row(ui, t("Work in"), false, &mut |ui: &mut Ui| {
                         let options = [
-                            kit::Seg::new(t("This folder"), ""),
+                            kit::Seg::new(t("This folder"), "").icon(icons::FOLDER_SIMPLE),
                             kit::Seg::new(t("New worktree"), t("A folder and a branch of its own, so agents in this repository don’t overwrite each other")).icon(icons::GIT_FORK),
                         ];
-                        let seg = kit::segmented(ui, &options, wt.on as usize);
-                        if let Some(i) = seg {
+                        if let Some(i) = kit::segmented(ui, &options, wt.on as usize) {
                             wt.on = i == 1;
                             if let Some(project) = self.project_mut(r.0) {
                                 project.new_worktree = wt.on;
@@ -922,139 +1182,168 @@ impl App {
                             self.mark_dirty();
                         }
                     });
-                });
-                ui.add_space(10.0);
-            }
-            if wt.on
-                && let Some(r) = &root
-            {
-                edit_setup = self.worktree_box(ui, r.0, &r.1, r.3, wt, &base, facts.as_ref(), problem.as_deref(), name_id);
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(icons::INFO).font(style::icon_font(12.0)).color(p.text_faint));
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(tf("A new worktree starts a new session. It opens under {} in the sidebar, in its own tab.", &[&r.1]))
-                                .size(style::SMALL)
-                                .color(p.text_faint),
-                        )
-                        .wrap(),
-                    );
-                });
-                ui.add_space(12.0);
-                self.skip_prompts_row(ui, agent);
-                return;
-            }
-
-            // The session: a new one, or one to continue.
-            ui.horizontal(|ui| {
-                ui.add_space(4.0);
-                ui.label(RichText::new(t("Session")).font(style::medium(13.0)).color(p.text));
-                if let Rows::Sessions(v) = &rows
-                    && !v.is_empty()
-                {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(crate::i18n::count(v.len(), t("1 earlier"), t("{} earlier"))).size(style::SMALL).color(p.text_faint));
                 }
-            });
-            ui.add_space(8.0);
-            let command = chosen.as_ref().map(|x| x.command.clone()).unwrap_or_default();
-            egui::Frame::NONE
-                .fill(p.canvas)
-                .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(CornerRadius::same(8))
-                .inner_margin(egui::Margin::same(4))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    egui::ScrollArea::vertical().id_salt("run-agent-sessions").max_height(206.0).auto_shrink([false, true]).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        // One row: its icon, two lines, and a pill at the right.
-                        let mut row = |ui: &mut Ui, index: usize, icon: &str, title: &str, sub: &str, mono: bool, pill: Option<String>| {
-                            let h = if sub.is_empty() { 34.0 } else { 44.0 };
-                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
-                            #[cfg(debug_assertions)]
-                            crate::devtest::record(format!("session:{index}"), rect);
-                            let on = index == *session;
-                            if on && moved {
-                                ui.scroll_to_rect(rect, None);
-                            }
-                            let painter = ui.painter_at(rect);
-                            if on {
-                                painter.rect_filled(rect, CornerRadius::same(6), p.accent_soft);
-                            } else if resp.hovered() {
-                                painter.rect_filled(rect, CornerRadius::same(6), p.faint_row());
-                            }
-                            let cy = rect.center().y;
-                            painter.text(egui::pos2(rect.left() + 10.0 + 7.0, cy), egui::Align2::CENTER_CENTER, icon, style::icon_font(14.0), if on { p.accent_text } else { p.text_muted });
-                            let x = rect.left() + 10.0 + 14.0 + 10.0;
-                            let mut right = rect.right() - 10.0;
-                            if let Some(text) = &pill {
-                                let w = kit::pill_width(&painter, Some(icons::TERMINAL), text);
-                                kit::paint_pill(&painter, egui::pos2(right - w, cy), Some(icons::TERMINAL), text, p.accent_text, style::tint(p.accent, ui.visuals().dark_mode));
-                                right -= w + 8.0;
-                            }
-                            let line1 = if sub.is_empty() { cy } else { cy - 8.0 };
-                            let mut job = egui::text::LayoutJob::simple_singleline(title.to_string(), style::medium(13.0), p.text);
-                            job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(20.0));
-                            let g = painter.layout_job(job);
-                            painter.galley(egui::pos2(x, line1 - g.size().y / 2.0), g, p.text);
-                            if !sub.is_empty() {
-                                let font = if mono { egui::FontId::monospace(11.0) } else { egui::FontId::proportional(style::SMALL) };
-                                let mut job = egui::text::LayoutJob::simple_singleline(sub.to_string(), font, p.text_faint);
+                if wt.on
+                    && let Some(r) = &root
+                {
+                    ui.add_space(4.0);
+                    edit_setup = self.worktree_box(ui, r.0, &r.1, r.3, wt, &base, facts.as_ref(), problem.as_deref(), name_id);
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(icons::INFO).font(style::icon_font(12.0)).color(p.text_faint));
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(tf("A new worktree starts a new session. It opens under {} in the sidebar, in its own tab.", &[&r.1]))
+                                    .size(style::SMALL)
+                                    .color(p.text_faint),
+                            )
+                            .wrap(),
+                        );
+                    });
+                    ui.add_space(8.0);
+                } else {
+                    // The session: a new one, or one to continue.
+                    let command = chosen.as_ref().map(|x| x.command.clone()).unwrap_or_default();
+                    option_row(ui, t("Session"), true, &mut |ui: &mut Ui| {
+                        egui::ScrollArea::vertical().id_salt("run-agent-sessions").max_height(212.0).auto_shrink([false, true]).show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            // One row: a radio, two lines, and a pill at the right.
+                            let mut row = |ui: &mut Ui, index: usize, title: &str, sub: &str, mono: bool, pill: Option<String>| {
+                                let h = if sub.is_empty() { 32.0 } else { 44.0 };
+                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record(format!("session:{index}"), rect);
+                                let on = index == *session;
+                                if on && moved {
+                                    ui.scroll_to_rect(rect, None);
+                                }
+                                let painter = ui.painter_at(rect);
+                                if on {
+                                    painter.rect(rect, CornerRadius::same(8), p.accent_tint, Stroke::new(1.0, style::soft(p.accent, 0.3)), egui::StrokeKind::Inside);
+                                } else if resp.hovered() {
+                                    painter.rect_filled(rect, CornerRadius::same(8), p.hover);
+                                }
+                                let cy = rect.center().y;
+                                // The radio.
+                                let rc = egui::pos2(rect.left() + 8.0 + 8.0, cy);
+                                if on {
+                                    painter.circle_filled(rc, 8.0, p.accent);
+                                    painter.circle_filled(rc, 3.0, Color32::WHITE);
+                                } else {
+                                    painter.circle_stroke(rc, 7.5, Stroke::new(1.0, p.border_heavy));
+                                }
+                                let x = rect.left() + 8.0 + 16.0 + 10.0;
+                                let mut right = rect.right() - 8.0;
+                                if let Some(text) = &pill {
+                                    let w = kit::pill_width(&painter, Some(icons::TERMINAL_WINDOW), text);
+                                    kit::paint_pill(&painter, egui::pos2(right - w, cy), Some(icons::TERMINAL_WINDOW), text, p.accent_text, p.accent_tint);
+                                    right -= w + 8.0;
+                                }
+                                let line1 = if sub.is_empty() { cy } else { cy - 8.0 };
+                                let mut job = egui::text::LayoutJob::simple_singleline(title.to_string(), if on { style::medium(12.5) } else { egui::FontId::proportional(12.5) }, p.text);
                                 job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(20.0));
                                 let g = painter.layout_job(job);
-                                painter.galley(egui::pos2(x, cy + 9.0 - g.size().y / 2.0), g, p.text_faint);
-                            }
-                            if resp.clicked() {
-                                *session = index;
-                            }
-                            if resp.double_clicked() {
-                                run = true;
-                            }
-                        };
-                        row(ui, 0, icons::PLUS, t("New session"), &command, true, None);
-                        let note = |ui: &mut Ui, text: &str| {
-                            let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
-                            ui.painter().text(egui::pos2(r.left() + 10.0 + 14.0 + 10.0, r.center().y), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(style::SMALL), p.text_faint);
-                        };
-                        match &rows {
-                            Rows::Listing => note(ui, t("Looking for sessions…")),
-                            Rows::Sessions(v) if v.is_empty() => note(ui, t("No earlier sessions in this project.")),
-                            Rows::Sessions(v) => {
-                                for (k, s) in v.iter().enumerate() {
-                                    let mut sub = vec![tf("{} ago", &[&ago(s.updated)])];
-                                    if let Some(b) = &s.branch {
-                                        sub.push(b.clone());
-                                    }
-                                    sub.push(s.id.chars().take(8).collect());
-                                    // Already open in a pane: choosing it goes there.
-                                    let open = self.panes.values().find(|x| x.agent_session.as_deref() == Some(s.id.as_str())).map(|x| tf("Open in {}", &[&x.label()]));
-                                    row(ui, k + 1, icons::CLOCK_COUNTER_CLOCKWISE, &s.title, &sub.join(" · "), false, open);
+                                painter.galley(egui::pos2(x, line1 - g.size().y / 2.0), g, p.text);
+                                if !sub.is_empty() {
+                                    let font = if mono { style::mono(10.5) } else { egui::FontId::proportional(11.5) };
+                                    let mut job = egui::text::LayoutJob::simple_singleline(sub.to_string(), font, p.text_faint);
+                                    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(20.0));
+                                    let g = painter.layout_job(job);
+                                    painter.galley(egui::pos2(x, cy + 9.0 - g.size().y / 2.0), g, p.text_faint);
                                 }
+                                if resp.clicked() {
+                                    *session = index;
+                                }
+                                if resp.double_clicked() {
+                                    run = true;
+                                }
+                            };
+                            row(ui, 0, t("New session"), &command, true, None);
+                            let note = |ui: &mut Ui, text: &str| {
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
+                                ui.painter().text(egui::pos2(r.left() + 8.0 + 16.0 + 10.0, r.center().y), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(12.0), p.text_faint);
+                            };
+                            match &rows {
+                                Rows::Listing => note(ui, t("Looking for sessions…")),
+                                Rows::Sessions(v) if v.is_empty() => note(ui, t("No earlier sessions in this project.")),
+                                Rows::Sessions(v) => {
+                                    for (k, s) in v.iter().enumerate() {
+                                        let mut sub = vec![tf("{} ago", &[&ago(s.updated)])];
+                                        if let Some(b) = &s.branch {
+                                            sub.push(b.clone());
+                                        }
+                                        sub.push(s.id.chars().take(8).collect());
+                                        // Already open in a pane: choosing it goes there.
+                                        let open = self.panes.values().find(|x| x.agent_session.as_deref() == Some(s.id.as_str())).map(|x| tf("Open in {}", &[&x.label()]));
+                                        row(ui, k + 1, &s.title, &sub.join(" · "), false, open);
+                                    }
+                                }
+                                Rows::Last(cmd) => row(ui, 1, t("Last session"), cmd, true, None),
+                                Rows::Nothing => note(ui, t("This agent has no command that resumes a session.")),
                             }
-                            Rows::Last(cmd) => row(ui, 1, icons::CLOCK_COUNTER_CLOCKWISE, t("Last session"), cmd, true, None),
-                            Rows::Nothing => note(ui, t("This agent has no command that resumes a session.")),
+                        });
+                    });
+                    option_row(ui, t("Open in"), false, &mut |ui: &mut Ui| {
+                        // A shell at its prompt with nothing typed takes the agent.
+                        let first = if here { t("This Tab") } else { t("New Tab") };
+                        let options = [kit::Seg::new(first, ""), kit::Seg::new(t("Split Right"), ""), kit::Seg::new(t("Split Down"), "")];
+                        if let Some(i) = kit::segmented(ui, &options, *place) {
+                            *place = i;
+                        }
+                    });
+                }
+                option_row(ui, t("Permissions"), false, &mut |ui: &mut Ui| {
+                    self.skip_prompts_row(ui, agent);
+                });
+                // How its status reaches TernaryCode.
+                let kind = agent.unwrap_or(AgentKind::Custom);
+                let note = self.hooks_note(kind);
+                let hooked = self.installed(kind).is_some()
+                    || (matches!(kind, AgentKind::Claude | AgentKind::Codex)
+                        && self.settings.integrations.get(kind.slug()).copied().unwrap_or_default() == tc_core::model::Integration::PerLaunch);
+                option_row(ui, t("Status"), false, &mut |ui: &mut Ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let name = chosen.as_ref().map(|x| x.name.clone()).unwrap_or_default();
+                        if hooked {
+                            kit::pill(ui, Some(icons::CHECK_CIRCLE), &tf("Hooks · {}", &[note.trim_start_matches("hooks · ")]), p.ok, style::tint(p.ok, ui.visuals().dark_mode));
+                            ui.add(egui::Label::new(RichText::new(tf("Needs input, Done and Failed come from {} itself.", &[&name])).size(11.5).color(p.text_faint)).wrap());
+                        } else if kind == AgentKind::Custom {
+                            kit::pill(ui, None, t("Custom"), p.text_muted, p.hover);
+                            ui.add(egui::Label::new(RichText::new(t("The status comes from the terminal.")).size(11.5).color(p.text_faint)).wrap());
+                        } else {
+                            kit::pill(ui, Some(icons::CIRCLE_HALF), t("No hooks · shows “Active”"), p.text_muted, p.hover);
+                            ui.add(egui::Label::new(RichText::new(t("Settings → Agents connects it.")).size(11.5).color(p.text_faint)).wrap());
                         }
                     });
                 });
-            ui.add_space(12.0);
-            self.skip_prompts_row(ui, agent);
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.add_space(4.0);
-                ui.label(RichText::new(t("Open in")).font(style::medium(13.0)).color(p.text));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(4.0);
-                    // A shell at its prompt with nothing typed takes the agent.
-                    let first = if here { t("This Tab") } else { t("New Tab") };
-                    let options = [kit::Seg::new(first, ""), kit::Seg::new(t("Split Right"), ""), kit::Seg::new(t("Split Down"), "")];
-                    if let Some(i) = kit::segmented(ui, &options, *place) {
-                        *place = i;
-                    }
-                });
-            });
+            }));
         });
+        // The agents' column: a shade of the base behind it, a line at its right.
+        let cols = columns.response.rect;
+        let left = egui::Rect::from_min_max(cols.min, egui::pos2(cols.left() + RUN_AGENT_LIST_W, cols.bottom()));
+        let dark = ui.visuals().dark_mode;
+        ui.painter().set(left_bg, egui::Shape::rect_filled(left, CornerRadius::ZERO, if dark { style::over(p.overlay, p.chrome, 0.3) } else { Color32::from_rgb(0xfa, 0xfa, 0xfa) }));
+        ui.painter().set(left_line, egui::Shape::vline(left.right(), left.y_range(), Stroke::new(1.0, p.border)));
+        // What will be typed, exactly, and where.
+        if let Some(preset) = &chosen {
+            let base_cmd = match (&rows, *session, wt.on) {
+                (Rows::Last(c), 1, false) => c.clone(),
+                _ => preset.command.clone(),
+            };
+            let line = self.launch_command(preset, &base_cmd);
+            let whereto = if wt.on {
+                t("a new tab of the new worktree").to_string()
+            } else {
+                match (*place, here) {
+                    (0, true) => t("this tab, its shell is idle").to_string(),
+                    (0, false) => t("a new tab").to_string(),
+                    (1, _) => t("a split at the right").to_string(),
+                    _ => t("a split below").to_string(),
+                }
+            };
+            run_command_bar(ui, &line, &whereto);
+        }
         if edit_setup && let Some(r) = &root {
             self.pending_setup = Some(r.0);
         }
@@ -1071,7 +1360,7 @@ impl App {
             #[cfg(debug_assertions)]
             crate::devtest::record("dialog-ok", r.rect);
             run |= r.clicked();
-            if kit::secondary(ui, None, t("Cancel")).clicked() {
+            if kit::button_ex(ui, kit::Kind::Ghost, None, t("Cancel"), false).clicked() {
                 keep = false;
             }
         });
@@ -1094,6 +1383,76 @@ impl App {
         }
         keep
     }
+}
+
+/// Run Agent's width, and its agents' column.
+const RUN_AGENT_W: f32 = 780.0;
+const RUN_AGENT_LIST_W: f32 = 250.0;
+
+/// Run Agent's header: the play icon, "Run an agent", and "in ‹tile› project ~/path".
+fn run_agent_header(ui: &mut Ui, project: Option<(&str, &str, &str, Color32)>) -> bool {
+    let p = style::pal(ui);
+    let top = ui.max_rect();
+    kit::paint_highlight(ui.painter(), egui::Rect::from_min_size(top.min, egui::vec2(top.width(), 1.0)), style::RADIUS_DIALOG, &p);
+    let mut close = false;
+    egui::Frame::NONE.inner_margin(Margin { left: PAD, right: 14, top: 18, bottom: 14 }).show(ui, |ui| {
+        ui.horizontal_top(|ui| {
+            paint_dialog_icon(ui, icons::PLAY, p.accent);
+            ui.add_space(14.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                let mut job = egui::text::LayoutJob::default();
+                let mut f = egui::TextFormat::simple(style::semibold(15.0), p.text);
+                f.extra_letter_spacing = -0.15;
+                job.append(t("Run an agent"), 0.0, f);
+                ui.label(job);
+                if let Some((name, path, letters, color)) = project {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label(RichText::new(t("in")).size(12.5).color(p.text_muted));
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                        kit::paint_project_tile(ui.painter(), r, letters, color, ui.visuals().dark_mode);
+                        ui.label(RichText::new(name).font(style::medium(12.5)).color(p.text));
+                        let mut job = egui::text::LayoutJob::simple_singleline(path.to_string(), style::mono(11.0), p.text_faint);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - 40.0).max(40.0));
+                        ui.label(job);
+                    });
+                }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                close = kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0).clicked();
+            });
+        });
+    });
+    close
+}
+
+/// The line under Run Agent's columns: what will be typed (`$ claude --mcp-config …`) and where.
+fn run_command_bar(ui: &mut Ui, line: &str, whereto: &str) {
+    let p = style::pal(ui);
+    let dark = ui.visuals().dark_mode;
+    let full = ui.max_rect();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(full.width(), 34.0 + 14.0), egui::Sense::hover());
+    let bar = egui::Rect::from_min_max(egui::pos2(rect.left() + 14.0, rect.top() + 2.0), egui::pos2(rect.right() - 14.0, rect.bottom() - 12.0));
+    let painter = ui.painter_at(bar);
+    painter.rect(bar, CornerRadius::same(8), if dark { p.inset } else { Color32::from_rgb(0xf3, 0xf3, 0xf2) }, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    let cy = bar.center().y;
+    painter.text(egui::pos2(bar.left() + 12.0 + 6.5, cy), egui::Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(13.0), p.text_faint);
+    let where_g = painter.layout_no_wrap(whereto.to_string(), style::mono(10.5), p.text_ghost);
+    let ww = where_g.size().x;
+    painter.galley(egui::pos2(bar.right() - 12.0 - ww, cy - where_g.size().y / 2.0), where_g, p.text_ghost);
+    // The program in the text colour, its flags quieter.
+    let mut job = egui::text::LayoutJob::default();
+    job.append("$ ", 0.0, egui::TextFormat::simple(style::mono(11.5), p.text_faint));
+    let (program, rest) = line.split_once(' ').unwrap_or((line, ""));
+    job.append(program, 0.0, egui::TextFormat::simple(style::mono(11.5), p.text));
+    if !rest.is_empty() {
+        job.append(rest, 7.0, egui::TextFormat::simple(style::mono(11.5), p.text_faint));
+    }
+    job.wrap = egui::text::TextWrapping::truncate_at_width((bar.width() - 12.0 - 13.0 - 9.0 - ww - 24.0).max(40.0));
+    let g = painter.layout_job(job);
+    painter.galley(egui::pos2(bar.left() + 12.0 + 13.0 + 9.0, cy - g.size().y / 2.0), g, p.text);
+    resp.on_hover_text(line);
 }
 
 /// Two letters for the tile of an agent with no logo ("My Agent" → "MA", "Aider" → "Ad").
@@ -1176,25 +1535,32 @@ impl App {
             self.toast_ok(t("Install command copied.").into());
         }
         let mut install_now = false;
-        // No "↵ …" hint: three buttons fill the footer (Enter still installs).
-        footer_with(ui, None, |ui| {
-            if now.is_some() {
-                let r = kit::button_ex(ui, kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Install in Terminal"), false);
+        let (mut anyway, mut cancel) = (false, false);
+        footer_left(
+            ui,
+            |ui| {
+                let r = kit::button_ex(ui, kit::Kind::Ghost, None, t("Run Anyway"), false);
                 #[cfg(debug_assertions)]
-                crate::devtest::record("dialog-ok", r.rect);
-                install_now = r.clicked();
-            }
-            if kit::secondary(ui, None, t("Cancel")).clicked() {
-                keep = false;
-            }
-            let r = kit::button_ex(ui, kit::Kind::Ghost, None, t("Run Anyway"), false);
-            #[cfg(debug_assertions)]
-            crate::devtest::record("dialog-anyway", r.rect);
-            if r.clicked() {
-                self.actions.push(Action::RunPresetAnyway(preset.to_string(), launch.clone(), place));
-                keep = false;
-            }
-        });
+                crate::devtest::record("dialog-anyway", r.rect);
+                anyway = r.clicked();
+            },
+            |ui| {
+                if now.is_some() {
+                    let r = kit::button_keys(ui, kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Install in Terminal"), Some("↵"), false);
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record("dialog-ok", r.rect);
+                    install_now = r.clicked();
+                }
+                cancel = kit::secondary(ui, None, t("Cancel")).clicked();
+            },
+        );
+        if cancel {
+            keep = false;
+        }
+        if anyway {
+            self.actions.push(Action::RunPresetAnyway(preset.to_string(), launch.clone(), place));
+            keep = false;
+        }
         if let Some(command) = now
             && (install_now || enter)
         {

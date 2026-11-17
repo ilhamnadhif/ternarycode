@@ -284,6 +284,52 @@ pub fn show_system_menu(maximized: bool) {
 #[cfg(not(windows))]
 pub fn show_system_menu(_maximized: bool) {}
 
+/// macOS: the window buttons (close, minimise, zoom) centred in the top row, `row_h` points
+/// high (the sidebar's and the top bar's), not in the 28 of a title bar. AppKit lays the title
+/// bar out again on some changes (a resize, full screen): called every frame, it only moves
+/// what is not where it belongs.
+#[cfg(target_os = "macos")]
+pub fn place_window_buttons(window: &impl raw_window_handle::HasWindowHandle, row_h: f64) {
+    use objc2_app_kit::{NSView, NSWindowButton, NSWindowStyleMask};
+    let Ok(handle) = window.window_handle() else { return };
+    let raw_window_handle::RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+    // SAFETY: the handle's view is the window's content view, alive while the window is.
+    let view: &NSView = unsafe { h.ns_view.cast::<NSView>().as_ref() };
+    let Some(win) = view.window() else { return };
+    if win.styleMask().contains(NSWindowStyleMask::FullScreen) {
+        return;
+    }
+    let kinds = [NSWindowButton::CloseButton, NSWindowButton::MiniaturizeButton, NSWindowButton::ZoomButton];
+    let Some(close) = win.standardWindowButton(kinds[0]) else { return };
+    // The buttons' view, and the title bar's container around it: made as tall as the row.
+    let Some(bar) = (unsafe { close.superview() }) else { return };
+    let Some(container) = (unsafe { bar.superview() }) else { return };
+    let window_h = win.frame().size.height;
+    let mut cf = container.frame();
+    if (cf.size.height - row_h).abs() > 0.5 || (cf.origin.y - (window_h - row_h)).abs() > 0.5 {
+        cf.size.height = row_h;
+        cf.origin.y = window_h - row_h;
+        container.setFrame(cf);
+    }
+    let mut bf = bar.frame();
+    if (bf.size.height - row_h).abs() > 0.5 || bf.origin.y.abs() > 0.5 {
+        bf.size.height = row_h;
+        bf.origin.y = 0.0;
+        bar.setFrame(bf);
+    }
+    let bh = close.frame().size.height;
+    let y = ((row_h - bh) / 2.0).round();
+    for kind in kinds {
+        if let Some(b) = win.standardWindowButton(kind) {
+            let mut o = b.frame().origin;
+            if (o.y - y).abs() > 0.5 {
+                o.y = y;
+                b.setFrameOrigin(o);
+            }
+        }
+    }
+}
+
 /// Room the window buttons (close, minimise, zoom) take at the top left when the content runs
 /// under the title bar (macOS, not in full screen).
 pub fn traffic_light_inset(fullscreen: bool) -> f32 {

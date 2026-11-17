@@ -41,6 +41,11 @@ pub fn since_start() -> Option<Duration> {
 /// Extra messages to the UI thread besides the panes' own.
 pub enum AppMsg {
     Git(ProjectId, Option<GitInfo>, crate::project::Kind),
+    /// A file's lines that differ from a base (for the marks beside its line numbers), and
+    /// what they were worked out for.
+    LineMarks(PathBuf, String, Vec<tc_git::LineMark>),
+    /// What an agent's run changed by the time it finished (files, added, removed).
+    DoneStats(PaneId, Instant, Option<(usize, u32, u32)>),
     /// Whether a pane's local server answered on its port.
     ServerProbe(PaneId, u16, bool),
     /// The files of a project, for quick open.
@@ -270,6 +275,8 @@ pub struct App {
     /// The first row the expanded inbox shows (it scrolls to keep the keyboard's row in view),
     /// and where it was drawn this frame (a click outside it closes it).
     pub inbox_scroll: usize,
+    /// The welcome screen's repositories and agents found (first run).
+    pub onboarding: crate::onboarding::Onboarding,
     pub inbox_rect: Option<egui::Rect>,
     /// What the sidebar's project search holds, and the row of its results the keyboard is on.
     pub project_filter: String,
@@ -412,6 +419,9 @@ pub struct App {
     project_files_at: HashMap<ProjectId, Instant>,
     pub pane_search: Option<PaneSearch>,
     pub review: Option<crate::ui::review::Review>,
+    /// Files an agent changed on disk while it worked, by project (kept while git still lists
+    /// them as changed): the Files column marks them with its logo.
+    pub agent_touched: HashMap<ProjectId, HashMap<PathBuf, tc_core::agent::AgentKind>>,
     /// The Review's choices and requests between its parts (top bar, list, diff).
     pub review_split: bool,
     pub review_filter: String,
@@ -619,6 +629,7 @@ impl App {
             toast: None,
             attention_sel: 0,
             inbox_scroll: 0,
+            onboarding: Default::default(),
             inbox_rect: None,
             project_filter: String::new(),
             project_filter_sel: 0,
@@ -691,6 +702,7 @@ impl App {
             explorers: HashMap::new(),
             pane_search: None,
             review: None,
+            agent_touched: HashMap::new(),
             review_split: false,
             review_filter: String::new(),
             review_hunk: 0,
@@ -784,7 +796,11 @@ impl App {
         let body = self.last_body.unwrap_or_else(|| {
             // Before the first frame: the saved window size less the sidebar, bars and header.
             let [_, _, w, h] = self.settings.window.unwrap_or([0.0, 0.0, 1280.0, 800.0]);
-            let left = if self.settings.sidebar_hidden { 0.0 } else { self.settings.sidebar_width };
+            let left = match (self.settings.sidebar_hidden, self.settings.sidebar_compact) {
+                (true, _) => 0.0,
+                (false, true) => crate::ui::sidebar::COMPACT_W,
+                (false, false) => self.settings.sidebar_width,
+            };
             egui::Rect::from_min_max(
                 egui::pos2(left, ui::focus::HEADER_H),
                 egui::pos2(w.max(left + 200.0), (h - ui::view::STATUS_H).max(ui::focus::HEADER_H + 100.0)),
@@ -818,7 +834,7 @@ impl App {
         // Not shown in the Focus view since the app started: nothing to measure against.
         let Some(full) = self.last_full_body else { return };
         let body = match self.editor_split(project, full) {
-            Some(x) => egui::Rect::from_min_max(full.min, egui::pos2(x, full.bottom())),
+            Some(x) => egui::Rect::from_min_max(full.min, egui::pos2(x - ui::style::GAP / 2.0, full.bottom())),
             None => full,
         };
         let cell = tc_term::widget::cell_size(ctx, self.settings.font_size);
@@ -1510,6 +1526,20 @@ impl App {
         let mut files_changed: HashMap<ProjectId, Vec<PathBuf>> = HashMap::new();
         while let Ok(msg) = self.app_rx.try_recv() {
             match msg {
+                AppMsg::DoneStats(pane, since, stats) => {
+                    if let Some(x) = self.panes.get_mut(&pane)
+                        && x.done_stats.as_ref().is_some_and(|(at, _)| *at == since)
+                    {
+                        x.done_stats = Some((since, Some(stats.unwrap_or((0, 0, 0)))));
+                    }
+                }
+                AppMsg::LineMarks(path, key, marks) => {
+                    for e in self.editors.values_mut() {
+                        for f in e.files.iter_mut().filter(|f| f.path == path && f.marks_key.as_deref() == Some(key.as_str())) {
+                            f.marks = marks.clone();
+                        }
+                    }
+                }
                 // (Listed for a project removed since: dropped.)
                 AppMsg::ProjectFiles(id, _) if self.project(id).is_none() => {}
                 AppMsg::ProjectFiles(id, files) => {
@@ -1523,6 +1553,13 @@ impl App {
                     }
                 }
                 AppMsg::Git(id, info, kind) => {
+                    // An agent's file that git no longer lists as changed is no longer marked.
+                    if let Some(t) = self.agent_touched.get_mut(&id) {
+                        match &info {
+                            Some(g) => t.retain(|path, _| g.changes.contains_key(path)),
+                            None => t.clear(),
+                        }
+                    }
                     if let Some(p) = self.project_mut(id) {
                         p.git = info.map(std::sync::Arc::new);
                         p.kind = kind;
@@ -1645,16 +1682,26 @@ impl App {
             .iter()
             .filter_map(|id| self.panes.get(id))
             .filter(|p| p.tracker.agent.is_some() && matches!(p.tracker.status, Status::Running | Status::Unknown | Status::NeedsInput))
-            .map(|p| p.label())
+            .map(|p| (p.label(), p.tracker.agent))
             .next();
+        // Files the editor itself saved are not the agent's.
+        let mut ours: Vec<PathBuf> = Vec::new();
         if let Some(editor) = self.editors.get_mut(&project) {
             for f in editor.files.iter_mut() {
                 if paths.contains(&f.path) {
                     let rev = f.rev;
                     if crate::editor::on_disk_change(f) && (f.rev != rev || f.conflict) {
-                        f.changed_by = agent.clone().map(|a| (a, now));
+                        f.changed_by = agent.clone().map(|(a, _)| (a, now));
+                    } else {
+                        ours.push(f.path.clone());
                     }
                 }
+            }
+        }
+        if let Some((_, Some(kind))) = &agent {
+            let touched = self.agent_touched.entry(project).or_default();
+            for path in paths.iter().filter(|p| !ours.contains(p)) {
+                touched.insert(path.clone(), *kind);
             }
         }
         self.git_due.entry(project).or_insert(now + Duration::from_millis(800));
@@ -2297,7 +2344,9 @@ impl App {
         {
             command = format!("{command} {flag}");
         }
-        integrate::launch_command_with(&command, preset.agent, integration, self.codex_hooks, self.codex_own_notify)
+        let command = integrate::launch_command_with(&command, preset.agent, integration, self.codex_hooks, self.codex_own_notify);
+        // The preset's environment (Settings → Agents), set for this command.
+        integrate::with_env(&command, &preset.env)
     }
 
     /// Run Agent starts this agent without its permission prompts.
@@ -2951,6 +3000,11 @@ impl App {
                 self.settings.sidebar_hidden = !self.settings.sidebar_hidden;
                 self.settings_changed();
             }
+            Action::ToggleCompactSidebar => {
+                self.settings.sidebar_compact = !self.settings.sidebar_compact;
+                self.settings.sidebar_hidden = false;
+                self.settings_changed();
+            }
             Action::Palette => self.open_palette(PaletteMode::All),
             Action::SwitchProject => self.open_palette(PaletteMode::Projects),
             Action::PickPreset => {
@@ -3321,6 +3375,10 @@ impl App {
                 if let Some(e) = self.active.and_then(|id| self.editors.get_mut(&id)) {
                     e.find.get_or_insert_with(Default::default).focus = true;
                 }
+            }
+            // Settings open: its search.
+            Action::Find if matches!(self.dialog, Some(Dialog::Settings(_))) => {
+                self.ctx.memory_mut(|m| m.request_focus(egui::Id::new("settings-search")));
             }
             Action::Find => {
                 if let Some(pane) = self.command_pane() {
@@ -4050,6 +4108,7 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
     ];
     keys.extend(map.map(|(key, action)| (cmd, key, action)));
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::J, Action::BackAttention));
+    keys.push((Modifiers::CTRL | Modifiers::ALT, Key::B, Action::ToggleCompactSidebar));
     keys
 }
 
@@ -4135,7 +4194,10 @@ impl eframe::App for App {
         self.browser_events(ui.ctx());
         self.sync_browsers(ui.ctx(), frame);
         #[cfg(target_os = "macos")]
-        self.sync_option_as_alt(ui.ctx(), frame);
+        {
+            self.sync_option_as_alt(ui.ctx(), frame);
+            crate::platform::place_window_buttons(frame, f64::from(crate::ui::sidebar::TOP_H));
+        }
         #[cfg(not(target_os = "macos"))]
         let _ = frame;
         self.first_frame = false;

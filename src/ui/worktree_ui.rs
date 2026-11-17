@@ -6,7 +6,7 @@ use tc_core::ProjectId;
 use tc_core::agent::AgentKind;
 use tc_core::model::WorktreeSetup;
 
-use super::dialogs::{ago, body, field_label, footer_with, header};
+use super::dialogs::{ago, body, field_label, footer_left, footer_with, header};
 use super::{icons, kit, style};
 use crate::actions::Action;
 use crate::app::App;
@@ -16,7 +16,7 @@ use crate::worktree::{Facts, Form};
 /// Width of the labels at the left of Run Agent's worktree box.
 const LABEL_W: f32 = 72.0;
 /// Run Agent's body: the dialog (560) without its sides.
-const RUN_AGENT_BODY: f32 = 560.0 - 44.0;
+const RUN_AGENT_BODY: f32 = 780.0 - 250.0 - 40.0;
 
 /// A line of a dialog's checks: an icon in its colour and what it says, wrapped.
 fn check(ui: &mut Ui, icon: &str, color: Color32, text: &str, muted: bool) {
@@ -71,27 +71,24 @@ impl App {
         let flag = agent.and_then(tc_agent::sessions::skip_permissions_flag);
         let mut skip = agent.is_some_and(|a| self.skips_permissions(a)) && flag.is_some();
         ui.horizontal(|ui| {
-            ui.add_space(4.0);
+            ui.spacing_mut().item_spacing.x = 10.0;
+            let r = ui.add_enabled_ui(flag.is_some(), |ui| kit::switch(ui, &mut skip)).inner;
+            #[cfg(debug_assertions)]
+            crate::devtest::record("skip-permissions", r.rect);
+            if r.changed()
+                && let Some(a) = agent
+            {
+                self.set_skips_permissions(a, skip);
+            }
             ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                ui.label(RichText::new(t("Skip permission prompts")).font(style::medium(13.0)).color(p.text));
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.label(RichText::new(t("Skip permission prompts")).size(13.0).color(p.text));
                 let (note, c) = match flag {
-                    Some(f) if skip => (tf("Adds {}: the agent acts without asking first.", &[f]), p.warn),
-                    Some(f) => (tf("Adds {}: the agent acts without asking first.", &[f]), p.text_faint),
+                    Some(f) if skip => (tf("Adds {}: the agent runs every tool without asking you.", &[f]), p.warn),
+                    Some(_) => (t("The agent runs every tool without asking you.").to_string(), p.text_faint),
                     None => (t("This agent has no option for this.").to_string(), p.text_faint),
                 };
-                ui.label(RichText::new(note).size(style::SMALL).color(c));
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(4.0);
-                let r = ui.add_enabled_ui(flag.is_some(), |ui| kit::switch(ui, &mut skip)).inner;
-                #[cfg(debug_assertions)]
-                crate::devtest::record("skip-permissions", r.rect);
-                if r.changed()
-                    && let Some(a) = agent
-                {
-                    self.set_skips_permissions(a, skip);
-                }
+                ui.label(RichText::new(note).size(11.5).color(c));
             });
         });
     }
@@ -285,57 +282,87 @@ impl App {
         let parent_name = parent.map(|r| r.name.clone()).unwrap_or_default();
         let parent_git = parent.and_then(|r| r.git.clone());
         let mut keep = true;
-        let sub = tf("TernaryCode types this in a new tab of {}, so you see what git does and can fix conflicts there.", &[&parent_name]);
-        if header(ui, icons::GIT_MERGE, p.accent, &tf("Merge {} into {}?", &[&wt.branch, &wt.base]), Some(&sub)) {
+        let path = w.path.clone();
+        let sub = tf("TernaryCode types the command in a new tab of {}, so you see git and any conflict.", &[&parent_name]);
+        if header(ui, icons::GIT_MERGE, p.accent, &tf("Merge {} into {}", &[&name, &wt.base]), Some(&sub)) {
             keep = false;
         }
-        body(ui, |ui| {
-            egui::Frame::NONE
-                .fill(p.canvas)
-                .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(CornerRadius::same(style::RADIUS + 1))
-                .inner_margin(Margin::symmetric(12, 9))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(format!("git merge --no-ff --no-edit {}", wt.branch)).font(egui::FontId::monospace(12.5)).color(p.text));
-                });
-            ui.add_space(6.0);
-            match parent_git.as_ref().map(|g| g.branch.clone()) {
-                Some(b) if b == wt.base => check(ui, icons::CHECK_CIRCLE, p.ok, &tf("{} is on {}.", &[&parent_name, &wt.base]), false),
-                Some(b) => check(ui, icons::WARNING, p.warn, &tf("{} is on {}, not {}: the merge goes into {}.", &[&parent_name, &b, &wt.base, &b]), false),
-                None => {}
+        // What the merge brings: commits, files, lines (read once, when the dialog opens).
+        let stat_id = egui::Id::new(("merge-stat", id));
+        let stat = match ui.data(|d| d.get_temp::<(usize, u32, u32)>(stat_id)) {
+            Some(s) => s,
+            None => {
+                let s = tc_git::worktree::diff_stat(&path, &wt.base, "HEAD").unwrap_or((0, 0, 0));
+                ui.data_mut(|d| d.insert_temp(stat_id, s));
+                s
             }
-            let (ahead, files) = git.as_ref().map_or((0, 0), |g| (g.ahead, g.branch_files));
-            let changed = self.worktree_dirty_files(id).len();
+        };
+        body(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 10.0;
+            let (ahead, files) = git.as_ref().map_or((0, 0), |g| (g.ahead, g.branch_files.max(stat.0)));
             if ahead > 0 {
-                let commits = crate::i18n::count(ahead, t("1 commit to merge"), t("{} commits to merge"));
-                let files = crate::i18n::count(files, t("1 file"), t("{} files"));
-                check(ui, icons::CHECK_CIRCLE, p.ok, &format!("{commits}, {files}."), false);
+                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
+                let painter = ui.painter();
+                let mut job = egui::text::LayoutJob::default();
+                let small = egui::FontId::proportional(12.0);
+                job.append(&crate::i18n::count(ahead, t("1 commit"), t("{} commits")), 0.0, egui::TextFormat::simple(small.clone(), p.text_muted));
+                job.append("·", 10.0, egui::TextFormat::simple(small.clone(), p.text_ghost));
+                job.append(&crate::i18n::count(files, t("1 file"), t("{} files")), 10.0, egui::TextFormat::simple(small.clone(), p.text_muted));
+                job.append("·", 10.0, egui::TextFormat::simple(small, p.text_ghost));
+                job.append(&format!("+{}", stat.1), 10.0, egui::TextFormat::simple(style::mono(11.0), p.ok));
+                job.append(&format!("−{}", stat.2), 6.0, egui::TextFormat::simple(style::mono(11.0), p.err));
+                let g = painter.layout_job(job);
+                painter.galley(pos2(rect.left(), rect.center().y - g.size().y / 2.0), g, p.text_muted);
+                super::review::paint_share(painter, pos2(rect.right() - super::review::SHARE_W, rect.center().y), stat.1, stat.2, &p);
             } else {
                 check(ui, icons::INFO, p.text_faint, &tf("{} has no commits of its own yet: there is nothing to merge.", &[&wt.branch]), true);
             }
+            // The command it types.
+            egui::Frame::NONE
+                .fill(if ui.visuals().dark_mode { p.inset } else { Color32::WHITE })
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::symmetric(12, 9))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        ui.label(RichText::new("$").font(style::mono(12.0)).color(p.text_ghost));
+                        ui.label(RichText::new(format!("git merge --no-ff --no-edit {}", wt.branch)).font(style::mono(12.0)).color(p.text));
+                    });
+                });
+            match parent_git.as_ref().map(|g| g.branch.clone()) {
+                Some(b) if b != wt.base => check(ui, icons::WARNING, p.warn, &tf("{} is on {}, not {}: the merge goes into {}.", &[&parent_name, &b, &wt.base, &b]), false),
+                _ => {}
+            }
             let parent_changed = parent_git.as_ref().map_or(0, |g| g.changed);
             if parent_changed > 0 {
-                check(ui, icons::WARNING, p.warn, &tf("{} has {} uncommitted changes. git stops if the merge touches them.", &[&parent_name, &parent_changed.to_string()]), false);
+                let changes = crate::i18n::count(parent_changed, t("1 uncommitted change"), t("{} uncommitted changes"));
+                check(ui, icons::WARNING, p.warn, &tf("{} has {}. git stops if the merge touches it.", &[&parent_name, &changes]), false);
             }
+            let changed = self.worktree_dirty_files(id).len();
             if changed > 0 {
                 let files = crate::i18n::count(changed, t("1 file"), t("{} files"));
                 check(ui, icons::INFO, p.text_faint, &tf("{} in {} are not committed: they are not merged.", &[&files, &name]), true);
             }
         });
         let mut ok = false;
-        footer_with(ui, Some(&tf("↵ {}", &[t("Merge")])), |ui| {
-            let r = kit::button_ex(ui, kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Merge in Terminal"), false);
+        footer_with(ui, Some(&tf("Opens a new tab in {}.", &[&parent_name])), |ui| {
+            let r = kit::button_keys(ui, kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Merge in Terminal"), Some("↵"), false);
             #[cfg(debug_assertions)]
             crate::devtest::record("dialog-ok", r.rect);
             ok = r.clicked();
-            if kit::secondary(ui, None, t("Cancel")).clicked() {
+            if kit::button_ex(ui, kit::Kind::Ghost, None, t("Cancel"), false).clicked() {
                 keep = false;
             }
         });
         if ok || enter {
+            ui.data_mut(|d| d.remove::<(usize, u32, u32)>(stat_id));
             self.actions.push(Action::MergeWorktreeNow(id));
             keep = false;
+        }
+        if !keep {
+            ui.data_mut(|d| d.remove::<(usize, u32, u32)>(stat_id));
         }
         keep
     }
@@ -349,6 +376,7 @@ impl App {
         let Some(w) = self.project(id) else { return false };
         let Some(wt) = w.worktree.clone() else { return false };
         let name = w.name.clone();
+        let w_path = w.path.clone();
         let place = crate::paths::contract_tilde(&w.path);
         let (merged, ahead) = w.git.as_ref().map_or((false, 0), |g| (g.merged, g.ahead));
         let uncommitted = self.worktree_dirty_files(id);
@@ -389,47 +417,106 @@ impl App {
                 }
             });
         } else {
-            if header(ui, icons::WARNING, p.err, &tf("{} has work that is not in {}", &[&name, &wt.base]), Some(t("Removing the worktree deletes its folder."))) {
+            let sub = tf("{} has work that is not in {}. Removing the worktree deletes its folder; the branch is kept, so you can merge it later.", &[&wt.branch, &wt.base]);
+            if header(ui, icons::TRASH, p.err, &tf("Remove worktree {}?", &[&name]), Some(&sub)) {
                 keep = false;
             }
+            // Its commits not merged (read once, when the dialog opens).
+            let commits_id = egui::Id::new(("remove-commits", id));
+            let commits: Vec<(String, String)> = match ui.data(|d| d.get_temp::<Vec<(String, String)>>(commits_id)) {
+                Some(c) => c,
+                None => {
+                    let c: Vec<(String, String)> = tc_git::worktree::merge_base(&w_path, &wt.base, "HEAD")
+                        .and_then(|fork| tc_git::worktree::commits(&w_path, &fork, "HEAD"))
+                        .map(|cs| cs.into_iter().map(|c| (c.short, c.subject)).collect())
+                        .unwrap_or_default();
+                    ui.data_mut(|d| d.insert_temp(commits_id, c.clone()));
+                    c
+                }
+            };
+            let git_changes = self.project(id).and_then(|x| x.git.clone());
             body(ui, |ui| {
-                if !uncommitted.is_empty() {
-                    let mut listed: Vec<String> = uncommitted.iter().take(5).cloned().collect();
-                    if uncommitted.len() > 5 {
-                        listed.push(tf("{} more", &[&(uncommitted.len() - 5).to_string()]));
-                    }
-                    let files = crate::i18n::count(uncommitted.len(), t("1 file is not committed"), t("{} files are not committed"));
-                    check(ui, icons::X_CIRCLE, p.err, &tf("{} and lost: {}", &[&files, &listed.join(", ")]), false);
-                }
-                if unmerged {
-                    let commits = crate::i18n::count(ahead, t("1 commit"), t("{} commits"));
-                    check(
-                        ui,
-                        icons::WARNING,
-                        p.warn,
-                        &tf("{} has {} not in {}. The branch is kept, so you can merge it later.", &[&wt.branch, &commits, &wt.base]),
-                        false,
-                    );
-                }
-                for r in &running {
-                    check(ui, icons::TERMINAL_WINDOW, p.text_faint, &tf("{} · it is stopped", &[r]), true);
-                }
+                // What would be lost or left behind, in one list.
+                egui::Frame::NONE
+                    .fill(p.canvas)
+                    .stroke(Stroke::new(1.0, p.border_strong))
+                    .corner_radius(CornerRadius::same(9))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let full = ui.available_width();
+                        let section = |ui: &mut Ui, icon: &str, text: &str, first: bool| {
+                            let (r, _) = ui.allocate_exact_size(vec2(full, 30.0), Sense::hover());
+                            if !first {
+                                ui.painter().hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, p.border));
+                            }
+                            ui.painter().rect_filled(r.shrink(1.0), CornerRadius::ZERO, p.hover);
+                            ui.painter().text(pos2(r.left() + 12.0 + 6.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(12.0), p.text_faint);
+                            ui.painter().text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, text, style::medium(12.0), p.text);
+                        };
+                        let line = |ui: &mut Ui, mark: (&str, Color32), text: &str, mono: bool| {
+                            let (r, _) = ui.allocate_exact_size(vec2(full, 30.0), Sense::hover());
+                            ui.painter().hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, p.border));
+                            ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, mark.0, style::mono(10.5), mark.1);
+                            let x = r.left() + if mark.0.len() > 2 { 66.0 } else { 34.0 };
+                            let font = if mono { style::mono(11.5) } else { egui::FontId::proportional(12.5) };
+                            let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, p.text);
+                            job.wrap = egui::text::TextWrapping::truncate_at_width((r.right() - 12.0 - x).max(20.0));
+                            let g = ui.painter().layout_job(job);
+                            ui.painter().galley(pos2(x, r.center().y - g.size().y / 2.0), g, p.text);
+                        };
+                        let mut first = true;
+                        if unmerged {
+                            section(ui, icons::GIT_COMMIT, &crate::i18n::count(ahead, t("1 commit to merge"), t("{} commits to merge")), first);
+                            first = false;
+                            for (short, subject) in commits.iter().take(5) {
+                                line(ui, (short, p.accent_text), subject, false);
+                            }
+                            if commits.len() > 5 {
+                                line(ui, ("", p.text_faint), &tf("{} more", &[&(commits.len() - 5).to_string()]), false);
+                            }
+                        }
+                        if !uncommitted.is_empty() {
+                            section(ui, icons::FILE, &crate::i18n::count(uncommitted.len(), t("1 file is not committed"), t("{} files are not committed")), first);
+                            first = false;
+                            for f in uncommitted.iter().take(5) {
+                                let change = git_changes.as_ref().and_then(|g| g.changes.get(&w_path.join(f)).copied());
+                                let (letter, color) = change.map_or(("M", p.accent_text), |c| (c.letter(), super::explorer_ui::change_color(c, &p)));
+                                line(ui, (letter, color), f, true);
+                            }
+                            if uncommitted.len() > 5 {
+                                line(ui, ("", p.text_faint), &tf("{} more", &[&(uncommitted.len() - 5).to_string()]), false);
+                            }
+                        }
+                        for r in &running {
+                            if first {
+                                section(ui, icons::TERMINAL_WINDOW, t("Stopped"), first);
+                                first = false;
+                            }
+                            line(ui, ("", p.text_faint), r, false);
+                        }
+                    });
                 ui.add_space(4.0);
                 switch_line(ui, delete, &tf("Delete the branch {} too", &[&wt.branch]), true);
             });
-            footer_with(ui, None, |ui| {
-                let r = kit::button_ex(ui, kit::Kind::DangerFilled, None, t("Remove Anyway"), false);
-                #[cfg(debug_assertions)]
-                crate::devtest::record("dialog-ok", r.rect);
-                remove = r.clicked();
-                if kit::secondary(ui, None, t("Cancel")).clicked() {
-                    keep = false;
-                }
-                // At the left: read the diff before deciding.
-                let w = kit::button_width(ui, Some(icons::GIT_DIFF), t("Review First"), None, false);
-                ui.add_space((ui.available_width() - w).max(0.0));
-                review = kit::button_ex(ui, kit::Kind::Ghost, Some(icons::GIT_DIFF), t("Review First"), false).clicked();
-            });
+            footer_left(
+                ui,
+                |ui| {
+                    review = kit::button_ex(ui, kit::Kind::Ghost, Some(icons::GIT_DIFF), t("Review First"), false).clicked();
+                },
+                |ui| {
+                    let r = kit::button_ex(ui, kit::Kind::DangerFilled, None, t("Remove Anyway"), false);
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record("dialog-ok", r.rect);
+                    remove = r.clicked();
+                    if kit::secondary(ui, None, t("Cancel")).clicked() {
+                        keep = false;
+                    }
+                },
+            );
+            if !keep || remove || review {
+                ui.data_mut(|d| d.remove::<Vec<(String, String)>>(commits_id));
+            }
         }
         if choice != branch.unwrap_or(!unmerged) {
             *branch = Some(choice);

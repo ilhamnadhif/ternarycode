@@ -115,7 +115,8 @@ pub fn place_panel(body: Rect, panel: &Panel, layout: &Layout, room: impl Fn(&[(
     let w = (body.width() * panel.share()).round().max(PANEL_MIN).min(body.width());
     let x = body.right() - w;
     let right = Rect::from_min_max(eframe::egui::pos2(x, body.top()), body.max);
-    let rest = Rect::from_min_max(body.min, eframe::egui::pos2(x - 1.0, body.bottom()));
+    // The sheets beside it end a gap before it.
+    let rest = Rect::from_min_max(body.min, eframe::egui::pos2(x - crate::ui::style::GAP, body.bottom()));
     let beside = PanelPlace { panes: rest, panel: Some(right), ..none };
     if rest.width() >= 1.0 {
         if room(&layout.arrange(rest).0) {
@@ -224,6 +225,26 @@ impl Kind {
         Self::Folder
     }
 
+    /// Two letters for the project's tile ("Rs", "Ts"); none for a plain folder (its name's
+    /// initials are used).
+    pub fn letters(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Folder => return None,
+            Self::Rust => "Rs",
+            Self::Go => "Go",
+            Self::TypeScript => "Ts",
+            Self::JavaScript => "Js",
+            Self::React => "Re",
+            Self::Flutter => "Fl",
+            Self::Dart => "Dt",
+            Self::Python => "Py",
+            Self::Swift => "Sw",
+            Self::Java => "Jv",
+            Self::Cpp => "C+",
+            Self::Web => "Wb",
+        })
+    }
+
     /// Its name, for the tooltip.
     pub fn label(self) -> &'static str {
         match self {
@@ -300,15 +321,35 @@ impl Change {
 
 /// Project colours (index saved in the workspace).
 pub const COLORS: [(u8, u8, u8); 8] = [
-    (0x5b, 0x9b, 0xd5),
-    (0x4f, 0xb0, 0xa0),
-    (0x8f, 0xb5, 0x5e),
-    (0xd9, 0xa4, 0x41),
-    (0xd9, 0x7a, 0x5b),
-    (0xc0, 0x76, 0xa8),
-    (0x63, 0xb4, 0xc9),
-    (0x9c, 0x9c, 0x9c),
+    // Sky, teal, lime, sand, coral, rose, violet, slate: apart from each other and from the
+    // status colours (amber, green, red, blue) where they could be taken for one.
+    (0x5a, 0xa6, 0xe6),
+    (0x45, 0xb5, 0xa8),
+    (0x9c, 0xbf, 0x5a),
+    (0xc9, 0xa4, 0x6a),
+    (0xe5, 0x8a, 0x6b),
+    (0xe0, 0x7a, 0xa0),
+    (0x9d, 0x8c, 0xf0),
+    (0x8e, 0x9a, 0xab),
 ];
+
+/// Two letters from a name: the first letters of its first two words, else its first two
+/// letters, the first upper case ("docs-site" → "Ds", "infra" → "In", "x" → "X").
+pub fn initials(name: &str) -> String {
+    let words: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let mut out: Vec<char> = match words.as_slice() {
+        [a, b, ..] => a.chars().take(1).chain(b.chars().take(1)).collect(),
+        [a] => a.chars().take(2).collect(),
+        [] => vec!['?'],
+    };
+    if let Some(c) = out.first_mut() {
+        *c = c.to_uppercase().next().unwrap_or(*c);
+    }
+    for c in out.iter_mut().skip(1) {
+        *c = c.to_lowercase().next().unwrap_or(*c);
+    }
+    out.into_iter().collect()
+}
 
 impl Project {
     /// A project at run time from what was saved (no tabs yet).
@@ -343,6 +384,15 @@ impl Project {
     /// A worktree TernaryCode made (listed under its project).
     pub fn is_worktree(&self) -> bool {
         self.parent.is_some()
+    }
+
+    /// The two letters of its tile: its kind's, else its name's initials ("docs-site" → "Ds",
+    /// "infra" → "In").
+    pub fn letters(&self) -> String {
+        if let Some(l) = self.kind.letters() {
+            return l.to_string();
+        }
+        initials(&self.name)
     }
 
     pub fn color32(&self) -> eframe::egui::Color32 {
@@ -629,6 +679,17 @@ fn bytes_path(b: &[u8]) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiles_get_two_letters() {
+        assert_eq!(initials("docs-site"), "Ds");
+        assert_eq!(initials("infra"), "In");
+        assert_eq!(initials("x"), "X");
+        assert_eq!(initials("my_great app"), "Mg");
+        assert_eq!(initials("--"), "?");
+        assert_eq!(Kind::Rust.letters(), Some("Rs"));
+        assert_eq!(Kind::Folder.letters(), None);
+    }
 
     #[test]
     fn pages_in_tabs_move_out_of_them() {

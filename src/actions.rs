@@ -120,6 +120,8 @@ pub enum Action {
     MarkSeen(PaneId),
     MarkAllSeen,
     ToggleSidebar,
+    /// The sidebar narrow (project tiles only) or full.
+    ToggleCompactSidebar,
     Palette,
     SwitchProject,
     PickPreset,
