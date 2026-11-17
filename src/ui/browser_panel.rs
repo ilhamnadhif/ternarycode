@@ -102,9 +102,18 @@ impl App {
         self.mark_dirty();
     }
 
-    /// Closes a page: its web view goes. An agent's next call opens it another.
+    /// Closes a page: its web view goes (Reopen Closed Page brings it back). An agent's next
+    /// call opens it another.
     pub fn close_page(&mut self, id: PaneId) {
-        let Some(project) = self.browsers.get(&id).map(|b| b.project) else { return };
+        let Some(b) = self.browsers.get(&id) else { return };
+        let project = b.project;
+        if !b.url.is_empty() && b.url != "about:blank" {
+            self.closed_pages.push(crate::browser::ClosedPage { project, url: b.url.clone(), title: b.title.clone() });
+            if self.closed_pages.len() > crate::browser::CLOSED_PAGES {
+                self.closed_pages.remove(0);
+            }
+        }
+        self.agent_pages.retain(|_, page| *page != id);
         if let Some(panel) = self.panel_mut(project) {
             panel.remove(id);
         }
@@ -115,6 +124,60 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Opens again the page closed last (of the project in view, else of any): a page of the
+    /// user's, in front.
+    pub fn reopen_closed_page(&mut self) {
+        let at = self.closed_pages.iter().rposition(|c| Some(c.project) == self.active).or_else(|| self.closed_pages.iter().rposition(|c| self.project(c.project).is_some()));
+        let Some(closed) = at.map(|i| self.closed_pages.remove(i)) else {
+            self.toast(t("No closed page to reopen").to_string());
+            return;
+        };
+        let id = self.add_page(closed.project, &closed.url, None);
+        if let Some(b) = self.browsers.get_mut(&id) {
+            b.title = closed.title;
+        }
+        self.show_page(closed.project, id);
+    }
+
+    /// An agent's terminal closed: its pages out of view and silent close with it; one in
+    /// view, or playing sound, stays as the user's (the music goes on).
+    pub fn agent_pane_closed(&mut self, pane: PaneId) {
+        self.agent_pages.remove(&pane);
+        self.agent_page_sessions.remove(&pane);
+        let owned: Vec<PaneId> = self.browsers.values().filter(|b| b.owner == Some(pane)).map(|b| b.id).collect();
+        for id in owned {
+            let Some((project, keep)) = self.browsers.get(&id).map(|b| (b.project, b.shown || b.busy())) else { continue };
+            // Its project going away takes its pages anyway.
+            if self.project(project).is_none() {
+                continue;
+            }
+            if keep {
+                if let Some(b) = self.browsers.get_mut(&id) {
+                    b.owner = None;
+                }
+            } else {
+                self.close_page(id);
+            }
+        }
+    }
+
+    /// Whether memory runs low (asked of the system at most every half minute; tests can say
+    /// so).
+    pub fn memory_pressure(&mut self, now: std::time::Instant) -> bool {
+        #[cfg(debug_assertions)]
+        if std::env::var_os("TERNARYCODE_MEMORY_LOW").is_some() {
+            return true;
+        }
+        match self.mem_low {
+            Some((at, low)) if now.duration_since(at) < std::time::Duration::from_secs(30) => low,
+            _ => {
+                let low = tc_agent::proc::memory_low();
+                self.mem_low = Some((now, low));
+                low
+            }
+        }
+    }
+
     /// The page in front follows the terminal the user picks: one whose agent has a page brings
     /// it to the front (once, as it is picked: a page chosen after stays).
     pub fn panel_follow(&mut self, project: ProjectId) {
@@ -122,7 +185,9 @@ impl App {
         if self.panel_of(project).is_none_or(|p| p.seen_focus == Some(focused)) {
             return;
         }
-        let owned = self.panel_of(project).and_then(|p| p.pages.iter().copied().find(|id| self.browsers.get(id).is_some_and(|b| b.owner == Some(focused))));
+        // The page its agent acts on (its own, or one of the user's it uses), else its own.
+        let current = self.agent_pages.get(&focused).copied().filter(|id| self.panel_of(project).is_some_and(|p| p.pages.contains(id)));
+        let owned = current.or_else(|| self.panel_of(project).and_then(|p| p.pages.iter().copied().find(|id| self.browsers.get(id).is_some_and(|b| b.owner == Some(focused)))));
         if let Some(panel) = self.panel_mut(project) {
             panel.seen_focus = Some(focused);
             if let Some(page) = owned {
@@ -389,6 +454,12 @@ impl App {
         if show_x {
             text_right = x_rect.left() - 2.0;
         }
+        // The speaker: the page plays sound (a click mutes it), or it is muted (a click lets it
+        // play again).
+        let speaker = (b.state.audible || b.muted).then(|| Rect::from_center_size(pos2(text_right - 8.0, r.center().y), vec2(16.0, 16.0)));
+        if let Some(sr) = speaker {
+            text_right = sr.left() - 2.0;
+        }
         if let Some(c) = dot {
             painter.circle_filled(pos2(text_right - 3.0, r.center().y), 3.0, c);
             text_right -= 10.0;
@@ -397,6 +468,19 @@ impl App {
         job.wrap = egui::text::TextWrapping::truncate_at_width((text_right - x).max(8.0));
         let g = painter.layout_job(job);
         painter.galley(pos2(x, r.center().y - g.size().y / 2.0), g, text_color);
+        let mut toggled = false;
+        if let Some(sr) = speaker {
+            let mr = ui.interact(sr, egui::Id::new(("page-mute", id)), Sense::click());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("page-mute:{id}"), sr);
+            if mr.hovered() {
+                ui.painter().rect_filled(sr, CornerRadius::same(4), if front { p.hover } else { p.subtle });
+            }
+            let icon = if b.muted { icons::SPEAKER_SLASH } else { icons::SPEAKER_HIGH };
+            let ink = if mr.hovered() || !b.muted { p.text } else { p.text_faint };
+            ui.painter().text(sr.center(), Align2::CENTER_CENTER, icon, style::icon_font(12.0), ink);
+            toggled = mr.on_hover_text(if b.muted { t("Unmute Page") } else { t("Mute Page") }).clicked();
+        }
         let mut closed = false;
         if show_x {
             let xr = ui.interact(x_rect, egui::Id::new(("page-close", id)), Sense::click());
@@ -419,12 +503,19 @@ impl App {
         if let Some(d) = b.driver.as_ref().filter(|d| !d.paused) {
             tip = format!("{tip}\n{} · {}", d.who, d.doing);
         }
+        if b.state.audible && !b.muted {
+            tip = format!("{tip}\n{}", t("Playing sound"));
+        }
         let _ = dark;
         let resp = resp.on_hover_text(tip);
         if resp.middle_clicked() {
             closed = true;
         }
-        (resp.clicked() && !closed, closed)
+        if toggled && let Some(b) = self.browsers.get_mut(&id) {
+            let on = !b.muted;
+            b.set_muted(on);
+        }
+        (resp.clicked() && !closed && !toggled, closed)
     }
 
     /// The page a tile shows beside its terminals, and its zoom: when its project's panel shows

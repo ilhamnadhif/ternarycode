@@ -342,7 +342,11 @@ pub struct Settings {
     /// Pages in Grid tiles keep the layout they have in Focus, zoomed out (else they fit the tile).
     #[serde(default = "yes")]
     pub browser_grid_zoom: bool,
-    /// Sites any agent may open without asking (`*.local`: that domain and its subdomains).
+    /// Agents ask the user before opening a site not on the lists (else they open any site).
+    #[serde(default)]
+    pub browser_agent_ask: bool,
+    /// Sites any agent may open without asking, when it asks (`*.local`: that domain and its
+    /// subdomains).
     #[serde(default = "agent_sites")]
     pub browser_agent_sites: Vec<String>,
     /// Agents may run their own JavaScript in pages (`browser_evaluate`).
@@ -418,6 +422,7 @@ impl Default for Settings {
             browser_sleep_minutes: 10,
             browser_agents: true,
             browser_agent_beside: true,
+            browser_agent_ask: false,
             browser_agent_sites: agent_sites(),
             browser_agent_js: false,
             browser_grid_zoom: true,

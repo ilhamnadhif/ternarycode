@@ -131,6 +131,8 @@ pub fn build_view(window: &impl raw_window_handle::HasWindowHandle, url: &str, b
                     if !lines.is_empty() {
                         s4.push(Event::Console(lines));
                     }
+                } else if let Some(state) = body.strip_prefix("state:").and_then(crate::browser::page_state) {
+                    s4.push(Event::State(state));
                 }
             })
             .with_permission_handler(|_| PermissionResponse::Default)

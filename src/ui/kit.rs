@@ -38,6 +38,7 @@ pub fn key_labels(action: &crate::actions::Action) -> Option<(&'static str, &'st
         A::NewTab => ("⌘T", "Ctrl+Shift+T"),
         A::ShowBrowser => ("⇧⌘B", "Ctrl+Shift+Alt+B"),
         A::NewBrowserTab => ("⌥⇧⌘B", ""),
+        A::ReopenClosedPage => ("⇧⌘T", "Ctrl+Shift+Alt+T"),
         A::BrowserAddress => ("⌘L", ""),
         A::BrowserReload => ("⌘R", ""),
         A::ClosePane => ("⌘W", "Ctrl+Shift+W"),

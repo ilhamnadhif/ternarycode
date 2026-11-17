@@ -51,13 +51,15 @@ $Mcp = Join-Path $Work "mcp"; New-Item -ItemType Directory -Force $Mcp | Out-Nul
 function Call($name, $tool, $argsJson) { Write-Text (Join-Path $Mcp "$name.json") ('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"' + $tool + '","arguments":' + $argsJson + '}}' + "`n") }
 # A preset running an agent's tool calls in its pane (a batch file: `m NAME` pipes NAME.json into
 # the MCP server and writes NAME.out, then says ok-NAME; "wait N" pauses about N-1 seconds).
-function Preset($name, $id, [string[]]$calls) {
+# Agents ask before other sites there (Settings) unless -Ask false: the scenarios of the question
+# have it.
+function Preset($name, $id, [string[]]$calls, [string]$Ask = "true") {
     $cmd = Join-Path $Work "$id.cmd"
     $lines = @("@echo off") + ($calls | ForEach-Object { if ($_ -like "wait *") { "ping -n " + $_.Split(" ")[1] + " 127.0.0.1 >nul" } else { "call :m $_" } }) + @("goto :eof", ":m", "`"$Hook`" mcp claude < `"$Mcp\%1.json`" > `"$Mcp\%1.out`"", "echo ok-%1", "goto :eof")
     [IO.File]::WriteAllLines($cmd, $lines)
     $d = Join-Path $Work "data-$name"; New-Item -ItemType Directory -Force $d | Out-Null
     $command = ("cmd /c " + $cmd) -replace '\\', '\\'
-    Write-Text (Join-Path $d "settings.json") ('{"browser_agent_js":true,"presets":[{"id":"' + $id + '","name":"' + $id + '","command":"' + $command + '"}]}')
+    Write-Text (Join-Path $d "settings.json") ('{"browser_agent_js":true,"browser_agent_ask":' + $Ask + ',"presets":[{"id":"' + $id + '","name":"' + $id + '","command":"' + $command + '"}]}')
 }
 
 # A small web server for the pages (no Python on Windows): a process of its own (a job blocked
@@ -77,7 +79,7 @@ while ($true) {
         $file = Join-Path $site ($path.TrimStart("/") -replace "/", "\")
         if (Test-Path $file -PathType Leaf) {
             $body = [IO.File]::ReadAllBytes($file)
-            $type = if ($file.EndsWith(".html")) { "text/html; charset=utf-8" } else { "text/plain" }
+            $type = if ($file.EndsWith(".html")) { "text/html; charset=utf-8" } elseif ($file.EndsWith(".wav")) { "audio/wav" } else { "text/plain" }
             $head = "HTTP/1.1 200 OK`r`nContent-Type: $type`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
         } else { $body = [Text.Encoding]::UTF8.GetBytes("not found"); $head = "HTTP/1.1 404 Not Found`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n" }
         $hb = [Text.Encoding]::ASCII.GetBytes($head); $s.Write($hb, 0, $hb.Length); $s.Write($body, 0, $body.Length); $s.Flush()
@@ -168,8 +170,45 @@ Call "ccls" "browser_close" '{}'
 Call "cnav2" "browser_navigate" ('{"url":"localhost:' + $Port + '/second.html"}')
 Call "cpanel" "browser_close" '{"panel":true}'
 Call "cnone" "browser_close" '{}'
-Preset "web-agent-close" "cls" @("cnav", "wait 5", "ccls", "wait 5", "cnav2", "wait 5", "cpanel", "wait 5", "cnone")
-Run "web-agent-close" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/;; wait-browser TC Test Page;; wait-pages 3*;; wait-screen PS C:;; action run cls;; wait-screen ok-cnav;; expect-file $Mcp\cnav.out Page: Agent Page;; wait-screen ok-ccls;; wait-pages 3*;; expect-file $Mcp\ccls.out Closed your page;; expect-file $Mcp\ccls.out TC Test Page;; wait-screen ok-cnav2;; expect-file $Mcp\cnav2.out Page: Second;; wait-screen ok-cpanel;; wait-panel hidden;; wait-pages 3*;; expect-file $Mcp\cpanel.out The Browser panel is hidden.;; wait-screen ok-cnone;; expect-file $Mcp\cnone.out You had no page open;; quit"
+Preset "web-agent-close" "cls" @("cnav", "wait 5", "ccls", "wait 5", "cnav2", "wait 5", "cpanel", "wait 5", "cnone") -Ask false
+# The user's page is on another site (127.0.0.1, not localhost): the agent opens its own.
+Run "web-agent-close" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web http://127.0.0.1:$Port/;; wait-browser TC Test Page;; wait-pages 3*;; wait-screen PS C:;; action run cls;; wait-screen ok-cnav;; expect-file $Mcp\cnav.out Page: Agent Page;; wait-screen ok-ccls;; wait-pages 3*;; expect-file $Mcp\ccls.out Closed your page;; expect-file $Mcp\ccls.out TC Test Page;; wait-screen ok-cnav2;; expect-file $Mcp\cnav2.out Page: Second;; wait-screen ok-cpanel;; wait-panel hidden;; wait-pages 3*;; expect-file $Mcp\cpanel.out The Browser panel is hidden.;; wait-screen ok-cnone;; expect-file $Mcp\cnone.out You had no page open;; quit"
+
+# Pages that sleep out of view and the ones that don't (sound, a form being filled in); the
+# tab's speaker mutes a page; Reopen Closed Page. Sleep after 4 s here.
+$ms = New-Object IO.MemoryStream; $bw = New-Object IO.BinaryWriter($ms)
+$bw.Write([Text.Encoding]::ASCII.GetBytes("RIFF")); $bw.Write([int](36 + 16000)); $bw.Write([Text.Encoding]::ASCII.GetBytes("WAVEfmt ")); $bw.Write([int]16); $bw.Write([int16]1); $bw.Write([int16]1); $bw.Write([int]8000); $bw.Write([int]16000); $bw.Write([int16]2); $bw.Write([int16]16); $bw.Write([Text.Encoding]::ASCII.GetBytes("data")); $bw.Write([int]16000); $bw.Write((New-Object byte[] 16000)); $bw.Flush()
+[IO.File]::WriteAllBytes("$Site\tone.wav", $ms.ToArray())
+Write-Text "$Site\sound.html" '<!doctype html><title>Sound Page</title><audio id="s" loop src="/tone.wav"></audio><button id="play" onclick="document.getElementById(&quot;s&quot;).play()" style="font:30px sans-serif;margin:40px">Play</button>'
+Write-Text "$Site\form.html" '<!doctype html><title>Form Page</title><form><textarea id="msg" name="msg"></textarea></form>'
+$env:TERNARYCODE_SLEEP_SECS = "4"
+Run "web-page-life" 120 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/sound.html;; wait-browser Sound Page;; wait-pages 3*;; sleep 800;; web-log document.getElementById('s').play().then(() => 'playing');; wait-page 3 audible;; action new-browser-tab;; wait-pages 3,4*;; action browser-address;; sleep 300;; keys $W/form.html\r;; wait-browser Form Page;; sleep 500;; web-log (() => { const m = document.getElementById('msg'); m.value = 'half a message'; m.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })();; wait-page 4 editing;; action new-browser-tab;; wait-pages 3,4,5*;; action browser-address;; sleep 300;; keys $W/second.html\r;; wait-browser Second;; click panel-hide;; wait-panel hidden;; wait-page 5 asleep;; sleep 2000;; wait-page 3 awake;; wait-page 4 awake;; action show-browser;; click page-tab:3;; wait-pages 3*,4,5;; wait-shown page-mute:3;; click page-mute:3;; wait-page 3 muted;; click page-mute:3;; wait-page 3 unmuted;; wait-page 3 audible;; click page-tab:5;; wait-browser Second;; click page-close:5;; wait-page 5 gone;; action reopen-page;; wait-browser Second;; wait-page front user;; quit"
+Remove-Item Env:TERNARYCODE_SLEEP_SECS
+
+# An agent works in a page of the user's already on the site it opens (idle); browser_tabs;
+# another page playing sound; its terminal closed.
+Call "bnav" "browser_navigate" ('{"url":"localhost:' + $Port + '/second.html"}')
+Call "blist" "browser_tabs" '{"action":"list"}'
+Call "bnew" "browser_tabs" ('{"action":"new","url":"localhost:' + $Port + '/sound.html"}')
+Call "bplay" "browser_click" '{"ref":"e1","element":"Play button"}'
+Call "bsel" "browser_tabs" '{"action":"select","index":1}'
+Call "bnav2" "browser_navigate" ('{"url":"localhost:' + $Port + '/sound.html"}')
+Call "bplay2" "browser_click" '{"ref":"e1","element":"Play button"}'
+Call "bcls" "browser_tabs" '{"action":"close","index":2}'
+Call "bnew2" "browser_tabs" ('{"action":"new","url":"localhost:' + $Port + '/agent.html"}')
+Call "bnew3" "browser_tabs" ('{"action":"new","url":"localhost:' + $Port + '/form.html"}')
+Preset "web-agent-tabs" "tabs" @("bnav", "blist", "bnew", "bplay", "bsel", "bnav2", "bplay2", "bcls", "bnew2", "bnew3") -Ask false
+Run "web-agent-tabs" 150 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/;; wait-browser TC Test Page;; wait-pages 3*;; wait-screen PS C:;; action run tabs;; wait-screen ok-bnav;; expect-file $Mcp\bnav.out open already (tab 1;; expect-file $Mcp\bnav.out Page: Second;; wait-pages 3*;; wait-page 3 user;; wait-screen ok-blist;; expect-file $Mcp\blist.out your tools act here;; wait-screen ok-bnew;; expect-file $Mcp\bnew.out Page: Sound Page;; wait-screen ok-bsel;; expect-file $Mcp\bsel.out Page: Second;; wait-screen ok-bplay2;; expect-file $Mcp\bplay2.out Also playing sound: tab 2;; wait-screen ok-bcls;; expect-file $Mcp\bcls.out Closed your page;; wait-screen ok-bnew3;; expect-file $Mcp\bnew3.out Page: Form Page;; wait-page-count 3;; action close-pane;; wait-page-count 2;; wait-page front user;; wait-browser Form Page;; quit"
+
+# An agent opens another site at once (no question); its page asleep a while after its agent
+# ended closes (3 s here); its page in view stays.
+Call "enav" "browser_navigate" ('{"url":"localhost:' + $Port + '/second.html"}')
+Call "eext" "browser_navigate" '{"url":"http://tc-popup.invalid/x"}'
+Call "enew" "browser_tabs" ('{"action":"new","url":"localhost:' + $Port + '/agent.html"}')
+Preset "web-agent-ended" "ended" @("enav", "eext", "enew") -Ask false
+$env:TERNARYCODE_SLEEP_SECS = "4"; $env:TERNARYCODE_AGENT_PAGE_SECS = "3"
+Run "web-agent-ended" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; wait-screen PS C:;; action run ended;; wait-screen ok-eext;; expect-file $Mcp\eext.out tc-popup.invalid;; expect-hidden browser-ask:*;; wait-screen ok-enew;; wait-browser Agent Page;; wait-page-count 2;; sleep 5000;; wait-page-count 1;; wait-page front agent;; wait-page front awake;; quit"
+Remove-Item Env:TERNARYCODE_SLEEP_SECS, Env:TERNARYCODE_AGENT_PAGE_SECS
 
 # The app's keys pressed while a page has the keyboard: typed as a person (SendKeys), Ctrl+F
 # opens the page's find bar; other keys stay the page's.

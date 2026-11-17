@@ -341,6 +341,15 @@ pub struct App {
     /// What the pages answered (by call number), taken in by the jobs.
     pub browser_done: crate::browser_agent::Done,
     pub browser_seq: u64,
+    /// The page each agent (by its pane) acts on now: its own, or a page of the user's it uses.
+    pub agent_pages: HashMap<PaneId, PaneId>,
+    /// The agent session (by its pane) that last used the browser there: a new session in the
+    /// same terminal hears that its page was left by an earlier one.
+    pub agent_page_sessions: HashMap<PaneId, String>,
+    /// Pages closed lately, the newest last (Reopen Closed Page).
+    pub closed_pages: Vec<crate::browser::ClosedPage>,
+    /// Whether memory runs low, and when that was last asked of the system.
+    pub mem_low: Option<(Instant, bool)>,
     /// Pane being dragged by its header.
     pub pane_drag: Option<PaneId>,
     /// The editor (its text or find field) had the keyboard in the last frame: ⌘F searches the
@@ -646,6 +655,10 @@ impl App {
             browser_jobs: Vec::new(),
             browser_done: Default::default(),
             browser_seq: 0,
+            agent_pages: HashMap::new(),
+            agent_page_sessions: HashMap::new(),
+            closed_pages: Vec::new(),
+            mem_low: None,
             pane_drag: None,
             editor_keyboard: false,
             editor_seen: false,
@@ -989,6 +1002,8 @@ impl App {
             // taken out of tabs.
             let mut pages: Vec<PaneId> = saved.panes.iter().filter(|p| p.browser.is_some() && !restored.pages.contains(&p.id)).map(|p| p.id).collect();
             pages.extend(restored.pages.iter().copied());
+            // An agent's page whose terminal is not there any more is not brought back.
+            pages.retain(|id| pane_info.get(id).and_then(|i| i.browser_owner).is_none_or(|o| self.panes.contains_key(&o)));
             for id in &pages {
                 let info = pane_info.get(id).cloned().unwrap_or_default();
                 let mut b = crate::browser::Browser::new(*id, saved.id, info.browser.as_deref().unwrap_or_default());
@@ -2023,6 +2038,8 @@ impl App {
     pub(crate) fn drop_pane(&mut self, id: PaneId) {
         if let Some(mut pane) = self.panes.remove(&id) {
             pane.hang_up();
+            // An agent's pages in the Browser panel: closed with it, unless in view or playing.
+            self.agent_pane_closed(id);
         }
         // A browser's page goes with its pane (its web view leaves the window).
         self.browsers.remove(&id);
@@ -3328,6 +3345,7 @@ impl App {
             },
             Action::ReviewAgent => self.open_review_with(None, true),
             Action::NewBrowserTab => self.new_browser_tab(),
+            Action::ReopenClosedPage => self.reopen_closed_page(),
             Action::ShowBrowser => self.show_browser(false),
             Action::BrowserAddress => self.show_browser(true),
             Action::BrowserReload => self.reload_browser(),
@@ -3991,6 +4009,7 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
         (cmd | Modifiers::ALT, Key::J, Action::ToggleAttention),
         (cmd | Modifiers::ALT, Key::K, Action::ClearScrollback),
         (cmd | Modifiers::ALT, Key::B, Action::ShowBrowser),
+        (cmd | Modifiers::ALT, Key::T, Action::ReopenClosedPage),
     ];
     let map = [
         (Key::J, Action::NextAttention),

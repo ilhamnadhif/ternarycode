@@ -42,13 +42,14 @@ run() { # name, seconds, script
 }
 
 # A preset whose command runs an agent's tool calls in its pane: `m NAME` pipes NAME.json into
-# the MCP server (as an agent starts it) and writes NAME.out, then says ok-NAME.
+# the MCP server (as an agent starts it) and writes NAME.out, then says ok-NAME. Agents ask
+# before other sites there (Settings) unless ASK=false: the scenarios of the question have it.
 preset() { # data dir name, preset id, calls…
     local name="$1" id="$2"; shift 2
     local script="$WORK/$id.sh"
     { printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\n' "$HOOK" "$MCP" "$MCP"; for c in "$@"; do printf '%s\n' "$c"; done; } > "$script"
     mkdir -p "$WORK/data-$name"
-    printf '{"browser_agent_js":true,"presets":[{"id":"%s","name":"%s","command":"sh %s"}]}\n' "$id" "$id" "$script" > "$WORK/data-$name/settings.json"
+    printf '{"browser_agent_js":true,"browser_agent_ask":%s,"presets":[{"id":"%s","name":"%s","command":"sh %s"}]}\n' "${ASK:-true}" "$id" "$id" "$script" > "$WORK/data-$name/settings.json"
 }
 
 P1="$WORK/alpha"; mkdir -p "$P1"; printf 'upload me\n' > "$P1/upload.txt"
@@ -157,8 +158,46 @@ call ccls browser_close '{}'
 call cnav2 browser_navigate "{\"url\":\"localhost:$WEBPORT/second.html\"}"
 call cpanel browser_close '{"panel":true}'
 call cnone browser_close '{}'
-preset web-agent-close cls 'm cnav; sleep 3; m ccls; sleep 3; m cnav2; sleep 3; m cpanel; sleep 3; m cnone'
-run web-agent-close 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/;; wait-browser TC Test Page;; wait-pages 3*;; action run cls;; wait-screen ok-cnav;; expect-file $MCP/cnav.out Page: Agent Page;; wait-screen ok-ccls;; wait-pages 3*;; wait-panel shown;; expect-file $MCP/ccls.out Closed your page;; expect-file $MCP/ccls.out it shows “TC Test Page” now;; wait-screen ok-cnav2;; expect-file $MCP/cnav2.out Page: Second;; wait-screen ok-cpanel;; wait-panel hidden;; wait-pages 3*;; expect-file $MCP/cpanel.out The Browser panel is hidden.;; wait-screen ok-cnone;; expect-file $MCP/cnone.out You had no page open;; quit"
+ASK=false preset web-agent-close cls 'm cnav; sleep 3; m ccls; sleep 3; m cnav2; sleep 3; m cpanel; sleep 3; m cnone'
+# The user's page is on another site (127.0.0.1, not localhost): the agent opens its own.
+run web-agent-close 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web http://127.0.0.1:$WEBPORT/;; wait-browser TC Test Page;; wait-pages 3*;; action run cls;; wait-screen ok-cnav;; expect-file $MCP/cnav.out Page: Agent Page;; wait-screen ok-ccls;; wait-pages 3*;; wait-panel shown;; expect-file $MCP/ccls.out Closed your page;; expect-file $MCP/ccls.out it shows “TC Test Page” now;; wait-screen ok-cnav2;; expect-file $MCP/cnav2.out Page: Second;; wait-screen ok-cpanel;; wait-panel hidden;; wait-pages 3*;; expect-file $MCP/cpanel.out The Browser panel is hidden.;; wait-screen ok-cnone;; expect-file $MCP/cnone.out You had no page open;; quit"
+
+# Pages that sleep out of view and the ones that don't: a page playing sound and a page with a
+# form being filled in stay awake while a quiet one sleeps; the tab's speaker mutes a page and
+# lets it play again; a page closed opens again (Reopen Closed Page). Sleep after 4 s here.
+python3 -c "import wave; w = wave.open('$SITE/tone.wav', 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000); w.writeframes(b'\0\0' * 8000); w.close()"
+printf '<!doctype html><title>Sound Page</title><audio id="s" loop src="/tone.wav"></audio><button id="play" onclick="document.getElementById(&quot;s&quot;).play()" style="font:30px sans-serif;margin:40px">Play</button>\n' > "$SITE/sound.html"
+printf '<!doctype html><title>Form Page</title><form><textarea id="msg" name="msg"></textarea></form>\n' > "$SITE/form.html"
+export TERNARYCODE_SLEEP_SECS=4
+run web-page-life 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/sound.html;; wait-browser Sound Page;; wait-pages 3*;; sleep 800;; web-log document.getElementById('s').play().then(() => 'playing');; wait-page 3 audible;; action new-browser-tab;; wait-pages 3,4*;; action browser-address;; sleep 300;; keys $W/form.html\\r;; wait-browser Form Page;; sleep 500;; web-log (() => { const m = document.getElementById('msg'); m.value = 'half a message'; m.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })();; wait-page 4 editing;; action new-browser-tab;; wait-pages 3,4,5*;; action browser-address;; sleep 300;; keys $W/second.html\\r;; wait-browser Second;; click panel-hide;; wait-panel hidden;; wait-page 5 asleep;; sleep 2000;; wait-page 3 awake;; wait-page 4 awake;; action show-browser;; wait-panel shown;; click page-tab:3;; wait-pages 3*,4,5;; wait-shown page-mute:3;; click page-mute:3;; wait-page 3 muted;; shot web-page-muted;; click page-mute:3;; wait-page 3 unmuted;; wait-page 3 audible;; click page-tab:5;; wait-browser Second;; click page-close:5;; wait-page 5 gone;; action reopen-page;; wait-browser Second;; wait-page front user;; quit"
+unset TERNARYCODE_SLEEP_SECS
+
+# An agent works in a page of the user's already on the site it opens, when that page is idle
+# (no new page); browser_tabs lists the pages, opens one of its own, picks one, closes one; it
+# hears of another page playing sound when its page plays too. Its terminal closed: its page
+# out of view closes, its page in view stays as the user's.
+call bnav browser_navigate "{\"url\":\"localhost:$WEBPORT/second.html\"}"
+call blist browser_tabs '{"action":"list"}'
+call bnew browser_tabs "{\"action\":\"new\",\"url\":\"localhost:$WEBPORT/sound.html\"}"
+call bplay browser_click '{"ref":"e1","element":"Play button"}'
+call bsel browser_tabs '{"action":"select","index":1}'
+call bnav2 browser_navigate "{\"url\":\"localhost:$WEBPORT/sound.html\"}"
+call bplay2 browser_click '{"ref":"e1","element":"Play button"}'
+call bcls browser_tabs '{"action":"close","index":2}'
+call bnew2 browser_tabs "{\"action\":\"new\",\"url\":\"localhost:$WEBPORT/agent.html\"}"
+call bnew3 browser_tabs "{\"action\":\"new\",\"url\":\"localhost:$WEBPORT/form.html\"}"
+ASK=false preset web-agent-tabs tabs 'm bnav; m blist; m bnew; m bplay; m bsel; m bnav2; m bplay2; m bcls; m bnew2; m bnew3'
+run web-agent-tabs 120 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/;; wait-browser TC Test Page;; wait-pages 3*;; action run tabs;; wait-screen ok-bnav;; expect-file $MCP/bnav.out The user had localhost:$WEBPORT open already (tab 1;; expect-file $MCP/bnav.out Page: Second;; wait-pages 3*;; wait-page 3 user;; wait-screen ok-blist;; expect-file $MCP/blist.out 1. “Second”;; expect-file $MCP/blist.out the user's · your tools act here;; wait-screen ok-bnew;; expect-file $MCP/bnew.out Page: Sound Page;; wait-screen ok-bplay;; wait-screen ok-bsel;; expect-file $MCP/bsel.out Page: Second;; wait-screen ok-bplay2;; expect-file $MCP/bplay2.out Also playing sound: tab 2, “Sound Page” (your page);; wait-screen ok-bcls;; expect-file $MCP/bcls.out Closed your page;; wait-screen ok-bnew3;; expect-file $MCP/bnew3.out Page: Form Page;; wait-page-count 3;; shot web-agent-tabs;; action close-pane;; wait-page-count 2;; wait-page front user;; wait-browser Form Page;; expect-screen-count ok-bnew3 0;; quit"
+
+# An agent opens another site at once (no question, as by default); its page asleep a while
+# after its agent ended closes (3 s here); its page in view stays.
+call enav browser_navigate "{\"url\":\"localhost:$WEBPORT/second.html\"}"
+call eext browser_navigate '{"url":"http://tc-popup.invalid/x"}'
+call enew browser_tabs "{\"action\":\"new\",\"url\":\"localhost:$WEBPORT/agent.html\"}"
+ASK=false preset web-agent-ended ended 'm enav; m eext; m enew'
+export TERNARYCODE_SLEEP_SECS=4 TERNARYCODE_AGENT_PAGE_SECS=3
+run web-agent-ended 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run ended;; wait-screen ok-eext;; expect-file $MCP/eext.out tc-popup.invalid;; expect-hidden browser-ask:*;; wait-screen ok-enew;; wait-browser Agent Page;; wait-page-count 2;; sleep 5000;; wait-page-count 1;; wait-page front agent;; wait-page front awake;; quit"
+unset TERNARYCODE_SLEEP_SECS TERNARYCODE_AGENT_PAGE_SECS
 
 # The app's keys pressed while a page has the keyboard (Windows, Linux: the page's window gets
 # them): Ctrl+F opens the page's find bar, Ctrl+L its address field; other keys stay the page's.

@@ -289,16 +289,20 @@ browser.
   where a download went; it uploads only files from the project's folder or Downloads.
 - **A page per agent.** Two agents in one tab each get a page of their own, marked with the
   agent's logo on its tab. The page in front follows the terminal you click; an agent working on a page behind it
-  shows a blue dot there. A link you open never takes an agent's page. Ask an agent to close the
-  browser or its tab and it closes its page (and hides the panel if you say so).
+  shows a blue dot there. A link you open never takes an agent's page. When you already have the
+  site it opens in a page of yours that is idle (YouTube open, “play Perfect”), the agent works in
+  that page instead of opening another, and it stays yours; point it at a tab (“use the YouTube
+  tab”) and it uses that one. Ask an agent to close the browser or its tab and it closes it (and
+  hides the panel if you say so). An agent's page closes with its terminal unless it is in view or
+  playing sound (then it stays, as yours), and an hour after its agent ended while it sleeps.
 - **Terminals are never squeezed.** Side by side and too narrow beside the panel, they show
   stacked while it is open (**Keep Side by Side** if you prefer them squeezed); with no room even
   so, the panel floats over them until you click a terminal. `⤢` lets a page fill the window.
-- **Agents stay on safe ground.** They open this machine's addresses (localhost and the like) and
-  the sites you allowed, for every project or one; another site waits for **Allow Once**,
-  **Always** or **Block**, asked in TernaryCode with the other questions waiting for you. Their own
-  JavaScript (`browser_evaluate`) is off until you allow it in Settings → Browser. A page gets the
-  keyboard only when you click it.
+- **Agents open what you ask, at once.** Any site, with no question in between. Prefer to be
+  asked? **Ask before agents open a site** in Settings → Browser: then a site not on your list
+  waits for **Allow Once**, **Always** or **Block**. Their own JavaScript (`browser_evaluate`) is
+  off until you allow it there, they never type your passwords, and a page gets the keyboard only
+  when you click it.
 - **On Linux** pages show through a helper, `ternarycode-web`, which needs WebKitGTK 4.1
   (`libwebkit2gtk-4.1-0`; the `.deb` and `.rpm` recommend it). It lays pages in an X11 window: under
   Wayland the app's window runs through XWayland so that they can show (`TERNARYCODE_WAYLAND=1`
@@ -309,7 +313,10 @@ browser.
   is using.
 - One login profile for every project, kept through restarts and updates. A page's console
   warnings and errors show on its toolbar. Pages out of view and unused sleep after 10 minutes
-  (never while an agent uses them), and the status bar shows the memory pages take.
+  (sooner when memory runs low), never while they play sound, use the camera or microphone, have a
+  form being filled in, or an agent uses them; a page playing sound shows a speaker on its tab,
+  which mutes it. **Reopen Closed Page** (`⇧⌘T`) brings back the page closed last. The status bar
+  shows the memory pages take.
 
 ### Editor and language features
 

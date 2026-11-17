@@ -440,6 +440,8 @@ fn ipc(sink: &Sink, body: &str) {
         if !lines.is_empty() {
             sink.push(Event::Console(lines));
         }
+    } else if let Some(state) = body.strip_prefix("state:").and_then(crate::browser::page_state) {
+        sink.push(Event::State(state));
     }
 }
 

@@ -266,6 +266,31 @@ impl App {
                 });
                 Some(now.as_deref() == Some(arg.trim())).filter(|ok| *ok)
             }
+            // `wait-page-count N`: the open project's panel holds N pages.
+            "wait-page-count" => Some(self.active_project().map(|p| p.panel.pages.len().to_string()).as_deref() == Some(arg.trim())).filter(|ok| *ok),
+            // `wait-page ID STATE`: page ID (`front`: the open project's page in front) is
+            // asleep, awake, audible, silent, muted, unmuted, editing, the user's (`user`), an agent's
+            // (`agent`), or `gone`.
+            "wait-page" => {
+                let (id, state) = arg.trim().split_once(' ').unwrap_or((arg.trim(), ""));
+                let id = if id == "front" { self.active_project().and_then(|p| p.panel.front) } else { id.parse::<tc_core::PaneId>().ok() };
+                let b = id.and_then(|id| self.browsers.get(&id));
+                let ok = match (state.trim(), b) {
+                    ("gone", b) => b.is_none(),
+                    (_, None) => false,
+                    ("asleep", Some(b)) => b.view.is_none(),
+                    ("awake", Some(b)) => b.view.is_some(),
+                    ("audible", Some(b)) => b.state.audible,
+                    ("silent", Some(b)) => !b.state.audible,
+                    ("muted", Some(b)) => b.muted && b.state.muted,
+                    ("unmuted", Some(b)) => !b.muted && !b.state.muted,
+                    ("editing", Some(b)) => b.state.editing,
+                    ("user", Some(b)) => b.owner.is_none(),
+                    ("agent", Some(b)) => b.owner.is_some(),
+                    _ => false,
+                };
+                Some(ok).filter(|ok| *ok)
+            }
             // `wait-panel shown|hidden|stacked|float|max`: how the open project's panel shows in
             // Focus ("stacked": shown, the terminals stacked beside it).
             "wait-panel" => {
@@ -569,6 +594,7 @@ impl App {
                     "review" => Some(Action::Review),
                     "review-agent" => Some(Action::ReviewAgent),
                     "new-browser-tab" => Some(Action::NewBrowserTab),
+                    "reopen-page" => Some(Action::ReopenClosedPage),
                     "show-browser" => Some(Action::ShowBrowser),
                     "browser-address" => Some(Action::BrowserAddress),
                     "browser-reload" => Some(Action::BrowserReload),
@@ -657,7 +683,7 @@ impl App {
                 self.devtest.check(!disk.contains(&want), &format!("expect-not-file {path} lacks {want:?}"));
             }
             "wait-screen" | "wait-status" | "wait-agent" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
-            | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-dialog" | "wait-download" | "wait-page-find" | "wait-inspector" | "wait-find" | "wait-caret"
+            | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-page" | "wait-page-count" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-dialog" | "wait-download" | "wait-page-find" | "wait-inspector" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
             | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" => {
                 WAIT.with(|w| {

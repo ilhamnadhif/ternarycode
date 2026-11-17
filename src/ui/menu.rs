@@ -85,6 +85,7 @@ impl AppMenu {
         let save = item(t("Save"), Action::SaveFile);
         let new_tab = item(t("New Tab"), Action::NewTab);
         let new_browser = item(t("New Browser Page"), Action::NewBrowserTab);
+        let reopen_page = item(t("Reopen Closed Page"), Action::ReopenClosedPage);
         let close = item(t("Close Pane"), Action::ClosePane);
         let file_menu = Submenu::with_items(
             t("File"),
@@ -96,6 +97,7 @@ impl AppMenu {
                 &PredefinedMenuItem::separator(),
                 &new_tab,
                 &new_browser,
+                &reopen_page,
                 &close,
             ],
         )

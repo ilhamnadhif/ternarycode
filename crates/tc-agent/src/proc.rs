@@ -197,6 +197,43 @@ pub fn own_resident_bytes() -> Option<u64> {
     None
 }
 
+/// Memory runs low on this machine, as the system says: macOS's memory pressure at warning or
+/// worse; Linux: less than a tenth of it available; Windows: nine tenths of it in use.
+#[cfg(target_os = "macos")]
+pub fn memory_low() -> bool {
+    let mut level: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: the name is NUL-terminated; `level` and `size` are valid for the call to write.
+    let r = unsafe {
+        libc::sysctlbyname(
+            c"kern.memorystatus_vm_pressure_level".as_ptr(),
+            (&mut level as *mut libc::c_int).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    r == 0 && level >= 2
+}
+
+#[cfg(target_os = "linux")]
+pub fn memory_low() -> bool {
+    let Ok(text) = std::fs::read_to_string("/proc/meminfo") else { return false };
+    let field = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name)?.split_whitespace().next()?.parse::<u64>().ok())
+    };
+    match (field("MemTotal:"), field("MemAvailable:")) {
+        (Some(total), Some(available)) if total > 0 => available * 10 < total,
+        _ => false,
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+pub fn memory_low() -> bool {
+    false
+}
+
 #[cfg(target_os = "linux")]
 pub fn info(pid: i32) -> Option<ProcInfo> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
@@ -227,7 +264,7 @@ pub fn cwd(_pid: i32) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-pub use win::{info, own_resident_bytes, ppid};
+pub use win::{info, memory_low, own_resident_bytes, ppid};
 
 #[cfg(windows)]
 mod win {
@@ -348,6 +385,17 @@ mod win {
             let cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
             (K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, cb) != 0)
                 .then_some(pmc.WorkingSetSize as u64)
+        }
+    }
+
+    /// Nine tenths of the machine's memory in use.
+    pub fn memory_low() -> bool {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        // SAFETY: plain data, its length set as the call wants.
+        unsafe {
+            let mut m: MEMORYSTATUSEX = std::mem::zeroed();
+            m.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+            GlobalMemoryStatusEx(&mut m) != 0 && m.dwMemoryLoad >= 90
         }
     }
 }

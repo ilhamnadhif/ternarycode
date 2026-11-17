@@ -1249,6 +1249,10 @@ impl App {
         let covered = self.dialog.is_some() || self.palette.is_some() || self.review_full() || self.attention_open || egui::Popup::is_any_open(ctx);
         let zoom = ctx.zoom_factor();
         let sleep = crate::browser::sleep_after(self.settings.browser_sleep_minutes);
+        // Memory runs low (the system says so): pages out of view sleep sooner, the oldest first.
+        let pressure = self.memory_pressure(now);
+        // A page with a pop-up open (a sign-in) keeps it: it stays awake.
+        let popups: std::collections::HashSet<PaneId> = self.browsers.keys().copied().filter(|id| crate::browser_popup::popup_of(*id).is_some()).collect();
         let pages = std::mem::take(&mut self.browser_pages);
         let mut wake: Option<Duration> = None;
         for b in self.browsers.values_mut() {
@@ -1308,6 +1312,9 @@ impl App {
                     if b.view.is_none() && !b.url.is_empty() {
                         b.view = crate::browser::build_view(frame, &b.url, crate::browser::bounds(*rect, zoom), b.sink(ctx));
                         b.asleep = b.view.is_none();
+                        if b.view.is_some() {
+                            b.asleep_since = None;
+                        }
                         b.placed = Some(*rect);
                         b.shown = b.view.is_some();
                         b.dimmed = false;
@@ -1342,6 +1349,9 @@ impl App {
                     if b.view.is_none() && !b.url.is_empty() {
                         b.view = crate::browser::build_view(frame, &b.url, off, b.sink(ctx));
                         b.asleep = b.view.is_none();
+                        if b.view.is_some() {
+                            b.asleep_since = None;
+                        }
                         b.dimmed = false;
                     } else if !b.offscreen
                         && let Some(v) = &b.view
@@ -1363,11 +1373,19 @@ impl App {
                     b.shown = false;
                     b.offscreen = false;
                     if b.view.is_some() {
+                        // Busy (sound, the camera, a form being filled in, a dialog, a download,
+                        // a pop-up): it stays awake, and its time unused counts from when that
+                        // ends.
+                        if b.busy() || popups.contains(&b.id) {
+                            b.last_seen = now;
+                        }
+                        let limit = if pressure { sleep.min(crate::browser::PRESSURE_SLEEP) } else { sleep };
                         let idle = now.duration_since(b.last_seen);
-                        if idle >= sleep {
+                        if idle >= limit {
                             b.sleep();
                         } else {
-                            let left = sleep - idle;
+                            // Looked at again within a minute: memory may run low meanwhile.
+                            let left = (limit - idle).min(crate::browser::PRESSURE_SLEEP);
                             wake = Some(wake.map_or(left, |w| w.min(left)));
                         }
                     }
@@ -1409,6 +1427,28 @@ impl App {
         }
         if typing_in != self.browser_focus {
             self.browser_focus = typing_in;
+        }
+        // An agent's page asleep a while after its agent ended (it left, or its terminal
+        // closed): it closes (Reopen Closed Page brings it back). One whose agent still runs
+        // in its terminal stays: the agent may come back to it.
+        let keep = crate::browser::agent_page_keep();
+        let mut ended = Vec::new();
+        for b in self.browsers.values() {
+            let Some(owner) = b.owner else { continue };
+            let Some(since) = b.asleep_since.filter(|_| b.view.is_none() && !in_use.contains(&b.id)) else { continue };
+            if self.panes.get(&owner).is_some_and(|p| p.tracker.agent.is_some()) {
+                continue;
+            }
+            let asleep = now.duration_since(since);
+            if asleep >= keep {
+                ended.push(b.id);
+            } else {
+                let left = keep - asleep;
+                wake = Some(wake.map_or(left, |w| w.min(left)));
+            }
+        }
+        for id in ended {
+            self.close_page(id);
         }
         if let Some(d) = wake {
             ctx.request_repaint_after(d);

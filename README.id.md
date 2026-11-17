@@ -302,17 +302,22 @@ Edge) di Windows, WebKitGTK di Linux. Di Windows dan Linux, tombol-tombol di baw
 - **Satu halaman per agent.** Dua agent di satu tab masing-masing mendapat halaman sendiri,
   bertanda logo agent-nya di tab-nya. Halaman yang di depan mengikuti terminal yang Anda klik; agent yang
   bekerja di halaman di belakangnya memberi titik biru di sana. Link yang Anda buka tidak pernah
-  mengambil halaman agent. Minta agent menutup browser atau tab-nya, dan ia menutup halamannya
-  (serta menyembunyikan panel kalau Anda minta).
+  mengambil halaman agent. Kalau situs yang dibuka agent sudah terbuka di halaman Anda dan halaman
+  itu sedang menganggur (YouTube terbuka, "putar Perfect"), agent bekerja di halaman itu, bukan
+  membuka yang baru, dan halaman itu tetap milik Anda; tunjuk sebuah tab ("pakai tab YouTube") dan
+  agent memakai tab itu. Minta agent menutup browser atau tab-nya, dan ia menutupnya (serta
+  menyembunyikan panel kalau Anda minta). Halaman agent ikut tertutup bersama terminalnya, kecuali
+  sedang terlihat atau berbunyi (maka tetap ada, jadi milik Anda), dan tertutup satu jam setelah
+  agent-nya selesai selama halaman itu tidur.
 - **Terminal tidak pernah diperas.** Terminal berdampingan yang jadi terlalu sempit di samping panel
   ditampilkan bertumpuk selama panel terbuka (**Keep Side by Side** kalau Anda lebih suka tetap
   berdampingan); kalau tetap tidak muat, panel mengambang di atasnya sampai Anda mengklik terminal.
   `⤢` membuat halaman memenuhi jendela.
-- **Agent tetap di jalur aman.** Agent membuka alamat mesin ini (localhost dan sejenisnya) dan situs
-  yang Anda izinkan, untuk semua project atau satu project; situs lain menunggu **Allow Once**,
-  **Always**, atau **Block**, ditanyakan di TernaryCode bersama pertanyaan lain yang menunggu Anda.
-  JavaScript milik agent sendiri (`browser_evaluate`) mati sampai Anda mengizinkannya di
-  Settings → Browser. Halaman hanya mendapat keyboard saat Anda mengkliknya.
+- **Agent langsung membuka yang Anda minta.** Situs apa pun, tanpa pertanyaan. Lebih suka ditanya
+  dulu? Nyalakan **Ask before agents open a site** di Settings → Browser: situs yang tidak ada di
+  daftar Anda lalu menunggu **Allow Once**, **Always**, atau **Block**. JavaScript milik agent sendiri
+  (`browser_evaluate`) mati sampai Anda mengizinkannya di sana, agent tidak pernah mengetik password
+  Anda, dan halaman hanya mendapat keyboard saat Anda mengkliknya.
 - **Di Linux** halaman tampil lewat program pembantu, `ternarycode-web`, yang butuh WebKitGTK 4.1
   (`libwebkit2gtk-4.1-0`; paket `.deb` dan `.rpm` menyarankannya). Ia menaruh halaman di jendela
   X11: di Wayland, jendela app berjalan lewat XWayland supaya halaman bisa tampil
@@ -324,8 +329,11 @@ Edge) di Windows, WebKitGTK di Linux. Di Windows dan Linux, tombol-tombol di baw
   sedang dipakai agent.
 - Satu profil login untuk semua project, tetap tersimpan melewati restart dan pembaruan. Warning dan
   error di console halaman tampil di toolbar-nya. Halaman yang tidak terlihat dan tidak dipakai
-  tidur setelah 10 menit (tidak pernah selama agent memakainya), dan status bar menampilkan memori
-  yang dipakai halaman.
+  tidur setelah 10 menit (lebih cepat kalau memori menipis), tidak pernah selama memutar suara,
+  memakai kamera atau mikrofon, ada form yang sedang diisi, atau dipakai agent; halaman yang berbunyi
+  menampilkan speaker di tab-nya, yang bisa diklik untuk membisukannya. **Reopen Closed Page**
+  (`⇧⌘T`) membuka lagi halaman yang terakhir ditutup. Status bar menampilkan memori yang dipakai
+  halaman.
 
 ### Editor dan fitur bahasa
 

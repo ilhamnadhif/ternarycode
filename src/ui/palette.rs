@@ -264,6 +264,7 @@ impl App {
             add(icons::PLUS, t("New Tab"), Action::NewTab);
             add(icons::GLOBE, t("Browser"), Action::ShowBrowser);
             add(icons::GLOBE, t("New Browser Page"), Action::NewBrowserTab);
+            add(icons::CLOCK_COUNTER_CLOCKWISE, t("Reopen Closed Page"), Action::ReopenClosedPage);
             add(icons::SQUARE_SPLIT_HORIZONTAL, t("Split Right"), Action::SplitRight);
             add(icons::SQUARE_SPLIT_VERTICAL, t("Split Down"), Action::SplitDown);
             add(icons::X, t("Close Pane"), Action::ClosePane);

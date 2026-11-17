@@ -53,6 +53,122 @@ if (!window.__tc) window.__tc = (() => {
   });
   addEventListener('unhandledrejection', (e) => say(`[error] Unhandled rejection: ${show(e.reason)}`, 'error', ''));
 
+  // ----- what sleeping would end, told to TernaryCode (`state:`), which keeps such a page awake
+  // and shows a speaker on its tab: sound playing (a: audio or video playing, not muted by the
+  // page), the camera, microphone or screen in use (c), a form being filled in (e: text typed
+  // in a field and not sent yet), and the user's mute from the tab (m), kept on new media.
+  let muted = false;
+  const played = new Set();
+  const streams = new Set();
+  const typed = new Set();
+  // Each new page tells its state once (the page before it may have been playing).
+  let sent = '';
+  let due = 0;
+  let polling = 0;
+  const medias = () => {
+    const all = new Set(played);
+    try { for (const m of document.querySelectorAll('audio, video')) all.add(m); } catch (e) { /* no document yet */ }
+    return all;
+  };
+  const sounding = (m) => !m.paused && !m.ended && m.volume > 0 && (!m.muted || m.__tcMuted === true);
+  const searchy = (el) => el.type === 'search' || /^(searchbox|combobox)$/.test(el.getAttribute('role') || '') || /search|query|^q$/i.test(el.name || '') || !!el.closest('form[role="search"], [role="search"]');
+  const filled = (el) => {
+    if (!el.isConnected) return false;
+    if (el.isContentEditable) return (el.textContent || '').trim() !== '';
+    return String(el.value || '').trim() !== '' && el.value !== el.defaultValue && !searchy(el);
+  };
+  const live = () => {
+    for (const s of streams) {
+      if (s.getTracks().some((t) => t.readyState === 'live')) return true;
+      streams.delete(s);
+    }
+    return false;
+  };
+  // Only the page itself tells (on Windows the helper runs in its frames too).
+  const topFrame = (() => { try { return window.top === window; } catch (e) { return false; } })();
+  const report = () => {
+    due = 0;
+    if (!topFrame) return;
+    const capturing = live();
+    for (const el of typed) if (!el.isConnected) typed.delete(el);
+    const now = JSON.stringify({ a: [...medias()].some(sounding), c: capturing, e: [...typed].some(filled), m: muted });
+    // A stream stopped with track.stop() says nothing: looked at again while one is live.
+    if (capturing && !polling) polling = setInterval(report, 2000);
+    if (!capturing && polling) { clearInterval(polling); polling = 0; }
+    if (now === sent) return;
+    sent = now;
+    try { window.ipc.postMessage('state:' + now); } catch (e) { /* no app */ }
+  };
+  const soon = (ms) => { if (!due) due = setTimeout(report, ms); };
+  const quiet = (m) => { if (muted && !m.muted) { m.muted = true; m.__tcMuted = true; } };
+  const seen = (m) => { if (m instanceof HTMLMediaElement) { played.add(m); quiet(m); } };
+  for (const type of ['play', 'playing', 'pause', 'ended', 'emptied', 'volumechange']) {
+    addEventListener(type, (e) => {
+      const m = e.target;
+      if (!(m instanceof HTMLMediaElement)) return;
+      if (type === 'play') seen(m);
+      // The page unmuted it (its own button): no longer the tab's mute.
+      if (type === 'volumechange' && !m.muted) m.__tcMuted = false;
+      soon(50);
+    }, true);
+  }
+  // Media made by scripts and never put in the page (new Audio()) is heard of when it plays.
+  try {
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (...args) {
+      seen(this);
+      const r = play.apply(this, args);
+      soon(50);
+      return r;
+    };
+  } catch (e) { /* kept as it is */ }
+  try {
+    const md = navigator.mediaDevices;
+    for (const name of ['getUserMedia', 'getDisplayMedia']) {
+      const f = md && md[name];
+      if (typeof f !== 'function') continue;
+      md[name] = function (...args) {
+        return f.apply(this, args).then((s) => {
+          streams.add(s);
+          for (const t of s.getTracks()) t.addEventListener('ended', () => soon(50));
+          soon(50);
+          return s;
+        });
+      };
+    }
+  } catch (e) { /* kept as it is */ }
+  addEventListener('input', (e) => {
+    const el = e.composedPath ? e.composedPath()[0] : e.target;
+    if (el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable)) {
+      if (el instanceof HTMLInputElement && /^(checkbox|radio|range|color|file|submit|button|hidden)$/.test(el.type)) return;
+      typed.add(el);
+      soon(400);
+    }
+  }, true);
+  // Sent: Enter in a one-line field, or the form's submit.
+  addEventListener('keydown', (e) => {
+    const el = e.composedPath ? e.composedPath()[0] : e.target;
+    if (e.key === 'Enter' && el instanceof HTMLInputElement) { typed.delete(el); soon(400); }
+  }, true);
+  addEventListener('submit', (e) => {
+    for (const el of typed) if (e.target.contains(el)) typed.delete(el);
+    soon(400);
+  }, true);
+  // Told once the page is there (not from the blank page a new window starts with: WebView2 is
+  // still making that window then).
+  const first = () => { if (location.href !== 'about:blank') soon(0); };
+  if (document.readyState === 'loading') addEventListener('DOMContentLoaded', first, { once: true });
+  else first();
+  const mute = (on) => {
+    muted = !!on;
+    for (const m of medias()) {
+      if (muted) quiet(m);
+      else if (m.__tcMuted) { m.muted = false; m.__tcMuted = false; }
+    }
+    report();
+    return { ok: true };
+  };
+
   // ----- refs: the elements of the last outline an agent can act on
   const refs = new Map();
   let next = 1;
@@ -560,6 +676,7 @@ if (!window.__tc) window.__tc = (() => {
         case 'wait': return await wait(args);
         case 'scroll': return await scroll(args);
         case 'console': return { text: log.length ? log.join('\n') : 'No console messages.' };
+        case 'mute': return mute(args.on);
         default: return { error: `Unknown action ${name}.` };
       }
     } catch (e) {

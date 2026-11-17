@@ -525,7 +525,7 @@ impl App {
                     self.settings.browser_agent_beside = i == 0;
                 }
             });
-            c.row(t("Put browsers to sleep after"), t("Out of view and unused. Never while an agent uses one."), |ui| {
+            c.row(t("Put browsers to sleep after"), t("Out of view and unused. Never while it plays sound, uses the camera or microphone, has a form being filled in, or an agent uses it."), |ui| {
                 const STEPS: [u32; 7] = [1, 5, 10, 15, 30, 60, 120];
                 let n = self.settings.browser_sleep_minutes;
                 let at = STEPS.iter().position(|s| *s >= n).unwrap_or(STEPS.len() - 1);
@@ -549,11 +549,13 @@ impl App {
             });
         });
 
-        // Agents: whether they get the tools, which sites they open without asking, scripts.
+        // Agents: whether they get the tools, whether they ask before a site (and which sites
+        // they open without asking then), scripts.
         let labels = [
             (t("Agents can use the browser"), t("Only agents in TernaryCode panes, each in its own project’s browser. Agents in other terminals don’t see the tools.")),
             (t("Sites agents may open without asking"), t("Every project. A project’s own sites are added from the question (“Always for …”).")),
             (t("Agents may run JavaScript in pages"), ""),
+            (t("Ask before agents open a site"), t("Off: agents open any site at once. On: a site not listed below waits for Allow Once, Always or Block.")),
         ];
         if labels.iter().any(|(l, n)| hit(search, l, n)) {
             group(ui, t("Agents"));
@@ -567,25 +569,30 @@ impl App {
             c.row(labels[0].0, labels[0].1, |ui| {
                 tools_changed = kit::switch(ui, &mut self.settings.browser_agents).changed();
             });
-            c.row_with(labels[1].0, labels[1].1, true, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                    for site in &self.settings.browser_agent_sites {
-                        if site_chip(ui, site) {
-                            remove_site = Some(site.clone());
-                        }
-                    }
-                    let id = egui::Id::new("browser-add-site");
-                    let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
-                    let r = kit::field(ui, id.with("field"), &mut text, Some(icons::PLUS), t("Add Site"), 150.0, false);
-                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if enter && !text.trim().is_empty() {
-                        add_site = Some(text.trim().to_string());
-                        text.clear();
-                    }
-                    ui.data_mut(|d| d.insert_temp(id, text));
-                });
+            c.row(labels[3].0, labels[3].1, |ui| {
+                kit::switch(ui, &mut self.settings.browser_agent_ask);
             });
+            if self.settings.browser_agent_ask {
+                c.row_with(labels[1].0, labels[1].1, true, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                        for site in &self.settings.browser_agent_sites {
+                            if site_chip(ui, site) {
+                                remove_site = Some(site.clone());
+                            }
+                        }
+                        let id = egui::Id::new("browser-add-site");
+                        let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
+                        let r = kit::field(ui, id.with("field"), &mut text, Some(icons::PLUS), t("Add Site"), 150.0, false);
+                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if enter && !text.trim().is_empty() {
+                            add_site = Some(text.trim().to_string());
+                            text.clear();
+                        }
+                        ui.data_mut(|d| d.insert_temp(id, text));
+                    });
+                });
+            }
             c.row(labels[2].0, t("browser_evaluate: anything a page’s own scripts can do, cookies included."), |ui| {
                 kit::switch(ui, &mut self.settings.browser_agent_js);
             });
@@ -619,7 +626,7 @@ impl App {
         // The sites one project's agents may open (added from the question in its browser).
         let sites: Vec<(tc_core::ProjectId, String, String)> =
             self.projects.iter().flat_map(|p| p.sites.iter().map(|s| (p.id, p.name.clone(), s.clone()))).collect();
-        if sites.is_empty() {
+        if sites.is_empty() || !self.settings.browser_agent_ask {
             return;
         }
         let labels = [(t("Sites added for a project"), "")];

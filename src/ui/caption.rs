@@ -77,6 +77,7 @@ impl App {
                 None,
                 Some((t("New Tab"), A::NewTab)),
                 Some((t("New Browser Page"), A::NewBrowserTab)),
+                Some((t("Reopen Closed Page"), A::ReopenClosedPage)),
                 Some((t("Close Pane"), A::ClosePane)),
                 None,
                 Some((t("Settings…"), A::Settings)),

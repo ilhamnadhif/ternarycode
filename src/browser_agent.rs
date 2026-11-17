@@ -38,6 +38,22 @@ const LOAD_LIMIT: Duration = Duration::from_secs(30);
 const STEP_LIMIT: Duration = Duration::from_secs(70);
 /// The moment between typed characters.
 const KEY_GAP: Duration = Duration::from_millis(12);
+/// Most pages of its own an agent keeps open (browser_tabs new): the panel's strip stays
+/// readable.
+const AGENT_PAGES: usize = 3;
+
+/// The site of an address, as pages are matched for an agent: its host without `www.`, and its
+/// port (two servers on this machine are two sites).
+fn site_of(url: &str) -> String {
+    let host = crate::browser::host_of(url);
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    let (hostport, _) = crate::browser::split_url(url);
+    let hostport = hostport.rsplit_once('@').map_or(hostport.as_str(), |(_, h)| h).to_ascii_lowercase();
+    match hostport.rsplit_once(':').filter(|(_, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
+        Some((_, port)) => format!("{host}:{port}"),
+        None => host.to_string(),
+    }
+}
 
 /// A step of a job.
 #[derive(Clone, Debug)]
@@ -215,11 +231,59 @@ impl App {
         let who = call.agent.as_deref().and_then(AgentKind::from_slug).map_or("The agent", AgentKind::label).to_string();
         if call.call == "browser_close" {
             let panel = call.args["panel"].as_bool().unwrap_or(false);
-            let _ = reply.send(self.agent_close(agent_pane, project, panel, &who));
+            let page = self.agent_page(agent_pane, project);
+            let _ = reply.send(self.close_for_agent(agent_pane, project, page, panel, &who));
             return;
         }
         let a = &call.args;
         let s = |k: &str| a[k].as_str().unwrap_or("").trim().to_string();
+        // browser_tabs: the pages of the panel; one to act on, a new one, one closed.
+        let mut picked_page = None;
+        let mut note = String::new();
+        if call.call == "browser_tabs" {
+            let pages = self.panel_of(project).map(|p| p.pages.clone()).unwrap_or_default();
+            let index = a["index"].as_f64().map(|n| n as usize);
+            let at = |n: Option<usize>| n.and_then(|n| n.checked_sub(1)).and_then(|i| pages.get(i).copied());
+            match a["action"].as_str().unwrap_or("list") {
+                "list" => {
+                    let _ = reply.send(json!({ "text": self.page_list(agent_pane, project) }));
+                    return;
+                }
+                "close" => {
+                    let Some(page) = at(index) else { return fail(reply, &format!("No tab {} here: browser_tabs list shows them.", index.unwrap_or(0))) };
+                    let _ = reply.send(self.close_for_agent(agent_pane, project, Some(page), false, &who));
+                    return;
+                }
+                "select" => {
+                    let Some(page) = at(index) else { return fail(reply, &format!("No tab {} here: browser_tabs list shows them.", index.unwrap_or(0))) };
+                    if let Some(d) = self.browsers.get(&page).and_then(|b| b.driver.as_ref()).filter(|d| d.pane != agent_pane && !d.paused) {
+                        return fail(reply, &format!("{} is using that page now: pick another, or open one of your own (browser_tabs new).", d.who));
+                    }
+                    picked_page = Some(page);
+                }
+                "new" => {
+                    let own: Vec<usize> = pages.iter().enumerate().filter(|(_, id)| self.browsers.get(id).is_some_and(|b| b.owner == Some(agent_pane))).map(|(i, _)| i + 1).collect();
+                    if own.len() >= AGENT_PAGES {
+                        let tabs: Vec<String> = own.iter().map(usize::to_string).collect();
+                        return fail(reply, &format!("You have {} pages open already (tabs {}): close one first (browser_tabs close).", own.len(), tabs.join(", ")));
+                    }
+                    let Some(id) = self.new_agent_page(agent_pane, project) else { return fail(reply, "The project is gone.") };
+                    let url = crate::browser::normalize(&s("url"));
+                    if url.is_empty() {
+                        let n = self.panel_of(project).and_then(|p| p.pages.iter().position(|x| *x == id)).map_or(0, |i| i + 1);
+                        let _ = reply.send(json!({ "text": format!("Opened a new page of yours (tab {n}); your tools act on it now. browser_navigate opens an address in it.") }));
+                        self.mark_dirty();
+                        return;
+                    }
+                    picked_page = Some(id);
+                }
+                other => return fail(reply, &format!("Unknown action {other}: list, new, select or close.")),
+            }
+            if let Some(page) = picked_page {
+                self.agent_pages.insert(agent_pane, page);
+                self.bring_agent_page(agent_pane, project, page);
+            }
+        }
         // What the agent says the element is (shown to the user), else its ref.
         let element = || Some(s("element")).filter(|e| !e.is_empty()).unwrap_or_else(|| s("ref"));
         let (doing, ops): (String, Vec<Op>) = match call.call.as_str() {
@@ -231,6 +295,14 @@ impl App {
                 (tf("Opening {}", &[&crate::browser::split_url(&url).0]), vec![Op::Go(url), Op::Read])
             }
             "browser_navigate_back" => (t("Going back").into(), vec![Op::Back, Op::Read]),
+            "browser_tabs" => {
+                let url = crate::browser::normalize(&s("url"));
+                if a["action"].as_str() == Some("new") && !url.is_empty() {
+                    (tf("Opening {}", &[&crate::browser::split_url(&url).0]), vec![Op::Go(url), Op::Read])
+                } else {
+                    (t("Reading the page").into(), vec![Op::Read])
+                }
+            }
             "browser_snapshot" => (t("Reading the page").into(), vec![Op::Read]),
             "browser_click" => {
                 let e = element();
@@ -314,20 +386,39 @@ impl App {
             "browser_handle_dialog" => (t("Answering the page’s dialog").into(), vec![Op::Dialog(a["accept"].as_bool().unwrap_or(true), a["promptText"].as_str().map(str::to_string)), Op::Settle, Op::Read]),
             other => return fail(reply, &format!("Unknown tool {other}.")),
         };
-        let Some(id) = self.agent_browser(agent_pane, project, call.call == "browser_navigate") else {
+        let target = if call.call == "browser_navigate" {
+            let (page, borrowed) = self.navigate_target(agent_pane, project, &crate::browser::normalize(&s("url")));
+            note = borrowed;
+            page
+        } else {
+            picked_page.or_else(|| self.agent_page(agent_pane, project))
+        };
+        let Some(id) = target else {
             return fail(reply, "No page is open in this project's browser yet: use browser_navigate first.");
         };
+        self.agent_pages.insert(agent_pane, id);
+        // A new session of the agent in this terminal: the page is where an earlier one left it.
+        if let Some(session) = self.panes.get(&agent_pane).and_then(|p| p.agent_session.clone()) {
+            let before = self.agent_page_sessions.insert(agent_pane, session.clone());
+            if before.is_some_and(|b| b != session)
+                && call.call != "browser_navigate"
+                && let Some(b) = self.browsers.get(&id)
+            {
+                note.push_str(&format!("This page was left by an earlier session in this terminal, at {} (“{}”).\n", b.url, b.label()));
+            }
+        }
         let Some(b) = self.browsers.get_mut(&id) else { return };
         if b.driver.as_ref().is_some_and(|d| d.paused) {
             return fail(reply, &format!("The user has the browser now (they took it over from {who} in TernaryCode). Wait until they hand it back, or ask them."));
         }
         b.driver = Some(Driver { pane: agent_pane, who, doing, last: Instant::now(), paused: false });
         // The user handed the browser back: the agent hears where they left it.
-        let text = if std::mem::take(&mut b.handed_back) {
+        let mut text = if std::mem::take(&mut b.handed_back) {
             format!("The user had taken the browser over and handed it back. It is at {} ({}).\n", b.url, b.title)
         } else {
             String::new()
         };
+        text.push_str(&note);
         self.browser_jobs.push(Job {
             browser: id,
             agent_pane,
@@ -347,43 +438,160 @@ impl App {
         self.mark_dirty();
     }
 
-    /// The page an agent's tools act on: its own in its project's Browser panel, else
-    /// (`create`) a new one there. It comes to the front when the agent's terminal is the one
-    /// picked (or the panel had none), and the panel opens (Settings), unless the Code drawer
-    /// is open: then the Browser button says so. The keyboard and the tab in view stay as they
-    /// are.
-    fn agent_browser(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, create: bool) -> Option<PaneId> {
-        if let Some(id) = self.browsers.values().find(|b| b.owner == Some(agent_pane) && b.project == project).map(|b| b.id) {
-            return Some(id);
+    /// The page an agent's tools act on: the one it last used (its own, or one of the user's it
+    /// was given or took), else its own first in the panel.
+    pub fn agent_page(&self, agent_pane: PaneId, project: tc_core::ProjectId) -> Option<PaneId> {
+        let pages = self.panel_of(project).map(|p| p.pages.as_slice()).unwrap_or_default();
+        self.agent_pages
+            .get(&agent_pane)
+            .copied()
+            .filter(|id| pages.contains(id))
+            .or_else(|| pages.iter().copied().find(|id| self.browsers.get(id).is_some_and(|b| b.owner == Some(agent_pane))))
+    }
+
+    /// Where browser_navigate opens `url`: the agent's page when it is on that site already;
+    /// else a page of the user's on that site, open and idle (no sound, no form being filled
+    /// in, no camera, not in the user's hands or another agent's: the user opened YouTube and
+    /// asks for a song there), which stays theirs; else the agent's own page (made if need be:
+    /// never a page of the user's on another site). With a note for the answer when it takes a
+    /// page of the user's.
+    fn navigate_target(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, url: &str) -> (Option<PaneId>, String) {
+        let site = site_of(url);
+        let current = self.agent_page(agent_pane, project);
+        if let Some(c) = current
+            && !site.is_empty()
+            && self.browsers.get(&c).is_some_and(|b| site_of(&b.url) == site)
+        {
+            return (Some(c), String::new());
         }
-        if !create {
+        if let Some(page) = self.idle_user_page(agent_pane, project, &site) {
+            self.bring_agent_page(agent_pane, project, page);
+            let n = self.panel_of(project).and_then(|p| p.pages.iter().position(|x| *x == page)).map_or(0, |i| i + 1);
+            let label = self.browsers.get(&page).map(|b| b.label()).unwrap_or_default();
+            let note = format!("The user had {site} open already (tab {n}, “{label}”, idle): you work in that page instead of opening another. It stays the user's page.\n");
+            return (Some(page), note);
+        }
+        let own = current.filter(|c| self.browsers.get(c).is_some_and(|b| b.owner == Some(agent_pane)));
+        let own = own.or_else(|| {
+            let pages = self.panel_of(project).map(|p| p.pages.clone()).unwrap_or_default();
+            pages.into_iter().find(|id| self.browsers.get(id).is_some_and(|b| b.owner == Some(agent_pane)))
+        });
+        (own.or_else(|| self.new_agent_page(agent_pane, project)), String::new())
+    }
+
+    /// A page of the user's on `site` an agent may work in: open and idle, the one in front
+    /// first.
+    fn idle_user_page(&self, agent_pane: PaneId, project: tc_core::ProjectId, site: &str) -> Option<PaneId> {
+        if site.is_empty() {
             return None;
         }
+        let panel = self.panel_of(project)?;
+        let mut pages = panel.pages.clone();
+        if let Some(f) = panel.front {
+            pages.retain(|p| *p != f);
+            pages.insert(0, f);
+        }
+        let taken: HashSet<PaneId> = self.agent_pages.iter().filter(|(a, _)| **a != agent_pane).map(|(_, p)| *p).collect();
+        pages.into_iter().find(|id| {
+            let Some(b) = self.browsers.get(id) else { return false };
+            b.owner.is_none()
+                && site_of(&b.url) == site
+                && !b.busy()
+                && b.ask.is_none()
+                && b.driver.as_ref().is_none_or(|d| d.pane == agent_pane && !d.paused)
+                && !taken.contains(id)
+                && self.browser_focus != Some(*id)
+                && crate::browser_popup::popup_of(*id).is_none()
+        })
+    }
+
+    /// A new page of the agent's in its project's panel (empty, to be given an address).
+    fn new_agent_page(&mut self, agent_pane: PaneId, project: tc_core::ProjectId) -> Option<PaneId> {
         self.project(project)?;
         let id = self.add_page(project, "", Some(agent_pane));
+        self.bring_agent_page(agent_pane, project, id);
+        Some(id)
+    }
+
+    /// A page an agent turns to comes to the front when the agent's terminal is the one picked
+    /// (or the panel shows none), and the panel opens (Settings), unless the Code drawer is
+    /// open: then the Browser button says so. The keyboard and the tab in view stay as they
+    /// are.
+    fn bring_agent_page(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, page: PaneId) {
         let picked = self.project(project).and_then(|p| p.current_pane()) == Some(agent_pane);
         let open = self.settings.browser_agent_beside;
         if let Some(panel) = self.panel_mut(project) {
             if picked || panel.shown().is_none() {
-                panel.front = Some(id);
+                panel.front = Some(page);
             }
             panel.open |= open;
         }
-        Some(id)
     }
 
-    /// `browser_close`: the agent's page closes (its tab; a job still on it is told the page
-    /// was closed), and with `panel` the project's Browser panel hides (the pages left in it
-    /// keep running). The answer says what the panel shows now.
-    fn agent_close(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, panel: bool, who: &str) -> Value {
-        let page = self.browsers.values().find(|b| b.owner == Some(agent_pane) && b.project == project);
+    /// The panel's pages as an agent's browser_tabs list gives them.
+    fn page_list(&self, agent_pane: PaneId, project: tc_core::ProjectId) -> String {
+        let Some(panel) = self.panel_of(project) else { return "The project is gone.".into() };
+        if panel.pages.is_empty() {
+            return "No page is open in this project's Browser panel. browser_navigate opens one.".into();
+        }
+        let current = self.agent_page(agent_pane, project);
+        let mut out = format!("Pages in this project's Browser panel (the panel is {}):", if panel.open { "shown" } else { "hidden" });
+        for (i, id) in panel.pages.iter().enumerate() {
+            let Some(b) = self.browsers.get(id) else { continue };
+            let mut marks = vec![self.page_owner(b, agent_pane)];
+            if current == Some(*id) {
+                marks.push("your tools act here".into());
+            }
+            if panel.open && panel.front == Some(*id) {
+                marks.push("in front".into());
+            }
+            if b.state.audible {
+                marks.push(if b.muted { "playing sound, muted by the user".into() } else { "playing sound".into() });
+            }
+            if b.state.editing {
+                marks.push("a form being filled in".into());
+            }
+            if b.asleep && b.view.is_none() {
+                marks.push("asleep (it loads again when used)".into());
+            }
+            if let Some(d) = &b.driver {
+                if d.paused {
+                    marks.push("the user took it over".into());
+                } else if d.pane != agent_pane {
+                    marks.push(format!("{} is using it", d.who));
+                }
+            }
+            let url = if b.url.is_empty() { "no address yet".to_string() } else { b.url.clone() };
+            out.push_str(&format!("\n{}. “{}” {url} · {}", i + 1, b.label(), marks.join(" · ")));
+        }
+        out.push_str("\nbrowser_tabs select N makes your tools act on tab N (a page of the user's: when they point you to it); new opens a page of your own; close N closes tab N (another's only when the user asks).");
+        out
+    }
+
+    /// Whose a page is, as an agent hears it.
+    fn page_owner(&self, b: &crate::browser::Browser, agent_pane: PaneId) -> String {
+        match b.owner {
+            None => "the user's".into(),
+            Some(o) if o == agent_pane => "yours".into(),
+            Some(o) => {
+                let kind = self.panes.get(&o).and_then(|p| p.tracker.agent.or(p.last_agent));
+                format!("{}'s", kind.map_or("another agent", AgentKind::label))
+            }
+        }
+    }
+
+    /// An agent closes `page` (browser_close: the page it acts on; browser_tabs close: a tab);
+    /// a job still on it is told the page was closed. With `panel` the project's Browser panel
+    /// hides too (the pages left in it keep running). The answer says what the panel shows now.
+    fn close_for_agent(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, page: Option<PaneId>, panel: bool, who: &str) -> Value {
+        let page = page.and_then(|id| self.browsers.get(&id));
         if page.and_then(|b| b.driver.as_ref()).is_some_and(|d| d.paused) {
             return json!({ "error": format!("The user has the browser now (they took it over from {who} in TernaryCode). Wait until they hand it back, or ask them.") });
         }
-        let mut text = match page.map(|b| b.id) {
-            Some(id) => {
+        let mut text = match page.map(|b| (b.id, self.page_owner(b, agent_pane), b.label())) {
+            Some((id, owner, label)) => {
                 self.close_page(id);
-                "Closed your page in TernaryCode's browser.".to_string()
+                if owner == "yours" { "Closed your page in TernaryCode's browser.".to_string() } else { format!("Closed {owner} page “{label}” in TernaryCode's browser.") }
             }
             None => "You had no page open in TernaryCode's browser.".to_string(),
         };
@@ -409,8 +617,33 @@ impl App {
         json!({ "text": text })
     }
 
-    /// The sites an agent of `project` may open without asking: every project's and its own.
+    /// Other pages of the project playing sound while `page` plays too: the agent hears of
+    /// them (the user may want only one).
+    fn sound_note(&self, page: PaneId, agent_pane: PaneId) -> String {
+        let Some(b) = self.browsers.get(&page).filter(|b| b.state.audible && !b.muted) else { return String::new() };
+        let Some(panel) = self.panel_of(b.project) else { return String::new() };
+        let mut out = String::new();
+        for (i, id) in panel.pages.iter().enumerate() {
+            let Some(o) = self.browsers.get(id).filter(|o| o.id != page && o.state.audible && !o.muted) else { continue };
+            let n = i + 1;
+            let whose = match self.page_owner(o, agent_pane).as_str() {
+                "yours" => "your page".to_string(),
+                owner => format!("{owner} page"),
+            };
+            out.push_str(&format!(
+                "\nAlso playing sound: tab {n}, “{}” ({whose}). If the user wants only one playing, pause it there (browser_tabs select {n}), or ask them.",
+                o.label()
+            ));
+        }
+        out
+    }
+
+    /// The sites an agent of `project` may open without asking: any (unless the user wants to
+    /// be asked, Settings → Browser), else every project's and its own.
     pub fn agent_sites(&self, project: tc_core::ProjectId) -> Vec<String> {
+        if !self.settings.browser_agent_ask {
+            return vec!["*".into()];
+        }
         let mut sites = self.settings.browser_agent_sites.clone();
         if let Some(p) = self.project(project) {
             sites.extend(p.sites.iter().cloned());
@@ -442,6 +675,9 @@ impl App {
             }
             self.asked(job.agent_pane);
         }
+        // Two pages playing sound: the agent hears of the other.
+        let sound = self.sound_note(job.browser, job.agent_pane);
+        job.text.push_str(&sound);
         // What the page downloaded meanwhile (the agent may need the file).
         if let Some(b) = self.browsers.get(&job.browser) {
             for d in b.downloads.iter().filter(|d| d.at >= job.since) {
@@ -1061,5 +1297,15 @@ mod tests {
         assert!(eval_call("() => document.title").contains("await (() => document.title)()"));
         assert!(eval_call("document.title").contains("await (async () => (document.title))()"));
         assert!(eval_call("async function () { return 1 }").contains("await (async function () { return 1 })()"));
+    }
+
+    #[test]
+    fn sites_of_addresses() {
+        assert_eq!(site_of("https://www.youtube.com/watch?v=1"), "youtube.com");
+        assert_eq!(site_of("https://youtube.com/"), "youtube.com");
+        assert_eq!(site_of("http://localhost:3000/a"), "localhost:3000");
+        assert_ne!(site_of("http://localhost:3000/"), site_of("http://localhost:5173/"));
+        assert_eq!(site_of("https://user@Example.com:8443/x"), "example.com:8443");
+        assert_eq!(site_of(""), "");
     }
 }

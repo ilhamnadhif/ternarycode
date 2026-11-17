@@ -35,6 +35,35 @@ pub enum Event {
     /// A key of the app's, pressed while the page had the keyboard (Windows, Linux: the page's
     /// window has the keys there, not the app's).
     Key(eframe::egui::Key, eframe::egui::Modifiers),
+    /// What the page does that sleeping would end, as its helper tells (each new page tells it
+    /// once, then each change).
+    State(PageState),
+}
+
+/// What a page does that sleeping would end (`browser_agent.js` tells it): such a page stays
+/// awake out of view, and its tab shows a speaker while it plays sound.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PageState {
+    /// Audio or video plays, not muted by the page (the tab's mute still counts it).
+    pub audible: bool,
+    /// The camera, the microphone or the screen is in use.
+    pub capturing: bool,
+    /// Text typed in a field of a form, not sent yet.
+    pub editing: bool,
+    /// The tab's mute is on in the page.
+    pub muted: bool,
+}
+
+/// A page's `state:` message.
+pub fn page_state(json: &str) -> Option<PageState> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let f = |k: &str| v[k].as_bool().unwrap_or(false);
+    Some(PageState { audible: f("a"), capturing: f("c"), editing: f("e"), muted: f("m") })
+}
+
+/// The script that turns the tab's mute on or off in a page (its media, and media to come).
+pub fn mute_script(on: bool) -> String {
+    format!("{AGENT_JS}\nreturn JSON.stringify(await window.__tc.run('mute', {{ on: {on} }}));")
 }
 
 /// The page's web view (wry's), and what the agents' steps act on (a page or a pop-up).
@@ -238,6 +267,17 @@ pub enum Answer {
     Block,
 }
 
+/// A page closed lately: where it was, to open it again (Reopen Closed Page).
+#[derive(Clone, Debug)]
+pub struct ClosedPage {
+    pub project: ProjectId,
+    pub url: String,
+    pub title: String,
+}
+
+/// Closed pages kept to reopen (the oldest go first).
+pub const CLOSED_PAGES: usize = 25;
+
 /// Where a page's callbacks put what they report, and wake the window.
 #[derive(Clone)]
 pub struct Sink {
@@ -268,10 +308,16 @@ pub struct Browser {
     pub loading: bool,
     /// What the address field holds.
     pub address: String,
-    /// When it was last in view.
+    /// When it was last in view (or busy out of view: playing sound, a form being filled in…).
     pub last_seen: Instant,
     /// The page was let go to save memory (loaded again when shown).
     pub asleep: bool,
+    /// Since when it has had no web view (asleep, or never shown yet).
+    pub asleep_since: Option<Instant>,
+    /// What the page does that sleeping would end (sound, camera, a form being filled in).
+    pub state: PageState,
+    /// The user muted it from its tab (kept through loads and sleep).
+    pub muted: bool,
     /// The agent pane this browser was opened for or taken by: its tools act here.
     pub owner: Option<PaneId>,
     /// An agent using the page now.
@@ -347,6 +393,9 @@ impl Browser {
             address: url.to_string(),
             last_seen: Instant::now(),
             asleep: true,
+            asleep_since: Some(Instant::now()),
+            state: PageState::default(),
+            muted: false,
             owner: None,
             driver: None,
             ask: None,
@@ -483,10 +532,34 @@ impl Browser {
                 }
                 Event::Title(t) => self.title = t.clone(),
                 Event::Loading(l) => self.loading = *l,
+                Event::State(st) => {
+                    self.state = *st;
+                    // A new page (or one loaded again) gets the tab's mute.
+                    if st.muted != self.muted
+                        && let Some(v) = &self.view
+                    {
+                        run_js(v, &mute_script(self.muted), |_| {});
+                    }
+                }
                 _ => {}
             }
         }
         events
+    }
+
+    /// Mutes the page from its tab, or lets it play sound again.
+    pub fn set_muted(&mut self, on: bool) {
+        self.muted = on;
+        if let Some(v) = &self.view {
+            run_js(v, &mute_script(on), |_| {});
+        }
+    }
+
+    /// The page does something sleeping would end: it plays sound, uses the camera, microphone
+    /// or screen, has a form being filled in, waits for a dialog's answer, or downloads. (A
+    /// pop-up it opened counts too: `App::page_busy`.)
+    pub fn busy(&self) -> bool {
+        self.state.audible || self.state.capturing || self.state.editing || self.dialog.is_some() || self.downloads.iter().any(|d| d.done.is_none())
     }
 
     /// Goes to `address` (as typed: see [`normalize`]).
@@ -557,6 +630,8 @@ impl Browser {
         self.still = None;
         self.covered_since = None;
         self.asleep = true;
+        self.asleep_since = Some(Instant::now());
+        self.state = PageState::default();
         self.loading = false;
         self.zoom = 1.0;
         // Its dialog went with the page (answered Cancel, `browser_dialog::tidy`).
@@ -571,7 +646,24 @@ impl Browser {
 
 /// How long a browser out of view and unused keeps its page.
 pub fn sleep_after(minutes: u32) -> Duration {
+    // Tests wait seconds, not minutes.
+    #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var("TERNARYCODE_SLEEP_SECS").ok().and_then(|s| s.parse::<u64>().ok()) {
+        return Duration::from_secs(secs);
+    }
     Duration::from_secs(u64::from(minutes.max(1)) * 60)
+}
+
+/// How long pages out of view and unused stay awake while memory runs low.
+pub const PRESSURE_SLEEP: Duration = Duration::from_secs(60);
+
+/// How long an agent's page stays asleep after its agent ended before it closes.
+pub fn agent_page_keep() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var("TERNARYCODE_AGENT_PAGE_SECS").ok().and_then(|s| s.parse::<u64>().ok()) {
+        return Duration::from_secs(secs);
+    }
+    Duration::from_secs(60 * 60)
 }
 
 /// The host (with its port) and the rest of an address, for the address field. The host ends
@@ -596,9 +688,12 @@ pub fn host_of(url: &str) -> String {
 }
 
 /// Whether `host` is on a list of sites: `example.com` (or `*.example.com`) takes that host and
-/// its subdomains.
+/// its subdomains; `*` takes every site.
 pub fn site_listed(host: &str, sites: &[String]) -> bool {
     sites.iter().any(|s| {
+        if s.trim() == "*" {
+            return true;
+        }
         let s = s.trim().trim_start_matches("*.").to_ascii_lowercase();
         !s.is_empty() && (host == s || host.ends_with(&format!(".{s}")))
     })
@@ -756,6 +851,8 @@ pub fn build_view(
                 if !lines.is_empty() {
                     s4.push(Event::Console(lines));
                 }
+            } else if let Some(state) = body.strip_prefix("state:").and_then(page_state) {
+                s4.push(Event::State(state));
             }
         })
         // Camera and microphone: WebKit asks the user, per site (never granted unasked).
@@ -1202,5 +1299,18 @@ mod tests {
             assert!(!agent_may_open(asks, &sites, None), "{asks}");
         }
         assert!(agent_may_open("https://github.com/x", &[], Some("github.com")));
+        // Agents that don't ask (the default) may open any site.
+        assert!(agent_may_open("https://www.youtube.com/watch?v=1", &["*".into()], None));
+        assert!(site_listed("example.com", &["*".into()]));
     }
+
+    #[test]
+    fn page_state_from_the_page() {
+        let st = page_state(r#"{"a":true,"c":false,"e":true,"m":false}"#).unwrap();
+        assert!(st.audible && st.editing && !st.capturing && !st.muted);
+        assert_eq!(page_state("{}"), Some(PageState::default()));
+        assert!(page_state("not json").is_none());
+        assert!(mute_script(true).ends_with("await window.__tc.run('mute', { on: true }));"));
+    }
+
 }

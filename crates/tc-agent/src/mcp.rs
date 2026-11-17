@@ -26,12 +26,14 @@ in, beside this terminal: it is the user's browser in this session, and the user
 and every click. Whenever the user asks to open, show, check or search something on a website or \
 in a browser (\"open YouTube\", \"check it in the browser\", a URL, a dev server), use these \
 tools, not `open <url>` in a shell and not other browser tools (Chrome, Zen, Safari, Playwright), \
-unless the user names that other browser. Start with browser_navigate: this machine's addresses \
-open at once; another site waits the first time for the user's OK, asked in TernaryCode. Then \
-act on the refs of the snapshot each tool returns. A pop-up a page opens (a sign-in such as \
-Continue with Google) shows in a window of its own; the tools act in it until it closes. When the \
-user asks to close the browser or its tab, browser_close closes your page. Never type the user's \
-passwords or one-time codes: ask the user to type them there.";
+unless the user names that other browser. Start with browser_navigate; then act on the refs of \
+the snapshot each tool returns. Pages: you work in a page of your own, but when the user already \
+has the site you open in a page of theirs that is idle, browser_navigate works in that one \
+instead of opening another (it stays theirs); browser_tabs lists the pages and picks one when \
+the user points you to it. A pop-up a page opens (a sign-in such as Continue with Google) shows \
+in a window of its own; the tools act in it until it closes. When the user asks to close the \
+browser or its tab, browser_close closes the page you work in. Never type the user's passwords \
+or one-time codes: ask the user to type them there.";
 
 /// The tools, as `tools/list` gives them.
 pub fn tools() -> Value {
@@ -40,7 +42,7 @@ pub fn tools() -> Value {
     json!([
         {
             "name": "browser_navigate",
-            "description": "Open a URL in TernaryCode's built-in browser, beside the terminal: the browser the user means in this session (any website or page they ask for, unless they name another browser). Local addresses (localhost, 127.0.0.1, a port like :5173) open at once; another site asks the user the first time. Waits for the page to load; returns its title and a snapshot.",
+            "description": "Open a URL in TernaryCode's built-in browser, beside the terminal: the browser the user means in this session (any website or page they ask for, unless they name another browser). It opens in the page you work in, or in a page of the user's already on that site and idle (it says so). Waits for the page to load; returns its title and a snapshot.",
             "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "The address (a bare port or host:port means this machine)."}}, "required": ["url"]},
         },
         {
@@ -134,8 +136,13 @@ pub fn tools() -> Value {
         },
         {
             "name": "browser_close",
-            "description": "Close your page in TernaryCode's browser (your tab in its Browser panel): when the user asks to close the browser, the tab or the page. With no other page left, the panel closes too. panel true also hides the Browser panel when other pages (the user's) stay in it; they keep running, and the Browser button shows the panel again.",
+            "description": "Close the page you work in, in TernaryCode's browser (its tab in the Browser panel): when the user asks to close the browser, the tab or the page. With no other page left, the panel closes too. panel true also hides the Browser panel when other pages (the user's) stay in it; they keep running, and the Browser button shows the panel again.",
             "inputSchema": {"type": "object", "properties": {"panel": {"type": "boolean", "description": "Also hide the Browser panel (when the user asks to close the browser itself)."}}},
+        },
+        {
+            "name": "browser_tabs",
+            "description": "The pages (tabs) of the project's Browser panel. list: each page, whose it is (yours, the user's, another agent's), which you work in, which plays sound. select: work in tab index from now on (a page of the user's when they point you to it: “use the YouTube tab I opened”); returns its snapshot. new: open a page of your own (at url, if given) and work in it; at most 3 of your own. close: close tab index (one that is not yours only when the user asks).",
+            "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "select", "new", "close"]}, "index": {"type": "number", "description": "The tab's number, from list (1 is the first)."}, "url": {"type": "string", "description": "For new: the address to open."}}, "required": ["action"]},
         },
     ])
 }
@@ -322,7 +329,7 @@ mod tests {
         let list = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"});
         assert_eq!(answer(&list, &None, &none).unwrap()["result"]["tools"], json!([]));
         let n = answer(&list, &pane(), &none).unwrap()["result"]["tools"].as_array().map(Vec::len).unwrap_or(0);
-        assert_eq!(n, 19);
+        assert_eq!(n, 20);
         // Closing its page (the tab) is one of them: “close the browser” has a tool.
         assert!(told.contains("browser_close"), "{told}");
     }

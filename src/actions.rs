@@ -172,6 +172,8 @@ pub enum Action {
     /// A new page of the user's in the project's Browser panel (at the project's local server,
     /// when it has one).
     NewBrowserTab,
+    /// ⇧⌘T: the page closed last opens again (of the project in view, else of any).
+    ReopenClosedPage,
     /// The Browser button and ⇧⌘B: shows or hides the project's Browser panel (a page made in
     /// it when it has none: `App::show_browser`).
     ShowBrowser,
