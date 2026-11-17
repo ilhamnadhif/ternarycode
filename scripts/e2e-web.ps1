@@ -50,10 +50,10 @@ $DL = Join-Path $Work "downloads"; New-Item -ItemType Directory -Force $DL | Out
 $Mcp = Join-Path $Work "mcp"; New-Item -ItemType Directory -Force $Mcp | Out-Null
 function Call($name, $tool, $argsJson) { Write-Text (Join-Path $Mcp "$name.json") ('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"' + $tool + '","arguments":' + $argsJson + '}}' + "`n") }
 # A preset running an agent's tool calls in its pane (a batch file: `m NAME` pipes NAME.json into
-# the MCP server and writes NAME.out, then says ok-NAME).
+# the MCP server and writes NAME.out, then says ok-NAME; "wait N" pauses about N-1 seconds).
 function Preset($name, $id, [string[]]$calls) {
     $cmd = Join-Path $Work "$id.cmd"
-    $lines = @("@echo off") + ($calls | ForEach-Object { "call :m $_" }) + @("goto :eof", ":m", "`"$Hook`" mcp claude < `"$Mcp\%1.json`" > `"$Mcp\%1.out`"", "echo ok-%1", "goto :eof")
+    $lines = @("@echo off") + ($calls | ForEach-Object { if ($_ -like "wait *") { "ping -n " + $_.Split(" ")[1] + " 127.0.0.1 >nul" } else { "call :m $_" } }) + @("goto :eof", ":m", "`"$Hook`" mcp claude < `"$Mcp\%1.json`" > `"$Mcp\%1.out`"", "echo ok-%1", "goto :eof")
     [IO.File]::WriteAllLines($cmd, $lines)
     $d = Join-Path $Work "data-$name"; New-Item -ItemType Directory -Force $d | Out-Null
     $command = ("cmd /c " + $cmd) -replace '\\', '\\'
@@ -159,6 +159,17 @@ Call "pnav2" "browser_navigate" ('{"url":"localhost:' + $Port + '/agentpop.html"
 Call "pelse" "browser_click" '{"ref":"e2","element":"Sign in elsewhere button"}'
 Preset "web-agent-popup" "pop" @("pnav", "pclick", "pcont", "pclick2", "pnav2", "pelse")
 Run "web-agent-popup" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; wait-screen PS C:;; action run pop;; wait-screen ok-pnav;; expect-file $Mcp\pnav.out Page: Agent Popup Opener;; wait-screen ok-pclick;; expect-file $Mcp\pclick.out A pop-up window opened;; expect-file $Mcp\pclick.out Page: Agent Sign In (a pop-up window);; wait-screen ok-pcont;; expect-file $Mcp\pcont.out The pop-up window closed;; expect-file $Mcp\pcont.out Page: Signed in: agent-ok;; wait-screen ok-pclick2;; wait-screen ok-pnav2;; expect-file $Mcp\pnav2.out The pop-up window closed;; expect-file $Mcp\pnav2.out Page: Agent Popup Opener;; wait-shown browser-ask:*;; click browser-block:*;; wait-screen ok-pelse;; expect-file $Mcp\pelse.out Blocked by the user: tc-popup.invalid;; quit"
+
+# Asked to close the browser, an agent closes its page: the user's page stays, in front (the
+# answer names it while the panel shows; on this small screen it floats); with panel the panel
+# hides too (the user's page kept); with no page of its own it says so.
+Call "cnav" "browser_navigate" ('{"url":"localhost:' + $Port + '/agent.html"}')
+Call "ccls" "browser_close" '{}'
+Call "cnav2" "browser_navigate" ('{"url":"localhost:' + $Port + '/second.html"}')
+Call "cpanel" "browser_close" '{"panel":true}'
+Call "cnone" "browser_close" '{}'
+Preset "web-agent-close" "cls" @("cnav", "wait 5", "ccls", "wait 5", "cnav2", "wait 5", "cpanel", "wait 5", "cnone")
+Run "web-agent-close" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/;; wait-browser TC Test Page;; wait-pages 3*;; wait-screen PS C:;; action run cls;; wait-screen ok-cnav;; expect-file $Mcp\cnav.out Page: Agent Page;; wait-screen ok-ccls;; wait-pages 3*;; expect-file $Mcp\ccls.out Closed your page;; expect-file $Mcp\ccls.out TC Test Page;; wait-screen ok-cnav2;; expect-file $Mcp\cnav2.out Page: Second;; wait-screen ok-cpanel;; wait-panel hidden;; wait-pages 3*;; expect-file $Mcp\cpanel.out The Browser panel is hidden.;; wait-screen ok-cnone;; expect-file $Mcp\cnone.out You had no page open;; quit"
 
 # The app's keys pressed while a page has the keyboard: typed as a person (SendKeys), Ctrl+F
 # opens the page's find bar; other keys stay the page's.

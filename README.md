@@ -289,7 +289,8 @@ browser.
   where a download went; it uploads only files from the project's folder or Downloads.
 - **A page per agent.** Two agents in one tab each get a page of their own, marked with the
   agent's logo on its tab. The page in front follows the terminal you click; an agent working on a page behind it
-  shows a blue dot there. A link you open never takes an agent's page.
+  shows a blue dot there. A link you open never takes an agent's page. Ask an agent to close the
+  browser or its tab and it closes its page (and hides the panel if you say so).
 - **Terminals are never squeezed.** Side by side and too narrow beside the panel, they show
   stacked while it is open (**Keep Side by Side** if you prefer them squeezed); with no room even
   so, the panel floats over them until you click a terminal. `⤢` lets a page fill the window.

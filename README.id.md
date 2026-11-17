@@ -302,7 +302,8 @@ Edge) di Windows, WebKitGTK di Linux. Di Windows dan Linux, tombol-tombol di baw
 - **Satu halaman per agent.** Dua agent di satu tab masing-masing mendapat halaman sendiri,
   bertanda logo agent-nya di tab-nya. Halaman yang di depan mengikuti terminal yang Anda klik; agent yang
   bekerja di halaman di belakangnya memberi titik biru di sana. Link yang Anda buka tidak pernah
-  mengambil halaman agent.
+  mengambil halaman agent. Minta agent menutup browser atau tab-nya, dan ia menutup halamannya
+  (serta menyembunyikan panel kalau Anda minta).
 - **Terminal tidak pernah diperas.** Terminal berdampingan yang jadi terlalu sempit di samping panel
   ditampilkan bertumpuk selama panel terbuka (**Keep Side by Side** kalau Anda lebih suka tetap
   berdampingan); kalau tetap tidak muat, panel mengambang di atasnya sampai Anda mengklik terminal.

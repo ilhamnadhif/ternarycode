@@ -213,6 +213,11 @@ impl App {
             );
         }
         let who = call.agent.as_deref().and_then(AgentKind::from_slug).map_or("The agent", AgentKind::label).to_string();
+        if call.call == "browser_close" {
+            let panel = call.args["panel"].as_bool().unwrap_or(false);
+            let _ = reply.send(self.agent_close(agent_pane, project, panel, &who));
+            return;
+        }
         let a = &call.args;
         let s = |k: &str| a[k].as_str().unwrap_or("").trim().to_string();
         // What the agent says the element is (shown to the user), else its ref.
@@ -365,6 +370,43 @@ impl App {
             panel.open |= open;
         }
         Some(id)
+    }
+
+    /// `browser_close`: the agent's page closes (its tab; a job still on it is told the page
+    /// was closed), and with `panel` the project's Browser panel hides (the pages left in it
+    /// keep running). The answer says what the panel shows now.
+    fn agent_close(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, panel: bool, who: &str) -> Value {
+        let page = self.browsers.values().find(|b| b.owner == Some(agent_pane) && b.project == project);
+        if page.and_then(|b| b.driver.as_ref()).is_some_and(|d| d.paused) {
+            return json!({ "error": format!("The user has the browser now (they took it over from {who} in TernaryCode). Wait until they hand it back, or ask them.") });
+        }
+        let mut text = match page.map(|b| b.id) {
+            Some(id) => {
+                self.close_page(id);
+                "Closed your page in TernaryCode's browser.".to_string()
+            }
+            None => "You had no page open in TernaryCode's browser.".to_string(),
+        };
+        let left = self.panel_of(project).map(|p| p.pages.len()).unwrap_or(0);
+        let open = self.panel_of(project).is_some_and(|p| p.open);
+        if panel && open {
+            self.hide_panel(project);
+            text.push_str(" The Browser panel is hidden.");
+            if left > 0 {
+                text.push_str(&format!(" Its other pages ({left}) keep running out of view; the Browser button shows them again."));
+            }
+        } else if left == 0 {
+            text.push_str(" No page is open, so the Browser panel is closed.");
+        } else if !open {
+            text.push_str(&format!(" The Browser panel is hidden; its other pages ({left}) keep running out of view."));
+        } else {
+            let front = self.panel_of(project).and_then(|p| p.front).and_then(|id| self.browsers.get(&id));
+            let showing = front.map(|b| if b.title.is_empty() { b.url.clone() } else { b.title.clone() }).filter(|s| !s.is_empty());
+            let showing = showing.map(|s| format!(": it shows “{s}” now")).unwrap_or_default();
+            text.push_str(&format!(" Other pages stay in the Browser panel ({left}: the user's or other agents'){showing}; browser_close with panel true hides the panel."));
+        }
+        self.mark_dirty();
+        json!({ "text": text })
     }
 
     /// The sites an agent of `project` may open without asking: every project's and its own.

@@ -29,8 +29,9 @@ tools, not `open <url>` in a shell and not other browser tools (Chrome, Zen, Saf
 unless the user names that other browser. Start with browser_navigate: this machine's addresses \
 open at once; another site waits the first time for the user's OK, asked in TernaryCode. Then \
 act on the refs of the snapshot each tool returns. A pop-up a page opens (a sign-in such as \
-Continue with Google) shows in a window of its own; the tools act in it until it closes. Never \
-type the user's passwords or one-time codes: ask the user to type them there.";
+Continue with Google) shows in a window of its own; the tools act in it until it closes. When the \
+user asks to close the browser or its tab, browser_close closes your page. Never type the user's \
+passwords or one-time codes: ask the user to type them there.";
 
 /// The tools, as `tools/list` gives them.
 pub fn tools() -> Value {
@@ -130,6 +131,11 @@ pub fn tools() -> Value {
             "name": "browser_evaluate",
             "description": "Run a JavaScript function in the page and return its result as JSON, e.g. \"() => document.title\" (it may be async). Off unless the user allows it in TernaryCode's settings.",
             "inputSchema": {"type": "object", "properties": {"function": {"type": "string"}}, "required": ["function"]},
+        },
+        {
+            "name": "browser_close",
+            "description": "Close your page in TernaryCode's browser (your tab in its Browser panel): when the user asks to close the browser, the tab or the page. With no other page left, the panel closes too. panel true also hides the Browser panel when other pages (the user's) stay in it; they keep running, and the Browser button shows the panel again.",
+            "inputSchema": {"type": "object", "properties": {"panel": {"type": "boolean", "description": "Also hide the Browser panel (when the user asks to close the browser itself)."}}},
         },
     ])
 }
@@ -316,7 +322,9 @@ mod tests {
         let list = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"});
         assert_eq!(answer(&list, &None, &none).unwrap()["result"]["tools"], json!([]));
         let n = answer(&list, &pane(), &none).unwrap()["result"]["tools"].as_array().map(Vec::len).unwrap_or(0);
-        assert_eq!(n, 18);
+        assert_eq!(n, 19);
+        // Closing its page (the tab) is one of them: “close the browser” has a tool.
+        assert!(told.contains("browser_close"), "{told}");
     }
 
     #[test]

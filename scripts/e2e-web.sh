@@ -150,6 +150,16 @@ call pelse browser_click '{"ref":"e2","element":"Sign in elsewhere button"}'
 preset web-agent-popup pop 'm pnav; m pclick; sleep 3; m pcont; m pclick2; sleep 2; m pnav2; m pelse'
 run web-agent-popup 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action run pop;; wait-screen ok-pnav;; expect-file $MCP/pnav.out Page: Agent Popup Opener;; wait-screen ok-pclick;; expect-file $MCP/pclick.out A pop-up window opened;; expect-file $MCP/pclick.out Page: Agent Sign In (a pop-up window);; wait-screen ok-pcont;; expect-file $MCP/pcont.out The pop-up window closed;; expect-file $MCP/pcont.out Page: Signed in: agent-ok;; wait-screen ok-pclick2;; wait-screen ok-pnav2;; expect-file $MCP/pnav2.out The pop-up window closed;; expect-file $MCP/pnav2.out Page: Agent Popup Opener;; wait-shown browser-ask:3;; click browser-block:3;; wait-screen ok-pelse;; expect-file $MCP/pelse.out Blocked by the user: tc-popup.invalid;; quit"
 
+# Asked to close the browser, an agent closes its page: the user's page stays, in front; with
+# panel the panel hides too (the user's page kept); with no page of its own it says so.
+call cnav browser_navigate "{\"url\":\"localhost:$WEBPORT/agent.html\"}"
+call ccls browser_close '{}'
+call cnav2 browser_navigate "{\"url\":\"localhost:$WEBPORT/second.html\"}"
+call cpanel browser_close '{"panel":true}'
+call cnone browser_close '{}'
+preset web-agent-close cls 'm cnav; sleep 3; m ccls; sleep 3; m cnav2; sleep 3; m cpanel; sleep 3; m cnone'
+run web-agent-close 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/;; wait-browser TC Test Page;; wait-pages 3*;; action run cls;; wait-screen ok-cnav;; expect-file $MCP/cnav.out Page: Agent Page;; wait-screen ok-ccls;; wait-pages 3*;; wait-panel shown;; expect-file $MCP/ccls.out Closed your page;; expect-file $MCP/ccls.out it shows “TC Test Page” now;; wait-screen ok-cnav2;; expect-file $MCP/cnav2.out Page: Second;; wait-screen ok-cpanel;; wait-panel hidden;; wait-pages 3*;; expect-file $MCP/cpanel.out The Browser panel is hidden.;; wait-screen ok-cnone;; expect-file $MCP/cnone.out You had no page open;; quit"
+
 # The app's keys pressed while a page has the keyboard (Windows, Linux: the page's window gets
 # them): Ctrl+F opens the page's find bar, Ctrl+L its address field; other keys stay the page's.
 if [ "$(uname)" = Linux ] && command -v xdotool >/dev/null; then
