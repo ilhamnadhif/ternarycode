@@ -179,6 +179,14 @@ Start-Sleep 1
 '@
 Run "web-keys" 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/keys.html;; wait-browser Keys Page;; wait-pages 3*;; sleep 800;; web-click document.getElementById('k');; page-focus;; sleep 500;; spawn & '$keys';; wait-browser Keys: abc;; wait-shown browser-find:3;; quit"
 
+# Codex from Run Agent: the settings it gets for the run (hooks, notify, browser tools, guide)
+# reach it whole through PowerShell, which in 5.1 drops each `"` inside an argument: Codex lists
+# the browser tools' server, and Run Agent starts it. Only where Codex is installed.
+if (Get-Command codex -ErrorAction SilentlyContinue) {
+    $flags = '-c "$env:TC_CODEX_HOOKS" -c "$env:TC_CODEX_NOTIFY" -c "$env:TC_CODEX_MCP" -c "$env:TC_CODEX_GUIDE"'
+    Run "agent-codex" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; wait-screen PS C:;; keys codex $flags mcp list\r;; wait-screen mcp codex;; expect-screen-count invalid type 0;; keys cls\r;; sleep 1500;; action run-agent codex;; wait-screen OpenAI;; expect-screen-count invalid type 0;; expect-screen-count failed to load 0;; quit"
+} else { "skip  agent-codex (Codex is not installed)" }
+
 Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
 "== $($script:Pass) checks passed, $($script:Fail) failed (logs in $Work)"
 if ($script:Fail -ne 0) { exit 1 }

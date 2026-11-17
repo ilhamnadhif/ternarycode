@@ -108,6 +108,29 @@ pub fn command_quote(path: &str) -> String {
     }
 }
 
+/// A program's path as the first word of a command `cmd.exe` runs, without quotes: as it is when
+/// `cmd.exe` reads it as one word, else (on Windows) its short 8.3 form. None when neither does.
+fn cmd_word(path: &Path) -> Option<String> {
+    let plain = |s: &str| !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c.is_control() || "\"&|<>^%!(),;=".contains(c));
+    let s = path.to_string_lossy();
+    if plain(&s) {
+        return Some(s.into_owned());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let mut buf = vec![0u16; 1024];
+        // SAFETY: `wide` ends with a NUL; `buf` is as long as said.
+        let n = unsafe { windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        if n > 0 && n < buf.len() {
+            let short = String::from_utf16(&buf[..n]).ok()?;
+            return plain(&short).then_some(short);
+        }
+    }
+    None
+}
+
 /// An environment variable in a command typed into a pane's shell, in double quotes: `$NAME`
 /// for POSIX shells and fish, `$env:NAME` for PowerShell (the shell on Windows).
 pub fn env_ref(name: &str) -> String {
@@ -187,11 +210,19 @@ impl Hooks {
     /// `mcp_servers.ternarycode={…}` for `codex -c`: the browser tools for one run (`tools`
     /// off: there, but disabled).
     pub fn codex_mcp_override(&self, tools: bool) -> String {
-        let env: Vec<String> = MCP_ENV.iter().map(|v| Self::toml_str(v)).collect();
+        self.codex_mcp_for(tools, cfg!(windows))
+    }
+
+    fn codex_mcp_for(&self, tools: bool, win: bool) -> String {
+        let s = |v: &str| Self::toml_arg(v, win);
+        let env: Vec<String> = MCP_ENV.iter().map(|v| s(v)).collect();
         format!(
-            "mcp_servers.ternarycode={{command={},args=[\"mcp\",\"codex\"],env_vars=[{}],tool_timeout_sec={MCP_TOOL_SECS},default_tools_approval_mode=\"approve\"{}}}",
-            Self::toml_str(&self.bin.to_string_lossy()),
+            "mcp_servers.ternarycode={{command={},args=[{},{}],env_vars=[{}],tool_timeout_sec={MCP_TOOL_SECS},default_tools_approval_mode={}{}}}",
+            s(&self.bin.to_string_lossy()),
+            s("mcp"),
+            s("codex"),
             env.join(","),
+            s("approve"),
             if tools { "" } else { ",enabled=false" }
         )
     }
@@ -210,15 +241,21 @@ impl Hooks {
     /// `developer_instructions="…"` for `codex -c`: the user's own (`own`, from `config.toml`),
     /// then which browser is theirs in a TernaryCode pane. `tools` off: the browser tools'
     /// disabled entry again, a flag that changes nothing.
+    /// On Windows, when the user's own text cannot go through PowerShell whole (it has a `"`),
+    /// the guide is not passed and theirs stays as their config sets it.
     pub fn codex_guide_override(&self, tools: bool, own: Option<&str>) -> String {
-        if !tools {
-            return self.codex_mcp_override(false);
-        }
+        self.codex_guide_for(tools, own, cfg!(windows))
+    }
+
+    fn codex_guide_for(&self, tools: bool, own: Option<&str>, win: bool) -> String {
         let text = match own {
             Some(own) => format!("{own}\n\n{CODEX_GUIDE}"),
             None => CODEX_GUIDE.to_string(),
         };
-        format!("developer_instructions={}", Self::toml_str(&text))
+        if !tools || (win && Self::toml_literal(&text).is_none()) {
+            return self.codex_mcp_for(tools, win);
+        }
+        format!("developer_instructions={}", Self::toml_arg(&text, win))
     }
 
     /// `OPENCODE_CONFIG_CONTENT` for the panes: the browser tools' server (unless the user has
@@ -265,14 +302,47 @@ impl Hooks {
         out
     }
 
+    /// A TOML literal string (`'…'`, `'''…'''` when it has a `'`) with no `"` in it, when `s`
+    /// can be one.
+    fn toml_literal(s: &str) -> Option<String> {
+        let bad = |c: char| c == '"' || (c.is_control() && c != '\t' && c != '\n' && c != '\r');
+        if s.chars().any(bad) || s.replace("\r\n", "\n").contains('\r') {
+            return None;
+        }
+        if !s.contains(['\'', '\n']) {
+            return Some(format!("'{s}'"));
+        }
+        // A line break right after `'''` would be dropped.
+        (!s.contains("'''") && !s.starts_with(['\n', '\r'])).then(|| format!("'''{s}'''"))
+    }
+
+    /// A string in a `codex -c` value, typed into a pane's shell. On Windows (`win`) that is
+    /// PowerShell, and Windows PowerShell (5.1) drops each `"` inside an argument it hands to a
+    /// program, so there the string is a literal one when it can be (no `"`).
+    fn toml_arg(s: &str, win: bool) -> String {
+        win.then(|| Self::toml_literal(s)).flatten().unwrap_or_else(|| Self::toml_str(s))
+    }
+
     /// `hooks={SessionStart=[{hooks=[{type="command",command="…"}]}],…}` for `codex -c`.
     pub fn codex_hooks_override(&self) -> String {
+        self.codex_hooks_for(cfg!(windows))
+    }
+
+    fn codex_hooks_for(&self, win: bool) -> String {
+        // Codex runs a hook's command with `cmd.exe /C` on Windows: the program's path goes
+        // without quotes there (a `"` would not get through PowerShell).
+        let bare = win.then(|| cmd_word(&self.bin)).flatten();
         let events: Vec<String> = CODEX_EVENTS
             .iter()
             .map(|e| {
+                let command = match &bare {
+                    Some(bin) => format!("{bin} {} {e}", AgentKind::Codex.slug()),
+                    None => self.command(AgentKind::Codex, e),
+                };
                 format!(
-                    "{e}=[{{hooks=[{{type=\"command\",command={}}}]}}]",
-                    Self::toml_str(&self.command(AgentKind::Codex, e))
+                    "{e}=[{{hooks=[{{type={},command={}}}]}}]",
+                    Self::toml_arg("command", win),
+                    Self::toml_arg(&command, win)
                 )
             })
             .collect();
@@ -281,10 +351,12 @@ impl Hooks {
 
     /// `notify=["…/ternarycode-hook","codex","notify"]` for `codex -c`.
     pub fn codex_notify_override(&self) -> String {
-        format!(
-            "notify=[{},\"codex\",\"notify\"]",
-            Self::toml_str(&self.bin.to_string_lossy())
-        )
+        self.codex_notify_for(cfg!(windows))
+    }
+
+    fn codex_notify_for(&self, win: bool) -> String {
+        let s = |v: &str| Self::toml_arg(v, win);
+        format!("notify=[{},{},{}]", s(&self.bin.to_string_lossy()), s("codex"), s("notify"))
     }
 
     /// Writes the `--settings` and `--mcp-config` files and returns the variables every pane
@@ -592,7 +664,7 @@ pub fn plan_codex(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
     if !has_notify {
         head = format!(
             "{MARK_BEGIN}\n{}\n{MARK_END}\n",
-            hooks.codex_notify_override().replacen('=', " = ", 1)
+            hooks.codex_notify_for(false).replacen('=', " = ", 1)
         );
     }
     let mut tail = format!("\n{MARK_BEGIN}\n");
@@ -1108,30 +1180,81 @@ mod tests {
 
     #[test]
     fn codex_overrides_are_valid_toml_shapes() {
-        let on = hooks().codex_mcp_override(true);
+        // As typed into a POSIX shell (Windows': `codex_values_get_through_windows_powershell`).
+        let on = hooks().codex_mcp_for(true, false);
         assert!(on.starts_with("mcp_servers.ternarycode={command="));
         // Approved for the run: Codex asks before each call of a server that is not (and fails
         // it where it may not ask).
         assert!(on.ends_with(",args=[\"mcp\",\"codex\"],env_vars=[\"TERNARYCODE_SOCK\",\"TERNARYCODE_PANE\",\"TERNARYCODE_TOKEN\"],tool_timeout_sec=900,default_tools_approval_mode=\"approve\"}"));
-        assert!(hooks().codex_mcp_override(false).ends_with(",default_tools_approval_mode=\"approve\",enabled=false}"));
+        assert!(hooks().codex_mcp_for(false, false).ends_with(",default_tools_approval_mode=\"approve\",enabled=false}"));
         // Each parses as TOML (`codex -c` takes a value that does not as a plain string).
         let parses = |kv: &str| {
             let (k, v) = kv.split_once('=').unwrap();
             toml::from_str::<toml::Table>(&format!("{} = {v}", k.replace('.', "_"))).is_ok()
         };
         assert!(parses(&on));
-        assert!(parses(&hooks().codex_hooks_override()));
-        assert!(parses(&hooks().codex_notify_override()));
-        let h = hooks().codex_hooks_override();
+        assert!(parses(&hooks().codex_hooks_for(false)));
+        assert!(parses(&hooks().codex_notify_for(false)));
+        let h = hooks().codex_hooks_for(false);
         #[cfg(unix)]
         assert!(h.starts_with("hooks={SessionStart=[{hooks=[{type=\"command\",command=\"'/Applications/Ternary Code.app/"));
         #[cfg(windows)]
         assert!(h.starts_with("hooks={SessionStart=[{hooks=[{type=\"command\",command=\"\\\"/Applications/Ternary Code.app/"));
         assert!(h.contains("PermissionRequest=[{hooks="));
         assert_eq!(
-            hooks().codex_notify_override(),
+            hooks().codex_notify_for(false),
             "notify=[\"/Applications/Ternary Code.app/Contents/MacOS/ternarycode-hook\",\"codex\",\"notify\"]"
         );
+    }
+
+    /// Each `codex -c` value as Windows PowerShell hands it over: no `"` (5.1 drops them), and
+    /// what Codex reads from it (`_x_ = <value>`, as its `-c` does) is what was meant.
+    #[test]
+    fn codex_values_get_through_windows_powershell() {
+        let bin = r"C:\Users\ilham\AppData\Local\Programs\TernaryCode\ternarycode-hook.exe";
+        let h = Hooks { bin: PathBuf::from(bin) };
+        let read = |kv: &str, key: &str| -> toml::Value {
+            assert!(!kv.contains('"'), "{kv}");
+            let (k, v) = kv.split_once('=').unwrap();
+            assert_eq!(k, key);
+            toml::from_str::<toml::Table>(&format!("_x_ = {v}")).unwrap_or_else(|e| panic!("{kv}: {e}"))["_x_"].clone()
+        };
+        let mcp = read(&h.codex_mcp_for(true, true), "mcp_servers.ternarycode");
+        assert_eq!(mcp["command"].as_str(), Some(bin));
+        assert_eq!(mcp["args"], toml::Value::from(vec!["mcp", "codex"]));
+        assert_eq!(mcp["env_vars"], toml::Value::from(MCP_ENV.to_vec()));
+        assert_eq!(mcp["tool_timeout_sec"].as_integer(), Some(MCP_TOOL_SECS as i64));
+        assert_eq!(mcp["default_tools_approval_mode"].as_str(), Some("approve"));
+        assert!(mcp.get("enabled").is_none());
+        assert_eq!(read(&h.codex_mcp_for(false, true), "mcp_servers.ternarycode")["enabled"].as_bool(), Some(false));
+        // Hooks: run by `cmd.exe /C`, the path bare.
+        let hooks = read(&h.codex_hooks_for(true), "hooks");
+        for e in CODEX_EVENTS {
+            let one = &hooks[*e][0]["hooks"][0];
+            assert_eq!(one["type"].as_str(), Some("command"));
+            assert_eq!(one["command"].as_str().unwrap(), format!("{bin} codex {e}"));
+        }
+        assert_eq!(read(&h.codex_notify_for(true), "notify"), toml::Value::from(vec![bin, "codex", "notify"]));
+        // The guide (it has a `'`), and after the user's own, lines and all.
+        assert_eq!(read(&h.codex_guide_for(true, None, true), "developer_instructions").as_str(), Some(CODEX_GUIDE));
+        let own = "Answer in Indonesian.\nIt's C:\\x, kept.\r\n\tIndented.";
+        let both = read(&h.codex_guide_for(true, Some(own), true), "developer_instructions");
+        assert_eq!(both.as_str().unwrap(), format!("{own}\n\n{CODEX_GUIDE}"));
+        // Theirs with a `"`: not passed (their config keeps it), a flag that changes nothing.
+        assert_eq!(h.codex_guide_for(true, Some("Say \"hi\"."), true), h.codex_mcp_for(true, true));
+        // A path with a space and no short form: quoted, as before.
+        let spaced = Hooks { bin: PathBuf::from(r"C:\No Such Dir\ternarycode-hook.exe") }.codex_hooks_for(true);
+        let v = toml::from_str::<toml::Table>(&format!("_x_ = {}", spaced.split_once('=').unwrap().1)).unwrap();
+        let command = v["_x_"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap().to_string();
+        assert_eq!(command, Hooks { bin: PathBuf::from(r"C:\No Such Dir\ternarycode-hook.exe") }.command(AgentKind::Codex, "Stop"));
+        // Literal strings: whatever has no `"`.
+        for s in ["plain", "it's", "x'", "'x", "a''", "tab\there", "two\nlines", "crlf\r\nok"] {
+            let lit = Hooks::toml_literal(s).unwrap();
+            assert_eq!(toml::from_str::<toml::Table>(&format!("x = {lit}")).unwrap()["x"].as_str(), Some(s), "{lit}");
+        }
+        for s in ["a\"b", "x'''y", "\nlead", "bell\u{7}", "lone\rcr"] {
+            assert_eq!(Hooks::toml_literal(s), None, "{s:?}");
+        }
     }
 
     #[test]
@@ -1141,12 +1264,12 @@ mod tests {
             assert_eq!(k, "developer_instructions");
             toml::from_str::<toml::Table>(&format!("x = {v}")).unwrap()["x"].as_str().unwrap().to_string()
         };
-        let guide = read(&hooks().codex_guide_override(true, None));
+        let guide = read(&hooks().codex_guide_for(true, None, false));
         assert!(guide.starts_with("You run in a terminal pane of TernaryCode"));
         assert!(guide.contains("unless the user names that other browser"));
         // The user's own, with quotes, a backslash and lines, come first, whole.
         let own = "Answer in \"Indonesian\".\nPaths like C:\\x stay as written.\n\tIndented.";
-        let both = read(&hooks().codex_guide_override(true, Some(own)));
+        let both = read(&hooks().codex_guide_for(true, Some(own), false));
         assert_eq!(both, format!("{own}\n\n{CODEX_GUIDE}"));
         // Browser tools off: a flag that changes nothing.
         assert_eq!(hooks().codex_guide_override(false, Some(own)), hooks().codex_mcp_override(false));
