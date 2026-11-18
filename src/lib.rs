@@ -48,6 +48,7 @@ pub mod pane;
 pub mod paths;
 pub mod platform;
 pub mod project;
+pub mod ship;
 pub mod ui;
 pub mod update;
 pub mod watch;

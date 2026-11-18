@@ -745,7 +745,8 @@ impl App {
                     return;
                 };
                 let payload = match kind {
-                    Some(k) => serde_json::json!({"notification_type": k, "message": message}).to_string(),
+                    // The message also as a prompt (UserPromptSubmit) and as last words (Stop).
+                    Some(k) => serde_json::json!({"notification_type": k, "message": message, "prompt": message, "last_assistant_message": message}).to_string(),
                     None => r#"{"message":"devtest"}"#.to_string(),
                 };
                 let _ = std::process::Command::new(&self.hook_bin.bin)

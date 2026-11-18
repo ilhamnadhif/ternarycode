@@ -179,6 +179,7 @@ impl AppMenu {
         let next_attention = item(t("Go to Next Waiting Agent"), Action::NextAttention);
         let back = item(t("Back to Where I Was"), Action::BackAttention);
         let review = item(t("Review Changes…"), Action::Review);
+        let commit = item(t("Commit…"), Action::Commit);
         let attention = item(t("Show Attention List"), Action::ToggleAttention);
         let agent_menu = Submenu::with_items(
             t("Agent"),
@@ -186,6 +187,7 @@ impl AppMenu {
             &[
                 &run_agent,
                 &review,
+                &commit,
                 &PredefinedMenuItem::separator(),
                 &next_attention,
                 &back,

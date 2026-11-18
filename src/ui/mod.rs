@@ -19,6 +19,7 @@ pub mod browser_ui;
 pub mod browser_panel;
 pub mod review;
 pub mod settings;
+pub mod ship_ui;
 pub mod sidebar;
 pub mod status;
 pub mod statusbar;

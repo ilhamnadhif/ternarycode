@@ -457,6 +457,13 @@ W="$WORK/wtrepo"; mkdir -p "$W"
 WT="$WORK/wtrepo.worktrees/feat"
 run worktree 90 "sleep 1000;; action add-project $W;; sleep 1500;; action worktree none feat main;; wait-project feat;; sleep 800;; expect-project feat;; expect-shown project:feat;; expect-file $WT/.env KEY=1;; expect-file $WT/a.txt one;; keys echo two >> a.txt && git commit -qam work && echo new > b.txt\\r;; sleep 1500;; action review;; sleep 1500;; wait-review Added:b.txt,Modified:a.txt;; shot e2e-worktree-review;; key esc;; sleep 400;; write-file $WT/b.txt new\\n;; rm-file $WT/b.txt;; sleep 800;; action merge-worktree;; sleep 500;; expect-dialog open;; click dialog-ok;; sleep 400;; expect-project wtrepo;; wait-screen Merge made;; wait-toast Merged tc/feat;; expect-file $W/a.txt two;; action select-name feat;; sleep 600;; action remove-worktree;; sleep 500;; expect-dialog open;; shot e2e-worktree-remove;; click dialog-ok;; sleep 2500;; expect-hidden project:feat;; expect-not-file $WT/a.txt one;; quit"
 
+# The commit box: the message comes from the agent's task and last words; a file left out of
+# the commit stays out; Commit & Push sends the rest to the remote (a local bare repository:
+# no pages, so no pull request).
+SH="$WORK/ship"; mkdir -p "$SH"
+(cd "$SH" && git init -q -b main && git config user.name t && git config user.email t@t && printf 'one\n' > a.txt && printf 'keep\n' > b.txt && git add -A && git commit -qm init && git init -q --bare -b main "$WORK/ship-remote.git" && git remote add origin "$WORK/ship-remote.git" && git push -q -u origin main && printf 'two\n' > a.txt && printf 'not this\n' > b.txt)
+run ship 60 "sleep 1000;; action add-project $SH;; sleep 1500;; hook 2 claude UserPromptSubmit - ship it from the e2e, then stop;; sleep 300;; hook 2 claude Stop - Changed a.txt only.;; sleep 300;; action review;; wait-review Modified:a.txt,Modified:b.txt;; wait-shown ship-go;; click review-in:b.txt;; sleep 400;; shot e2e-ship;; click ship-go;; wait-shown ship-act-done;; focus-pane 0;; keys git -C $WORK/ship-remote.git log -1 --format=MSG:%s/%b main; git diff --quiet -- b.txt || echo B-LEFT-OUT\\r;; wait-screen MSG:Ship it from the e2e/Changed a.txt only.;; wait-screen B-LEFT-OUT;; quit"
+
 # A Grid tile of a project with two tabs (alpha: the agent's tab 0, a shell in tab 1, the one
 # last open; the keyboard is in beta's tile): it shows the tab last open while nothing happens;
 # the agent asking brings its tab; a tab picked from the strip holds until something new waits;

@@ -43,6 +43,8 @@ pub struct Project {
     pub merge_offered: bool,
     /// Its Browser panel: its pages (one per agent, and the user's), at the right of Focus.
     pub panel: Panel,
+    /// What its commit button does (saved when not the default).
+    pub ship: tc_core::model::ShipPrefs,
 }
 
 /// A project's Browser panel: at the right of the terminals in Focus, like the Code drawer
@@ -372,6 +374,7 @@ impl Project {
             sites: saved.browser_sites.clone(),
             missing: false,
             merge_offered: false,
+            ship: saved.ship.unwrap_or_default(),
             panel: saved.browser_panel.as_ref().map_or_else(Panel::default, |b| Panel {
                 open: b.open,
                 width: b.width,
@@ -447,6 +450,7 @@ impl Project {
             folded: self.folded,
             new_worktree: self.new_worktree,
             browser_sites: self.sites.clone(),
+            ship: (self.ship != tc_core::model::ShipPrefs::default()).then_some(self.ship),
             browser_panel: (!self.panel.pages.is_empty() || self.panel.width > 0.0).then_some(tc_core::model::PanelSave {
                 open: self.panel.open && !self.panel.pages.is_empty(),
                 width: self.panel.width,

@@ -26,6 +26,9 @@ pub struct HookMsg {
     pub session: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The first line of the task the user gave the agent (for a commit message), shortened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
 }
 
 /// A tool call from `ternarycode-hook mcp` (an agent using the browser of its project), sent
@@ -120,6 +123,30 @@ fn text(v: &Value) -> Option<String> {
     v.as_str().map(str::to_string).filter(|s| !s.trim().is_empty())
 }
 
+/// How long the task's line kept from a prompt may be.
+pub const MAX_PROMPT: usize = 160;
+
+/// The task the user gave the agent, for a commit message: the first line of their prompt
+/// (`UserPromptSubmit`; Codex's `notify` names the turn's input), shortened. It goes only to
+/// the app on this machine and is never saved. A slash command (`/clear`) is not a task.
+pub fn prompt(agent: AgentKind, event: &str, payload: &Value) -> Option<String> {
+    let raw = match event {
+        "UserPromptSubmit" => text(&payload["prompt"]),
+        "notify" if agent == AgentKind::Codex => payload["input-messages"].as_array().and_then(|a| a.first()).and_then(text),
+        _ => None,
+    }?;
+    let line = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
+    if line.starts_with('/') {
+        return None;
+    }
+    if line.chars().count() <= MAX_PROMPT {
+        return Some(line.to_string());
+    }
+    let mut out: String = line.chars().take(MAX_PROMPT - 1).collect();
+    out.push('…');
+    Some(out)
+}
+
 fn shorten(s: String) -> String {
     let one_line = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if one_line.chars().count() <= MAX_MESSAGE {
@@ -130,8 +157,8 @@ fn shorten(s: String) -> String {
     out
 }
 
-/// The parts of a hook payload worth keeping: (kind, message, session, cwd). Only these leave
-/// the hook process; prompts and transcripts never do.
+/// The parts of a hook payload worth keeping: (kind, message, session, cwd). Only these and
+/// [`prompt`]'s one line leave the hook process; transcripts and whole prompts never do.
 pub fn extract(
     agent: AgentKind,
     event: &str,
@@ -200,6 +227,20 @@ pub fn extract(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_task_is_the_prompts_first_line() {
+        let p = |agent, event, payload: Value| prompt(agent, event, &payload);
+        assert_eq!(
+            p(AgentKind::Claude, "UserPromptSubmit", json!({"prompt": "\n  Add a cart badge to the header\nthen check it"})).as_deref(),
+            Some("Add a cart badge to the header")
+        );
+        assert_eq!(p(AgentKind::Claude, "UserPromptSubmit", json!({"prompt": "/clear"})), None);
+        assert_eq!(p(AgentKind::Claude, "Stop", json!({"prompt": "x"})), None);
+        assert_eq!(p(AgentKind::Codex, "notify", json!({"input-messages": ["Fix the rounding", "and more"]})).as_deref(), Some("Fix the rounding"));
+        let long = p(AgentKind::Codex, "UserPromptSubmit", json!({"prompt": "x".repeat(400)})).unwrap();
+        assert_eq!(long.chars().count(), MAX_PROMPT);
+    }
 
     #[test]
     fn claude_events() {

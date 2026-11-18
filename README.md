@@ -44,7 +44,8 @@ take around 70 MB.
 - **A browser your agents can use.** An agent opens your dev server beside its terminal, clicks
   through it and reads the console; you watch, and take over at any time.
 - **Code beside the agent**: files it changed, lines it touched, your language servers.
-- **Review** what an agent changed, and give each agent **a git worktree** of its own.
+- **Review** what an agent changed, then **commit, push and open the pull request** with one
+  button; give each agent **a git worktree** of its own.
 - **Documents in place**: PDF, Word, PowerPoint, Excel, CSV and images.
 
 ## Install
@@ -144,6 +145,11 @@ Each project has a **Browser panel** beside its terminals (`⇧⌘B`), on the sy
 - **Review** (`⇧⌘R`) shows what changed since the agent started or since the last commit, with the
   words that changed highlighted, unified or side by side. A worktree's review lists its commits
   and ends with **Merge** and **Remove**.
+- **Commit, push and pull request in one button** (`⇧⌘C`), under Review's file list. It commits the
+  files you checked with a message made from the task you gave the agent and its last words (✦
+  asks Claude Code or Codex to write it from the diff), pushes the branch and opens the pull
+  request with the GitHub CLI, or its form in the Browser panel. On `main` it pushes to `main`. Each
+  step shows as it runs; when git needs a password or the push is rejected, a terminal takes over.
 - **Documents** open in place: PDF, Word, PowerPoint, Excel and CSV (as a table), and images, read
   in Rust off the UI thread.
 
@@ -171,6 +177,7 @@ terminal. The command palette (`⌘K`) lists everything.
 | `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | split right · down |
 | `⌘E` · `⌘O` · `⌘S` | `Ctrl+Shift+Y` · `Ctrl+Shift+O` · `Ctrl+Shift+S` | Code drawer · open file · save |
 | `⇧⌘R` | `Ctrl+Shift+R` | review changes |
+| `⇧⌘C` | `Ctrl+Shift+Alt+C` | commit, push & pull request |
 | `⇧⌘B` | `Ctrl+Shift+Alt+B` | Browser panel |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | find · in all panes |
 | `⌘B` · `⌥⌘B` | `Ctrl+Shift+B` · `Ctrl+Alt+B` | sidebar · narrow sidebar |
@@ -190,7 +197,8 @@ terminal. The command palette (`⌘K`) lists everything.
 ## Privacy
 
 No account, no telemetry. TernaryCode connects only to GitHub, to check for updates (you can turn
-it off). Hooks and browser tools talk to the app over a local socket with a token per pane.
+it off); pull requests go through your own GitHub CLI. Hooks and browser tools talk to the app
+over a local socket with a token per pane.
 Settings live in `~/Library/Application Support/ternarycode` (macOS), `%APPDATA%\ternarycode`
 (Windows) or `~/.local/share/ternarycode` (Linux).
 

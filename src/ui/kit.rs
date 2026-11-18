@@ -44,6 +44,7 @@ pub fn key_labels(action: &crate::actions::Action) -> Option<(&'static str, &'st
         A::BrowserReload => ("⌘R", ""),
         A::ClosePane => ("⌘W", "Ctrl+Shift+W"),
         A::Review => ("⇧⌘R", "Ctrl+Shift+R"),
+        A::Commit => ("⇧⌘C", "Ctrl+Shift+Alt+C"),
         A::Palette => ("⌘K", "Ctrl+Shift+K"),
         A::SwitchProject => ("⌘P", "Ctrl+Shift+P"),
         A::NextAttention => ("⌘J", "Ctrl+Shift+J"),

@@ -4,7 +4,7 @@
 //!
 //! Outside TernaryCode (no `TERNARYCODE_*` variables) it does nothing. The payload comes from
 //! stdin (Claude Code, Codex hooks, Gemini CLI) or as the last argument (Codex `notify`, the
-//! OpenCode plugin); only the fields in `protocol::extract` are sent on.
+//! OpenCode plugin); only the fields in `protocol::extract` (and `protocol::prompt`'s one line) are sent on.
 
 use std::io::{IsTerminal, Read, Write};
 use std::time::Duration;
@@ -61,6 +61,7 @@ pub fn message(
         event = e.to_string();
     }
     let (kind, message, session, cwd) = extract(agent, &event, &payload);
+    let prompt = crate::protocol::prompt(agent, &event, &payload);
     Some((
         sock,
         HookMsg {
@@ -72,6 +73,7 @@ pub fn message(
             message,
             session,
             cwd,
+            prompt,
         },
     ))
 }

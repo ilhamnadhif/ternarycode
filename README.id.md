@@ -44,7 +44,8 @@ sepuluh pane memakai sekitar 70 MB.
 - **Browser yang bisa dipakai agent.** Agent membuka dev server Anda di samping terminalnya,
   mengklik halamannya, dan membaca console-nya; Anda melihatnya dan bisa mengambil alih kapan saja.
 - **Kode di samping agent**: file yang diubahnya, baris yang disentuhnya, language server Anda.
-- **Review** apa yang diubah agent, dan beri setiap agent **git worktree** sendiri.
+- **Review** apa yang diubah agent, lalu **commit, push, dan buka pull request** dengan satu
+  tombol; beri setiap agent **git worktree** sendiri.
 - **Dokumen langsung terbuka**: PDF, Word, PowerPoint, Excel, CSV, dan gambar.
 
 ## Instalasi
@@ -147,6 +148,12 @@ Setiap project punya **panel Browser** di samping terminalnya (`⇧⌘B`), memak
 - **Review** (`⇧⌘R`) menampilkan apa yang berubah sejak agent mulai atau sejak commit terakhir,
   dengan kata yang berubah disorot, unified atau berdampingan. Review worktree menampilkan
   commit-nya, diakhiri **Merge** dan **Remove**.
+- **Commit, push, dan pull request dalam satu tombol** (`⇧⌘C`), di bawah daftar file Review. File
+  yang dicentang di-commit dengan pesan dari tugas yang kamu berikan ke agent dan kata-kata
+  terakhirnya (✦ meminta Claude Code atau Codex menulisnya dari diff), branch-nya di-push, lalu
+  pull request dibuat lewat GitHub CLI, atau form-nya dibuka di panel Browser. Di `main`, push
+  langsung ke `main`. Setiap langkah terlihat saat berjalan; kalau git butuh password atau push
+  ditolak, terminal yang mengambil alih.
 - **Dokumen** langsung terbuka: PDF, Word, PowerPoint, Excel, dan CSV (sebagai tabel), serta gambar,
   dibaca dengan Rust di luar thread UI.
 
@@ -174,6 +181,7 @@ terminal. Command palette (`⌘K`) menampilkan semuanya.
 | `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | bagi ke kanan · ke bawah |
 | `⌘E` · `⌘O` · `⌘S` | `Ctrl+Shift+Y` · `Ctrl+Shift+O` · `Ctrl+Shift+S` | laci Code · buka file · simpan |
 | `⇧⌘R` | `Ctrl+Shift+R` | review perubahan |
+| `⇧⌘C` | `Ctrl+Shift+Alt+C` | commit, push & pull request |
 | `⇧⌘B` | `Ctrl+Shift+Alt+B` | panel Browser |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | cari · di semua pane |
 | `⌘B` · `⌥⌘B` | `Ctrl+Shift+B` · `Ctrl+Alt+B` | sidebar · sidebar sempit |
@@ -193,7 +201,8 @@ terminal. Command palette (`⌘K`) menampilkan semuanya.
 ## Privasi
 
 Tanpa akun, tanpa telemetri. TernaryCode hanya terhubung ke GitHub untuk memeriksa update (bisa
-dimatikan). Hook dan tool browser berbicara dengan aplikasi lewat socket lokal dengan token per pane.
+dimatikan); pull request lewat GitHub CLI-mu sendiri. Hook dan tool browser berbicara dengan
+aplikasi lewat socket lokal dengan token per pane.
 Pengaturan disimpan di `~/Library/Application Support/ternarycode` (macOS), `%APPDATA%\ternarycode`
 (Windows), atau `~/.local/share/ternarycode` (Linux).
 

@@ -239,6 +239,11 @@ pub struct Pane {
     /// The session the agent here works in, as its hooks say (Run Agent goes here instead of
     /// starting the same session twice).
     pub agent_session: Option<String>,
+    /// The task the user last gave the agent here (its prompt's first line) and the agent's
+    /// last words when it finished that turn: a commit message is made from them. In memory
+    /// only.
+    pub task: Option<String>,
+    pub last_words: Option<String>,
     /// Local servers its program named, at most three, the ones that answer shown.
     pub servers: Vec<Server>,
     /// The next probe of `servers` is due.
@@ -320,6 +325,8 @@ impl Pane {
             fg_due: None,
             resume: None,
             agent_session: None,
+            task: None,
+            last_words: None,
             servers: Vec::new(),
             servers_probe_at: None,
             last_agent: None,
@@ -968,10 +975,20 @@ impl Pane {
         } else if let Some(session) = &msg.session {
             self.agent_session = Some(session.clone());
         }
+        // A new task: the last words were about the one before.
+        if let Some(prompt) = &msg.prompt {
+            self.task = Some(prompt.clone());
+            self.last_words = None;
+        }
         let Some(signal) = tc_agent::protocol::classify(agent, &msg.event, msg.kind.as_deref())
         else {
             return false;
         };
+        if signal == tc_core::status::HookSignal::TurnDone
+            && let Some(words) = &msg.message
+        {
+            self.last_words = Some(words.clone());
+        }
         self.tracker.apply(
             Event::Hook {
                 agent,

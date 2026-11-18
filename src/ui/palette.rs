@@ -271,6 +271,11 @@ impl App {
                 items.push(it);
             };
             add(icons::GIT_DIFF, t("Review Changes…"), Action::Review);
+            add(icons::GIT_PULL_REQUEST, t("Commit…"), Action::Commit);
+            // The branch's pull request, once it is known.
+            if let Some(n) = self.active.and_then(|id| self.ship.get(&id)).and_then(|s| s.pr.as_ref()).map(|pr| pr.number) {
+                add(icons::GIT_PULL_REQUEST, &tf("Open Pull Request #{}", &[&n.to_string()]), Action::OpenPullRequest);
+            }
             // The worktree in view: its own commands.
             if let Some((id, base)) = self.active_project().and_then(|x| Some((x.id, x.worktree.as_ref()?.base.clone()))) {
                 add(icons::GIT_MERGE, &tf("Merge into {}…", &[&base]), Action::MergeWorktree(id));

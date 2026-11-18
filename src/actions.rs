@@ -168,6 +168,10 @@ pub enum Action {
     QuickOpen,
     Find,
     Review,
+    /// ⇧⌘C: the commit box of the project in view (Review's Changes, its message focused).
+    Commit,
+    /// The pull request of the branch in view, in the Browser panel.
+    OpenPullRequest,
     /// Review of what an agent's finished run changed (its Review button, the waiting list):
     /// that run's changes when it made some, else those since the last commit.
     ReviewAgent,

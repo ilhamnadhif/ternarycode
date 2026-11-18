@@ -91,6 +91,8 @@ pub struct Review {
     pub folded: HashSet<usize>,
     /// A worktree's commit (or what is not committed) shown instead of all of its work.
     pub pick: Option<Pick>,
+    /// Files that differ from the last commit: the ones the commit box can take.
+    pub uncommitted: HashSet<String>,
 }
 
 /// Numbers review work, so late answers of earlier work are told apart.
@@ -113,6 +115,7 @@ pub enum ReviewMsg {
         base: Base,
         counts: Vec<(Base, usize)>,
         fell_back: bool,
+        uncommitted: Vec<String>,
     },
     Diff(u64, usize, Result<FileDiff, String>),
     /// The files of a picked commit (or of what is not committed), and the trees compared.
@@ -191,6 +194,7 @@ impl App {
             dir_of: Vec::new(),
             folded: HashSet::new(),
             pick: None,
+            uncommitted: HashSet::new(),
         });
         let tx = self.app_tx.clone();
         let run_tree = run.map(|(_, _, tree)| tree);
@@ -207,6 +211,7 @@ impl App {
                 };
                 // Every base it can be compared with, counted: each is shown with its number.
                 let head_files = tc_git::changes(root, &head_tree, &now)?;
+                let uncommitted: Vec<String> = head_files.iter().map(|c| c.path.clone()).collect();
                 let run_files = match &run_tree {
                     Some(tree) => Some(tc_git::changes(root, tree, &now)?),
                     None => None,
@@ -268,12 +273,12 @@ impl App {
                     Base::Head => (head_tree.clone(), head_files),
                 };
                 let chosen = if chosen == Base::Branch && branch.is_none() { Base::Head } else { chosen };
-                Ok::<_, String>((from, now, files, branch, chosen, counts, fell_back))
+                Ok::<_, String>((from, now, files, branch, chosen, counts, fell_back, uncommitted))
             })();
             let root = root.unwrap_or(folder);
             let msg = match result {
-                Ok((from, to, files, branch, base, counts, fell_back)) => {
-                    ReviewMsg::Loaded { load, root, from, to, files: Ok(files), branch: branch.map(Box::new), base, counts, fell_back }
+                Ok((from, to, files, branch, base, counts, fell_back, uncommitted)) => {
+                    ReviewMsg::Loaded { load, root, from, to, files: Ok(files), branch: branch.map(Box::new), base, counts, fell_back, uncommitted }
                 }
                 Err(e) => ReviewMsg::Loaded {
                     load,
@@ -285,6 +290,7 @@ impl App {
                     base: base.unwrap_or(Base::Head),
                     counts: Vec::new(),
                     fell_back: false,
+                    uncommitted: Vec::new(),
                 },
             };
             let _ = tx.send(AppMsg::Review(msg));
@@ -356,11 +362,12 @@ impl App {
             .unwrap_or_default();
         let Some(r) = self.review.as_mut() else { return };
         match msg {
-            ReviewMsg::Loaded { load, root, from, to, files, branch, base, counts, fell_back } => {
+            ReviewMsg::Loaded { load, root, from, to, files, branch, base, counts, fell_back, uncommitted } => {
                 if load != r.load {
                     return;
                 }
                 r.loading = false;
+                r.uncommitted = uncommitted.into_iter().collect();
                 r.root = root;
                 r.branch = branch.map(|b| *b);
                 r.base = base;
@@ -560,27 +567,31 @@ impl App {
         let nfiles = r.files.len();
         let head_count = bases.iter().find(|(b, ..)| *b == Base::Head).and_then(|(.., n)| *n).unwrap_or(0);
         let mut switch = None;
-        let files_w = if drawer { (body.width() * 0.42).clamp(220.0, 290.0) } else { FILES_W };
+        let files_w = if drawer { (body.width() * 0.42).clamp(240.0, 320.0) } else { FILES_W };
 
         // ----- keys: full screen always; in the drawer once it was clicked ----------------------
         let keys_id = egui::Id::new("review-keys");
         if drawer {
             let resp = ui.interact(body, keys_id, Sense::click());
             let filter_area = ui.data(|d| d.get_temp::<Rect>(egui::Id::new("review-filter-rect"))).unwrap_or(Rect::NOTHING);
-            let pressed_here = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| body.contains(pos) && !filter_area.contains(pos)));
+            let ship_area = ui.data(|d| d.get_temp::<Rect>(egui::Id::new("ship-box-rect"))).unwrap_or(Rect::NOTHING);
+            let pressed_here = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| body.contains(pos) && !filter_area.contains(pos) && !ship_area.contains(pos)));
             if resp.clicked() || pressed_here {
                 ui.memory_mut(|m| m.request_focus(keys_id));
             }
         }
         let has_keys = !drawer || ui.memory(|m| m.has_focus(keys_id));
         let filter_focused = ui.ctx().memory(|m| m.focused().is_some_and(|f| f == egui::Id::new("review-filter")));
+        // Typing in the commit box: Review's keys leave it alone (Esc too).
+        let ship_typing = ui.ctx().memory(|m| m.focused().is_some_and(|f| f == App::ship_message_id(r.project) || f == egui::Id::new(("ship-branch", r.project))));
+        let mut toggle_in: Option<usize> = None;
         let mut close = false;
         let expand = false;
         let mut to_terminal = false;
         let mut select: Option<usize> = None;
         let mut hunk_step: i32 = 0;
         let mut open = false;
-        if self.dialog.is_none() && self.palette.is_none() && has_keys {
+        if self.dialog.is_none() && self.palette.is_none() && has_keys && !ship_typing {
             ui.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::NONE, Key::Escape) {
                     if drawer {
@@ -607,6 +618,10 @@ impl App {
                 }
                 if i.consume_key(egui::Modifiers::NONE, Key::Enter) {
                     open = true;
+                }
+                // Space: the file in or out of the commit.
+                if i.consume_key(egui::Modifiers::NONE, Key::Space) && sel < nfiles {
+                    toggle_in = Some(sel);
                 }
                 if i.consume_key(egui::Modifiers::NONE, Key::Tab) && bases.len() > 1 {
                     let at = bases.iter().position(|(b, ..)| *b == base).unwrap_or(0);
@@ -813,10 +828,26 @@ impl App {
             ui.data_mut(|d| d.insert_temp(egui::Id::new("review-filter-rect"), Rect::NOTHING));
         }
 
-        // The column's foot: a worktree's Merge and Remove (in the drawer), else how much
-        // changed and against what.
+        // The column's foot: the commit box (in the drawer, a worktree's Merge and Remove under
+        // it); outside a repository, how much changed and against what.
         let (adds, dels): (u32, u32) = r.files.iter().fold((0, 0), |(a, d), f| (a + f.additions.unwrap_or(0), d + f.deletions.unwrap_or(0)));
-        let foot_top = if base == Base::Branch && branch.is_some() {
+        let has_box = r.error.is_none();
+        let fell_back = r.fell_back;
+        let foot_top = if has_box {
+            let col_bottom = if base == Base::Branch && branch.is_some() && drawer { self.review_branch_actions(ui, files_rect, branch.as_ref()).top() } else { files_rect.bottom() };
+            let top = self.ship_box(ui, Rect::from_min_max(files_rect.min, pos2(files_rect.right(), col_bottom)));
+            // The agent's run changed nothing: why these are the changes since the last commit.
+            if fell_back {
+                let text = tf("{} changed nothing since it started: these are the changes since the last commit.", &[who.as_deref().unwrap_or("")]);
+                let g = ui.painter().layout(text, egui::FontId::proportional(style::SMALL), p.text_faint, files_w - 28.0);
+                let note_top = top - g.size().y - 20.0;
+                ui.painter().hline(files_rect.x_range(), note_top + 0.5, Stroke::new(1.0, p.border));
+                ui.painter().galley(pos2(files_rect.left() + 14.0, note_top + 10.0), g, p.text_faint);
+                note_top
+            } else {
+                top
+            }
+        } else if base == Base::Branch && branch.is_some() {
             if drawer { self.review_branch_actions(ui, files_rect, branch.as_ref()).top() } else { files_rect.bottom() }
         } else {
             let note = match base {
@@ -862,6 +893,9 @@ impl App {
             .map(|(i, _)| i)
             .collect();
         let agent_logo = (base == Base::Run).then_some(run_kind).flatten().filter(|k| super::agent_logo::has(*k));
+        // The commit box takes the files not committed yet: a box before each says in or out.
+        let ship_out = self.ship.get(&r.project).map(|s| s.out.clone()).unwrap_or_default();
+        let cb_col = has_box && r.files.iter().any(|f| r.uncommitted.contains(&f.path));
         let mut fold: Option<usize> = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(list_rect), |ui| {
             ui.set_clip_rect(list_rect);
@@ -910,7 +944,28 @@ impl App {
                     } else if resp.hovered() {
                         painter.rect_filled(rect, CornerRadius::same(7), p.hover);
                     }
-                    let left = rect.left() + 6.0 + indent;
+                    let mut left = rect.left() + 6.0 + indent;
+                    if cb_col {
+                        if r.uncommitted.contains(&f.path) {
+                            let cb = Rect::from_center_size(pos2(left + 7.0, rect.center().y), vec2(14.0, 14.0));
+                            let cb_resp = ui.interact(cb.expand(3.0), egui::Id::new(("review-in", &f.path)), Sense::click());
+                            let painter = ui.painter();
+                            if ship_out.contains(&f.path) {
+                                painter.rect(cb, CornerRadius::same(4), Color32::TRANSPARENT, Stroke::new(1.0, if cb_resp.hovered() { p.text_faint } else { p.border_heavy }), egui::StrokeKind::Inside);
+                            } else {
+                                painter.rect_filled(cb, CornerRadius::same(4), p.accent);
+                                painter.text(cb.center(), Align2::CENTER_CENTER, icons::CHECK, style::icon_font(10.0), p.on_accent);
+                            }
+                            #[cfg(debug_assertions)]
+                            crate::devtest::record(format!("review-in:{}", f.path), cb);
+                            let in_commit = !ship_out.contains(&f.path);
+                            if cb_resp.on_hover_text(if in_commit { t("In the commit: click to leave it out") } else { t("Left out of the commit: click to put it in") }).clicked() {
+                                toggle_in = Some(*i);
+                            }
+                        }
+                        left += 20.0;
+                    }
+                    let painter = ui.painter();
                     painter.text(pos2(left + 7.0, rect.center().y), Align2::CENTER_CENTER, letter, style::mono_semibold(10.5), color);
                     // The counts at the right, the agent's mark before them.
                     let mut job = egui::text::LayoutJob::default();
@@ -1215,6 +1270,17 @@ impl App {
         {
             r.folded.insert(d);
         }
+        if let Some(i) = toggle_in
+            && let Some(r) = self.review.as_ref()
+            && let Some(f) = r.files.get(i)
+            && r.uncommitted.contains(&f.path)
+        {
+            let (project, path) = (r.project, f.path.clone());
+            let s = self.ship_mut(project);
+            if !s.out.remove(&path) {
+                s.out.insert(path);
+            }
+        }
         if let Some(i) = select {
             // A file chosen with j / k inside a folded folder: the folder opens.
             if let Some(r) = self.review.as_mut()
@@ -1248,25 +1314,12 @@ impl App {
     /// The foot of a worktree's file list: what Merge leaves out (files not committed), Merge
     /// into its base, Remove. Returns where it is (the list ends above it).
     fn review_branch_actions(&mut self, ui: &mut Ui, files_rect: Rect, branch: Option<&BranchView>) -> Rect {
+        // What is not committed is the commit box's (above): here Merge and Remove only.
         let p = style::pal(ui);
-        let loose = branch.map_or(0, |b| b.uncommitted.len());
         let base = branch.map(|b| b.base.clone()).unwrap_or_default();
-        let width = files_rect.width() - 24.0;
-        let warning = (loose > 0).then(|| {
-            let files = crate::i18n::count(loose, t("1 file is not committed"), t("{} files are not committed"));
-            let text = tf("{} (●). Merge takes commits only: ask the agent to commit, or commit in the terminal.", &[&files]);
-            ui.painter().layout(text, egui::FontId::proportional(style::SMALL), p.warn, width - 20.0)
-        });
-        let warn_h = warning.as_ref().map_or(0.0, |g| g.size().y + 8.0);
-        let rect = Rect::from_min_max(pos2(files_rect.left(), files_rect.bottom() - 10.0 - warn_h - 24.0 - 12.0), files_rect.max);
+        let rect = Rect::from_min_max(pos2(files_rect.left(), files_rect.bottom() - 10.0 - 24.0 - 12.0), files_rect.max);
         ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
-        let mut y = rect.top() + 10.0;
-        if let Some(g) = warning {
-            ui.painter().text(pos2(rect.left() + 12.0 + 6.5, y + 8.0), Align2::CENTER_CENTER, icons::WARNING, style::icon_font(12.5), p.warn);
-            let h = g.size().y;
-            ui.painter().galley(pos2(rect.left() + 12.0 + 20.0, y), g, p.warn);
-            y += h + 8.0;
-        }
+        let y = rect.top() + 10.0;
         let row = Rect::from_min_max(pos2(rect.left() + 12.0, y), pos2(rect.right() - 12.0, y + 24.0));
         let id = self.active;
         ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {

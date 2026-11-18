@@ -1265,6 +1265,14 @@ impl App {
                         }
                     }
                     Foot::Done => {
+                        let c = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::GIT_PULL_REQUEST), t("Commit…"), true);
+                        #[cfg(debug_assertions)]
+                        if let Some(id) = review {
+                            crate::devtest::record(format!("tile-commit:{id}"), c.rect);
+                        }
+                        if c.on_hover_text(kit::tip(t("Commit what the agent changed"), Action::Commit)).clicked() {
+                            clicked = Some(4);
+                        }
                         let r = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::GIT_DIFF), t("Review"), true);
                         #[cfg(debug_assertions)]
                         if let Some(id) = review {
@@ -1363,6 +1371,13 @@ impl App {
                 if let Some(id) = review.or(pane) {
                     self.actions.push(Action::FocusPane(id));
                     self.actions.push(Action::ReviewAgent);
+                }
+            }
+            Some(4) => {
+                if let Some(id) = review.or(pane) {
+                    self.actions.push(Action::FocusPane(id));
+                    self.actions.push(Action::SetView(View::Focus));
+                    self.actions.push(Action::Commit);
                 }
             }
             Some(2) => {

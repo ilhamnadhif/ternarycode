@@ -105,6 +105,28 @@ pub struct ProjectSave {
     /// Its Browser panel (its pages are in `panes`, in the panel's order).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub browser_panel: Option<PanelSave>,
+    /// What its commit button does, when not the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ship: Option<ShipPrefs>,
+}
+
+/// What a project's commit button does (its ▾ menu), and whether its pull requests start as
+/// drafts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShipPrefs {
+    pub action: ShipAction,
+    pub draft: bool,
+}
+
+/// How far the commit button goes. On the branch a pull request would go into (main), it
+/// pushes there instead of opening one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShipAction {
+    Commit,
+    CommitPush,
+    #[default]
+    PullRequest,
 }
 
 /// A project's Browser panel: shown or not, its width, the page in front.

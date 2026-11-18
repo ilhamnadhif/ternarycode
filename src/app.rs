@@ -72,6 +72,8 @@ pub enum AppMsg {
     WorktreeDirty(ProjectId, Vec<String>),
     /// The update was put in place for a restart in place (the new program), or why not.
     UpdateInstalled(Result<PathBuf, crate::update::Outcome>),
+    /// The commit box: a branch's facts, a run's steps, a message written by an agent.
+    Ship(crate::ship::ShipMsg),
 }
 
 /// A line of a confirmation's list: a program that would be stopped, or a file whose changes
@@ -270,6 +272,12 @@ pub struct App {
     instance_rx: Option<Receiver<Vec<String>>>,
     pub allow_close: bool,
     pub toast: Option<Toast>,
+    /// Each project's commit box (Review's Changes): its branch, message and run.
+    pub ship: HashMap<ProjectId, crate::ship::Ship>,
+    /// When each project's pull request checks were read last (read again while they run).
+    pub ship_checks_at: crate::ship::ChecksAt,
+    /// The commit box's message takes the keyboard in the next frame (⇧⌘C).
+    pub ship_focus: bool,
     /// The row of the attention list the keyboard is on.
     pub attention_sel: usize,
     /// The first row the expanded inbox shows (it scrolls to keep the keyboard's row in view),
@@ -627,6 +635,9 @@ impl App {
             instance_rx: inbox.map(|i| i.attach(ctx)),
             allow_close: false,
             toast: None,
+            ship: HashMap::new(),
+            ship_checks_at: HashMap::new(),
+            ship_focus: false,
             attention_sel: 0,
             inbox_scroll: 0,
             onboarding: Default::default(),
@@ -1565,6 +1576,7 @@ impl App {
                         p.kind = kind;
                     }
                     self.offer_merged_removal(id);
+                    self.ship_git_changed(id);
                     self.git_running.remove(&id);
                     if self.git_again.remove(&id) {
                         self.refresh_git(id);
@@ -1604,6 +1616,7 @@ impl App {
                 AppMsg::Files(id, paths) => files_changed.entry(id).or_default().extend(paths),
                 AppMsg::Lsp(key, generation, msg) => self.lsp_message(key, generation, msg),
                 AppMsg::LspPath(path) => self.lsp_path_found(ctx, path),
+                AppMsg::Ship(msg) => self.on_ship_msg(msg),
                 AppMsg::Sessions(agent, path, list) => {
                     self.session_lists.insert((agent, path), Some(list));
                 }
@@ -3402,6 +3415,12 @@ impl App {
                 _ => self.open_review(None),
             },
             Action::ReviewAgent => self.open_review_with(None, true),
+            Action::Commit => self.ship_open(),
+            Action::OpenPullRequest => {
+                if let Some(url) = self.active.and_then(|id| self.ship.get(&id)).and_then(|s| s.pr.as_ref()).map(|pr| pr.url.clone()) {
+                    self.actions.push(Action::OpenWeb(url));
+                }
+            }
             Action::NewBrowserTab => self.new_browser_tab(),
             Action::ReopenClosedPage => self.reopen_closed_page(),
             Action::ShowBrowser => self.show_browser(false),
@@ -3949,6 +3968,7 @@ impl App {
             ctx.request_repaint_after(due.saturating_duration_since(now));
         }
         self.probe_servers(ctx, now);
+        self.ship_tick(ctx);
         // A write that failed (disk full, folder gone) is tried again a little later.
         for path in self.saver.take_failed() {
             if path == paths::workspace_file() {
@@ -4068,6 +4088,7 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
         (cmd | Modifiers::ALT, Key::K, Action::ClearScrollback),
         (cmd | Modifiers::ALT, Key::B, Action::ShowBrowser),
         (cmd | Modifiers::ALT, Key::T, Action::ReopenClosedPage),
+        (cmd | Modifiers::ALT, Key::C, Action::Commit),
     ];
     let map = [
         (Key::J, Action::NextAttention),

@@ -217,6 +217,13 @@ impl App {
         let mut strip_shown: Option<Rect> = None;
         let letters = project.letters();
         let changed = git.as_ref().map_or(0, |g| g.changed);
+        // The branch's pull request (read with gh), while it is open.
+        let pr = self
+            .ship
+            .get(&pid)
+            .filter(|s| s.facts.as_ref().and_then(|f| f.branch.as_deref()) == git.as_ref().map(|g| g.branch.as_str()))
+            .and_then(|s| s.pr.clone())
+            .filter(|pr| matches!(pr.state, tc_git::ship::PrState::Open | tc_git::ship::PrState::Draft));
         let body = self.top_bar(ui, full, |app, ui| {
             let dark = ui.visuals().dark_mode;
             // The project: its tile, its name, a caret; a click opens its menu.
@@ -291,6 +298,20 @@ impl App {
                 crate::devtest::record("changed-chip", r.rect);
                 if r.on_hover_text(kit::tip(t("Review Changes…"), Action::Review)).clicked() {
                     app.actions.push(Action::Review);
+                }
+            }
+            if let Some(pr) = &pr {
+                let r = pr_chip(ui, pr);
+                #[cfg(debug_assertions)]
+                crate::devtest::record("pr-chip", r.rect);
+                let tip = match pr.checks {
+                    tc_git::ship::Checks::Pending => t("Checks are running"),
+                    tc_git::ship::Checks::Passed => t("Checks passed"),
+                    tc_git::ship::Checks::Failed => t("A check failed"),
+                    tc_git::ship::Checks::None => t("Open the pull request"),
+                };
+                if r.on_hover_text(tip).clicked() {
+                    app.actions.push(Action::OpenWeb(pr.url.clone()));
                 }
             }
             if !servers.is_empty()
@@ -1514,6 +1535,56 @@ pub(super) fn server_label(url: &str) -> &str {
 /// first one's address with a green dot, "+N" for the others. A click opens it in the browser;
 /// with several, a menu lists them all with the pane each runs in. Returns the address
 /// clicked (it opens in the project's browser pane; with ⌥, in the default browser).
+/// A pull request in the top bar: its number and its checks (a lattice while they run).
+fn pr_chip(ui: &mut Ui, pr: &tc_git::ship::Pr) -> egui::Response {
+    use tc_git::ship::{Checks, PrState};
+    let p = style::pal(ui);
+    let number = format!("#{}", pr.number);
+    let (check_text, check_c) = match pr.checks {
+        Checks::Pending => (t("checks"), p.info),
+        Checks::Passed => (t("passed"), p.ok),
+        Checks::Failed => (t("failed"), p.err),
+        Checks::None => (if pr.state == PrState::Draft { t("draft") } else { "" }, p.text_faint),
+    };
+    let ng = ui.painter().layout_no_wrap(number, style::mono(11.5), p.text);
+    let cg = (!check_text.is_empty()).then(|| ui.painter().layout_no_wrap(check_text.to_string(), egui::FontId::proportional(11.5), check_c));
+    let cw = cg.as_ref().map_or(0.0, |g| 6.0 + 12.0 + 4.0 + g.size().x);
+    let (rect, resp) = ui.allocate_exact_size(vec2(8.0 + 13.0 + 6.0 + ng.size().x + cw + 8.0, 26.0), Sense::click());
+    let painter = ui.painter();
+    if resp.hovered() {
+        painter.rect_filled(rect, CornerRadius::same(7), p.hover);
+    }
+    painter.rect_stroke(rect, CornerRadius::same(7), Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+    let cy = rect.center().y;
+    let mut x = rect.left() + 8.0;
+    painter.text(pos2(x + 6.5, cy), Align2::CENTER_CENTER, icons::GIT_PULL_REQUEST, style::icon_font(13.0), p.accent_text);
+    x += 13.0 + 6.0;
+    let nw = ng.size().x;
+    painter.galley(pos2(x, cy - ng.size().y / 2.0), ng, p.text);
+    x += nw;
+    if let Some(g) = cg {
+        x += 6.0;
+        match pr.checks {
+            // Still (no frames while nothing changes): the lattice without its light running.
+            Checks::Pending => kit::paint_lattice(painter, pos2(x + 6.0, cy), 10.0, check_c, false),
+            Checks::Passed => {
+                painter.text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, icons::CHECK_CIRCLE, style::icon_fill(12.0), check_c);
+            }
+            Checks::Failed => {
+                painter.text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, icons::X_CIRCLE, style::icon_fill(12.0), check_c);
+            }
+            Checks::None => {}
+        }
+        if pr.checks != Checks::None {
+            x += 12.0 + 4.0;
+        } else {
+            x -= 6.0;
+        }
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, check_c);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 fn server_chip(ui: &mut Ui, servers: &[(String, String)]) -> Option<String> {
     let p = style::pal(ui);
     let (url, pane) = servers.first()?;

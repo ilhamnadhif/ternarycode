@@ -17,6 +17,7 @@
 //! human-readable strings that include git's stderr.
 
 mod parse;
+pub mod ship;
 pub mod worktree;
 
 use std::fs;
@@ -393,6 +394,12 @@ fn git_dir_path(root: &Path, name: &str) -> Result<PathBuf, String> {
     let out = run(git(root).args(["rev-parse", "--git-path", name]))?;
     // Relative to the working directory of the command, which `join` keeps; absolute otherwise.
     Ok(root.join(path_from_bytes(trim_line(&out))))
+}
+
+/// The path of `name` inside the repository's git folder (a linked worktree's own), for files
+/// TernaryCode writes there (a commit message for `git commit -F`).
+pub fn git_path(root: &Path, name: &str) -> Result<PathBuf, String> {
+    git_dir_path(root, name)
 }
 
 /// Rejects revisions git would read as options.
