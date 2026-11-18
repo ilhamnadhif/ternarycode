@@ -949,7 +949,7 @@ impl App {
                                     }
                                     if name == "console" {
                                         job.text.push_str(v["text"].as_str().unwrap_or(""));
-                                    } else {
+                                    } else if name != "caret" {
                                         job.text.push_str(&line);
                                         job.text.push_str(v["note"].as_str().unwrap_or(""));
                                         job.text.push('\n');
@@ -1199,11 +1199,14 @@ impl App {
                                 Op::Native(native, line) => {
                                     // Keys go to a page that has the keyboard, a moment after it
                                     // took it: else its focus comes after the first key.
+                                    // Its editor gets its caret back where it was (WebKit puts it
+                                    // at the start when the page gets the keyboard back).
                                     #[cfg(target_os = "macos")]
                                     if !matches!(native, Native::ClickAt(..)) && crate::browser_input::take_keyboard(view) {
                                         if !matches!(native, Native::Focus) {
                                             job.ops.push_front(Op::Native(native, line));
                                         }
+                                        job.ops.push_front(Op::Act("caret", json!({}), String::new()));
                                         job.ops.push_front(Op::Pause(FOCUS_GAP));
                                         continue;
                                     }

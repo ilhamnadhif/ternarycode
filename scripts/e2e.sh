@@ -227,8 +227,9 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     # An agent typing (macOS): keys the page does not take (nothing in it has the keyboard) go
     # nowhere, never into the terminal; text typed into an editor stays in order, though the
     # page got the keyboard back and forth between calls; the user's keys meanwhile go to the
-    # terminal, not into the agent's text.
-    printf '<!doctype html><title>Typing Page</title><body style="margin:0;font:14px sans-serif"><div contenteditable="true" aria-label="Note" style="position:absolute;left:10px;top:10px;width:400px;min-height:40px;border:1px solid #888"></div><p style="position:absolute;left:10px;top:300px">Nothing here</p>\n' > "$SITE/typing.html"
+    # terminal, not into the agent's text. Text typed after a click made in an earlier call goes
+    # where the click put the caret, even when the user clicks the terminal while it is typed.
+    printf '<!doctype html><title>Typing Page</title><body style="margin:0;font:14px sans-serif"><div contenteditable="true" aria-label="Note" style="position:absolute;left:10px;top:10px;width:400px;min-height:40px;border:1px solid #888"></div><div contenteditable="true" aria-label="Greeting" style="position:absolute;left:10px;top:120px;width:600px;border:1px solid #888">Hello world</div><p style="position:absolute;left:10px;top:300px">Nothing here</p>\n' > "$SITE/typing.html"
     call tnav browser_navigate "{\"url\":\"localhost:$WEBPORT/typing.html\"}"
     call tblank browser_mouse_click_xy '{"x":300,"y":200,"element":"empty space"}'
     call tleak browser_keyboard_type "{\"text\":\"echo leaked > $MCP/leak.txt\\n\"}"
@@ -236,8 +237,11 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     call tnote browser_click '{"ref":"e1","element":"Note"}'
     call tkt browser_keyboard_type '{"text":"The quick brown fox jumps over the lazy dog, then the quick brown fox naps.\nLine two."}'
     call tget browser_evaluate '{"function":"() => document.querySelector(\"[contenteditable]\").innerText"}'
+    call tgreet browser_click '{"ref":"e2","element":"Greeting"}'
+    call tgkt browser_keyboard_type '{"text":", typed in the next call while the user clicks the terminal."}'
+    call tgget browser_evaluate '{"function":"() => document.querySelector(\"[aria-label=Greeting]\").innerText"}'
     mkdir -p "$WORK/data-browser-typing"; printf '{"browser_agent_js":true}\n' > "$WORK/data-browser-typing/settings.json"
-    run browser-typing 60 "sleep 1000;; action add-project $P1;; sleep 1500;; keys m() { $HOOK mcp claude < $MCP/\$1.json > $MCP/\$1.out; echo ok-\$1; }; clear\\r;; sleep 300;; keys m tnav\\r;; wait-screen ok-tnav;; wait-browser Typing Page;; keys m tblank\\r;; wait-screen ok-tblank;; keys m tleak\\r;; wait-screen ok-tleak;; keys m tenter\\r;; wait-screen ok-tenter;; sleep 800;; expect-not-file $MCP/leak.txt leaked;; keys m tnote\\r;; wait-screen ok-tnote;; keys m tkt\\r;; sleep 400;; keys qq;; wait-screen qqok-tkt;; clear-line;; keys m tget\\r;; wait-screen ok-tget;; expect-file $MCP/tget.out The quick brown fox jumps over the lazy dog, then the quick brown fox naps.;; expect-file $MCP/tget.out Line two.;; expect-not-file $MCP/tget.out qq;; quit"
+    run browser-typing 60 "sleep 1000;; action add-project $P1;; sleep 1500;; keys m() { $HOOK mcp claude < $MCP/\$1.json > $MCP/\$1.out; echo ok-\$1; }; clear\\r;; sleep 300;; keys m tnav\\r;; wait-screen ok-tnav;; wait-browser Typing Page;; keys m tblank\\r;; wait-screen ok-tblank;; keys m tleak\\r;; wait-screen ok-tleak;; keys m tenter\\r;; wait-screen ok-tenter;; sleep 800;; expect-not-file $MCP/leak.txt leaked;; keys m tnote\\r;; wait-screen ok-tnote;; keys m tkt\\r;; sleep 400;; keys qq;; wait-screen qqok-tkt;; clear-line;; keys m tget\\r;; wait-screen ok-tget;; expect-file $MCP/tget.out The quick brown fox jumps over the lazy dog, then the quick brown fox naps.;; expect-file $MCP/tget.out Line two.;; expect-not-file $MCP/tget.out qq;; keys m tgreet\\r;; wait-screen ok-tgreet;; keys m tgkt\\r;; sleep 400;; click pane:2;; wait-screen ok-tgkt;; keys m tgget\\r;; wait-screen ok-tgget;; expect-file $MCP/tgget.out Hello world, typed in the next call while the user clicks the terminal.;; quit"
 
     # More of the browser: $BROWSER (Python's webbrowser) opens the page beside the terminal; its
     # console's error and warning show as a chip, then in the drawer; under the palette the page

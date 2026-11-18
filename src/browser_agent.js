@@ -669,9 +669,64 @@ if (!window.__tc) window.__tc = (() => {
     return { ok: true, note: top ? ` (on ${clip(squash(top.innerText || top.getAttribute('aria-label') || top.tagName), 60)})` : '' };
   }
 
+  // ----- where the caret was in the editor that has the keyboard, while the page had it.
+  // WebKit clears the selection when the page loses the keyboard (the agent's call ends, the
+  // user clicks in the app) and puts the caret at the start of the editor when it gets it back:
+  // the agent's next keys go where its caret was (`caret`), not before the text. A text field
+  // (input, textarea) keeps its own selection.
+  let caret = null;
+  // The selection was cleared (the page lost the keyboard): the next caret at the start of the
+  // editor is WebKit's, as the page gets the keyboard back.
+  let cleared = false;
+  // Offsets count the characters of the editor's text nodes (block breaks are not characters).
+  const offsetIn = (root, node, off) => {
+    const r = document.createRange();
+    r.selectNodeContents(root);
+    try { r.setEnd(node, off); } catch (e) { return null; }
+    return r.toString().length;
+  };
+  const pointAt = (root, n) => {
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let t, last = null;
+    while ((t = w.nextNode())) {
+      if (n <= t.data.length) return [t, n];
+      n -= t.data.length;
+      last = t;
+    }
+    return last ? [last, last.data.length] : [root, root.childNodes.length];
+  };
+  document.addEventListener('selectionchange', () => {
+    const el = document.activeElement;
+    if (!el || !el.isContentEditable) return;
+    const s = getSelection();
+    if (!s.rangeCount) { cleared = true; return; }
+    if (!el.contains(s.anchorNode)) return;
+    const a = offsetIn(el, s.anchorNode, s.anchorOffset);
+    const f = offsetIn(el, s.focusNode, s.focusOffset);
+    if (a === null || f === null) return;
+    const restored = cleared && a === 0 && f === 0;
+    cleared = false;
+    if (restored && caret && caret.el === el) return;
+    caret = { el, a, f };
+  });
+  async function restoreCaret() {
+    const el = document.activeElement;
+    if (!caret || el !== caret.el || !el.isConnected) return { ok: true };
+    const s = getSelection();
+    const at = s.rangeCount && el.contains(s.anchorNode) ? [offsetIn(el, s.anchorNode, s.anchorOffset), offsetIn(el, s.focusNode, s.focusOffset)] : [];
+    if (at[0] === caret.a && at[1] === caret.f) return { ok: true };
+    const [an, ao] = pointAt(el, caret.a);
+    const [fn, fo] = pointAt(el, caret.f);
+    s.setBaseAndExtent(an, ao, fn, fo);
+    // The editor hears of it (selectionchange) before the next key.
+    await pause(30);
+    return { ok: true };
+  }
+
   async function run(name, args) {
     try {
       switch (name) {
+        case 'caret': return await restoreCaret();
         case 'snapshot': return { text: outline(), title: document.title, url: location.href };
         case 'aim': return await aim(args);
         case 'drag5': return await dragHtml5(args);
