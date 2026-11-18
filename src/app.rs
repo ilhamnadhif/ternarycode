@@ -358,6 +358,9 @@ pub struct App {
     pub browser_seq: u64,
     /// The page each agent (by its pane) acts on now: its own, or a page of the user's it uses.
     pub agent_pages: HashMap<PaneId, PaneId>,
+    /// When the Browser panel was last shown for an agent's browser call (by its pane): once per
+    /// prompt (`show_for_prompt`).
+    pub agent_panel_shown: HashMap<PaneId, Instant>,
     /// The agent session (by its pane) that last used the browser there: a new session in the
     /// same terminal hears that its page was left by an earlier one.
     pub agent_page_sessions: HashMap<PaneId, String>,
@@ -678,6 +681,7 @@ impl App {
             browser_done: Default::default(),
             browser_seq: 0,
             agent_pages: HashMap::new(),
+            agent_panel_shown: HashMap::new(),
             agent_page_sessions: HashMap::new(),
             closed_pages: Vec::new(),
             mem_low: None,
@@ -2100,6 +2104,7 @@ impl App {
             pane.hang_up();
             // An agent's pages in the Browser panel: closed with it, unless in view or playing.
             self.agent_pane_closed(id);
+            self.agent_panel_shown.remove(&id);
         }
         // A browser's page goes with its pane (its web view leaves the window).
         self.browsers.remove(&id);

@@ -50,12 +50,21 @@ $DL = Join-Path $Work "downloads"; New-Item -ItemType Directory -Force $DL | Out
 $Mcp = Join-Path $Work "mcp"; New-Item -ItemType Directory -Force $Mcp | Out-Null
 function Call($name, $tool, $argsJson) { Write-Text (Join-Path $Mcp "$name.json") ('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"' + $tool + '","arguments":' + $argsJson + '}}' + "`n") }
 # A preset running an agent's tool calls in its pane (a batch file: `m NAME` pipes NAME.json into
-# the MCP server and writes NAME.out, then says ok-NAME; "wait N" pauses about N-1 seconds).
-# Agents ask before other sites there (Settings) unless -Ask false: the scenarios of the question
-# have it.
+# the MCP server and writes NAME.out, then says ok-NAME; "wait N" pauses about N-1 seconds;
+# "until NAME" waits for the file NAME in the calls' folder; "read" waits for a line typed in the
+# pane). Agents ask before other sites there (Settings) unless -Ask false: the scenarios of the
+# question have it.
 function Preset($name, $id, [string[]]$calls, [string]$Ask = "true") {
     $cmd = Join-Path $Work "$id.cmd"
-    $lines = @("@echo off") + ($calls | ForEach-Object { if ($_ -like "wait *") { "ping -n " + $_.Split(" ")[1] + " 127.0.0.1 >nul" } else { "call :m $_" } }) + @("goto :eof", ":m", "`"$Hook`" mcp claude < `"$Mcp\%1.json`" > `"$Mcp\%1.out`"", "echo ok-%1", "goto :eof")
+    $steps = @(); $n = 0
+    foreach ($c in $calls) {
+        $n += 1
+        if ($c -like "wait *") { $steps += "ping -n " + $c.Split(" ")[1] + " 127.0.0.1 >nul" }
+        elseif ($c -like "until *") { $steps += ":u$n"; $steps += "if not exist `"$Mcp\" + $c.Split(" ")[1] + "`" (ping -n 2 127.0.0.1 >nul & goto u$n)" }
+        elseif ($c -eq "read") { $steps += "set /p line=" }
+        else { $steps += "call :m $c" }
+    }
+    $lines = @("@echo off") + $steps + @("goto :eof", ":m", "`"$Hook`" mcp claude < `"$Mcp\%1.json`" > `"$Mcp\%1.out`"", "echo ok-%1", "goto :eof")
     [IO.File]::WriteAllLines($cmd, $lines)
     $d = Join-Path $Work "data-$name"; New-Item -ItemType Directory -Force $d | Out-Null
     $command = ("cmd /c " + $cmd) -replace '\\', '\\'
@@ -173,6 +182,15 @@ Call "cnone" "browser_close" '{}'
 Preset "web-agent-close" "cls" @("cnav", "wait 5", "ccls", "wait 5", "cnav2", "wait 5", "cpanel", "wait 5", "cnone") -Ask false
 # The user's page is on another site (127.0.0.1, not localhost): the agent opens its own.
 Run "web-agent-close" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web http://127.0.0.1:$Port/;; wait-browser TC Test Page;; wait-pages 3*;; wait-screen PS C:;; action run cls;; wait-screen ok-cnav;; expect-file $Mcp\cnav.out Page: Agent Page;; wait-screen ok-ccls;; wait-pages 3*;; expect-file $Mcp\ccls.out Closed your page;; expect-file $Mcp\ccls.out TC Test Page;; wait-screen ok-cnav2;; expect-file $Mcp\cnav2.out Page: Second;; wait-screen ok-cpanel;; wait-panel hidden;; wait-pages 3*;; expect-file $Mcp\cpanel.out The Browser panel is hidden.;; wait-screen ok-cnone;; expect-file $Mcp\cnone.out You had no page open;; quit"
+
+# An agent's first browser call after a prompt shows the Browser panel (it floats on this small
+# screen). The user hides it; the agent's next call (no prompt since) leaves it hidden; after the
+# user types into the agent's terminal (a prompt), its next call shows it again.
+Call "snav" "browser_navigate" ('{"url":"localhost:' + $Port + '/agent.html"}')
+Call "ssnap" "browser_snapshot" '{}'
+Call "ssnap2" "browser_snapshot" '{}'
+Preset "web-agent-show" "show" @("snav", "until go", "ssnap", "read", "ssnap2") -Ask false
+Run "web-agent-show" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; wait-screen PS C:;; action run show;; wait-screen ok-snav;; wait-panel float;; action show-browser;; wait-panel hidden;; write-file $Mcp\go go;; wait-screen ok-ssnap;; sleep 1000;; wait-panel hidden;; expect-file $Mcp\ssnap.out Page: Agent Page;; keys again\r;; wait-screen ok-ssnap2;; wait-panel float;; quit"
 
 # Pages that sleep out of view and the ones that don't (sound, a form being filled in); the
 # tab's speaker mutes a page; Reopen Closed Page. Sleep after 4 s here.

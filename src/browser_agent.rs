@@ -423,6 +423,10 @@ impl App {
                 note.push_str(&format!("This page was left by an earlier session in this terminal, at {} (“{}”).\n", b.url, b.label()));
             }
         }
+        // The first call after a prompt shows the panel (the user may hide it again).
+        if !self.browsers.get(&id).is_some_and(|b| b.driver.as_ref().is_some_and(|d| d.paused)) {
+            self.show_for_prompt(agent_pane, project, id);
+        }
         let Some(b) = self.browsers.get_mut(&id) else { return };
         if b.driver.as_ref().is_some_and(|d| d.paused) {
             return fail(reply, &format!("The user has the browser now (they took it over from {who} in TernaryCode). Wait until they hand it back, or ask them."));
@@ -530,18 +534,40 @@ impl App {
     }
 
     /// A page an agent turns to comes to the front when the agent's terminal is the one picked
-    /// (or the panel shows none), and the panel opens (Settings), unless the Code drawer is
-    /// open: then the Browser button says so. The keyboard and the tab in view stay as they
-    /// are.
+    /// (or the panel shows none). The panel opens by `show_for_prompt`.
     fn bring_agent_page(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, page: PaneId) {
         let picked = self.project(project).and_then(|p| p.current_pane()) == Some(agent_pane);
-        let open = self.settings.browser_agent_beside;
-        if let Some(panel) = self.panel_mut(project) {
-            if picked || panel.shown().is_none() {
-                panel.front = Some(page);
-            }
-            panel.open |= open;
+        if let Some(panel) = self.panel_mut(project)
+            && (picked || panel.shown().is_none())
+        {
+            panel.front = Some(page);
         }
+    }
+
+    /// The first browser call of an agent after a prompt (the user typed into its terminal
+    /// since the panel last showed for it, or it never did) shows the project's panel with the
+    /// agent's page (Settings: else the Browser button lights), unless the Code drawer is open:
+    /// then the Browser button says so. The user may hide it again: the agent's later calls
+    /// leave it hidden until the next prompt. The keyboard, the view and the tab in view stay as
+    /// they are.
+    fn show_for_prompt(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, page: PaneId) {
+        let typed = self.panes.get(&agent_pane).and_then(|p| p.last_input);
+        let prompted = match self.agent_panel_shown.get(&agent_pane) {
+            None => true,
+            Some(shown) => typed.is_some_and(|t| t > *shown),
+        };
+        if !prompted {
+            return;
+        }
+        self.agent_panel_shown.insert(agent_pane, Instant::now());
+        if !self.settings.browser_agent_beside {
+            return;
+        }
+        self.bring_agent_page(agent_pane, project, page);
+        if let Some(panel) = self.panel_mut(project) {
+            panel.open = true;
+        }
+        self.mark_dirty();
     }
 
     /// The panel's pages as an agent's browser_tabs list gives them.
