@@ -33,6 +33,17 @@ const PLAYWRIGHT: Other = Other { name: "Playwright", words: &["playwright"] };
 const PUPPETEER: Other = Other { name: "Puppeteer", words: &["puppeteer"] };
 const SELENIUM: Other = Other { name: "Selenium", words: &["selenium", "webdriver"] };
 const BROWSER_TOOL: Other = Other { name: "another browser tool", words: &[] };
+/// The system's opener given a web address (`start https://…`, `xdg-open …`).
+const DEFAULT: Other = Other { name: "the default browser", words: &["default"] };
+
+/// A web address as an opener is given it.
+fn is_url(arg: &str) -> bool {
+    let a = arg.to_lowercase();
+    ["http://", "https://", "localhost:", "127.0.0.1:", "www."].iter().any(|p| a.starts_with(p))
+}
+
+/// Programs that open a web address in the system's default browser.
+const OPENERS: &[&str] = &["xdg-open", "sensible-browser", "x-www-browser", "www-browser", "gnome-open", "kde-open", "kde-open5", "wslview", "explorer", "explorer.exe", "rundll32", "rundll32.exe"];
 
 /// The browser a program (its file name, lowercase) is.
 fn program_browser(base: &str) -> Option<Other> {
@@ -216,25 +227,39 @@ fn command_browser(command: &str, cwd: Option<&Path>) -> Option<Other> {
         {
             return Some(b);
         }
-        // macOS `open -a Safari …` / `open -b com.google.Chrome …` (a bare `open <url>` comes to
-        // TernaryCode's browser).
+        // macOS `open -a Safari …` / `open -b com.google.Chrome …`, or `open https://…`.
         if base == "open" {
             for (k, a) in args.iter().enumerate() {
                 if (a == "-a" || a == "-b" || a == "--bundle-identifier") && let Some(b) = app_browser(&lc(k + 1)) {
                     return Some(b);
                 }
             }
+            if args.iter().any(|a| is_url(a)) {
+                return Some(DEFAULT);
+            }
         }
-        // Windows `start chrome …`, `Start-Process msedge …`.
+        // The system's opener given a web address (`xdg-open`, `gio open`, `explorer`, `rundll32
+        // url.dll,…`, `python -m webbrowser`): the default browser.
+        if (OPENERS.contains(&base.as_str()) || (base == "gio" && lc(0) == "open")) && args.iter().any(|a| is_url(a)) {
+            return Some(DEFAULT);
+        }
+        if INTERPRETERS.contains(&base.as_str()) && args.windows(2).any(|p| p[0] == "-m" && p[1] == "webbrowser") {
+            return Some(DEFAULT);
+        }
+        // Windows `start chrome …`, `Start-Process msedge …`, `start "" https://…`.
         for (k, a) in w.iter().enumerate() {
             let a = a.to_lowercase();
-            if (a == "start" || a == "start-process")
-                && let Some(next) = w.get(k + 1)
-            {
-                let next = next.to_lowercase();
-                let nb = next.rsplit(['/', '\\']).next().unwrap_or(&next).to_string();
-                if let Some(b) = program_browser(&nb) {
-                    return Some(b);
+            if a == "start" || a == "start-process" {
+                let next = w[k + 1..].iter().find(|x| !x.is_empty() && !x.starts_with('/') && !x.starts_with('-'));
+                if let Some(next) = next {
+                    let lower = next.to_lowercase();
+                    let nb = lower.rsplit(['/', '\\']).next().unwrap_or(&lower).to_string();
+                    if let Some(b) = program_browser(&nb) {
+                        return Some(b);
+                    }
+                    if is_url(next) {
+                        return Some(DEFAULT);
+                    }
                 }
             }
         }
@@ -394,12 +419,31 @@ mod tests {
         assert_eq!(other("Start-Process msedge https://x.dev"), Some("Edge"));
         assert_eq!(other("node -e \"require('puppeteer').launch()\""), Some("Puppeteer"));
         assert_eq!(other("python3 -c 'from playwright.sync_api import sync_playwright'"), Some("Playwright"));
+        // The system's opener given a web address: the default browser, outside TernaryCode.
+        for cmd in [
+            "open https://x.dev",
+            "xdg-open http://localhost:3000",
+            "gio open https://x.dev",
+            "start https://x.dev",
+            "cmd /c start \"\" https://x.dev",
+            "Start-Process 'https://x.dev'",
+            "explorer.exe https://x.dev",
+            "rundll32 url.dll,FileProtocolHandler https://x.dev",
+            "python3 -m webbrowser https://x.dev",
+        ] {
+            assert_eq!(other(cmd), Some("the default browser"), "{cmd}");
+        }
     }
 
     #[test]
     fn leaves_other_commands_alone() {
         for cmd in [
-            "open https://x.dev",
+            "open .",
+            "open README.md",
+            "xdg-open report.pdf",
+            "explorer .",
+            "Start-Process notepad",
+            "npm start",
             "npx playwright test",
             "npx playwright install chromium",
             "npm test",
@@ -455,6 +499,10 @@ mod tests {
         assert!(decision(AgentKind::Claude, "PreToolUse", &p, false, || None).is_none());
         assert!(decision(AgentKind::Claude, "PostToolUse", &p, true, || None).is_none());
         assert!(decision(AgentKind::Gemini, "PreToolUse", &p, true, || None).is_none());
+        // "Open it in my default browser" lets the system's opener through.
+        let start = bash("start https://x.dev");
+        assert!(decision(AgentKind::Codex, "PreToolUse", &start, true, || Some("buka di default browser saya".into())).is_none());
+        assert!(decision(AgentKind::Codex, "PreToolUse", &start, true, || Some("open the shop".into())).is_some());
         // "search" is not Arc.
         let arc = bash("open -a Arc https://x.dev");
         assert!(decision(AgentKind::Claude, "PreToolUse", &arc, true, || Some("search the docs".into())).is_some());

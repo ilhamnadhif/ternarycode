@@ -192,6 +192,15 @@ Call "ssnap2" "browser_snapshot" '{}'
 Preset "web-agent-show" "show" @("snav", "until go", "ssnap", "read", "ssnap2") -Ask false
 Run "web-agent-show" 90 "sleep 1000;; action add-project $P1;; sleep 1500;; wait-screen PS C:;; action run show;; wait-screen ok-snav;; wait-panel float;; action show-browser;; wait-panel hidden;; write-file $Mcp\go go;; wait-screen ok-ssnap;; sleep 1000;; wait-panel hidden;; expect-file $Mcp\ssnap.out Page: Agent Page;; keys again\r;; wait-screen ok-ssnap2;; wait-panel float;; quit"
 
+# The update dialog (a release from a test feed; Later at launch, then Update in the status bar)
+# covers the page: its web view hides under it and comes back after Later.
+Write-Text (Join-Path $Work "feed.json") '{"tag_name":"v99.0.0","html_url":"https://example.invalid/releases/v99.0.0","published_at":"2026-11-18T00:00:00Z","body":"Test release","assets":[]}'
+$d = Join-Path $Work "data-web-update"; New-Item -ItemType Directory -Force $d | Out-Null
+Write-Text (Join-Path $d "settings.json") '{"check_updates":true}'
+$env:TERNARYCODE_UPDATE_FEED = "file:///" + ((Join-Path $Work "feed.json") -replace '\\', '/')
+Run "web-update" 90 "sleep 1000;; action add-project $P1;; wait-shown update-close;; sleep 800;; key esc;; wait-hidden update-close;; action open-web $W/;; wait-browser TC Test Page;; wait-pages 3*;; sleep 1500;; expect-web-placed;; click update-button;; wait-shown update-close;; sleep 1500;; expect-web-hidden;; shot web-update;; click update-close;; wait-hidden update-close;; sleep 1500;; expect-web-placed;; quit"
+Remove-Item Env:TERNARYCODE_UPDATE_FEED -ErrorAction SilentlyContinue
+
 # Pages that sleep out of view and the ones that don't (sound, a form being filled in); the
 # tab's speaker mutes a page; Reopen Closed Page. Sleep after 4 s here.
 $ms = New-Object IO.MemoryStream; $bw = New-Object IO.BinaryWriter($ms)

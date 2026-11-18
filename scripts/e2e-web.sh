@@ -151,6 +151,23 @@ call pelse browser_click '{"ref":"e2","element":"Sign in elsewhere button"}'
 preset web-agent-popup pop 'm pnav; m pclick; sleep 3; m pcont; m pclick2; sleep 2; m pnav2; m pelse'
 run web-agent-popup 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action run pop;; wait-screen ok-pnav;; expect-file $MCP/pnav.out Page: Agent Popup Opener;; wait-screen ok-pclick;; expect-file $MCP/pclick.out A pop-up window opened;; expect-file $MCP/pclick.out Page: Agent Sign In (a pop-up window);; wait-screen ok-pcont;; expect-file $MCP/pcont.out The pop-up window closed;; expect-file $MCP/pcont.out Page: Signed in: agent-ok;; wait-screen ok-pclick2;; wait-screen ok-pnav2;; expect-file $MCP/pnav2.out The pop-up window closed;; expect-file $MCP/pnav2.out Page: Agent Popup Opener;; wait-shown browser-ask:3;; click browser-block:3;; wait-screen ok-pelse;; expect-file $MCP/pelse.out Blocked by the user: tc-popup.invalid;; quit"
 
+# An agent's first browser call after a prompt shows the Browser panel. The user hides it; the
+# agent's next call (no prompt since) leaves it hidden; after the user types into the agent's
+# terminal (a prompt), its next call shows it again.
+call snav browser_navigate "{\"url\":\"localhost:$WEBPORT/agent.html\"}"
+call ssnap browser_snapshot '{}'
+call ssnap2 browser_snapshot '{}'
+ASK=false preset web-agent-show show 'm snav' "while [ ! -f \"$MCP/go\" ]; do sleep 0.2; done" 'm ssnap' 'read a' 'm ssnap2'
+run web-agent-show 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run show;; wait-screen ok-snav;; wait-panel shown;; action show-browser;; wait-panel hidden;; write-file $MCP/go go;; wait-screen ok-ssnap;; sleep 500;; wait-panel hidden;; expect-file $MCP/ssnap.out Page: Agent Page;; keys again\\r;; wait-screen ok-ssnap2;; wait-panel shown;; quit"
+
+# The update dialog (a release from a test feed; Later at launch, then Update in the status
+# bar) covers the page: its web view hides under it and comes back after Later.
+printf '{"tag_name":"v99.0.0","html_url":"https://example.invalid/releases/v99.0.0","published_at":"2026-11-18T00:00:00Z","body":"Test release","assets":[]}\n' > "$WORK/feed.json"
+mkdir -p "$WORK/data-web-update"; printf '{"check_updates":true}\n' > "$WORK/data-web-update/settings.json"
+export TERNARYCODE_UPDATE_FEED="file://$WORK/feed.json"
+run web-update 60 "sleep 1000;; action add-project $P1;; wait-shown update-close;; sleep 500;; key esc;; wait-hidden update-close;; action open-web $W/;; wait-browser TC Test Page;; wait-pages 3*;; sleep 800;; expect-web-placed;; click update-button;; wait-shown update-close;; sleep 800;; expect-web-hidden;; shot web-update;; click update-close;; wait-hidden update-close;; sleep 800;; expect-web-placed;; quit"
+unset TERNARYCODE_UPDATE_FEED
+
 # Asked to close the browser, an agent closes its page: the user's page stays, in front; with
 # panel the panel hides too (the user's page kept); with no page of its own it says so.
 call cnav browser_navigate "{\"url\":\"localhost:$WEBPORT/agent.html\"}"
