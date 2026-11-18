@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TernaryCode — know which agent needs you</title>
+<meta name="description" content="One native window for all your projects and the AI coding agents working in them. TernaryCode tells you when Claude Code, Codex or OpenCode is waiting, and ⌘J takes you there. Free and open source for macOS, Windows and Linux.">
+<meta name="theme-color" content="#0a0a0a">
+<link rel="canonical" href="https://ilhamnadhif.github.io/ternarycode/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="TernaryCode">
+<meta property="og:title" content="TernaryCode — know which agent needs you">
+<meta property="og:description" content="One native window for all your projects and the coding agents working in them. Free and open source for macOS, Windows and Linux.">
+<meta property="og:url" content="https://ilhamnadhif.github.io/ternarycode/">
+<meta property="og:image" content="https://ilhamnadhif.github.io/ternarycode/assets/img/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://ilhamnadhif.github.io/ternarycode/assets/img/og.png">
+<link rel="icon" href="assets/img/icon.svg" type="image/svg+xml">
+<link rel="icon" href="assets/img/favicon-64.png" type="image/png" sizes="64x64">
+<link rel="apple-touch-icon" href="assets/img/icon-180.png">
+<link rel="preload" href="assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/jbm-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/app.css">
+<link rel="stylesheet" href="assets/site.css">
+<script>document.documentElement.classList.replace('no-js', 'js')</script>
+</head>
+<body>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top" aria-label="TernaryCode, back to top"><img src="assets/img/icon.svg" alt="" width="26" height="26">TernaryCode</a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#features">Features</a>
+      <a href="#shortcuts">Shortcuts</a>
+      <a href="#install">Install</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="nav-r">
+      <a class="nav-gh" href="https://github.com/ilhamnadhif/ternarycode"><i class="ic" data-i="github-logo"></i><span>GitHub</span></a>
+      <a class="pb pb-pri pb-sm" href="#install" data-dl-nav>Download</a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- ============================================================ hero -->
+<section class="hero">
+  <div class="field" id="field-hero" aria-hidden="true"></div>
+  <div class="wrap hero-in">
+    <a class="announce" href="https://github.com/ilhamnadhif/ternarycode/releases/latest" data-release-link>
+      <span class="lat run">&nbsp;<b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></span>
+      <span><b>TernaryCode <span data-version>0.1.37</span></b> is out</span><span class="sep"></span><span>What’s new</span><i class="ic" data-i="arrow-right"></i>
+    </a>
+    <h1>Which agent<br>needs you now?</h1>
+    <p class="lede">One native window for all your projects and the coding agents working in them. When <b>Claude Code</b>, <b>Codex</b> or <b>OpenCode</b> waits for you, TernaryCode knows, and <span data-k="jump"><kbd>⌘</kbd><kbd>J</kbd></span> takes you there.</p>
+    <div class="cta">
+      <a class="pb pb-pri" href="#install" id="cta-main"><i class="ic" data-i="download-simple"></i><span>Download for macOS</span></a>
+      <a class="pb pb-sec" href="https://github.com/ilhamnadhif/ternarycode"><i class="ic" data-i="github-logo"></i>View on GitHub</a>
+    </div>
+    <p class="cta-note" id="cta-note">Free and open source · macOS, <a href="#install" data-os-link="win">Windows</a> and <a href="#install" data-os-link="linux">Linux</a></p>
+  </div>
+
+  <div class="demo" id="demo" role="region" aria-label="Live demo of TernaryCode with sample projects">
+    <div class="demo-bar">
+      <span class="live"><b></b>Live demo</span><span class="hint">· sample projects, running in this page</span>
+      <span class="sp"></span>
+      <button type="button" id="demo-replay"><i class="ic" data-i="arrow-counter-clockwise"></i>Replay</button>
+    </div>
+    <div class="demo-frame">
+      <div class="scaler"><div class="scaled" id="demo-win" aria-hidden="true"></div></div>
+      <noscript><img src="assets/img/focus.webp" alt="TernaryCode: Claude Code checks its change in the Browser panel while the sidebar lists the agents waiting in other projects" width="1600" height="1000"></noscript>
+    </div>
+    <div class="coach" id="coach" aria-live="polite"></div>
+  </div>
+</section>
+
+<!-- ============================================================ agents -->
+<section class="agents">
+  <div class="wrap agents-in rv">
+    <div class="agents-t">Bring the agents you already use. Nothing to sign in to.</div>
+    <div class="agent-row">
+      <span class="ag-pill"><span class="lg" data-logo="CC"></span>Claude Code</span>
+      <span class="ag-pill"><span class="lg" data-logo="Cx"></span>Codex</span>
+      <span class="ag-pill"><span class="lg" data-logo="OC"></span>OpenCode</span>
+      <span class="ag-pill"><span class="lg" data-logo="AG"></span>Antigravity CLI</span>
+      <span class="ag-pill any"><span class="lg">&gt;_</span>Any command</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ native -->
+<section class="sec" id="native">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><i class="ic" data-i="lightning"></i>Rust, drawn by the GPU</div>
+        <h2>Native. <span class="q">Not a browser<br>in a costume.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>No Electron and no web page behind the window. TernaryCode is one small app that opens before you’ve looked away, and does <b>nothing at all</b> when nothing changes.</p>
+      </div>
+    </div>
+    <div class="stats rv" id="stats">
+      <div class="stat"><div class="n">0.2<small>s</small></div><div class="l">to open, with every project where you left it</div></div>
+      <div class="stat"><div class="n">0<small>%</small></div><div class="l">CPU when nothing changes. No frames are drawn.</div></div>
+      <div class="stat"><div class="n">~70<small>MB</small></div><div class="l">of memory for ten terminal panes</div></div>
+      <div class="stat"><div class="n">0</div><div class="l">accounts, trackers or telemetry</div></div>
+    </div>
+    <p class="foot">Measured on an Apple M1 Pro with a release build. Your shells and agents use their own memory on top.</p>
+  </div>
+</section>
+
+<!-- ============================================================ 1. status -->
+<section class="sec" id="features">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><span data-k="jump"><kbd>⌘J</kbd></span>Attention</div>
+        <h2>Status you can trust, <span class="q">not a guess.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>Each agent tells TernaryCode what it’s doing through its own <b>hooks</b>. The ones that wait for you line up at the top of the sidebar, in the order <span data-k="jump"><kbd>⌘J</kbd></span> visits them; <span data-k="back"><kbd>⇧⌘J</kbd></span> takes you back.</p>
+        <ul class="facts">
+          <li><b>Hooks are added per launch</b> for Claude Code and Codex. Nothing in your config changes.</li>
+          <li>Notifications and the Dock badge only when you’re <b>not</b> looking.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="status-grid rv">
+      <div class="sb-shot"><div class="scaler" data-frame="sidebar" aria-hidden="true"><div class="scaled"></div></div></div>
+      <div class="states">
+        <div class="state"><span class="pill wait"><i class="icf" data-i="bell-ringing"></i>Needs input</span><p>Wants permission or an answer. It goes to the <b>top of the queue</b>, the oldest first.</p><div class="spec" data-spec="wait"></div><span class="src">PermissionRequest · Notification</span></div>
+        <div class="state"><span class="pill run"><span class="lat run"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></span>Running</span><p>Working on its own. The light runs along the <b>&lt;/</b> of the app’s icon.</p><div class="spec" data-spec="run"></div><span class="src">UserPromptSubmit · PreToolUse</span></div>
+        <div class="state"><span class="pill done"><i class="icf" data-i="check-circle"></i>Done</span><p>Finished its turn. It says <b>how many files</b> it changed, with Review one click away.</p><div class="spec" data-spec="done"></div><span class="src">Stop · agent-turn-complete</span></div>
+        <div class="state"><span class="pill fail"><i class="icf" data-i="x-circle"></i>Failed</span><p>An error, or a command that exited badly. <b>Without a reliable signal</b> it says <i>Active</i>, never a guess.</p><div class="spec" data-spec="fail"></div><span class="src">StopFailure · exit status</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ 2. grid -->
+<section class="sec">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><span data-k="grid"><kbd>⌘0</kbd></span>Grid</div>
+        <h2>Every project, <span class="q">live, side by side.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>The Grid shows every project at once, each tile a real terminal, not a picture of one. Two agents asking for permission and one that finished: you see all three without opening anything.</p>
+        <ul class="facts">
+          <li>A finished agent’s tile says <b>how many files it changed</b>, with Review at hand.</li>
+          <li>Tabs and splits per project come back at the next start. <b>Shells start when you look at them</b>, so twenty projects open as fast as one.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot rv" style="margin-left:0;margin-right:0">
+      <img src="assets/img/grid.webp" alt="The Grid: six projects side by side, two agents waiting for permission and one done" width="1600" height="1000" loading="lazy" decoding="async">
+      <span class="pin r" style="--x:89%;--y:47.7%"><i tabindex="0">1</i><span>mobile-app waits: Claude Code wants to run <b>flutter test</b>. <b>Open</b> takes you there.</span></span>
+      <span class="pin" style="--x:31%;--y:94%"><i tabindex="0">2</i><span>Done: <b>2 files</b> changed. Review is one click.</span></span>
+      <span class="pin" style="--x:65%;--y:88%"><i tabindex="0">3</i><span>Even the agent’s browser page, live in its tile.</span></span>
+      <figcaption><b></b>The real app, on macOS</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================================================ 3. browser -->
+<section class="sec">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><span data-k="browser"><kbd>⇧⌘B</kbd></span>Browser</div>
+        <h2>A browser your agents <span class="q">can drive.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>An agent opens your dev server beside its terminal, clicks through it, types, reads the page and the console, and answers dialogs, with <b>real input events</b>. You watch it work. Click into the page to <b>Take Over</b>; <b>Hand Back</b> when you’re done.</p>
+        <ul class="facts">
+          <li>The system’s own web view: <b>WebKit, WebView2, WebKitGTK</b>. Sign-in pop-ups, downloads, find, zoom and the inspector all work.</li>
+          <li>Each agent gets a page of its own. Agents <b>never type your passwords</b>.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot rv" style="margin-left:0;margin-right:0">
+      <img src="assets/img/focus.webp" alt="Claude Code checks its change in the Browser panel beside its terminal; the sidebar lists the agents waiting in other projects" width="1600" height="1000" loading="lazy" decoding="async">
+      <span class="pin r" style="--x:79%;--y:15.5%"><i tabindex="0">1</i><span>Claude Code is using this page. <b>Take Over</b> any time.</span></span>
+      <span class="pin" style="--x:12%;--y:10.9%"><i tabindex="0">2</i><span>Meanwhile, two agents wait in other projects, in <b>⌘J</b> order.</span></span>
+      <span class="pin" style="--x:42%;--y:98.4%"><i tabindex="0">3</i><span>The status bar names the next one. <b>⌘J</b> goes there.</span></span>
+      <figcaption><b></b>The real app, on macOS</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================================================ 4. code -->
+<section class="sec">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><span data-k="code"><kbd>⌘E</kbd></span>Code</div>
+        <h2>See what the agent touched, <span class="q">line by line.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>The Code drawer opens beside the terminals, not instead of them. Files an agent changed carry <b>its logo</b>; lines it added or changed are marked by the line numbers, so you can read before you answer.</p>
+        <ul class="facts">
+          <li>Your language servers: <b>rust-analyzer, gopls, TypeScript, pyright, clangd</b>… Definitions, references, rename, hover and problems.</li>
+          <li>Servers start only when you open a file, and stop when you don’t need them.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot rv" style="margin-left:0;margin-right:0">
+      <img src="assets/img/editor.webp" alt="The Code drawer: the files Claude Code changed carry its logo, and the changed lines are marked beside the agent" width="1600" height="1000" loading="lazy" decoding="async">
+      <span class="pin" style="--x:68.2%;--y:26.4%"><i tabindex="0">1</i><span>Changed by <b>Claude Code</b> in this run.</span></span>
+      <span class="pin" style="--x:73.5%;--y:47%"><i tabindex="0">2</i><span>Added and changed lines, marked in the gutter.</span></span>
+      <span class="pin" style="--x:35%;--y:34%"><i tabindex="0">3</i><span>The question it asked stays in view.</span></span>
+      <figcaption><b></b>The real app, on macOS</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================================================ 5. review -->
+<section class="sec">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><span data-k="review"><kbd>⇧⌘R</kbd></span>Review &amp; worktrees</div>
+        <h2>Review it, merge it, <span class="q">or throw it away.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>Review shows what changed <b>since the agent started</b> or since the last commit, with the words that changed highlighted, unified or side by side.</p>
+        <ul class="facts">
+          <li>Start an agent in <b>a git worktree of its own</b>, so two agents never write over the same files.</li>
+          <li>A worktree’s review lists its commits and ends with <b>Merge</b> and <b>Remove</b>.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot rv" style="margin-left:0;margin-right:0">
+      <div class="scaler" data-frame="review" aria-hidden="true"><div class="scaled"></div></div>
+      <figcaption><b style="background:var(--run)"></b>Drawn with the app’s design system</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================================================ 6. documents -->
+<section class="sec">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><i class="ic" data-i="file-text"></i>Documents</div>
+        <h2>The report your agent wrote, <span class="q">right there.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>PDF, Word, PowerPoint, Excel, CSV and images open in place, read in Rust off the UI thread. A CSV opens as a table, with find and zoom, beside the agent that wrote it.</p>
+      </div>
+    </div>
+    <figure class="shot rv" style="margin-left:0;margin-right:0">
+      <img src="assets/img/docs.webp" alt="A CSV report open as a table beside Codex" width="1600" height="1000" loading="lazy" decoding="async">
+      <figcaption><b></b>The real app, on macOS</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================================================ details -->
+<section class="sec">
+  <div class="wrap">
+    <div class="rv">
+      <div class="eyebrow"><i class="ic" data-i="sparkle"></i>The small things</div>
+      <h2>Built by someone <span class="q">who lives in it.</span></h2>
+    </div>
+    <div class="bento">
+      <div class="tile-c rv">
+        <div class="vis"><span class="mini"><span class="lat run lg" style="--c:var(--run)"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></span>Updated to <span class="mono" data-version>0.1.37</span><span class="t3">·</span><span class="t3">4 agents kept running</span></span></div>
+        <h3>Updates don’t stop your agents</h3>
+        <p>On macOS, an update installs while you work and TernaryCode restarts in place. The programs in your panes keep running.</p>
+      </div>
+      <div class="tile-c rv">
+        <div class="vis"><span class="mini"><i class="ic" data-i="clock-counter-clockwise" style="color:var(--fg-3)"></i>Claude Code<span class="t3">·</span><span class="t3">can resume</span><span class="key" style="margin-left:4px">↵</span></span></div>
+        <h3>Pick up the conversation</h3>
+        <p>Agents that can continue a conversation offer <b>Resume</b> after a restart, in the pane where they were.</p>
+      </div>
+      <div class="tile-c rv">
+        <div class="vis"><span class="mini"><span class="dot"></span><span class="mono">localhost:5173</span><i class="ic" data-i="arrow-up-right" style="color:var(--fg-3);font-size:12px"></i></span></div>
+        <h3>Dev servers become chips</h3>
+        <p>A local server a pane starts shows up in the top bar. One click opens it in the Browser panel, beside the agent.</p>
+      </div>
+      <div class="tile-c rv">
+        <div class="vis" style="min-height:0"><div class="term-mini"><span class="m">storefront</span> <span class="d">on</span> <span class="m"> main</span> <span class="g">❯</span> npm test
+<span class="g">✓</span> 48 passed <span class="d">(1.2s)</span>  see <span class="lnk">src/cart.ts:42</span>
+<span class="m">storefront</span> <span class="g">❯</span> <span class="cur"> </span></div></div>
+        <h3>A real terminal</h3>
+        <p>24-bit colour, mouse, IME, <kbd>⌘</kbd>-click links, <kbd>⇧⌘F</kbd> search in every pane, shell integration for zsh, bash, fish and PowerShell.</p>
+      </div>
+      <div class="tile-c rv">
+        <div class="vis" style="min-height:0"><div class="pal"><div class="pal-q"><i class="ic" data-i="magnifying-glass"></i>re<span class="caret"></span></div><div class="pal-r on"><i class="ic" data-i="git-diff"></i>Review Changes…<span class="k">⇧⌘R</span></div><div class="pal-r"><i class="ic" data-i="clock-counter-clockwise"></i>Reopen Closed Page</div></div></div>
+        <h3>Everything is a keystroke away</h3>
+        <p>The command palette <span data-k="palette"><kbd>⌘K</kbd></span> lists every command, with its shortcut, so you learn them as you go.</p>
+      </div>
+      <div class="tile-c rv">
+        <div class="vis"><span class="mini"><i class="ic" data-i="apple-logo"></i>macOS</span><span class="mini"><i class="ic" data-i="windows-logo"></i>Windows</span><span class="mini"><i class="ic" data-i="linux-logo"></i>Linux</span></div>
+        <h3>One app, three systems</h3>
+        <p>On Windows it draws its own title bar with menus and runs PowerShell 7. On Linux the Browser panel uses WebKitGTK.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ shortcuts -->
+<section class="sec" id="shortcuts">
+  <div class="wrap">
+    <div class="keys-top rv">
+      <div>
+        <div class="eyebrow"><i class="ic" data-i="keyboard"></i>Shortcuts</div>
+        <h2>Your hands <span class="q">stay on the keys.</span></h2>
+      </div>
+      <div class="seg-os" role="group" aria-label="Keyboard of">
+        <button type="button" data-keys="mac" aria-pressed="true">macOS</button>
+        <button type="button" data-keys="pc" aria-pressed="false">Windows &amp; Linux</button>
+      </div>
+    </div>
+    <div class="keygrid rv" id="keygrid"></div>
+    <p class="keys-note rv" id="keys-note">The command palette, <kbd>⌘K</kbd>, lists all of them.</p>
+  </div>
+</section>
+
+<!-- ============================================================ open -->
+<section class="sec">
+  <div class="wrap">
+    <div class="rv">
+      <div class="eyebrow"><i class="ic" data-i="lock-simple"></i>Private by design</div>
+      <h2>Yours, <span class="q">on your machine.</span></h2>
+    </div>
+    <div class="trio rv">
+      <div><h3><i class="ic" data-i="user-circle-dashed"></i>No account</h3><p>Download it and use it. There is no sign-in, no plan and no trial. Your agents keep their own logins, as they do in any terminal.</p></div>
+      <div><h3><i class="ic" data-i="eye-slash"></i>No telemetry</h3><p>TernaryCode connects to one place: GitHub, to check for updates, and you can turn that off. Hooks and browser tools talk to the app over a local socket, with a token per pane.</p></div>
+      <div><h3><i class="ic" data-i="code"></i>Open source</h3><p>MIT licensed, built in the open with <a href="https://github.com/emilk/egui" style="text-decoration:underline;text-decoration-color:var(--hair-3);text-underline-offset:3px">egui</a>, alacritty_terminal and wry. Read it, build it, change it.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ install -->
+<section class="sec" id="install">
+  <div class="wrap">
+    <div class="rv">
+      <div class="eyebrow"><i class="ic" data-i="download-simple"></i>Install</div>
+      <h2>Two minutes <span class="q">from here.</span></h2>
+      <p class="sub">TernaryCode updates itself after that. Then install the agents you use (<span class="mono" style="font-size:.9em">claude</span>, <span class="mono" style="font-size:.9em">codex</span>, <span class="mono" style="font-size:.9em">opencode</span>, <span class="mono" style="font-size:.9em">agy</span>); Run Agent shows how when one is missing.</p>
+    </div>
+    <div class="inst rv">
+      <div class="tabs-os" role="tablist" aria-label="Operating system">
+        <button type="button" role="tab" id="tab-mac" aria-controls="os-mac" aria-selected="true"><i class="ic" data-i="apple-logo"></i>macOS</button>
+        <button type="button" role="tab" id="tab-win" aria-controls="os-win" aria-selected="false"><i class="ic" data-i="windows-logo"></i>Windows</button>
+        <button type="button" role="tab" id="tab-linux" aria-controls="os-linux" aria-selected="false"><i class="ic" data-i="linux-logo"></i>Linux</button>
+        <span class="ver">v<span data-version>0.1.37</span></span>
+      </div>
+
+      <div class="pane-os" role="tabpanel" id="os-mac" aria-labelledby="tab-mac">
+        <div class="step"><span class="no">1</span><div>
+          <h3>Run this in Terminal <span>recommended</span></h3>
+          <p>It checks the download’s SHA-256 and signature, then installs into <b>/Applications</b>. macOS 12 or later, Apple Silicon and Intel.</p>
+          <div class="cmd"><span class="ps">$</span><code id="cmd-mac">curl -fsSL https://raw.githubusercontent.com/ilhamnadhif/ternarycode/main/scripts/install.sh | bash</code><button class="copy" type="button" data-copy="cmd-mac"><i class="ic" data-i="copy"></i><span>Copy</span></button></div>
+        </div></div>
+        <div class="step"><span class="no">2</span><div>
+          <h3>Or download the disk image</h3>
+          <div class="dls"><a class="dl-b" data-asset="dmg" href="https://github.com/ilhamnadhif/ternarycode/releases/latest"><i class="ic" data-i="download-simple"></i><span class="t"><b>TernaryCode.dmg</b><span data-size>Apple Silicon and Intel</span></span></a></div>
+          <div class="note"><i class="icf" data-i="warning"></i><span>The builds aren’t notarized yet, so macOS blocks a <b>.dmg</b> downloaded in a browser. Open it anyway from <b>System Settings → Privacy &amp; Security → Open Anyway</b>, or use the command above.</span></div>
+        </div></div>
+      </div>
+
+      <div class="pane-os" role="tabpanel" id="os-win" aria-labelledby="tab-win" hidden>
+        <div class="step"><span class="no">1</span><div>
+          <h3>Download the installer</h3>
+          <p>Windows 10 (1809) or later, x64.</p>
+          <div class="dls">
+            <a class="dl-b hi" data-asset="win-setup" href="https://github.com/ilhamnadhif/ternarycode/releases/latest"><i class="ic" data-i="download-simple"></i><span class="t"><b>Installer (.exe)</b><span data-size>x64</span></span></a>
+            <a class="dl-b" data-asset="win-zip" href="https://github.com/ilhamnadhif/ternarycode/releases/latest"><i class="ic" data-i="file-zip"></i><span class="t"><b>Portable (.zip)</b><span data-size>x64</span></span></a>
+          </div>
+          <div class="note"><i class="icf" data-i="warning"></i><span>The builds aren’t code-signed yet, so SmartScreen asks once: <b>More info → Run anyway</b>.</span></div>
+        </div></div>
+        <div class="step"><span class="no">2</span><div>
+          <h3>If PowerShell says “running scripts is disabled”</h3>
+          <div class="cmd"><span class="ps">&gt;</span><code id="cmd-win">Set-ExecutionPolicy -Scope CurrentUser RemoteSigned</code><button class="copy" type="button" data-copy="cmd-win"><i class="ic" data-i="copy"></i><span>Copy</span></button></div>
+          <p>Run it once, or install PowerShell 7 with <span class="mono" style="font-size:.9em;color:var(--fg)">winget install Microsoft.PowerShell</span>.</p>
+        </div></div>
+      </div>
+
+      <div class="pane-os" role="tabpanel" id="os-linux" aria-labelledby="tab-linux" hidden>
+        <div class="step"><span class="no">1</span><div>
+          <h3>Pick your package</h3>
+          <div class="linux">
+            <div class="lx"><div class="w"><b>.deb</b><span>Debian, Ubuntu, Mint</span></div><div class="arch"><a data-asset="deb-x64" href="https://github.com/ilhamnadhif/ternarycode/releases/latest">x86_64</a><a data-asset="deb-arm" href="https://github.com/ilhamnadhif/ternarycode/releases/latest">ARM64</a></div></div>
+            <div class="lx"><div class="w"><b>.rpm</b><span>Fedora, RHEL, openSUSE</span></div><div class="arch"><a data-asset="rpm-x64" href="https://github.com/ilhamnadhif/ternarycode/releases/latest">x86_64</a><a data-asset="rpm-arm" href="https://github.com/ilhamnadhif/ternarycode/releases/latest">ARM64</a></div></div>
+            <div class="lx"><div class="w"><b>AppImage</b><span>Any distribution</span></div><div class="arch"><a data-asset="appimage-x64" href="https://github.com/ilhamnadhif/ternarycode/releases/latest">x86_64</a><a data-asset="appimage-arm" href="https://github.com/ilhamnadhif/ternarycode/releases/latest">ARM64</a></div></div>
+            <div class="lx"><div class="w"><b>.tar.gz</b><span>Any distribution</span></div><div class="arch"><a data-asset="tar-x64" href="https://github.com/ilhamnadhif/ternarycode/releases/latest">x86_64</a><a data-asset="tar-arm" href="https://github.com/ilhamnadhif/ternarycode/releases/latest">ARM64</a></div></div>
+          </div>
+        </div></div>
+        <div class="step"><span class="no">2</span><div>
+          <h3>What it needs</h3>
+          <p>OpenGL (a software renderer is fine) and glibc 2.28 or later. The Browser panel needs <b>WebKitGTK 4.1</b> (<span class="mono" style="font-size:.9em;color:var(--fg)">libwebkit2gtk-4.1-0</span>); without it, pages open in your default browser. A blank window? <span class="mono" style="font-size:.9em;color:var(--fg)">LIBGL_ALWAYS_SOFTWARE=1 ternarycode</span>.</p>
+        </div></div>
+      </div>
+
+      <div class="inst-f">
+        <span>Then: <kbd>+</kbd> in the sidebar, drop a folder on the window, or run <span class="mono" style="color:var(--fg-2)">ternarycode .</span> in any terminal.</span>
+        <span class="sp"></span>
+        <a href="https://github.com/ilhamnadhif/ternarycode/releases" data-release-link>Release notes</a>
+        <a href="https://github.com/ilhamnadhif/ternarycode#build-from-source">Build from source</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ faq -->
+<section class="sec" id="faq">
+  <div class="wrap faq-cols">
+    <div class="rv">
+      <div class="eyebrow"><i class="ic" data-i="question"></i>FAQ</div>
+      <h2>Fair <span class="q">questions.</span></h2>
+      <p class="sub">Something else? <a href="https://github.com/ilhamnadhif/ternarycode/issues" style="color:var(--fg);text-decoration:underline;text-decoration-color:var(--hair-3);text-underline-offset:3px">Open an issue</a> with your version, system and the steps.</p>
+    </div>
+    <div class="faq-l rv">
+      <details><summary>Is it really free?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Yes. TernaryCode is MIT licensed, with no account, no paid tier and no telemetry. You pay only for the agents you already use, through their own plans.</p></div></details>
+      <details><summary>Which agents does it work with?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Run Agent has presets for <b>Claude Code, Codex, OpenCode and Antigravity CLI</b>, and you can add any command as a preset of your own. Each agent is installed on its own, as usual.</p><p>Status comes from hooks for Claude Code and Codex (added per launch) and from a plugin for OpenCode. Antigravity CLI has no hooks yet, so it shows <i>Active</i>.</p></div></details>
+      <details><summary>Will it change my agent’s settings?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not unless you ask. Hooks are passed for each launch. If you want agents you start by hand to report too, <b>Settings → Agents</b> installs them once: it shows the exact change first, keeps a backup, and <b>Uninstall</b> restores the file byte for byte.</p></div></details>
+      <details><summary>Is it an IDE?<i class="ic" data-i="plus"></i></summary><div class="a"><p>No, and on purpose. TernaryCode is terminal-first: agents do the writing, you read, review and answer. The Code drawer is there to read what changed, with your language servers, and for the small edit.</p></div></details>
+      <details><summary>Does my code go anywhere?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not through TernaryCode. It sends nothing about you or your code; it only asks GitHub whether there’s an update. Your agents talk to their own providers, exactly as they do in any terminal.</p></div></details>
+      <details><summary>Why does my system warn me about it?<i class="ic" data-i="plus"></i></summary><div class="a"><p>The builds aren’t notarized or code-signed yet. On macOS, the one-line installer checks the download’s SHA-256 and signature itself; with the <b>.dmg</b>, use <b>Open Anyway</b> in Privacy &amp; Security. On Windows, SmartScreen asks once.</p></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ final -->
+<section class="final">
+  <div class="field" id="field-final" aria-hidden="true"></div>
+  <div class="wrap rv">
+    <img class="final-icon" src="assets/img/icon.svg" alt="" width="76" height="76">
+    <h2>Let the waiting agent<br><span class="q">find you.</span></h2>
+    <div class="cta">
+      <a class="pb pb-pri" href="#install" data-cta-main><i class="ic" data-i="download-simple"></i><span>Download for macOS</span></a>
+      <a class="pb pb-sec" href="https://github.com/ilhamnadhif/ternarycode"><i class="ic" data-i="github-logo"></i>View on GitHub</a>
+    </div>
+    <p class="cta-note">Free and open source · v<span data-version>0.1.37</span></p>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot-site">
+  <div class="wrap foot-g">
+    <div>
+      <div class="brand"><img src="assets/img/icon.svg" alt="" width="22" height="22" style="width:22px;height:22px">TernaryCode</div>
+      <p>One window for all your projects and the AI coding agents working in them. Written in Rust, with egui, alacritty_terminal and wry. MIT licensed.</p>
+    </div>
+    <div>
+      <h4>TernaryCode</h4>
+      <ul>
+        <li><a href="https://github.com/ilhamnadhif/ternarycode">Source</a></li>
+        <li><a href="https://github.com/ilhamnadhif/ternarycode/releases">Releases</a></li>
+        <li><a href="https://github.com/ilhamnadhif/ternarycode/issues">Issues</a></li>
+        <li><a href="https://github.com/ilhamnadhif/ternarycode/blob/main/LICENSE">License</a></li>
+      </ul>
+    </div>
+    <div class="fam">
+      <h4>The Ternary family</h4>
+      <ul>
+        <li><a href="https://github.com/ilhamnadhif/ternarygrid">TernaryGrid <span>· SQL</span></a></li>
+        <li><a href="https://github.com/ilhamnadhif/ternarywire">TernaryWire <span>· API</span></a></li>
+        <li><a href="https://github.com/ilhamnadhif/ternaryshell">TernaryShell <span>· SSH</span></a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/icons.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/site.js"></script>
+<script src="assets/demo.js"></script>
+</body>
+</html>

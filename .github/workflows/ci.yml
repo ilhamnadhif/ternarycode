@@ -9,6 +9,8 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # the website alone (pages.yml publishes it) needs no Rust build
+    paths-ignore: ["site/**", ".github/workflows/pages.yml"]
   pull_request:
   workflow_dispatch:
 
