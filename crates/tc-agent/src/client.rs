@@ -143,13 +143,23 @@ pub fn run(args: &[String]) -> i32 {
         _ => {}
     }
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    match message(args, env, read_stdin) {
-        Some((sock, msg)) => {
-            let _ = send(&sock, &msg);
-        }
-        None => {
-            // Not in a TernaryCode pane: still take the payload so the agent's write succeeds.
-            let _ = read_stdin();
+    // The payload comes from stdin unless it is the last argument; taken either way so the
+    // agent's write succeeds.
+    let stdin = if args.len() < 3 { read_stdin() } else { None };
+    let raw = args.get(2).map(|j| j.clone().into_bytes()).or_else(|| stdin.clone());
+    if let Some((sock, msg)) = message(args, env, || stdin) {
+        let _ = send(&sock, &msg);
+        // A call that would open a page in another browser: refused (Claude Code, Codex).
+        if let Some(agent) = AgentKind::from_slug(&msg.agent) {
+            let payload: Value = raw.and_then(|r| serde_json::from_slice(&r).ok()).unwrap_or(Value::Null);
+            let transcript = payload["transcript_path"].as_str().map(std::path::PathBuf::from);
+            let tools = || crate::guard::tools_on(agent, env);
+            let prompt = || transcript.as_deref().and_then(crate::guard::last_prompt);
+            if msg.event == "PreToolUse"
+                && let Some(out) = crate::guard::decision(agent, &msg.event, &payload, tools(), prompt)
+            {
+                println!("{out}");
+            }
         }
     }
     0

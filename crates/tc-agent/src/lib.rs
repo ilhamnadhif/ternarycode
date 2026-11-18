@@ -4,6 +4,7 @@
 //! each agent (flags for one launch, or hooks installed in the agent's configuration).
 
 pub mod client;
+pub mod guard;
 pub mod integrate;
 pub mod mcp;
 pub mod proc;

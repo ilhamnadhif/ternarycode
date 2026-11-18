@@ -40,10 +40,15 @@ pub const ENV_OPENCODE_CONFIG: &str = "OPENCODE_CONFIG_CONTENT";
 /// TernaryCode's browser (after the user's own instructions).
 const CODEX_GUIDE: &str = "You run in a terminal pane of TernaryCode, which has a browser built in, \
 beside this terminal: it is the user's browser in this session, and the user sees every page and \
-every click. Whenever the user asks to open, show, check or search something on a website or in a \
-browser (open YouTube, check it in the browser, a URL, a dev server), use the ternarycode tools, \
-browser_navigate first, not `open <url>` in a shell and not other browser or computer-use tools \
-(Computer Use, Chrome, Safari, Playwright), unless the user names that other browser or tool. A \
+every click. Use the ternarycode tools, browser_navigate first, for every web page you need, \
+whether the user asks for it or your work needs it: to open, show, check or search something on a \
+website (open YouTube, check it in the browser, a URL, a dev server), to look at a page or take a \
+picture of it, to test a web app, to study a site's design. Do not start another browser for it: \
+not Chrome, Chromium, Edge, Firefox or Safari (headless included), not Playwright, Puppeteer, \
+Selenium or a script of your own that drives a browser, not `open <url>` or `open -a` in a shell, \
+and not other browser or computer-use tools (Computer Use, Chrome, Safari, Playwright), unless the \
+user names that other browser or tool. A project's own tests (npm test, playwright test) run as \
+they always do. A \
 pop-up a page opens (a sign-in such as Continue with Google) shows in a window of its own; the \
 tools act in it until it closes. Never type the user's passwords or one-time codes: ask the user \
 to type them there.";

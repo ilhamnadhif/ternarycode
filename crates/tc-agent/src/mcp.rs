@@ -23,10 +23,15 @@ const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-0
 /// have (a browser extension's, Playwright) and before `open <url>`.
 const INSTRUCTIONS: &str = "You run in a terminal pane of TernaryCode, which has a browser built \
 in, beside this terminal: it is the user's browser in this session, and the user sees every page \
-and every click. Whenever the user asks to open, show, check or search something on a website or \
-in a browser (\"open YouTube\", \"check it in the browser\", a URL, a dev server), use these \
-tools, not `open <url>` in a shell and not other browser tools (Chrome, Zen, Safari, Playwright), \
-unless the user names that other browser. Start with browser_navigate; then act on the refs of \
+and every click. Use these tools for every web page you need, whether the user asks for it or \
+your work needs it: to open, show, check or search something on a website (\"open YouTube\", \
+\"check it in the browser\", a URL, a dev server), to look at a page or take a picture of it, to \
+test a web app, to study a site's design. Do not start another browser for it: not Chrome, \
+Chromium, Edge, Firefox or Safari (headless included), not Playwright, Puppeteer, Selenium or a \
+script of your own that drives a browser, not `open <url>` or `open -a` in a shell, and not other \
+browser tools (Claude in Chrome, Zen, a Playwright server), unless the user names that other \
+browser. A project's own tests (npm test, playwright test) run as they always do. Start with \
+browser_navigate; then act on the refs of \
 the snapshot each tool returns. Pages: you work in a page of your own, but when the user already \
 has the site you open in a page of theirs that is idle, browser_navigate works in that one \
 instead of opening another (it stays theirs); browser_tabs lists the pages and picks one when \
