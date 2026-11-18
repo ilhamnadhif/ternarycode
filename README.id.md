@@ -17,6 +17,7 @@
 </p>
 
 <p align="center">
+  <a href="https://ilhamnadhif.github.io/ternarycode/"><b>Website</b></a> ·
   <a href="#instalasi">Instalasi</a> ·
   <a href="#fitur">Fitur</a> ·
   <a href="#shortcut-keyboard">Shortcut</a> ·

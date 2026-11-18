@@ -17,6 +17,7 @@
 </p>
 
 <p align="center">
+  <a href="https://ilhamnadhif.github.io/ternarycode/"><b>Website</b></a> ·
   <a href="#install">Install</a> ·
   <a href="#features">Features</a> ·
   <a href="#keyboard-shortcuts">Shortcuts</a> ·
