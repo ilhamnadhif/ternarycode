@@ -146,6 +146,7 @@
     ['grid', 'Grid', ['⌘0'], ['Ctrl+Shift+0']],
     ['code', 'Code drawer', ['⌘E'], ['Ctrl+Shift+Y']],
     ['review', 'Review changes', ['⇧⌘R'], ['Ctrl+Shift+R']],
+    ['commit', 'Commit, push &amp; PR', ['⇧⌘C'], ['Ctrl+Shift+Alt+C']],
     ['browser', 'Browser panel', ['⇧⌘B'], ['Ctrl+Shift+Alt+B']],
     ['split', 'Split right · down', ['⌘D', '⇧⌘D'], ['Ctrl+Shift+D', 'Ctrl+Shift+E']],
     ['find', 'Find · in all panes', ['⌘F', '⇧⌘F'], ['Ctrl+Shift+F', 'Ctrl+Shift+G']],
@@ -229,12 +230,74 @@
     return win({ theme: 'dark', sb: sidebar({ sel: null, groups }), top, main: body,
       status: statusbar({ lead: `<span class="lead">${IF('bell-ringing', 'c-wait')}<b>mobile-app</b><span class="t3">·</span>Claude Code wants to run <span class="mono" style="font-size:10.5px;color:var(--text)">flutter test</span><span class="t3">+1 more</span>${kbd('⌘J')}</span>` }) });
   }
+  // The commit box under Changes: the message from the agent's task and last words, one button.
+  function shipWindow() {
+    const shFile = r => `<div class="sh-fr ${r.on ? 'on' : ''}">${chk(true)}${cdMark(r.m)}
+      <div class="sh-nm"><div class="ell t1">${r.n}</div><div class="mono t3 ell" style="font-size:10.5px;margin-top:1px">${r.d}</div></div>
+      ${al(r.ag, 11)}<span class="cd-pm"><span class="c-add">+${r.a}</span>${r.x ? `<span class="c-del">−${r.x}</span>` : ''}</span></div>`;
+    const files = [
+      { m: 'a', n: 'CartBadge.tsx', d: 'src/components', a: 31, ag: 'CC' },
+      { m: 'a', n: 'useCart.ts', d: 'src/cart', a: 22, ag: 'CC' },
+      { m: 'm', n: 'Header.tsx', d: 'src/components', a: 7, x: 1, ag: 'CC', on: true },
+    ];
+    const unified = [`<div class="hunk"><span>@@ −1,14 +1,19 @@</span><span class="ctx">export function Header()</span></div>`];
+    for (const [t, a, l, b, r] of HEADER_SPLIT) {
+      if (t === 'add') unified.push(cdDl('add', '', b, r, 'ts'));
+      else if (t === 'mod') { unified.push(cdDl('del', a, '', l, 'ts')); unified.push(cdDl('add', '', b, r.replace('<CartButton>', '<CartButton⟦⟧>'), 'ts')); }
+      else unified.push(cdDl('', a, b, l, 'ts'));
+    }
+    const agent = [
+      ...T.ccHead('opus 4.6', '~/code/storefront'),
+      `<span class="d">&gt;</span> Add a cart badge to the header, then`,
+      `  check it in the browser`,
+      '',
+      `<span class="g">⏺</span> Write <span class="b">src/components/CartBadge.tsx</span> <span class="g">+31</span>`,
+      `<span class="g">⏺</span> Write <span class="b">src/cart/useCart.ts</span> <span class="g">+22</span>`,
+      `<span class="g">⏺</span> Update <span class="b">src/components/Header.tsx</span> <span class="g">+7</span> <span class="r">−1</span>`,
+      `<span class="g">⏺</span> <span class="b">ternarycode</span> <span class="d">·</span> browser_click <span class="d">× 2</span>`,
+      `  <span class="f">⎿</span>  <span class="d">The badge shows 2.</span>`,
+      '',
+      `<span class="g">⏺</span> The header shows the item count from`,
+      `  useCart. Checked in the browser: 0 → 1 → 2.`,
+      '',
+      ...T.prompt(48),
+    ];
+    const box = `<div class="sh-box">
+      <div class="sh-msg"><div class="t">Add a cart badge to the header</div><div class="b">The header shows the item count from useCart. Checked in the browser: 0 → 1 → 2.</div>${ib('sparkle', { xs: true, cls: 'ai' })}</div>
+      <div class="sh-src">${al('CC', 10)}<span>From Claude Code’s task and its last words</span></div>
+      <div class="sh-go"><span class="btn primary m">${I('git-pull-request')}Commit, Push &amp; Create PR<span class="kb">⌘↵</span></span><span class="btn primary x">${I('caret-down')}</span></div>
+      <div class="sh-to">${I('git-branch')}<span>feature/cart-badge</span><span class="ar">→</span><span class="ell">origin · PR into main</span></div>
+    </div>`;
+    const scope = `<div class="cd-scope">
+      <span class="cd-sc on"><span class="cd-sci">${al('CC', 12)}</span><span class="cd-scb"><span>Since Claude Code started</span><span class="cd-cnt">6 min ago · 3 files</span></span></span>
+      <span class="cd-sc"><span class="cd-sci">${I('git-commit')}</span><span class="cd-scb"><span>Since last commit</span><span class="cd-cnt">4 files</span></span></span>
+    </div>`;
+    const drawer = sheet(`
+      ${cdHead(1, { n: 4 })}
+      <div class="cd-body">
+        <div class="cd-col sh-col">${scope}<div class="cd-flist">${files.map(shFile).join('')}</div>${box}</div>
+        <div class="cd-main">
+          <div class="cd-dfh">${cdMark('m')}<span class="medium">src/components/Header.tsx</span><span class="mono c-add" style="font-size:11px">+7</span><span class="mono c-del" style="font-size:11px">−1</span>${bars(7, 1)}<span class="sp"></span>${seg(['Unified', 'Split'], 0, 'sm')}${ib('arrow-square-out', { sm: true })}</div>
+          <div class="cd-diff code">${unified.join('')}</div>
+          <div class="cd-sl"><span class="row g4">${kbd('j')}${kbd('k')}<span>file</span></span><span class="row g4">${kbd('space')}<span>in or out of the commit</span></span><span class="sp"></span><span class="row g4">${kbd('⇧⌘C')}<span>commit box</span></span></div>
+        </div>
+      </div>`, { cls: 'focus cd-drawer', style: 'flex:1' });
+    const groups = GROUPS('storefront').map(g => ({ ...g, rows: g.rows.map(r => r.n === 'storefront' ? { ...r, st: 'done', a: null, stl: 'Done', br: 'feature/cart-badge', chg: 4, dots: ['d', 'r'] } : r) }));
+    return win({
+      theme: 'dark',
+      sb: sidebar({ sel: 'storefront', queue: QUEUE.slice(0, 2), groups }),
+      top: topbar({ p: 'storefront', br: 'feature/cart-badge', chg: 4, code: true, tabs: [{ al: 'CC', l: 'Claude Code', on: true }, { l: 'zsh', i: 'terminal-window' }] }),
+      main: `${pane({ a: 'CC', st: 'done', stl: 'Done', meta: 'opus 4.6', hooks: true, time: '6:12', style: 'width:440px;flex:none' }, agent)}${drawer}`,
+    });
+  }
   if (typeof LOGO === 'object') $$('[data-logo]').forEach(el => { el.innerHTML = LOGO[el.dataset.logo](16); });
   if (typeof win === 'function') {
     const sb = $('[data-frame="sidebar"]');
     if (sb) frame(sb, 248, 520, `<div class="app dark"><div class="sbx" style="width:248px;height:520px">${sidebar({})}</div></div>`);
     const rv = $('[data-frame="review"]');
     if (rv) frame(rv, 1440, 900, reviewWindow());
+    const sh = $('[data-frame="ship"]');
+    if (sh) frame(sh, 1440, 900, shipWindow());
     // how each state looks where you meet it: a Grid tile's footer, a sidebar row
     const SPEC = {
       wait: () => `<div class="tile-f wait">${IF('bell-ringing', 'c-wait')}<span class="ell">Claude Code wants to run <code>flutter test</code></span><span class="sp"></span>${btn('Allow', { sm: true, k: 'primary' })}</div>`,

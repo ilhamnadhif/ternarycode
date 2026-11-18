@@ -243,7 +243,31 @@
   </div>
 </section>
 
-<!-- ============================================================ 6. documents -->
+<!-- ============================================================ 6. commit & pull request -->
+<section class="sec">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><span data-k="commit"><kbd>⇧⌘C</kbd></span>Commit &amp; pull request</div>
+        <h2>Read the diff, <span class="q">press one button.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>Under the files you just reviewed: <b>commit, push and open the pull request</b> in one go, with each step shown as it runs.</p>
+        <ul class="facts">
+          <li>The message is already written, from <b>the task you gave the agent</b> and its last words. ✦ asks Claude Code or Codex to write it from the diff.</li>
+          <li>Only the files you check go in. On <b>main</b> it pushes to main; on a branch it opens the pull request with your GitHub CLI, or its form in the Browser panel.</li>
+          <li>When git needs a password or the push is rejected, <b>a terminal takes over</b> and your commit stays safe.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot rv" style="margin-left:0;margin-right:0">
+      <div class="scaler" data-frame="ship" aria-hidden="true"><div class="scaled"></div></div>
+      <figcaption><b style="background:var(--run)"></b>Drawn with the app’s design system</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================================================ 7. documents -->
 <section class="sec">
   <div class="wrap">
     <div class="ch-head rv">
@@ -333,7 +357,7 @@
     </div>
     <div class="trio rv">
       <div><h3><i class="ic" data-i="user-circle-dashed"></i>No account</h3><p>Download it and use it. There is no sign-in, no plan and no trial. Your agents keep their own logins, as they do in any terminal.</p></div>
-      <div><h3><i class="ic" data-i="eye-slash"></i>No telemetry</h3><p>TernaryCode connects to one place: GitHub, to check for updates, and you can turn that off. Hooks and browser tools talk to the app over a local socket, with a token per pane.</p></div>
+      <div><h3><i class="ic" data-i="eye-slash"></i>No telemetry</h3><p>TernaryCode connects to one place: GitHub, to check for updates, and you can turn that off. Pushes and pull requests go through your own git and GitHub CLI. Hooks and browser tools talk to the app over a local socket, with a token per pane.</p></div>
       <div><h3><i class="ic" data-i="code"></i>Open source</h3><p>MIT licensed, built in the open with <a href="https://github.com/emilk/egui" style="text-decoration:underline;text-decoration-color:var(--hair-3);text-underline-offset:3px">egui</a>, alacritty_terminal and wry. Read it, build it, change it.</p></div>
     </div>
   </div>
@@ -424,7 +448,7 @@
       <details><summary>Which agents does it work with?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Run Agent has presets for <b>Claude Code, Codex, OpenCode and Antigravity CLI</b>, and you can add any command as a preset of your own. Each agent is installed on its own, as usual.</p><p>Status comes from hooks for Claude Code and Codex (added per launch) and from a plugin for OpenCode. Antigravity CLI has no hooks yet, so it shows <i>Active</i>.</p></div></details>
       <details><summary>Will it change my agent’s settings?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not unless you ask. Hooks are passed for each launch. If you want agents you start by hand to report too, <b>Settings → Agents</b> installs them once: it shows the exact change first, keeps a backup, and <b>Uninstall</b> restores the file byte for byte.</p></div></details>
       <details><summary>Is it an IDE?<i class="ic" data-i="plus"></i></summary><div class="a"><p>No, and on purpose. TernaryCode is terminal-first: agents do the writing, you read, review and answer. The Code drawer is there to read what changed, with your language servers, and for the small edit.</p></div></details>
-      <details><summary>Does my code go anywhere?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not through TernaryCode. It sends nothing about you or your code; it only asks GitHub whether there’s an update. Your agents talk to their own providers, exactly as they do in any terminal.</p></div></details>
+      <details><summary>Does my code go anywhere?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not through TernaryCode. It sends nothing about you or your code; it only asks GitHub whether there’s an update. When you push or open a pull request, your own git and GitHub CLI send it where you asked. Your agents talk to their own providers, exactly as they do in any terminal.</p></div></details>
       <details><summary>Why does my system warn me about it?<i class="ic" data-i="plus"></i></summary><div class="a"><p>The builds aren’t notarized or code-signed yet. On macOS, the one-line installer checks the download’s SHA-256 and signature itself; with the <b>.dmg</b>, use <b>Open Anyway</b> in Privacy &amp; Security. On Windows, SmartScreen asks once.</p></div></details>
     </div>
   </div>

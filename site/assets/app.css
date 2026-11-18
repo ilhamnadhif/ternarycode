@@ -675,3 +675,121 @@
 .cd-wtf .mono { font-size: 11px; }
 .cd-wtf .ph { font-size: 14px; }
 
+
+/* Commit, push & pull request (sh- prefix). */
+
+/* the Changes column, a little wider when it holds the commit box */
+.sh-col { width: 300px !important; }
+.sh-col .cd-flist { padding-bottom: 6px; }
+
+/* a changed file, with the box that says whether it goes into the commit */
+.sh-fr { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px 0 7px; border-radius: 7px; font-size: 12.5px; }
+.sh-fr.on { background: var(--accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent); }
+.sh-fr .chk { width: 14px; height: 14px; border-radius: 4px; font-size: 10px; }
+.sh-fr.out .sh-nm, .sh-fr.out .cd-m, .sh-fr.out .cd-pm { opacity: .45; }
+.sh-fr .sh-nm { min-width: 0; flex: 1; }
+.sh-fr .sh-who { font-size: 10px; color: var(--text-3); font-family: "JBM"; }
+.sh-sub { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 14px; font-size: 11px; font-weight: 500; color: var(--text-3); }
+.sh-sub .n { font-family: "JBM"; font-weight: 500; color: var(--text-4); font-size: 10.5px; }
+.sh-sub .lk { margin-left: auto; color: var(--accent-t); font-weight: 500; }
+
+/* the commit box: message, one button, where it goes */
+.sh-box { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 10px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--base) 22%, transparent); }
+.light .sh-box { background: #f8f8f7; }
+.sh-msg { position: relative; padding: 8px 32px 9px 10px; border-radius: 8px; background: var(--inset); box-shadow: inset 0 0 0 1px var(--line-2); }
+.light .sh-msg { background: #fff; }
+.sh-msg.focus { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
+.sh-msg .t { font-size: 12.5px; font-weight: 500; color: var(--text); line-height: 1.4; }
+.sh-msg .b { margin-top: 5px; font-size: 12px; color: var(--text-2); line-height: 1.45; }
+.sh-msg .ph-t { font-size: 12.5px; color: var(--text-3); }
+.sh-msg .ai { position: absolute; right: 5px; top: 5px; }
+.sh-msg .ai.acc { color: var(--accent-t); }
+.sh-msg .caret { display: inline-block; width: 1.5px; height: 14px; background: var(--accent-t); vertical-align: -2px; margin-left: 1px; }
+.sh-src { display: flex; align-items: center; gap: 5px; margin-top: -2px; font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.sh-src .al { opacity: .9; }
+.sh-go { display: flex; gap: 1px; }
+.sh-go .btn { height: 32px; font-size: 12.5px; }
+.sh-go .btn.m { flex: 1; border-radius: 7px 0 0 7px; justify-content: center; }
+.sh-go .btn.x { width: 30px; padding: 0; border-radius: 0 7px 7px 0; }
+.sh-go .btn.solo { border-radius: 7px; }
+.sh-go .btn.dis { opacity: .45; }
+.sh-to { display: flex; align-items: center; gap: 5px; min-width: 0; font-family: "JBM"; font-size: 10.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; }
+.sh-to .ph { font-size: 11px; flex: none; }
+.sh-to .ar { color: var(--text-4); }
+.sh-to .sp { flex: 1; }
+.sh-to .lk { font-family: "Inter"; font-size: 11px; color: var(--text-3); display: inline-flex; align-items: center; gap: 3px; }
+.sh-runs { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border-radius: 8px; background: var(--inset); box-shadow: inset 0 0 0 1px var(--line); font-family: "JBM"; font-size: 10.5px; line-height: 1.5; color: var(--text-2); white-space: nowrap; overflow: hidden; }
+.light .sh-runs { background: #f3f3f2; }
+.sh-runs .p { color: var(--text-4); margin-right: 6px; }
+.sh-note { display: flex; gap: 7px; font-size: 11.5px; line-height: 1.45; color: var(--text-2); }
+.sh-note .ph, .sh-note .phf { font-size: 13px; flex: none; margin-top: 1px; }
+.sh-note.warn .ph { color: var(--wait); }
+.sh-note b { color: var(--text); font-weight: 500; }
+.sh-note .mono { font-size: 10.5px; color: var(--text); }
+.sh-opt { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
+.sh-opt .fld { height: 26px; font-size: 11.5px; flex: 1; }
+
+/* while it runs, and after */
+.sh-steps { display: flex; flex-direction: column; gap: 2px; padding: 4px; border-radius: 9px; background: var(--inset); box-shadow: inset 0 0 0 1px var(--line); }
+.light .sh-steps { background: #fff; }
+.sh-st { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 8px; border-radius: 6px; font-size: 12.5px; white-space: nowrap; }
+.sh-st .gl { width: 14px; }
+.sh-st .w { font-weight: 500; }
+.sh-st .mono { font-size: 10.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.sh-st .sp { flex: 1; }
+.sh-st .tm { font-family: "JBM"; font-size: 10px; color: var(--text-4); }
+.sh-st.todo { color: var(--text-3); }
+.sh-st.todo .w { font-weight: 400; }
+.sh-st.fail { background: color-mix(in srgb, var(--fail) 10%, transparent); }
+.sh-err { padding: 8px 10px; border-radius: 8px; background: var(--inset); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fail) 28%, transparent); font-family: "JBM"; font-size: 10.5px; line-height: 1.55; color: var(--text-2); white-space: pre; overflow: hidden; }
+.light .sh-err { background: #fff; }
+.sh-err .r { color: var(--fail); }
+.sh-pr { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 12px; border-radius: 9px; background: color-mix(in srgb, var(--done) 9%, var(--sheet)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--done) 26%, transparent); }
+.sh-pr .ic { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; font-size: 15px; color: var(--done); background: color-mix(in srgb, var(--done) 14%, transparent); flex: none; }
+.sh-pr .t { font-size: 12.5px; font-weight: 600; }
+.sh-pr .s { font-family: "JBM"; font-size: 10.5px; color: var(--text-3); margin-top: 1px; }
+.sh-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.sh-acts .btn { height: 28px; }
+
+/* the pull request, afterwards */
+.sh-prchip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 7px; font-size: 12px; color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line-2); white-space: nowrap; }
+.sh-prchip > .ph { font-size: 13px; color: var(--accent-t); }
+.sh-prchip .mono { font-size: 11.5px; color: var(--text); }
+.sh-prchip .ck { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; }
+.sh-prchip .ck .phf { font-size: 12px; }
+.sh-prchip .ext { font-size: 11px; color: var(--text-4); }
+
+/* boards */
+.sh-flow { display: flex; align-items: stretch; gap: 14px; }
+.sh-step { width: 300px; flex: none; }
+.sh-sn { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.sh-sn span { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; font-family: "JBM"; font-size: 10.5px; color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+.sh-sn b { font-weight: 600; }
+.sh-arr { align-self: center; color: var(--text-4); font-size: 15px; margin-top: 26px; }
+.sh-card { background: var(--sheet); border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; display: flex; flex-direction: column; }
+.light .sh-card { box-shadow: 0 0 0 1px var(--line-2); }
+.sh-card .sh-box { border-top: 0; background: transparent; }
+.sh-cap { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border-bottom: 1px solid var(--line); font-size: 11.5px; color: var(--text-3); }
+.sh-cap b { color: var(--text); font-weight: 500; }
+.sh-cap .mono { font-size: 10.5px; }
+.sh-grid3 { display: grid; grid-template-columns: repeat(4, 300px); gap: 22px 20px; }
+.sh-topbar { height: 44px; display: flex; align-items: center; gap: 6px; padding: 0 10px 0 6px; border-radius: 10px; background: var(--base); box-shadow: inset 0 0 0 1px var(--line); }
+.sh-toast { position: relative; display: inline-flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border-radius: 11px; background: var(--menu); box-shadow: 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi), var(--sh-pop); font-size: 12.5px; white-space: nowrap; }
+.light .sh-toast { box-shadow: 0 0 0 1px var(--line-2), var(--sh-pop); }
+.sh-toast .phf { font-size: 15px; }
+.sh-pal { width: 520px; }
+.sh-pal .lrow .ph { font-size: 15px; color: var(--text-2); }
+.sh-pal .lrow.on .ph { color: var(--accent-t); }
+.sh-tile .tile-f { margin: 0 6px 6px; }
+.sh-tile .tile-f .btn { height: 26px; }
+.sh-wtcol { width: 300px; display: flex; flex-direction: column; }
+.sh-mtag { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 5px; font-family: "JBM"; font-size: 10px; font-weight: 600; color: var(--accent-t); background: var(--accent-soft); }
+.sh-decide { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.sh-q { padding: 16px 18px; border-radius: 10px; background: var(--sheet); box-shadow: inset 0 0 0 1px var(--line); }
+.light .sh-q { box-shadow: 0 0 0 1px var(--line-2); }
+.sh-q h3 { margin: 0 0 4px; font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
+.sh-q > p { margin: 0 0 12px; font-size: 12px; color: var(--text-3); line-height: 1.5; }
+.sh-q .o { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 12.5px; line-height: 1.5; color: var(--text-2); }
+.sh-q .o b { color: var(--text); font-weight: 500; }
+.sh-q .o .tag { flex: none; margin-top: 1px; }
+.sh-q .o.rec .tag { color: var(--done); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--done) 40%, transparent); }
