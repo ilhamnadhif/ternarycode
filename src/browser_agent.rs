@@ -38,6 +38,10 @@ const LOAD_LIMIT: Duration = Duration::from_secs(30);
 const STEP_LIMIT: Duration = Duration::from_secs(70);
 /// The moment between typed characters.
 const KEY_GAP: Duration = Duration::from_millis(12);
+/// The moment a page takes to hear it has the keyboard (WebKit tells it after a key sent with
+/// it, and an editor such as x.com's then puts its caret back where it was).
+#[cfg(target_os = "macos")]
+const FOCUS_GAP: Duration = Duration::from_millis(80);
 /// Most pages of its own an agent keeps open (browser_tabs new): the panel's strip stays
 /// readable.
 const AGENT_PAGES: usize = 3;
@@ -106,6 +110,11 @@ enum Native {
     /// One character typed (text goes a character at a time, a moment apart: WebKit's input
     /// takes text from keys sent all at once only for the first few).
     Char(char),
+    /// The page takes the keyboard, as when the user clicks in it.
+    Focus,
+    /// Text put in at once where the page has its selection, as the system's input does
+    /// (dictation, the emoji picker): editors take it as typed.
+    Insert(String),
 }
 
 /// What a job waits for.
@@ -349,8 +358,15 @@ impl App {
             }
             "browser_type" => {
                 let e = element();
-                let args = json!({ "ref": s("ref"), "text": a["text"].as_str().unwrap_or(""), "submit": a["submit"].as_bool().unwrap_or(false) });
-                (tf("Typing into {}", &[&e]), vec![Op::Act("type", args, format!("Typed into {e}.")), Op::Settle, Op::Read])
+                // macOS: an editor (contenteditable) gets the text as typed, by the system's input
+                // (`native`), the page having the keyboard first.
+                let native = cfg!(target_os = "macos");
+                let args = json!({ "ref": s("ref"), "text": a["text"].as_str().unwrap_or(""), "submit": a["submit"].as_bool().unwrap_or(false), "native": native });
+                let mut ops = vec![Op::Act("type", args, format!("Typed into {e}.")), Op::Settle, Op::Read];
+                if native {
+                    ops.insert(0, Op::Native(Native::Focus, String::new()));
+                }
+                (tf("Typing into {}", &[&e]), ops)
             }
             "browser_select_option" => {
                 let e = element();
@@ -921,6 +937,16 @@ impl App {
                                         self.ask_site(id, pane, &url, true);
                                         return None;
                                     }
+                                    // An editor took the agent's text as typed: its text is
+                                    // selected for the system's input to replace (then Enter).
+                                    if name == "type" && v["insert"].as_bool() == Some(true) {
+                                        let text = args["text"].as_str().unwrap_or("").to_string();
+                                        if args["submit"].as_bool() == Some(true) {
+                                            job.ops.push_front(Op::Native(Native::Key("Enter".into()), String::new()));
+                                        }
+                                        let put = if text.is_empty() { Native::Key("Backspace".into()) } else { Native::Insert(text) };
+                                        job.ops.push_front(Op::Native(put, String::new()));
+                                    }
                                     if name == "console" {
                                         job.text.push_str(v["text"].as_str().unwrap_or(""));
                                     } else {
@@ -1171,15 +1197,33 @@ impl App {
                                     job.waiting = Some(Waiting::Page { seq, op: Op::Aim(args, then, line), since: now, at: (page_url.clone(), loading) });
                                 }
                                 Op::Native(native, line) => {
+                                    // Keys go to a page that has the keyboard, a moment after it
+                                    // took it: else its focus comes after the first key.
+                                    #[cfg(target_os = "macos")]
+                                    if !matches!(native, Native::ClickAt(..)) && crate::browser_input::take_keyboard(view) {
+                                        if !matches!(native, Native::Focus) {
+                                            job.ops.push_front(Op::Native(native, line));
+                                        }
+                                        job.ops.push_front(Op::Pause(FOCUS_GAP));
+                                        continue;
+                                    }
+                                    if matches!(native, Native::Focus) {
+                                        continue;
+                                    }
                                     crate::browser_popup::agent_acting(view, sites.clone(), pass.clone());
                                     job.acted = Some(crate::browser::page_key(view));
-                                    if !matches!(native, Native::Char(_) | Native::Type(..)) {
+                                    if !matches!(native, Native::Char(_) | Native::Type(..) | Native::Insert(_)) {
                                         job.redo = Some(Op::Native(native.clone(), line.clone()));
                                     }
                                     let done = match native {
                                         Native::ClickAt(x, y) => crate::browser_input::click(view, x, y, 1).then_some(()).ok_or_else(|| "The page has no window.".to_string()),
                                         Native::Key(k) => crate::browser_input::key(view, &k),
                                         Native::Char(c) => crate::browser_input::type_text(view, &c.to_string()).then_some(()).ok_or_else(|| "The page has no window.".to_string()),
+                                        #[cfg(target_os = "macos")]
+                                        Native::Insert(text) => crate::browser_input::insert_text(view, &text).then_some(()).ok_or_else(|| "The page has no window.".to_string()),
+                                        #[cfg(not(target_os = "macos"))]
+                                        Native::Insert(text) => crate::browser_input::type_text(view, &text).then_some(()).ok_or_else(|| "The page has no window.".to_string()),
+                                        Native::Focus => Ok(()),
                                         Native::Type(text, submit) => {
                                             // A character at a time, a moment apart (then Enter).
                                             let mut keys: Vec<Op> = Vec::new();

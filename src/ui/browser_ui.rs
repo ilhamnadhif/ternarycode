@@ -1449,8 +1449,13 @@ impl App {
         }
         // A page under a question is dimmed; a page loading says so (from its request on). A
         // page an agent acts in takes the keyboard when the agent focuses something in it: the
-        // keyboard goes back where the user had it (the agent's terminal).
+        // keyboard goes back where the user had it (the agent's terminal). On macOS, once the
+        // agent's call is done: before, the page would lose its focus between two keys the agent
+        // types, and an editor (x.com's) its caret with it.
         let mut typing_in = self.browser_focus;
+        let acting: std::collections::HashSet<PaneId> = if cfg!(target_os = "macos") { self.browser_jobs.iter().map(|j| j.browser).collect() } else { Default::default() };
+        #[cfg(target_os = "macos")]
+        let mut agents = Vec::new();
         for b in self.browsers.values_mut() {
             // A page out of sight that has the keyboard gives it back (else keys go nowhere).
             if !b.shown
@@ -1464,8 +1469,12 @@ impl App {
             }
             if let Some(v) = &b.view {
                 b.loading = crate::browser::is_loading(v);
-                if b.driven() && typing_in != Some(b.id) && crate::browser::has_keyboard(v) {
-                    let _ = v.focus_parent();
+                if b.driven() && typing_in != Some(b.id) {
+                    #[cfg(target_os = "macos")]
+                    agents.push(crate::browser::page_key(&crate::browser::web_view_of(v)));
+                    if !acting.contains(&b.id) && crate::browser::has_keyboard(v) {
+                        let _ = v.focus_parent();
+                    }
                 }
             }
             if b.view.is_some() {
@@ -1483,6 +1492,9 @@ impl App {
         if typing_in != self.browser_focus {
             self.browser_focus = typing_in;
         }
+        // The user's keys while an agent types in a page go to the app (`browser::to_app_while_agent_types`).
+        #[cfg(target_os = "macos")]
+        crate::browser::set_agents_pages(agents);
         // An agent's page asleep a while after its agent ended (it left, or its terminal
         // closed): it closes (Reopen Closed Page brings it back). One whose agent still runs
         // in its terminal stays: the agent may come back to it.

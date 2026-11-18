@@ -211,7 +211,7 @@ if (!window.__tc) window.__tc = (() => {
     if (el.isContentEditable && (!el.parentElement || !el.parentElement.isContentEditable)) return 'textbox';
     return TAG_ROLE[el.tagName] || null;
   };
-  const squash = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const squash = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
   const clip = (s, n = 100) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
   const textIn = (el) => squash(el.innerText !== undefined ? el.innerText : el.textContent);
   const nameOf = (el, role) => {
@@ -479,6 +479,13 @@ if (!window.__tc) window.__tc = (() => {
     await pause(200);
     el.focus();
     const text = String(args.text ?? '');
+    if (el.isContentEditable && args.native) {
+      // The app puts the text in as typed (the system's input), over the editor's text selected
+      // here: an editor (Draft, Lexical, ProseMirror) keeps its own model of the text.
+      document.execCommand('selectAll', false);
+      await pause(60);
+      return { ok: true, insert: true };
+    }
     if (el.isContentEditable) {
       document.execCommand('selectAll', false);
       document.execCommand('insertText', false, text);

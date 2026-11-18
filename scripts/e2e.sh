@@ -121,7 +121,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # terminal, where the web view sits exactly on the page's place; an address typed goes there;
 # a new page (⌥⇧⌘B) opens the project's server beside it in the panel; a page tab brings its
 # page back. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-agent-human browser-tools browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-agent-human browser-typing browser-tools browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -224,6 +224,21 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\nm hnav; m hq; m htype; m hhover; m hdrag; m hdnd; m hup; m hbad; m hshot; m hxy1; m htype2; m hxy2\n' "$HOOK" "$MCP" "$MCP" > "$WORK/agenthuman.sh"
     mkdir -p "$WORK/data-browser-agent-human"; printf '{"presets":[{"id":"hum","name":"Human","command":"sh %s"}]}\n' "$WORK/agenthuman.sh" > "$WORK/data-browser-agent-human/settings.json"
     run browser-agent-human 90 "sleep 1000;; action add-project $P1;; sleep 1500;; action run hum;; wait-screen ok-hdrag;; wait-screen ok-hbad;; wait-screen ok-hxy1;; wait-screen ok-hxy2;; expect-file $MCP/hnav.out [ref=e8];; expect-file $MCP/htype.out Page: Submitted: hello;; expect-file $MCP/hhover.out Page: Hovered;; expect-file $MCP/hdrag.out Page: Dropped on B;; expect-file $MCP/hdnd.out Page: HTML5 drop c;; expect-file $MCP/hup.out Page: File: upload.txt;; expect-file $MCP/hbad.out outside the project;; expect-file $MCP/hshot.out CSS pixels;; expect-file $MCP/hxy2.out Page: Paid: 4242;; quit"
+    # An agent typing (macOS): keys the page does not take (nothing in it has the keyboard) go
+    # nowhere, never into the terminal; text typed into an editor stays in order, though the
+    # page got the keyboard back and forth between calls; the user's keys meanwhile go to the
+    # terminal, not into the agent's text.
+    printf '<!doctype html><title>Typing Page</title><body style="margin:0;font:14px sans-serif"><div contenteditable="true" aria-label="Note" style="position:absolute;left:10px;top:10px;width:400px;min-height:40px;border:1px solid #888"></div><p style="position:absolute;left:10px;top:300px">Nothing here</p>\n' > "$SITE/typing.html"
+    call tnav browser_navigate "{\"url\":\"localhost:$WEBPORT/typing.html\"}"
+    call tblank browser_mouse_click_xy '{"x":300,"y":200,"element":"empty space"}'
+    call tleak browser_keyboard_type "{\"text\":\"echo leaked > $MCP/leak.txt\\n\"}"
+    call tenter browser_press_key '{"key":"Enter"}'
+    call tnote browser_click '{"ref":"e1","element":"Note"}'
+    call tkt browser_keyboard_type '{"text":"The quick brown fox jumps over the lazy dog, then the quick brown fox naps.\nLine two."}'
+    call tget browser_evaluate '{"function":"() => document.querySelector(\"[contenteditable]\").innerText"}'
+    mkdir -p "$WORK/data-browser-typing"; printf '{"browser_agent_js":true}\n' > "$WORK/data-browser-typing/settings.json"
+    run browser-typing 60 "sleep 1000;; action add-project $P1;; sleep 1500;; keys m() { $HOOK mcp claude < $MCP/\$1.json > $MCP/\$1.out; echo ok-\$1; }; clear\\r;; sleep 300;; keys m tnav\\r;; wait-screen ok-tnav;; wait-browser Typing Page;; keys m tblank\\r;; wait-screen ok-tblank;; keys m tleak\\r;; wait-screen ok-tleak;; keys m tenter\\r;; wait-screen ok-tenter;; sleep 800;; expect-not-file $MCP/leak.txt leaked;; keys m tnote\\r;; wait-screen ok-tnote;; keys m tkt\\r;; sleep 400;; keys qq;; wait-screen qqok-tkt;; clear-line;; keys m tget\\r;; wait-screen ok-tget;; expect-file $MCP/tget.out The quick brown fox jumps over the lazy dog, then the quick brown fox naps.;; expect-file $MCP/tget.out Line two.;; expect-not-file $MCP/tget.out qq;; quit"
+
     # More of the browser: $BROWSER (Python's webbrowser) opens the page beside the terminal; its
     # console's error and warning show as a chip, then in the drawer; under the palette the page
     # is a picture; `open https://…` and `ternarycode browse` go to the same browser; a link to a

@@ -10,10 +10,23 @@
 //! Points are CSS pixels from the top left of the page's viewport (what `getBoundingClientRect`
 //! gives), drawn at the page's zoom.
 
+use std::collections::VecDeque;
+
 use objc2::rc::Retained;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_foundation::{NSPoint, NSProcessInfo, NSString};
 use objc2_web_kit::WKWebView;
+use parking_lot::Mutex;
+
+/// The agent's last key downs, by their time (it names an event): WebKit hands a key its page
+/// did not take on to the app (`NSApp sendEvent`), which drops it (`agents_key`), so an agent's
+/// typing never lands in a terminal.
+static AGENT_KEYS: Mutex<VecDeque<u64>> = Mutex::new(VecDeque::new());
+
+/// Whether a key event is one an agent pressed in a page.
+pub fn agents_key(ev: &NSEvent) -> bool {
+    AGENT_KEYS.lock().contains(&ev.timestamp().to_bits())
+}
 
 /// A point of the page (CSS pixels) in its window.
 fn in_window(wk: &WKWebView, x: f64, y: f64) -> NSPoint {
@@ -172,12 +185,20 @@ fn press(wk: &WKWebView, code: u16, chars: &str, shift: bool) -> bool {
     let flags = if shift { NSEventModifierFlags::Shift } else { NSEventModifierFlags::empty() };
     let unmod = if shift { chars.to_lowercase() } else { chars.to_string() };
     let (keys, ukeys) = (NSString::from_str(chars), NSString::from_str(&unmod));
+    let at = now();
+    {
+        let mut mine = AGENT_KEYS.lock();
+        if mine.len() >= 64 {
+            mine.pop_front();
+        }
+        mine.push_back(at.to_bits());
+    }
     let mk = |ty| {
         NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
             ty,
             NSPoint::new(0.0, 0.0),
             flags,
-            now(),
+            at,
             window.windowNumber(),
             None,
             &keys,
@@ -196,6 +217,34 @@ fn press(wk: &WKWebView, code: u16, chars: &str, shift: bool) -> bool {
 pub fn key(wk: &WKWebView, key: &str) -> Result<(), String> {
     let (code, chars, shift) = key_of(key).ok_or_else(|| format!("Unknown key {key:?}: use Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, or one character."))?;
     if press(wk, code, &chars, shift) { Ok(()) } else { Err("The page has no window.".into()) }
+}
+
+/// The page takes the keyboard of its window, as when the user clicks in it. False: it had it
+/// (or has no window).
+pub fn take_keyboard(wk: &WKWebView) -> bool {
+    if crate::browser::view_has_keyboard(wk) {
+        return false;
+    }
+    let Some(window) = wk.window() else { return false };
+    window.makeFirstResponder(Some(wk));
+    true
+}
+
+/// Puts `text` in at once where the page has its selection (replacing it), as the system's
+/// input does (dictation, the emoji picker): the page hears it as typed (`beforeinput`,
+/// `textInput`), which editors such as x.com's want.
+pub fn insert_text(wk: &WKWebView, text: &str) -> bool {
+    if wk.window().is_none() {
+        return false;
+    }
+    let s = NSString::from_str(text);
+    let none = objc2_foundation::NSRange::new(objc2_foundation::NSNotFound as usize, 0);
+    // SAFETY: WKWebView's NSTextInputClient method (macOS 10.5+) with an NSString and "no range"
+    // (the selection), on the main thread.
+    unsafe {
+        let _: () = objc2::msg_send![wk, insertText: &*s, replacementRange: none];
+    }
+    true
 }
 
 /// Types `text` into what has the keyboard in the page, a key at a time (a line break is Enter).
