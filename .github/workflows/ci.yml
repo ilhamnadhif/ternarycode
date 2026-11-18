@@ -35,7 +35,6 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # The shell integration tests run each shell they find.
       # The shell integration tests run each shell they find; the page helper (crates/tc-web)
       # builds against WebKitGTK.
       - name: Shells and WebKitGTK
