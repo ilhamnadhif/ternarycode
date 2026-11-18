@@ -1287,7 +1287,8 @@ impl App {
     }
 
     /// Lays each page's web view where its pane was drawn this frame, hidden when the pane was
-    /// not drawn or something covers it (a dialog, the palette, a menu, Review full screen);
+    /// not drawn or something covers it (a dialog, the update dialog, the palette, a menu,
+    /// Review full screen);
     /// lets go of pages out of view and unused a while (asleep). Hands the keyboard between
     /// the pages and the app.
     pub fn sync_browsers(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -1301,7 +1302,12 @@ impl App {
         // Pages agents use stay up out of view (outside the window, where they keep drawing).
         let in_use = self.browsers_in_use();
         let now = std::time::Instant::now();
-        let covered = self.dialog.is_some() || self.palette.is_some() || self.review_full() || self.attention_open || egui::Popup::is_any_open(ctx);
+        let covered = self.dialog.is_some()
+            || self.updater.dialog_open
+            || self.palette.is_some()
+            || self.review_full()
+            || self.attention_open
+            || egui::Popup::is_any_open(ctx);
         let zoom = ctx.zoom_factor();
         let sleep = crate::browser::sleep_after(self.settings.browser_sleep_minutes);
         // Memory runs low (the system says so): pages out of view sleep sooner, the oldest first.

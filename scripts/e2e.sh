@@ -121,7 +121,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # terminal, where the web view sits exactly on the page's place; an address typed goes there;
 # a new page (⌥⇧⌘B) opens the project's server beside it in the panel; a page tab brings its
 # page back. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-agent-human browser-typing browser-agent-show browser-tools browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-agent-human browser-typing browser-agent-show browser-update browser-tools browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -252,6 +252,15 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\nm snav\nwhile [ ! -f "%s/go" ]; do sleep 0.2; done\nm ssnap\nread a\nm ssnap2\n' "$HOOK" "$MCP" "$MCP" "$MCP" > "$WORK/agentshow.sh"
     mkdir -p "$WORK/data-browser-agent-show"; printf '{"presets":[{"id":"show","name":"Show","command":"sh %s"}]}\n' "$WORK/agentshow.sh" > "$WORK/data-browser-agent-show/settings.json"
     run browser-agent-show 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run show;; wait-screen ok-snav;; wait-panel shown;; action show-browser;; wait-panel hidden;; write-file $MCP/go go;; wait-screen ok-ssnap;; sleep 500;; wait-panel hidden;; expect-file $MCP/ssnap.out Page: Agent Page;; keys again\\r;; wait-screen ok-ssnap2;; wait-panel shown;; quit"
+
+    # The update dialog (a release from a test feed; Later at launch, then Update in the status
+    # bar) covers the page: its web view hides under it (else the page would show over the
+    # dialog) and comes back after Later.
+    printf '{"tag_name":"v99.0.0","html_url":"https://example.invalid/releases/v99.0.0","published_at":"2026-11-18T00:00:00Z","body":"Test release","assets":[]}\n' > "$WORK/feed.json"
+    mkdir -p "$WORK/data-browser-update"; printf '{"check_updates":true}\n' > "$WORK/data-browser-update/settings.json"
+    export TERNARYCODE_UPDATE_FEED="file://$WORK/feed.json"
+    run browser-update 60 "sleep 1000;; action add-project $P1;; wait-shown update-close;; sleep 500;; key esc;; wait-hidden update-close;; action open-web http://localhost:$WEBPORT/;; wait-browser TC Test Page;; wait-pages 3*;; sleep 500;; expect-web-placed;; click update-button;; wait-shown update-close;; sleep 500;; expect-web-hidden;; shot e2e-browser-update;; click update-close;; wait-hidden update-close;; sleep 500;; expect-web-placed;; quit"
+    unset TERNARYCODE_UPDATE_FEED
 
     # More of the browser: $BROWSER (Python's webbrowser) opens the page beside the terminal; its
     # console's error and warning show as a chip, then in the drawer; under the palette the page
