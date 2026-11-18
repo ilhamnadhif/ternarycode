@@ -33,7 +33,7 @@
   const NAME = { mac: 'macOS', win: 'Windows', linux: 'Linux' };
 
   /* ---------------------------------------------------------- release: version, files, sizes */
-  const FALLBACK = '0.1.41';
+  const FALLBACK = '0.1.44';
   const FILE = {
     'dmg': v => `TernaryCode-${v}.dmg`,
     'win-setup': v => `TernaryCode-${v}-windows-x64-setup.exe`,
