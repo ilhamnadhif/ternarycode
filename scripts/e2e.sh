@@ -274,9 +274,10 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     call snav browser_navigate "{\"url\":\"localhost:$WEBPORT/agent.html\"}"
     call ssnap browser_snapshot '{}'
     call ssnap2 browser_snapshot '{}'
-    printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\nm snav\nwhile [ ! -f "%s/go" ]; do sleep 0.2; done\nm ssnap\nread a\nm ssnap2\n' "$HOOK" "$MCP" "$MCP" "$MCP" > "$WORK/agentshow.sh"
+    call ssnapb browser_snapshot '{}'
+    printf 'm() { "%s" mcp claude < "%s/$1.json" > "%s/$1.out"; echo "ok-$1"; }\nm snav\nwhile [ ! -f "%s/go" ]; do sleep 0.2; done\nm ssnap\nwhile [ ! -f "%s/go2" ]; do sleep 0.2; done\nm ssnapb\nread a\nm ssnap2\n' "$HOOK" "$MCP" "$MCP" "$MCP" "$MCP" > "$WORK/agentshow.sh"
     mkdir -p "$WORK/data-browser-agent-show"; printf '{"presets":[{"id":"show","name":"Show","command":"sh %s"}]}\n' "$WORK/agentshow.sh" > "$WORK/data-browser-agent-show/settings.json"
-    run browser-agent-show 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run show;; wait-screen ok-snav;; wait-panel shown;; action show-browser;; wait-panel hidden;; write-file $MCP/go go;; wait-screen ok-ssnap;; sleep 500;; wait-panel hidden;; expect-file $MCP/ssnap.out Page: Agent Page;; keys again\\r;; wait-screen ok-ssnap2;; wait-panel shown;; quit"
+    run browser-agent-show 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run show;; wait-screen ok-snav;; wait-panel shown;; action show-browser;; wait-panel hidden;; write-file $MCP/go go;; wait-screen ok-ssnap;; sleep 500;; wait-panel hidden;; expect-file $MCP/ssnap.out Page: Agent Page;; keys typed;; sleep 300;; write-file $MCP/go2 go;; wait-screen ok-ssnapb;; sleep 500;; wait-panel hidden;; keys again\\r;; wait-screen ok-ssnap2;; wait-panel shown;; quit"
 
     # The update dialog (a release from a test feed; Later at launch, then Update in the status
     # bar) covers the page: its web view hides under it (else the page would show over the

@@ -550,14 +550,17 @@ impl App {
         }
     }
 
-    /// The first browser call of an agent after a prompt (the user typed into its terminal
-    /// since the panel last showed for it, or it never did) shows the project's panel with the
+    /// The first browser call of an agent after a prompt (the user pressed Enter in its
+    /// terminal since the panel last showed for it, or it never did) shows the project's panel with the
     /// agent's page (Settings: else the Browser button lights), unless the Code drawer is open:
     /// then the Browser button says so. The user may hide it again: the agent's later calls
     /// leave it hidden until the next prompt. The keyboard, the view and the tab in view stay as
     /// they are.
     fn show_for_prompt(&mut self, agent_pane: PaneId, project: tc_core::ProjectId, page: PaneId) {
-        let typed = self.panes.get(&agent_pane).and_then(|p| p.last_input);
+        // A new prompt: Enter in the agent's terminal since the panel last showed for it (keys
+        // typed meanwhile are not one: the panel would come back and the agent's page to the
+        // front at each of its calls while the user types).
+        let typed = self.panes.get(&agent_pane).and_then(|p| p.last_prompt);
         let prompted = match self.agent_panel_shown.get(&agent_pane) {
             None => true,
             Some(shown) => typed.is_some_and(|t| t > *shown),

@@ -157,8 +157,9 @@ run web-agent-popup 90 "sleep 1000;; action add-project $P1;; sleep 1500;; actio
 call snav browser_navigate "{\"url\":\"localhost:$WEBPORT/agent.html\"}"
 call ssnap browser_snapshot '{}'
 call ssnap2 browser_snapshot '{}'
-ASK=false preset web-agent-show show 'm snav' "while [ ! -f \"$MCP/go\" ]; do sleep 0.2; done" 'm ssnap' 'read a' 'm ssnap2'
-run web-agent-show 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run show;; wait-screen ok-snav;; wait-panel shown;; action show-browser;; wait-panel hidden;; write-file $MCP/go go;; wait-screen ok-ssnap;; sleep 500;; wait-panel hidden;; expect-file $MCP/ssnap.out Page: Agent Page;; keys again\\r;; wait-screen ok-ssnap2;; wait-panel shown;; quit"
+call ssnapb browser_snapshot '{}'
+ASK=false preset web-agent-show show 'm snav' "while [ ! -f \"$MCP/go\" ]; do sleep 0.2; done" 'm ssnap' "while [ ! -f \"$MCP/go2\" ]; do sleep 0.2; done" 'm ssnapb' 'read a' 'm ssnap2'
+run web-agent-show 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action run show;; wait-screen ok-snav;; wait-panel shown;; action show-browser;; wait-panel hidden;; write-file $MCP/go go;; wait-screen ok-ssnap;; sleep 500;; wait-panel hidden;; expect-file $MCP/ssnap.out Page: Agent Page;; keys typed;; sleep 300;; write-file $MCP/go2 go;; wait-screen ok-ssnapb;; sleep 500;; wait-panel hidden;; keys again\\r;; wait-screen ok-ssnap2;; wait-panel shown;; quit"
 
 # The update dialog (a release from a test feed; Later at launch, then Update in the status
 # bar) covers the page: its web view hides under it and comes back after Later.

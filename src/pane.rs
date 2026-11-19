@@ -270,8 +270,9 @@ pub struct Pane {
     started: Instant,
     /// The user typed into the current shell (Ctrl+D included).
     typed: bool,
-    /// When the user last typed or pasted into it (a prompt to its agent, say).
-    pub last_input: Option<Instant>,
+    /// When the user last pressed Enter in it (sent a prompt to its agent, say). Not merely typed:
+    /// keys typed while an agent works are no new prompt.
+    pub last_prompt: Option<Instant>,
     /// When Enter was last pressed: the shell may take a moment to start the command.
     enter_at: Option<Instant>,
     /// How often the PTY was resized (Gate C: switching views must not resize).
@@ -348,7 +349,7 @@ impl Pane {
             closing: false,
             started: Instant::now(),
             typed: false,
-            last_input: None,
+            last_prompt: None,
             enter_at: None,
             resizes: 0,
             shown: Arc::new(std::sync::atomic::AtomicU8::new(Shown::Hidden as u8)),
@@ -667,7 +668,6 @@ impl Pane {
     /// Keys typed or text pasted by the user.
     pub fn input(&mut self, bytes: Vec<u8>) {
         self.typed = true;
-        self.last_input = Some(Instant::now());
         self.write(bytes);
     }
 
@@ -761,6 +761,7 @@ impl Pane {
     /// The user pressed Enter in this pane.
     pub fn entered(&mut self, now: Instant) {
         self.enter_at = Some(now);
+        self.last_prompt = Some(now);
         self.tracker.apply(Event::Enter, now);
         self.schedule_fg_check(now + Duration::from_millis(150));
     }
