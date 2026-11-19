@@ -156,12 +156,15 @@ pub fn title_for(url: &str) -> String {
 /// to load the request in; `None` when there is no window to show it over.
 fn open(opener: &WKWebView, url: &str, config: &WKWebViewConfiguration, size: Option<(f64, f64)>, sink: Sink, keyboard: bool) -> Option<Retained<WKWebView>> {
     let mtm = MainThreadMarker::new()?;
-    let parent = opener.window()?;
+    // Over the app's window (the page's own window is a child of it, `browser_host`, hidden
+    // with the page; the pop-up stays).
+    let own = opener.window()?;
+    let parent = crate::browser_host::app_window_of(&own);
     let screen = parent.screen()?;
     let room = screen.visibleFrame();
     let (w, h) = fit(size, (room.size.width, room.size.height));
     // Centred over the page that opened it, on its screen.
-    let page = parent.convertRectToScreen(opener.convertRect_toView(opener.bounds(), None));
+    let page = own.convertRectToScreen(opener.convertRect_toView(opener.bounds(), None));
     let x = (page.origin.x + (page.size.width - w) / 2.0).clamp(room.origin.x + SCREEN_MARGIN, (room.origin.x + room.size.width - w - SCREEN_MARGIN).max(room.origin.x));
     let y = (page.origin.y + (page.size.height - h) / 2.0).clamp(room.origin.y + SCREEN_MARGIN, (room.origin.y + room.size.height - h - SCREEN_MARGIN).max(room.origin.y));
     // Not minimized on its own: it rides on the app's window.
@@ -200,6 +203,15 @@ fn open(opener: &WKWebView, url: &str, config: &WKWebViewConfiguration, size: Op
     watch_keys();
     POPUPS.with_borrow_mut(|p| p.push(Popup { window, web: web.clone(), sink }));
     Some(web)
+}
+
+/// Pop-ups stay over the pages (a page's window shown again comes over its siblings).
+pub fn raise() {
+    POPUPS.with_borrow(|p| {
+        for popup in p.iter().filter(|p| p.window.isVisible()) {
+            popup.window.orderFront(None);
+        }
+    });
 }
 
 /// How many pop-ups are open (for tests).

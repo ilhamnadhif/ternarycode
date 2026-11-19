@@ -192,6 +192,8 @@ mod native {
         let windows = app.windows();
         (0..windows.count())
             .map(|i| windows.objectAtIndex(i))
+            // A page's own window over it is not the app's (`browser_host`).
+            .filter(|w| crate::browser_host::page_window(w).is_none())
             .max_by(|a, b| {
                 let (ra, rb) = (a.contentLayoutRect(), b.contentLayoutRect());
                 (ra.size.width * ra.size.height).total_cmp(&(rb.size.width * rb.size.height))
@@ -251,6 +253,11 @@ mod native {
         }
     }
 
+    thread_local! {
+        /// The window the mouse's button last went down in (`mouse`).
+        static DOWN_IN: std::cell::Cell<Option<isize>> = const { std::cell::Cell::new(None) };
+    }
+
     /// Keys go to the key window (as the keyboard's do), not the app's main window.
     static TO_KEY_WINDOW: AtomicBool = AtomicBool::new(false);
 
@@ -268,12 +275,12 @@ mod native {
         TO_KEY_WINDOW.store(false, Ordering::Relaxed);
     }
 
-    /// Sends a key press (down, then up).
+    /// Sends a key press (down, then up). The keyboard's keys go to the key window: a page's own
+    /// window once the user clicked in the page (`browser_host`).
     fn press(flags: NSEventModifierFlags, chars: &str, unmod: &str, code: u16) {
-        let key_window = TO_KEY_WINDOW
-            .load(Ordering::Relaxed)
-            .then(|| MainThreadMarker::new().and_then(|mtm| NSApplication::sharedApplication(mtm).keyWindow()))
-            .flatten();
+        let key = MainThreadMarker::new().and_then(|mtm| NSApplication::sharedApplication(mtm).keyWindow());
+        let page_has_it = key.as_ref().is_some_and(|w| crate::browser_host::page_window(w).is_some());
+        let key_window = (TO_KEY_WINDOW.load(Ordering::Relaxed) || page_has_it).then_some(key).flatten();
         let Some(w) = key_window.or_else(window) else { return };
         let wn = w.windowNumber();
         let (Some(down), Some(up)) = (
@@ -355,14 +362,24 @@ mod native {
             .unwrap_or_else(|| w.contentLayoutRect().size.height)
     }
 
-    /// Clicks at a point in egui coordinates (points from the content's top-left).
-    pub fn click(pos: egui::Pos2, count: isize, right: bool) {
-        let Some(w) = window() else { return };
+    /// Where a mouse event at `pos` (egui points from the content's top left) lands, as the
+    /// mouse's would: in a page's own window over the app's there (`browser_host`), else in the
+    /// app's window. The window's number and the point in it.
+    fn landing(pos: egui::Pos2) -> Option<(isize, NSPoint)> {
+        let w = window()?;
         // The content view's height: with the content under the title bar it is the whole
         // window, not just the area below the title bar.
         let height = content_height(&w);
         let loc = NSPoint::new(pos.x as f64, height - pos.y as f64);
-        let wn = w.windowNumber();
+        Some(match crate::browser_host::page_window_at(&w, loc) {
+            Some((page, at)) => (page.windowNumber(), at),
+            None => (w.windowNumber(), loc),
+        })
+    }
+
+    /// Clicks at a point in egui coordinates (points from the content's top-left).
+    pub fn click(pos: egui::Pos2, count: isize, right: bool) {
+        let Some((wn, loc)) = landing(pos) else { return };
         let mk = |ty, clicks| {
             NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
                 ty,
@@ -395,13 +412,24 @@ mod native {
     /// One left-button mouse event (`down`, `drag` or `up`) at a point in egui coordinates. A drag
     /// is a series of these in separate frames, as with a real mouse.
     pub fn mouse(kind: &str, pos: egui::Pos2) {
-        let Some(w) = window() else { return };
-        let height = content_height(&w);
         // `cmd-down`, `cmd-up`…: with ⌘ held.
         let (flags, kind) = match kind.strip_prefix("cmd-") {
             Some(k) => (NSEventModifierFlags::Command, k),
             None => (NSEventModifierFlags::empty(), kind),
         };
+        // A drag and its button's release go to the window the button went down in, wherever the
+        // pointer is (as AppKit hands the mouse's): the app's, though it is over a page by then.
+        let Some((mut wn, mut loc)) = landing(pos) else { return };
+        if matches!(kind, "drag" | "up")
+            && let Some(w) = window()
+            && DOWN_IN.with(|d| d.get()) == Some(w.windowNumber())
+        {
+            wn = w.windowNumber();
+            loc = NSPoint::new(pos.x as f64, content_height(&w) - pos.y as f64);
+        }
+        if kind == "down" {
+            DOWN_IN.with(|d| d.set(Some(wn)));
+        }
         let ty = match kind {
             "down" => NSEventType::LeftMouseDown,
             "drag" => NSEventType::LeftMouseDragged,
@@ -411,10 +439,10 @@ mod native {
         if let Some(e) =
             NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
                 ty,
-                NSPoint::new(pos.x as f64, height - pos.y as f64),
+                loc,
                 flags,
                 0.0,
-                w.windowNumber(),
+                wn,
                 None,
                 0,
                 1,

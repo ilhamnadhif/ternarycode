@@ -66,9 +66,10 @@ pub fn mute_script(on: bool) -> String {
     format!("{AGENT_JS}\nreturn JSON.stringify(await window.__tc.run('mute', {{ on: {on} }}));")
 }
 
-/// The page's web view (wry's), and what the agents' steps act on (a page or a pop-up).
+/// The page's web view (wry's, in a window of its own over the app's), and what the agents'
+/// steps act on (a page or a pop-up).
 #[cfg(target_os = "macos")]
-pub type View = wry::WebView;
+pub use crate::browser_host::View;
 #[cfg(target_os = "macos")]
 pub type Page = objc2_web_kit::WKWebView;
 #[cfg(target_os = "macos")]
@@ -800,14 +801,14 @@ pub const AGENT_JS: &str = include_str!("browser_agent.js");
 pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15";
 
 /// The page as a web view laid over the window at `bounds` (logical points from the top left of
-/// the window's content).
+/// the window's content), in a window of its own (`browser_host`).
 #[cfg(target_os = "macos")]
 pub fn build_view(
     window: &impl raw_window_handle::HasWindowHandle,
     url: &str,
     bounds: wry::Rect,
     sink: Sink,
-) -> Option<wry::WebView> {
+) -> Option<View> {
     use wry::{NewWindowResponse, PageLoadEvent, PermissionResponse, WebViewBuilder};
     let (s1, s2, s3, s4, s5, s6) = (sink.clone(), sink.clone(), sink.clone(), sink.clone(), sink.clone(), sink.clone());
     let url = if url.is_empty() { "about:blank" } else { url };
@@ -872,6 +873,7 @@ pub fn build_view(
         .with_download_completed_handler(move |url, _, ok| s6.push(Event::DownloadDone(url, ok)))
         .build_as_child(window)
         .ok()?;
+    let view = View::new(view)?;
     let wk = web_view_of(&view);
     crate::browser_dialog::install(&wk);
     crate::browser_dialog::register(&wk, sink);
@@ -890,7 +892,7 @@ pub fn bounds(rect: eframe::egui::Rect, zoom: f32) -> wry::Rect {
 /// Sends an editing command (copy, paste, cut, select all) to the page: the app's menu has the
 /// keys, the page has the text.
 #[cfg(target_os = "macos")]
-pub fn edit_command(view: &wry::WebView, command: &str) {
+pub fn edit_command(view: &View, command: &str) {
     use objc2::runtime::AnyObject;
     use wry::WebViewExtMacOS;
     let wk = view.webview();
@@ -910,13 +912,13 @@ pub fn edit_command(view: &wry::WebView, command: &str) {
 
 /// The page as it shows now, as a PNG, handed to `done` (on the main thread, once).
 #[cfg(target_os = "macos")]
-pub fn snapshot(view: &wry::WebView, done: impl FnOnce(Option<Vec<u8>>) + 'static) {
+pub fn snapshot(view: &View, done: impl FnOnce(Option<Vec<u8>>) + 'static) {
     snapshot_at(view, None, done);
 }
 
 /// [`snapshot`], `width` points wide (a smaller picture costs less to make).
 #[cfg(target_os = "macos")]
-pub fn snapshot_at(view: &wry::WebView, width: Option<f64>, done: impl FnOnce(Option<Vec<u8>>) + 'static) {
+pub fn snapshot_at(view: &View, width: Option<f64>, done: impl FnOnce(Option<Vec<u8>>) + 'static) {
     use wry::WebViewExtMacOS;
     snapshot_view(&view.webview(), width, done);
 }
@@ -974,7 +976,7 @@ pub fn take_picture(view: &View, width: Option<f64>, slot: Picture, ctx: eframe:
 /// string, to `done` (on the main thread, once). An error: the script failed to run, or the
 /// page went away meanwhile (it navigated).
 #[cfg(target_os = "macos")]
-pub fn run_js(view: &wry::WebView, body: &str, done: impl FnOnce(Result<String, String>) + 'static) {
+pub fn run_js(view: &View, body: &str, done: impl FnOnce(Result<String, String>) + 'static) {
     use wry::WebViewExtMacOS;
     run_js_in(&view.webview(), body, done);
 }
@@ -1010,12 +1012,12 @@ pub fn run_js_in(wk: &objc2_web_kit::WKWebView, body: &str, done: impl FnOnce(Re
     }
 }
 
-/// Prints the page (the system's print sheet, on the page's window).
+/// Prints the page (the system's print sheet, on the app's window).
 #[cfg(target_os = "macos")]
-pub fn print(view: &wry::WebView) {
+pub fn print(view: &View) {
     use objc2_app_kit::NSPrintInfo;
     let wk = web_view_of(view);
-    let Some(window) = wk.window() else { return };
+    let Some(window) = wk.window().map(|w| crate::browser_host::app_window_of(&w)) else { return };
     // SAFETY: WebKit's print operation of the page, run as a sheet on its window (main thread).
     unsafe {
         let op = wk.printOperationWithPrintInfo(&NSPrintInfo::sharedPrintInfo());
@@ -1030,7 +1032,7 @@ pub fn print(view: &wry::WebView) {
 /// Whether the page is loading: from the request on (wry reports a load only once it commits,
 /// and a load that fails not at all).
 #[cfg(target_os = "macos")]
-pub fn is_loading(view: &wry::WebView) -> bool {
+pub fn is_loading(view: &View) -> bool {
     use wry::WebViewExtMacOS;
     // SAFETY: a plain WKWebView getter on the main thread.
     unsafe { view.webview().isLoading() }
@@ -1038,9 +1040,8 @@ pub fn is_loading(view: &wry::WebView) -> bool {
 
 /// A page's web view, as WebKit's own type (for the calls a pop-up's takes too).
 #[cfg(target_os = "macos")]
-pub fn web_view_of(view: &wry::WebView) -> objc2::rc::Retained<objc2_web_kit::WKWebView> {
-    use wry::WebViewExtMacOS;
-    objc2::rc::Retained::into_super(view.webview())
+pub fn web_view_of(view: &View) -> objc2::rc::Retained<objc2_web_kit::WKWebView> {
+    objc2::Message::retain(view.page())
 }
 
 /// A number naming a page (for "is it the same one").
@@ -1082,7 +1083,7 @@ pub fn url_in(wk: &objc2_web_kit::WKWebView) -> String {
 /// Takes the page back from a site an agent may not open yet. wry tells of a load once it has
 /// committed (the new page is in), so it is stopped and the page goes back to the last one.
 #[cfg(target_os = "macos")]
-pub fn turn_back(view: &wry::WebView) {
+pub fn turn_back(view: &View) {
     use wry::WebViewExtMacOS;
     // SAFETY: plain WKWebView methods on the main thread.
     unsafe {
@@ -1112,20 +1113,13 @@ fn watch_clicks() {
         let block = block2::RcBlock::new(|e: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
             // SAFETY: AppKit hands the monitor a live event, on the main thread.
             let ev = unsafe { e.as_ref() };
-            let ty = ev.r#type();
-            if matches!(ty, NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged) {
+            if ev.r#type() == NSEventType::KeyDown {
                 // A key an agent pressed that its page did not take (WebKit hands it on to the
                 // app): it goes nowhere, as in a browser, never into a terminal.
-                if ty == NSEventType::KeyDown && crate::browser_input::agents_key(ev) {
+                if crate::browser_input::agents_key(ev) {
                     return std::ptr::null_mut();
                 }
-                if ty == NSEventType::KeyDown {
-                    *LAST_KEY.lock() = Some(std::time::Instant::now());
-                }
-                // The user's key goes where the user types, whichever page has the keyboard.
-                if route_user_key(ev) {
-                    return std::ptr::null_mut();
-                }
+                *LAST_KEY.lock() = Some(std::time::Instant::now());
             } else {
                 let at = ev.locationInWindow();
                 *LAST_CLICK.lock() = Some((std::time::Instant::now(), ev.windowNumber(), at.x, at.y));
@@ -1134,31 +1128,18 @@ fn watch_clicks() {
             // The event goes on as it came.
             e.as_ptr()
         });
-        let mask = NSEventMask::LeftMouseDown
-            | NSEventMask::RightMouseDown
-            | NSEventMask::OtherMouseDown
-            | NSEventMask::KeyDown
-            | NSEventMask::KeyUp
-            | NSEventMask::FlagsChanged;
+        let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown | NSEventMask::KeyDown;
         // SAFETY: the block returns the event it was given. The monitor stays for the app's life.
         let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
         std::mem::forget(monitor);
     });
 }
 
-// The user's keyboard and the pages (macOS). A page has the keyboard of the window (it is the
-// first responder) when the user clicked in it, and also while an agent acts in it: WebKit types
-// into a page only then, and taking the keyboard from a page clears its selection (the agent's
-// next key would go to the start of the field). So the user's keys are not left to the first
-// responder: each goes where the user types (`USER_PAGE`), a page or the app, whichever page
-// holds the keyboard for an agent meanwhile. The user moves it by a click (seen here at once) or
-// by the app (`App::browser_focus`, set here each frame).
-
-thread_local! {
-    /// The pages in the window (each frame, `set_pages`): the key and click watch look at them.
-    #[cfg(target_os = "macos")]
-    static PAGE_VIEWS: std::cell::RefCell<Vec<objc2::rc::Retained<objc2_web_kit::WKWebView>>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+// The user's keyboard and the pages (macOS). Each page is in a window of its own
+// (`browser_host`), whose keyboard its web view keeps (WebKit types into a page only then, and
+// takes it at every click in the page, an agent's too). The user's keys go to the key window: the
+// app's, or a page's once the user clicked in it (or the app gave it the page). An agent's clicks
+// and keys go to its page's web view itself and leave the key window as it is.
 
 /// The page the user types in (`page_key`); `None`: the app.
 #[cfg(target_os = "macos")]
@@ -1168,20 +1149,13 @@ static USER_PAGE: Mutex<Option<usize>> = Mutex::new(None);
 #[cfg(target_os = "macos")]
 static CLICKED_PAGE: Mutex<Option<usize>> = Mutex::new(None);
 
-/// The pages of the window (called each frame, on the main thread).
-#[cfg(target_os = "macos")]
-pub fn set_pages(pages: Vec<objc2::rc::Retained<objc2_web_kit::WKWebView>>) {
-    PAGE_VIEWS.with(|p| *p.borrow_mut() = pages);
-}
-
-/// Where the user types: a page (`page_key`), or the app.
+/// Where the user types: a page (`page_key`), or the app (the app tells it each frame).
 #[cfg(target_os = "macos")]
 pub fn set_user_page(page: Option<usize>) {
     *USER_PAGE.lock() = page;
 }
 
-/// Whether the user types in this page (not merely: it has the keyboard, which an agent's
-/// page has while the agent types, the user typing in a terminal meanwhile).
+/// Whether the user types in this page (not merely: an agent acts in it).
 #[cfg(target_os = "macos")]
 pub fn user_types_in(page: &objc2_web_kit::WKWebView) -> bool {
     *USER_PAGE.lock() == Some(page_key(page))
@@ -1193,86 +1167,29 @@ pub fn take_clicked_page() -> Option<usize> {
     CLICKED_PAGE.lock().take()
 }
 
-/// The user's click: in a page, the user types there now; elsewhere in the window, in the app.
-/// Agents' clicks go to their page's view itself and never come here (`browser_input`).
+/// The user's click (seen before AppKit hands it on): in a page, its window becomes the key
+/// window and the user types there now; elsewhere in the app's window, in the app. Agents'
+/// clicks go to their page's view itself and never come here (`browser_input`).
 #[cfg(target_os = "macos")]
 fn note_user_click(ev: &objc2_app_kit::NSEvent) {
     let Some(mtm) = objc2::MainThreadMarker::new() else { return };
     let Some(window) = ev.window(mtm) else { return };
-    let at = ev.locationInWindow();
-    let (hit, ours) = PAGE_VIEWS.with(|p| {
-        let mut hit = None;
-        let mut ours = false;
-        for wk in p.borrow().iter() {
-            if wk.window().is_none_or(|w| !std::ptr::eq(&*w, &*window)) {
-                continue;
-            }
-            ours = true;
-            if wk.isHiddenOrHasHiddenAncestor() {
-                continue;
-            }
-            // The page's place in the window, as the click's point (from the window's bottom left).
-            let r = wk.convertRect_toView(wk.bounds(), None);
-            if at.x >= r.origin.x && at.x <= r.origin.x + r.size.width && at.y >= r.origin.y && at.y <= r.origin.y + r.size.height {
-                hit = Some(page_key(wk));
-            }
-        }
-        (hit, ours)
-    });
-    // A window without pages (a page's pop-up, the inspector) keeps its own keyboard.
-    if ours {
-        *USER_PAGE.lock() = hit;
-        *CLICKED_PAGE.lock() = hit;
+    if let Some(page) = crate::browser_host::page_window(&window) {
+        page.take_user_click();
+        *USER_PAGE.lock() = Some(page.page());
+        *CLICKED_PAGE.lock() = Some(page.page());
+    } else if crate::browser_host::holds_pages(&window) {
+        // A window without pages (a page's pop-up, the inspector) keeps its own keyboard.
+        *USER_PAGE.lock() = None;
+        *CLICKED_PAGE.lock() = None;
     }
-}
-
-/// The user's key while a page has the keyboard: it goes to the page the user types in, or to
-/// the app: a shortcut to the app's menu first (⌘J and the others are the menu's on macOS,
-/// `ui::menu`; it has no Copy or Paste, whose actions would go to the page), the rest to the
-/// page's parent view, where egui hands it to a terminal or a field. True: it went to the app
-/// here. False: the key goes on as it came (the app has the keyboard, or the page is the user's).
-#[cfg(target_os = "macos")]
-fn route_user_key(ev: &objc2_app_kit::NSEvent) -> bool {
-    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSEventType, NSView};
-    let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
-    let Some(window) = ev.window(mtm) else { return false };
-    let Some(first) = window.firstResponder() else { return false };
-    let Ok(first) = first.downcast::<NSView>() else { return false };
-    let user = *USER_PAGE.lock();
-    PAGE_VIEWS.with(|p| {
-        let pages = p.borrow();
-        let Some(holder) = pages.iter().find(|wk| first.isDescendantOf(wk)) else { return false };
-        if user == Some(page_key(holder)) {
-            return false;
-        }
-        // The user types in another page: it takes the keyboard back, and the key goes there.
-        if let Some(mine) = user.and_then(|u| pages.iter().find(|wk| page_key(wk) == u)) {
-            window.makeFirstResponder(Some(mine));
-            return false;
-        }
-        // SAFETY: a plain NSView getter on the main thread (the monitor runs there).
-        let Some(app) = (unsafe { holder.superview() }) else { return false };
-        match ev.r#type() {
-            NSEventType::KeyDown => {
-                let shortcut = ev.modifierFlags().intersects(NSEventModifierFlags::Command.union(NSEventModifierFlags::Control))
-                    && NSApplication::sharedApplication(mtm).mainMenu().is_some_and(|m| m.performKeyEquivalent(ev));
-                if !shortcut {
-                    app.keyDown(ev);
-                }
-            }
-            NSEventType::KeyUp => app.keyUp(ev),
-            NSEventType::FlagsChanged => app.flagsChanged(ev),
-            _ => return false,
-        }
-        true
-    })
 }
 
 /// Whether the user's last click, a moment ago, was on this page. A page saying it was clicked
 /// (`Event::Focused`) is believed only then: any script in the page can post that message
 /// (`window.ipc` is the page's), and the keyboard must not leave a terminal for it.
 #[cfg(target_os = "macos")]
-pub fn clicked_in(view: &wry::WebView) -> bool {
+pub fn clicked_in(view: &View) -> bool {
     use wry::WebViewExtMacOS;
     clicked_in_view(&view.webview(), Duration::from_secs(3))
 }
@@ -1292,17 +1209,36 @@ pub fn clicked_in_view(wk: &objc2_web_kit::WKWebView, within: Duration) -> bool 
     x >= r.origin.x && x <= r.origin.x + r.size.width && y >= r.origin.y && y <= r.origin.y + r.size.height
 }
 
-/// Whether the page has the keyboard (its web view, or a view in it, is the window's first
-/// responder).
+/// Whether the page has the user's keyboard (its window is the key window).
 #[cfg(target_os = "macos")]
-pub fn has_keyboard(view: &wry::WebView) -> bool {
-    use wry::WebViewExtMacOS;
-    view_has_keyboard(&view.webview())
+pub fn has_keyboard(view: &View) -> bool {
+    view.has_keyboard()
 }
 
-/// [`has_keyboard`] of a web view.
+/// Whether the user's keys go to the page (on macOS a page may have its own window's keyboard
+/// for an agent, `has_keyboard`, while the user types elsewhere).
+#[cfg(target_os = "macos")]
+pub fn has_user_keyboard(view: &View) -> bool {
+    view.has_user_keyboard()
+}
+
+/// [`has_user_keyboard`]: on Windows and Linux a page has the keyboard only as the user's.
+#[cfg(not(target_os = "macos"))]
+pub fn has_user_keyboard(view: &View) -> bool {
+    has_keyboard(view)
+}
+
+/// [`has_keyboard`] of a web view (a page's, or a pop-up's): its window is the key window and
+/// the web view (or a view in it) its first responder.
 #[cfg(target_os = "macos")]
 pub fn view_has_keyboard(wk: &objc2_web_kit::WKWebView) -> bool {
+    wk.window().is_some_and(|w| crate::browser_host::is_key(&w)) && holds_window_keys(wk)
+}
+
+/// Whether the web view (or a view in it) is its window's first responder, whichever window
+/// the user types in: WebKit types into a page only then.
+#[cfg(target_os = "macos")]
+pub fn holds_window_keys(wk: &objc2_web_kit::WKWebView) -> bool {
     use objc2_app_kit::NSView;
     let Some(window) = wk.window() else { return false };
     let Some(first) = window.firstResponder() else { return false };
@@ -1317,7 +1253,7 @@ pub fn typed_within(within: Duration) -> bool {
 
 /// The process WebKit draws the page in (each page has its own), for the memory it takes.
 #[cfg(target_os = "macos")]
-pub fn web_pid(view: &wry::WebView) -> Option<i32> {
+pub fn web_pid(view: &View) -> Option<i32> {
     use wry::WebViewExtMacOS;
     let wk = view.webview();
     let sel = objc2::sel!(_webProcessIdentifier);
@@ -1335,7 +1271,7 @@ pub fn web_pid(view: &wry::WebView) -> Option<i32> {
 
 /// Dims the page (a question is asked over it) or shows it fully again.
 #[cfg(target_os = "macos")]
-pub fn dim(view: &wry::WebView, dimmed: bool) {
+pub fn dim(view: &View, dimmed: bool) {
     use wry::WebViewExtMacOS;
     let alpha: f64 = if dimmed { 0.55 } else { 1.0 };
     // SAFETY: NSView's alphaValue setter, on the main thread.

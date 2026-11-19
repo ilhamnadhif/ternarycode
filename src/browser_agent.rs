@@ -1232,20 +1232,10 @@ impl App {
                                     job.waiting = Some(Waiting::Page { seq, op: Op::Aim(args, then, line), since: now, at: (page_url.clone(), loading) });
                                 }
                                 Op::Native(native, line) => {
-                                    // The user is typing in another page: the agent's click or
-                                    // keys would take the keyboard from it (its caret with it), so
-                                    // they wait for a pause in the user's typing.
-                                    #[cfg(target_os = "macos")]
-                                    if !crate::browser::view_has_keyboard(view)
-                                        && self.browser_focus.is_some_and(|u| u != id)
-                                        && crate::browser::typed_within(Duration::from_secs(3))
-                                    {
-                                        job.ops.push_front(Op::Native(native, line));
-                                        job.ops.push_front(Op::Pause(Duration::from_millis(250)));
-                                        continue;
-                                    }
-                                    // Keys go to a page that has the keyboard, a moment after it
-                                    // took it: else its focus comes after the first key.
+                                    // Keys go to a page that has its window's keyboard, a moment
+                                    // after it took it: else its focus comes after the first key.
+                                    // (macOS: the page's own window, `browser_host`, whose
+                                    // keyboard is not the user's unless they typed in the page.)
                                     // Its editor gets its caret back where it was (WebKit puts it
                                     // at the start when the page gets the keyboard back).
                                     #[cfg(target_os = "macos")]

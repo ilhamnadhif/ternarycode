@@ -41,6 +41,49 @@ fn now() -> f64 {
     NSProcessInfo::processInfo().systemUptime()
 }
 
+/// Hands the pointer's move (or its coming in, or going out) to the page as the real mouse's.
+/// WebKit takes these only from its own tracking of the mouse, never through the web view's
+/// `mouseMoved:` (Safari's own automation says so, and uses these calls: `_simulateMouseMove:`,
+/// macOS 13; `_simulateMouseEnter:`, 15; `_simulateMouseExit:`, 14). False: this macOS has not
+/// got it.
+pub fn simulate_pointer(wk: &WKWebView, ev: &NSEvent) -> bool {
+    let ty = ev.r#type();
+    let sel = match ty {
+        NSEventType::MouseEntered => objc2::sel!(_simulateMouseEnter:),
+        NSEventType::MouseExited => objc2::sel!(_simulateMouseExit:),
+        _ => objc2::sel!(_simulateMouseMove:),
+    };
+    // SAFETY: WKWebView's own methods (not public, so asked for first), each taking an event and
+    // returning nothing, on the main thread.
+    unsafe {
+        let responds: bool = objc2::msg_send![wk, respondsToSelector: sel];
+        if !responds {
+            return false;
+        }
+        match ty {
+            NSEventType::MouseEntered => {
+                let _: () = objc2::msg_send![wk, _simulateMouseEnter: ev];
+            }
+            NSEventType::MouseExited => {
+                let _: () = objc2::msg_send![wk, _simulateMouseExit: ev];
+            }
+            _ => {
+                let _: () = objc2::msg_send![wk, _simulateMouseMove: ev];
+            }
+        }
+    }
+    true
+}
+
+/// The pointer moves to `at` (a point of the page's window), as the real mouse's would.
+fn move_to(wk: &WKWebView, at: NSPoint) {
+    if let Some(e) = mouse(wk, NSEventType::MouseMoved, at, 0)
+        && !simulate_pointer(wk, &e)
+    {
+        wk.mouseMoved(&e);
+    }
+}
+
 fn mouse(wk: &WKWebView, ty: NSEventType, at: NSPoint, count: isize) -> Option<Retained<NSEvent>> {
     let window = wk.window()?;
     let pressure = if matches!(ty, NSEventType::LeftMouseDown | NSEventType::LeftMouseDragged) { 1.0 } else { 0.0 };
@@ -59,6 +102,7 @@ fn mouse(wk: &WKWebView, ty: NSEventType, at: NSPoint, count: isize) -> Option<R
 
 /// The pointer comes into the page and moves to (`x`, `y`) of it (hover). WebKit takes moves
 /// only once the pointer has come in (its own tracking of the mouse), so it is told so first.
+/// Where the real cursor is plays no part (`simulate_pointer`).
 pub fn hover(wk: &WKWebView, x: f64, y: f64) -> bool {
     let at = in_window(wk, x, y);
     let Some(window) = wk.window() else { return false };
@@ -76,16 +120,13 @@ pub fn hover(wk: &WKWebView, x: f64, y: f64) -> bool {
             std::ptr::null_mut(),
         )
     };
-    if let Some(e) = entered {
+    if let Some(e) = entered
+        && !simulate_pointer(wk, &e)
+    {
         wk.mouseEntered(&e);
     }
     for p in [NSPoint::new(at.x - 1.0, at.y), at] {
-        if let Some(e) = mouse(wk, NSEventType::MouseMoved, p, 0) {
-            wk.mouseMoved(&e);
-            if let Some(mtm) = objc2::MainThreadMarker::new() {
-                objc2_app_kit::NSApplication::sharedApplication(mtm).postEvent_atStart(&e, false);
-            }
-        }
+        move_to(wk, p);
     }
     true
 }
@@ -93,9 +134,7 @@ pub fn hover(wk: &WKWebView, x: f64, y: f64) -> bool {
 /// A click (`count` 2: a double click) at (`x`, `y`) of the page.
 pub fn click(wk: &WKWebView, x: f64, y: f64, count: isize) -> bool {
     let at = in_window(wk, x, y);
-    if let Some(e) = mouse(wk, NSEventType::MouseMoved, at, 0) {
-        wk.mouseMoved(&e);
-    }
+    move_to(wk, at);
     for n in 1..=count.max(1) {
         let (Some(down), Some(up)) = (mouse(wk, NSEventType::LeftMouseDown, at, n), mouse(wk, NSEventType::LeftMouseUp, at, n)) else { return false };
         wk.mouseDown(&down);
@@ -108,9 +147,7 @@ pub fn click(wk: &WKWebView, x: f64, y: f64, count: isize) -> bool {
 pub fn drag(wk: &WKWebView, from: (f64, f64), to: (f64, f64)) -> bool {
     let a = in_window(wk, from.0, from.1);
     let Some(down) = mouse(wk, NSEventType::LeftMouseDown, a, 1) else { return false };
-    if let Some(e) = mouse(wk, NSEventType::MouseMoved, a, 0) {
-        wk.mouseMoved(&e);
-    }
+    move_to(wk, a);
     wk.mouseDown(&down);
     const STEPS: usize = 12;
     for i in 1..=STEPS {
@@ -219,10 +256,10 @@ pub fn key(wk: &WKWebView, key: &str) -> Result<(), String> {
     if press(wk, code, &chars, shift) { Ok(()) } else { Err("The page has no window.".into()) }
 }
 
-/// The page takes the keyboard of its window, as when the user clicks in it. False: it had it
-/// (or has no window).
+/// The page takes the keyboard of its window (its own, `browser_host`: not the user's, who types
+/// in the key window), as when the user clicks in it. False: it had it (or has no window).
 pub fn take_keyboard(wk: &WKWebView) -> bool {
-    if crate::browser::view_has_keyboard(wk) {
+    if crate::browser::holds_window_keys(wk) {
         return false;
     }
     let Some(window) = wk.window() else { return false };

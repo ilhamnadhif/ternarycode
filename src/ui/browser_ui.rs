@@ -1470,19 +1470,19 @@ impl App {
         // A page under a question is dimmed; a page loading says so (from its request on). The
         // keyboard stays where the user types (`browser_focus`): a page that has it otherwise
         // (an agent focused something in it, or the page took it by itself) gives it back once
-        // no agent acts in it. On macOS not between the keys of an agent's call (the page would
-        // lose its focus between two keys, and an editor, x.com's, its caret with it): the
-        // user's keys go where they type meanwhile (`browser::route_user_key`). On Windows and
-        // Linux an agent's keys need no keyboard, and a page the user clicks says so only a
-        // moment after it took the keyboard: there only agents' pages give it back.
+        // no agent acts in it. On macOS a page has the user's keyboard only when its window is
+        // the key window (`browser_host`), which an agent's clicks and keys never make it. On
+        // Windows and Linux an agent's keys need no keyboard, and a page the user clicks says so
+        // only a moment after it took the keyboard: there only agents' pages give it back.
         let mut typing_in = self.browser_focus;
         let acting: std::collections::HashSet<PaneId> = if cfg!(target_os = "macos") { self.browser_jobs.iter().map(|j| j.browser).collect() } else { Default::default() };
         let mut back = Vec::new();
         for b in self.browsers.values_mut() {
-            // A page out of sight that has the keyboard gives it back (else keys go nowhere).
+            // A page out of sight that has the user's keyboard gives it back (else keys go
+            // nowhere). Not one an agent types in out of sight (macOS: its own window's keyboard).
             if !b.shown
                 && let Some(v) = &b.view
-                && crate::browser::has_keyboard(v)
+                && crate::browser::has_user_keyboard(v)
             {
                 let _ = v.focus_parent();
                 if typing_in == Some(b.id) {
@@ -1576,26 +1576,27 @@ impl App {
         self.tell_key_watch();
     }
 
-    /// The key and click watch (macOS, `browser::route_user_key`) learns the pages in the window
-    /// and where the user types.
+    /// The click watch (macOS, `browser::note_user_click`) learns where the user types.
     fn tell_key_watch(&self) {
         #[cfg(target_os = "macos")]
         {
-            crate::browser::set_pages(self.browsers.values().filter_map(|b| b.view.as_ref()).map(crate::browser::web_view_of).collect());
+            crate::browser_host::tell_webkit();
             let user = self.browser_focus.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref());
             crate::browser::set_user_page(user.map(|v| crate::browser::page_key(&crate::browser::web_view_of(v))));
         }
     }
 
     /// A page has the keyboard though the user does not type in it: the keyboard goes back
-    /// where they type, the app or another page (its caret where it was: WebKit puts it at the
-    /// start of the field when the page gets the keyboard back).
+    /// where they type, the app or another page (Windows, Linux: its caret where it was, which
+    /// the page lost with the keyboard; on macOS each page keeps its own window's keyboard, and
+    /// its caret with it).
     fn keyboard_back_from(&mut self, id: PaneId) {
         if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
             let _ = v.focus_parent();
         }
         if let Some(v) = self.browser_focus.filter(|u| *u != id).and_then(|u| self.browsers.get(&u)).and_then(|b| b.view.as_ref()) {
             let _ = v.focus();
+            #[cfg(not(target_os = "macos"))]
             crate::browser_agent::restore_caret(v);
         }
     }

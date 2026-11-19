@@ -1009,6 +1009,12 @@ impl App {
                 };
                 self.devtest.check(ok, &format!("expect-page-focus {arg} (got {got})"));
             }
+            // `expect-looked-at yes|no`: the app counts as in use (its title bar and the focused
+            // pane look so), as while the user types in a page.
+            "expect-looked-at" => {
+                let got = self.window_focused;
+                self.devtest.check(got == (arg.trim() == "yes"), &format!("expect-looked-at {arg} (got {got})"));
+            }
             // `expect-page-keyboard yes|no`: the open project's front page has the window's keyboard.
             "expect-page-keyboard" => {
                 let front = self.active_project().and_then(|p| p.panel.front);
@@ -1127,8 +1133,10 @@ impl App {
                     let near = |a: f64, b: f32| (a - f64::from(b * zoom)).abs() < 1.5;
                     // AppKit counts y from the bottom of the window's content.
                     let flipped = ctx.content_rect().height() - r.bottom();
-                    ok = near(pos.x, r.left()) && (near(pos.y, r.top()) || near(pos.y, flipped)) && near(size.width, r.width()) && near(size.height, r.height());
-                    eprintln!("DEVTEST LOG: web view {:?} {:?}, page {:?}", pos, size, r);
+                    // The page's own window shows with the app's (in its Space, full screen too).
+                    let on_screen = v.on_screen();
+                    ok = on_screen && near(pos.x, r.left()) && (near(pos.y, r.top()) || near(pos.y, flipped)) && near(size.width, r.width()) && near(size.height, r.height());
+                    eprintln!("DEVTEST LOG: web view {:?} {:?}, page {:?}, on screen {on_screen}", pos, size, r);
                 }
                 self.devtest.check(ok, "expect-web-placed");
             }
@@ -1143,6 +1151,8 @@ impl App {
                 self.devtest.check(ok, "expect-web-placed");
             }
             // `expect-web-hidden`: no web view shows (something is drawn over the pages).
+            // `fullscreen on|off`: the window goes full screen (its own Space) or back.
+            "fullscreen" => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(arg.trim() == "on")),
             "expect-web-hidden" => {
                 let ok = !self.browsers.values().any(|b| b.shown);
                 self.devtest.check(ok, "expect-web-hidden");

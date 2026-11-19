@@ -4168,7 +4168,13 @@ impl App {
 /// draws none, and the logic also runs while it is hidden (FR-L1).
 fn window_looked_at(ctx: &egui::Context) -> bool {
     // The viewport's own facts first: while hidden, the rest of the input is the last frame's.
-    ctx.input(|i| i.raw.focused && i.viewport().focused != Some(false) && i.viewport().visible() != Some(false))
+    // macOS: the user types in a page, whose window is then the key window, not the app's
+    // (`browser_host`): the app is still the one in use.
+    #[cfg(target_os = "macos")]
+    let in_page = crate::browser_host::typing_in_page();
+    #[cfg(not(target_os = "macos"))]
+    let in_page = false;
+    ctx.input(|i| ((i.raw.focused && i.viewport().focused != Some(false)) || in_page) && i.viewport().visible() != Some(false))
 }
 
 /// How long the next try waits after `n` frames in a row panicked: none for a one-off, then
