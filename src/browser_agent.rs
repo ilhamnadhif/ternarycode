@@ -187,6 +187,12 @@ fn helper_call(name: &str, args: &Value) -> String {
     format!("{}\nreturn JSON.stringify(await window.__tc.run({}, {}));", crate::browser::AGENT_JS, json!(name), args)
 }
 
+/// The page's editor gets its caret back where it was before the page lost the keyboard
+/// (WebKit puts it at the start of the field when the page gets the keyboard back).
+pub fn restore_caret(view: &crate::browser::View) {
+    crate::browser::run_js(view, &helper_call("caret", &json!({})), |_| {});
+}
+
 /// The agent's function (or expression) run in the page, its result as JSON.
 fn eval_call(src: &str) -> String {
     let s = src.trim();
@@ -1223,6 +1229,18 @@ impl App {
                                     job.waiting = Some(Waiting::Page { seq, op: Op::Aim(args, then, line), since: now, at: (page_url.clone(), loading) });
                                 }
                                 Op::Native(native, line) => {
+                                    // The user is typing in another page: the agent's click or
+                                    // keys would take the keyboard from it (its caret with it), so
+                                    // they wait for a pause in the user's typing.
+                                    #[cfg(target_os = "macos")]
+                                    if !crate::browser::view_has_keyboard(view)
+                                        && self.browser_focus.is_some_and(|u| u != id)
+                                        && crate::browser::typed_within(Duration::from_secs(3))
+                                    {
+                                        job.ops.push_front(Op::Native(native, line));
+                                        job.ops.push_front(Op::Pause(Duration::from_millis(250)));
+                                        continue;
+                                    }
                                     // Keys go to a page that has the keyboard, a moment after it
                                     // took it: else its focus comes after the first key.
                                     // Its editor gets its caret back where it was (WebKit puts it

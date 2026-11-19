@@ -931,6 +931,10 @@ impl App {
             ui.ctx().request_repaint();
         }
         let request = self.focus_request == Some(pane_id);
+        // The terminal is to take the keyboard: the page the user typed in lets go of it.
+        if request && self.browser_focus.is_some() {
+            self.keyboard_to_app();
+        }
         let Some(pane) = self.panes.get_mut(&pane_id) else { return };
         if request {
             ui.memory_mut(|m| m.request_focus(widget::pane_widget_id(pane_id)));

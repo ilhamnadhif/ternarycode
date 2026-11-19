@@ -256,6 +256,19 @@ Start-Sleep 1
 '@
 Run "web-keys" 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/keys.html;; wait-browser Keys Page;; wait-pages 3*;; sleep 800;; web-click document.getElementById('k');; page-focus;; sleep 500;; spawn & '$keys';; wait-browser Keys: abc;; wait-shown browser-find:3;; quit"
 
+# The user's keyboard moved to a terminal by a key (not a click): the page they typed in lets go
+# of it, and the user's real keys (SendKeys) go to the terminal, not into the page (it once kept
+# the keyboard, and the window coming to the front gave it back to the page).
+$type = Join-Path $Work "type.ps1"
+Write-Text $type @'
+Add-Type -AssemblyName System.Windows.Forms
+Start-Sleep 2
+(New-Object -ComObject WScript.Shell).AppActivate('TernaryCode') | Out-Null
+Start-Sleep 2
+[System.Windows.Forms.SendKeys]::SendWait('echo kept-${(}40{+}2{)}{ENTER}')
+'@
+Run "web-focus" 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/keys.html;; wait-browser Keys Page;; wait-pages 3*;; sleep 800;; web-click document.getElementById('k');; page-focus;; wait-page-focus;; sleep 600;; expect-page-keyboard yes;; focus-pane 0;; sleep 800;; expect-page-focus no;; expect-page-keyboard no;; spawn & '$type';; wait-screen kept-42;; wait-web document.getElementById('k').value === '' => true;; quit"
+
 # Codex from Run Agent: the settings it gets for the run (hooks, notify, browser tools, guide)
 # reach it whole through PowerShell, which in 5.1 drops each `"` inside an argument: Codex lists
 # the browser tools' server, and Run Agent starts it. Only where Codex is installed.

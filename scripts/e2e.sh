@@ -77,6 +77,14 @@ run unconnected 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WOR
 # again, the shell is in use, so it gets a pane of its own. A preset that only echoes.
 mkdir -p "$WORK/data-run-here"; printf '{"presets":[{"id":"echoer","name":"Echoer","command":"echo agent-ran-here"}]}\n' > "$WORK/data-run-here/settings.json"
 run run-here 40 "sleep 1000;; action add-project $P1;; sleep 1200;; wait-tabs 0:2;; action run echoer;; wait-screen agent-ran-here;; wait-tabs 0:2;; action run echoer;; sleep 800;; wait-tabs 0:2,3;; quit"
+# A shell whose startup files ask something first (oh-my-zsh's "Would you like to update? [Y/n]",
+# which reads one key): Run Agent waits for the shell's prompt, so the question does not take the
+# first letter of the command (`claude` once ran as `laude`); it is typed once answered.
+mkdir -p "$WORK/zdot"; printf 'printf "[oh-my-zsh] Would you like to update? [Y/n] "\nread -r -k 1 option\necho\n[[ "$option" == [yY] ]] || echo "[oh-my-zsh] You can update manually by running omz update"\n' > "$WORK/zdot/.zshrc"
+mkdir -p "$WORK/data-run-asks"; printf '{"presets":[{"id":"echoer","name":"Echoer","command":"echo agent-ran-$((40+2))"}]}\n' > "$WORK/data-run-asks/settings.json"
+export ZDOTDIR="$WORK/zdot"
+run run-asks 40 "sleep 1000;; action add-project $P1;; sleep 300;; action run echoer;; wait-screen Would you like to update;; sleep 1500;; expect-screen-count command not found 0;; expect-screen-count agent-ran-42 0;; keys n;; wait-screen agent-ran-42;; expect-screen-count command not found 0;; quit"
+unset ZDOTDIR
 # Run Agent when the agent's program is not on the PATH: a dialog says how to install it and
 # nothing is typed; Run Anyway types the command all the same (an alias the check can't see).
 mkdir -p "$WORK/data-agent-missing"; printf '{"presets":[{"id":"codex","name":"Codex","agent":"codex","command":"tc-no-such-agent"}]}\n' > "$WORK/data-agent-missing/settings.json"
@@ -121,7 +129,7 @@ run local-server 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WO
 # terminal, where the web view sits exactly on the page's place; an address typed goes there;
 # a new page (⌥⇧⌘B) opens the project's server beside it in the panel; a page tab brings its
 # page back. After a restart both pages come back where they were.
-if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-agent-human browser-typing browser-agent-show browser-update browser-tools browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
+if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browser-agent browser-agent-popup browser-dialogs browser-agent-dialogs browser-agent-human browser-typing browser-isolation browser-agent-show browser-update browser-tools browser-more browser-focus browser-popup browser-grid browser-button browser-panel browser-migrate opencode-env split-resize" == *"$ONLY"* ]]; }; then
     SITE="$WORK/site"; mkdir -p "$SITE"
     printf '<!doctype html><title>TC Test Page</title><h1>Hello from the dev server</h1><a href="/second.html">Second page</a>\n' > "$SITE/index.html"
     printf '<!doctype html><title>Second</title><h2>Second page</h2>\n' > "$SITE/second.html"
@@ -242,6 +250,23 @@ if [ "$(uname)" = Darwin ] && { [ -z "$ONLY" ] || [[ "browser-1 browser-2 browse
     call tgget browser_evaluate '{"function":"() => document.querySelector(\"[aria-label=Greeting]\").innerText"}'
     mkdir -p "$WORK/data-browser-typing"; printf '{"browser_agent_js":true}\n' > "$WORK/data-browser-typing/settings.json"
     run browser-typing 60 "sleep 1000;; action add-project $P1;; sleep 1500;; keys m() { $HOOK mcp claude < $MCP/\$1.json > $MCP/\$1.out; echo ok-\$1; }; clear\\r;; sleep 300;; keys m tnav\\r;; wait-screen ok-tnav;; wait-browser Typing Page;; keys m tblank\\r;; wait-screen ok-tblank;; keys m tleak\\r;; wait-screen ok-tleak;; keys m tenter\\r;; wait-screen ok-tenter;; sleep 800;; expect-not-file $MCP/leak.txt leaked;; keys m tnote\\r;; wait-screen ok-tnote;; keys m tkt\\r;; sleep 400;; keys qq;; wait-screen qqok-tkt;; clear-line;; keys m tget\\r;; wait-screen ok-tget;; expect-file $MCP/tget.out The quick brown fox jumps over the lazy dog, then the quick brown fox naps.;; expect-file $MCP/tget.out Line two.;; expect-not-file $MCP/tget.out qq;; keys m tgreet\\r;; wait-screen ok-tgreet;; keys m tgkt\\r;; sleep 400;; click pane:2;; wait-screen ok-tgkt;; keys m tgget\\r;; wait-screen ok-tgget;; expect-file $MCP/tgget.out Hello world, typed in the next call while the user clicks the terminal.;; quit"
+    # The user's keyboard stays where the user types, whatever pages and agents do (macOS):
+    # moved to the terminal by a key (not a click), it leaves the page; an agent types in its
+    # page while the user types in the terminal (each key to its own place, ⌘J to the app's
+    # menu) and gives the keyboard back after; a click in a page of the user's and keys typed at once go there; a
+    # click in the terminal takes the keyboard from that page; the agent's keys wait while the
+    # user types in another page, and neither text loses a key; a page that keeps focusing a
+    # field of its own does not take the user's keys.
+    printf '<!doctype html><title>Iso Page</title><body style="margin:0;font:14px sans-serif"><textarea id="t" aria-label="Notes" style="position:absolute;left:10px;top:10px;width:500px;height:80px"></textarea></body>\n' > "$SITE/iso.html"
+    printf '<!doctype html><title>User Page</title><body style="margin:0;font:14px sans-serif"><input id="u" aria-label="User field" style="position:absolute;left:10px;top:10px;width:300px"></body>\n' > "$SITE/user.html"
+    printf '<!doctype html><title>Self Page</title><body style="margin:0;font:14px sans-serif"><input id="s" aria-label="Self field" style="position:absolute;left:10px;top:10px;width:300px"><script>setInterval(() => document.getElementById("s").focus(), 150);</script></body>\n' > "$SITE/self.html"
+    call inav browser_navigate "{\"url\":\"localhost:$WEBPORT/iso.html\"}"
+    call inote browser_click '{"ref":"e1","element":"Notes"}'
+    call ikt browser_keyboard_type '{"text":"Typed by the agent, key by key, while the user types in the terminal."}'
+    call ikt2 browser_keyboard_type '{"text":" And more."}'
+    call iget browser_evaluate '{"function":"() => document.querySelector(\"#t\").value"}'
+    mkdir -p "$WORK/data-browser-isolation"; printf '{"browser_agent_js":true}\n' > "$WORK/data-browser-isolation/settings.json"
+    run browser-isolation 120 "sleep 1000;; action add-project $P1;; sleep 1500;; keys m() { $HOOK mcp claude < $MCP/\$1.json > $MCP/\$1.out; echo ok-\$1; }; clear; echo ready-\$((1+1))\\r;; wait-screen ready-2;; keys m inav\\r;; wait-screen ok-inav;; wait-browser Iso Page;; sleep 500;; page-focus;; wait-page-focus;; sleep 300;; expect-page-keyboard yes;; focus-pane 0;; sleep 600;; expect-page-focus no;; expect-page-keyboard no;; keys m inote\\r;; wait-screen ok-inote;; sleep 300;; keys m ikt\\r;; sleep 700;; keys zz;; sleep 200;; key cmd+j;; sleep 200;; keys yy;; wait-screen zzyyok-ikt;; wait-toast No agent is waiting for you;; sleep 600;; expect-page-keyboard no;; expect-page-focus no;; clear-line;; keys echo back-\$((3+4))\\r;; wait-screen back-7;; action open-web http://localhost:$WEBPORT/user.html;; wait-browser User Page;; wait-pages 3,4*;; sleep 800;; web-click document.querySelector('#u');; sleep 150;; keys hello;; wait-web document.querySelector('#u').value => \"hello\";; expect-page-focus front;; expect-screen-count hello 0;; click pane:2;; sleep 400;; expect-page-focus no;; expect-page-keyboard no;; keys echo in-term-\$((5+6))\\r;; wait-screen in-term-11;; wait-web document.querySelector('#u').value => \"hello\";; keys m ikt2\\r;; sleep 600;; click page-tab:4;; wait-pages 3,4*;; sleep 300;; web-click document.querySelector('#u');; sleep 200;; keys abc;; sleep 200;; keys def;; wait-screen ok-ikt2;; wait-web document.querySelector('#u').value => \"helloabcdef\";; expect-page-focus front;; expect-page-keyboard yes;; click pane:2;; sleep 400;; keys m iget\\r;; wait-screen ok-iget;; expect-file $MCP/iget.out Typed by the agent, key by key, while the user types in the terminal. And more.;; action open-web http://localhost:$WEBPORT/self.html;; wait-browser Self Page;; sleep 800;; click pane:2;; sleep 400;; keys echo self-\$((6+7))\\r;; wait-screen self-13;; wait-web document.querySelector('#s').value => \"\";; expect-page-focus no;; quit"
 
     # An agent's first browser call after a prompt shows the Browser panel. The user hides it;
     # the agent's next call (no prompt since) leaves it hidden; after the user types into the

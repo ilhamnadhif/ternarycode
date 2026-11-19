@@ -199,7 +199,10 @@ mod linux {
                 });
             }
             "blur" => {
-                with(id, |p| give_keyboard(p.parent));
+                with(id, |p| {
+                    keys_to(&p.web.webview(), false);
+                    give_keyboard(p.parent);
+                });
             }
             "js" => match with(id, |p| p.web.evaluate_script(&s("script"))) {
                 Some(_) => {}
@@ -311,25 +314,28 @@ mod linux {
             }
         };
         let wv = web.webview();
-        // The page's window inside the app's (wry's, made by Xlib) hears the pointer and keys:
-        // without asking, X hands them to the app's window around it.
+        // The page's window inside the app's (wry's, made by Xlib) hears the pointer: without
+        // asking, X hands it to the app's window around it. Keys only once it has the keyboard
+        // (`keys_to`).
         if let Some(w) = wv.toplevel().and_then(|t| t.window()) {
             use gdk::EventMask as M;
             w.set_events(
-                w.events()
+                (w.events()
                     | M::BUTTON_PRESS_MASK
                     | M::BUTTON_RELEASE_MASK
                     | M::POINTER_MOTION_MASK
                     | M::SCROLL_MASK
                     | M::SMOOTH_SCROLL_MASK
-                    | M::KEY_PRESS_MASK
-                    | M::KEY_RELEASE_MASK
                     | M::ENTER_NOTIFY_MASK
                     | M::LEAVE_NOTIFY_MASK
                     | M::FOCUS_CHANGE_MASK
-                    | M::STRUCTURE_MASK,
+                    | M::STRUCTURE_MASK)
+                    & !(M::KEY_PRESS_MASK | M::KEY_RELEASE_MASK),
             );
         }
+        // No keys until it has the keyboard, WebKit's window too (made when the page first shows).
+        keys_to(&wv, false);
+        wv.connect_realize(|wv| keys_to(wv, false));
         watch(id, &wv);
         PAGES.with_borrow_mut(|p| p.insert(id, Page { web, parent, upload: None }));
     }
@@ -466,8 +472,22 @@ mod linux {
 
     /// The page takes the keyboard (its window, inside the app's).
     fn take_keyboard(wv: &webkit2gtk::WebView) {
+        keys_to(wv, true);
         if let Some(w) = page_window(wv) {
             set_focus(w);
+        }
+    }
+
+    /// The page's window asks X for keys only while it has the keyboard. X hands a key to the
+    /// window under the pointer when that is inside the window with the keyboard: with the app's
+    /// window focused (the user types in a terminal) and the pointer resting on a page that asks
+    /// for keys, the typing would go into the page.
+    fn keys_to(wv: &webkit2gtk::WebView, on: bool) {
+        use gdk::EventMask as M;
+        let keys = M::KEY_PRESS_MASK | M::KEY_RELEASE_MASK;
+        // Both of the page's windows: WebKit's own (under the pointer) and the one wry puts it in.
+        for w in [wv.window(), wv.toplevel().and_then(|t| t.window())].into_iter().flatten() {
+            w.set_events(if on { w.events() | keys } else { w.events() & !keys });
         }
     }
 

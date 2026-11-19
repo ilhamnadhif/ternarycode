@@ -539,6 +539,10 @@ impl App {
             self.pane_rects.insert(pane_id, term_rect);
             self.term_rects.push((pane_id, term_rect.intersect(ui.clip_rect())));
             let request = self.focus_request == Some(pane_id);
+            // The terminal is to take the keyboard: the page the user typed in lets go of it.
+            if request && self.browser_focus.is_some() {
+                self.keyboard_to_app();
+            }
             let Some(pane) = self.panes.get_mut(&pane_id) else {
                 continue;
             };

@@ -40,6 +40,10 @@ struct Wait {
     started: Instant,
 }
 
+/// `wait-web`: the front page's last answer (its script, and what it gave), and whether an
+/// answer is on its way.
+static WEB_ANSWER: parking_lot::Mutex<(Option<(String, String)>, bool)> = parking_lot::Mutex::new((None, false));
+
 thread_local! {
     static WAIT: RefCell<Option<Wait>> = const { RefCell::new(None) };
     static SHOT: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -257,6 +261,33 @@ impl App {
             }
             // A page has the keyboard (clicked).
             "wait-page-focus" => Some(self.browser_focus.is_some()).filter(|ok| *ok),
+            // `wait-web EXPR => WANT`: a script in the open project's front page gives WANT (as
+            // JSON: `"text"`, `true`).
+            "wait-web" => {
+                let (expr, want) = arg.split_once(" => ")?;
+                let (expr, want) = (expr.trim().to_string(), want.trim());
+                let front = self.active_project().and_then(|p| p.panel.front);
+                let v = front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref())?;
+                let mut a = WEB_ANSWER.lock();
+                if a.0.as_ref().is_some_and(|(e, got)| *e == expr && got == want) {
+                    *a = (None, false);
+                    return Some(true);
+                }
+                if !a.1 {
+                    a.1 = true;
+                    drop(a);
+                    let body = format!("try {{ return JSON.stringify(await ({expr})); }} catch (e) {{ return JSON.stringify('error: ' + e); }}");
+                    crate::browser::run_js(v, &body, move |out| {
+                        let got = out.unwrap_or_else(|e| format!("error: {e}"));
+                        let mut a = WEB_ANSWER.lock();
+                        if a.0.as_ref().is_none_or(|(_, before)| *before != got) {
+                            eprintln!("DEVTEST LOG: wait-web {expr} gives {got}");
+                        }
+                        *a = (Some((expr, got)), false);
+                    });
+                }
+                None
+            }
             // `wait-pages 3,4*`: the open project's panel holds these pages, in this order, the one
             // marked * in front ("-": none).
             "wait-pages" => {
@@ -686,7 +717,7 @@ impl App {
             "wait-screen" | "wait-status" | "wait-agent" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
             | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-page" | "wait-page-count" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-dialog" | "wait-download" | "wait-page-find" | "wait-inspector" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
-            | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" => {
+            | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" | "wait-web" => {
                 WAIT.with(|w| {
                     *w.borrow_mut() = Some(Wait {
                         step: step.clone(),
@@ -963,6 +994,27 @@ impl App {
                     None => self.devtest.check(false, "web-click: no page"),
                 }
             }
+            // `expect-page-focus yes|no|front|other`: the user types in a page (`yes`), in the
+            // app (`no`), in the open project's front page, or in another page.
+            "expect-page-focus" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                let got = match self.browser_focus {
+                    None => "no",
+                    Some(id) if Some(id) == front => "front",
+                    Some(_) => "other",
+                };
+                let ok = match arg.trim() {
+                    "yes" => got != "no",
+                    want => got == want,
+                };
+                self.devtest.check(ok, &format!("expect-page-focus {arg} (got {got})"));
+            }
+            // `expect-page-keyboard yes|no`: the open project's front page has the window's keyboard.
+            "expect-page-keyboard" => {
+                let front = self.active_project().and_then(|p| p.panel.front);
+                let has = front.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()).is_some_and(crate::browser::has_keyboard);
+                self.devtest.check(has == (arg.trim() == "yes"), &format!("expect-page-keyboard {arg} (has: {has})"));
+            }
             // `page-focus`: the open project's front page takes the keyboard (as a click on it does).
             "page-focus" => match self.active_project().and_then(|p| p.panel.front) {
                 Some(id) => self.browser_focus_request = Some(id),
@@ -1120,11 +1172,6 @@ impl App {
             "expect-review" => {
                 let got = self.review.as_ref().map(|r| format!("{:?} {}", r.base, if r.expanded { "full" } else { "drawer" })).unwrap_or_else(|| "closed".into());
                 self.devtest.check(got == arg.trim(), &format!("expect-review {arg} (got {got})"));
-            }
-            // `expect-page-focus yes|no`: a page has the keyboard.
-            "expect-page-focus" => {
-                let has = self.browser_focus.is_some();
-                self.devtest.check(has == (arg.trim() == "yes"), &format!("expect-page-focus {arg} (got {has})"));
             }
             "expect-dialog" => {
                 let open = self.dialog.is_some();

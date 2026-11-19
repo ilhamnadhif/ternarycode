@@ -49,6 +49,13 @@ pub struct SpawnCtx<'a> {
 
 /// How long after Enter the foreground is watched for the command to start.
 const ENTER_WATCH: Duration = Duration::from_secs(2);
+
+/// A command waiting to be typed into a shell that marks its prompt is typed after this long
+/// without output even if no prompt mark came (its startup files undid the integration).
+const PROMPT_MARK_WAIT: Duration = Duration::from_secs(45);
+/// A command waiting to be typed into a shell that does not mark its prompt is typed once the
+/// shell has been quiet this long.
+const QUIET_BEFORE_TYPING: Duration = Duration::from_millis(300);
 /// How long a pane's size must stay the same before the PTY is resized.
 const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 /// The most a program may put on the clipboard at once (OSC 52), in bytes.
@@ -221,9 +228,11 @@ pub struct Pane {
     pub cwd: PathBuf,
     /// The preset that started the agent in this pane (for resume and restore).
     pub preset: Option<String>,
-    /// Typed into the shell once it has printed something.
+    /// Typed into the shell once it waits at its prompt (`type_pending`).
     pending_command: Option<String>,
     got_output: bool,
+    /// The shell loads TernaryCode's integration, so it marks its prompt (OSC 133).
+    expects_marks: bool,
     pub exit: Option<ExitInfo>,
     /// The shell's own process group (the PTY's child is `login` on macOS).
     shell_pgid: Option<i32>,
@@ -320,6 +329,7 @@ impl Pane {
             preset: None,
             pending_command: None,
             got_output: false,
+            expects_marks: false,
             exit: None,
             shell_pgid: None,
             last_pgid: None,
@@ -403,6 +413,7 @@ impl Pane {
         } else {
             crate::paths::home_dir()
         };
+        self.expects_marks = shell_integrated(&env);
         let ws = *self.shared.window.lock();
         self.pty_grid = Some(size);
         let opts = SpawnOptions {
@@ -714,16 +725,37 @@ impl Pane {
         }
     }
 
-    /// Types `command` and Enter into the shell, as the user would, once it is ready.
+    /// Types `command` and Enter into the shell, as the user would, once it waits at its prompt
+    /// (`type_pending`).
     pub fn type_command(&mut self, command: String) {
         // A command typed in for the user (an agent, a resume, a merge) is the pane in use.
         self.typed = true;
-        if self.got_output {
-            self.write(format!("{command}\r").into_bytes());
-            self.schedule_fg_check(Instant::now() + Duration::from_millis(500));
-        } else {
-            self.pending_command = Some(command);
+        self.pending_command = Some(command);
+        self.type_pending(Instant::now());
+    }
+
+    /// Types the command waiting to be typed once the shell is ready for it, and says when to
+    /// look again. A shell's startup files can ask something first (oh-my-zsh: "Would you like to
+    /// update? [Y/n]", which takes the first key typed, so `claude` ran as `laude`): a shell that
+    /// marks its prompt (TernaryCode's integration) gets the command at its prompt, after its
+    /// startup files ran and whatever they asked was answered. Another shell gets it once it has
+    /// printed something and gone quiet a moment. A shell with the integration that never marks
+    /// its prompt (its startup files undo it) gets it after a long quiet.
+    pub fn type_pending(&mut self, now: Instant) -> Option<Instant> {
+        self.pending_command.as_ref()?;
+        if !self.got_output || self.session.is_none() {
+            return None;
         }
+        let at_prompt = self.shared.prompt.lock().at_prompt;
+        let quiet = if self.tracker.shell_marks || self.expects_marks { PROMPT_MARK_WAIT } else { QUIET_BEFORE_TYPING };
+        let due = self.last_output + quiet;
+        if !at_prompt && now < due {
+            return Some(due);
+        }
+        let command = self.pending_command.take()?;
+        self.write(format!("{command}\r").into_bytes());
+        self.schedule_fg_check(now + Duration::from_millis(500));
+        None
     }
 
     /// The user pressed Enter in this pane.
@@ -753,10 +785,6 @@ impl Pane {
                 let mut changed = false;
                 if !self.got_output && (fed.repaint || !fed.reply.is_empty()) {
                     self.got_output = true;
-                    if let Some(cmd) = self.pending_command.take() {
-                        self.write(format!("{cmd}\r").into_bytes());
-                        self.schedule_fg_check(now + Duration::from_millis(500));
-                    }
                 }
                 // The shell's own titles come with its command mark (`preexec`), in the same read.
                 let command_started = fed
@@ -766,6 +794,8 @@ impl Pane {
                 for signal in fed.signals {
                     changed |= self.on_signal(signal, now);
                 }
+                // The shell came to its prompt: a command waiting for it is typed now.
+                self.type_pending(now);
                 for found in fed.servers {
                     self.found_server(found, now);
                 }
@@ -1182,6 +1212,16 @@ fn login_shell(env: &HashMap<String, String>) -> Option<(String, Vec<String>)> {
     let shell = tc_term::pty::default_shell().to_string();
     let args = tc_agent::shell::windows_shell_args(&shell, env.contains_key(tc_agent::shell::ENV_PWSH));
     Some((shell, args))
+}
+
+/// Whether a shell started with `env` loads TernaryCode's integration (`tc_agent::shell::env`),
+/// so it marks its prompt.
+fn shell_integrated(env: &HashMap<String, String>) -> bool {
+    let zsh = crate::paths::shell_dir().join("zsh");
+    env.get("ZDOTDIR").is_some_and(|z| std::path::Path::new(z) == zsh)
+        || env.get("PROMPT_COMMAND").is_some_and(|p| p.contains("ternarycode.bash"))
+        || env.contains_key("TERNARYCODE_FISH_XDG_DIR")
+        || env.contains_key(tc_agent::shell::ENV_PWSH)
 }
 
 #[cfg(test)]

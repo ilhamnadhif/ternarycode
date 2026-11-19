@@ -71,7 +71,7 @@ pub fn wanted(sized: bool, user_acted: bool) -> bool {
 
 /// Whether the user just clicked in this page, or typed in it, now.
 pub fn user_acted_in(page: &WKWebView) -> bool {
-    crate::browser::clicked_in_view(page, USER_ACT) || (crate::browser::typed_within(USER_ACT) && crate::browser::view_has_keyboard(page))
+    crate::browser::clicked_in_view(page, USER_ACT) || (crate::browser::typed_within(USER_ACT) && crate::browser::user_types_in(page))
 }
 
 fn key(web: &WKWebView) -> usize {

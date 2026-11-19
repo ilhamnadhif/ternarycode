@@ -222,6 +222,12 @@ if [ "$(uname)" = Linux ] && command -v xdotool >/dev/null; then
     # A real click on the page (the window's page area), then real keys.
     printf 'W=$(xdotool search --onlyvisible --name "^TernaryCode$" | head -1); eval $(xdotool getwindowgeometry --shell "$W"); xdotool mousemove $((X + WIDTH * 3 / 4)) $((Y + 130)) click 1; sleep 1; xdotool type --delay 80 abc; sleep 1; xdotool key ctrl+f\n' > "$WORK/xkeys.sh"
     run web-keys 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/keys.html;; wait-browser Keys Page;; wait-pages 3*;; sleep 1500;; spawn sh $WORK/xkeys.sh;; wait-page-focus;; wait-browser Keys: abc;; wait-shown browser-find:3;; quit"
+    # The user's keyboard moved to a terminal by a key (not a click): the page they clicked in lets
+    # go of it, and the user's real keys go to the terminal, not into the page (it once kept the
+    # keyboard, and the next prompt went into the browser).
+    printf 'W=$(xdotool search --onlyvisible --name "^TernaryCode$" | head -1); eval $(xdotool getwindowgeometry --shell "$W"); xdotool mousemove $((X + WIDTH * 3 / 4)) $((Y + 130)) click 1\n' > "$WORK/xclick.sh"
+    printf 'xdotool type --delay 60 "echo kept-\\$((40+2))"; xdotool key Return\n' > "$WORK/xtype.sh"
+    run web-focus 60 "sleep 1000;; action add-project $P1;; sleep 1500;; action open-web $W/keys.html;; wait-browser Keys Page;; wait-pages 3*;; sleep 1500;; spawn sh $WORK/xclick.sh;; wait-page-focus;; sleep 600;; expect-page-keyboard yes;; focus-pane 0;; sleep 800;; expect-page-focus no;; expect-page-keyboard no;; spawn sh $WORK/xtype.sh;; wait-screen kept-42;; wait-web document.getElementById('k').value => \"\";; quit"
 fi
 
 # Run Agent starts each agent and its own screen opens: the pane's program is that agent, still

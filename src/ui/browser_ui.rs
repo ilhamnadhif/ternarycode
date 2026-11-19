@@ -1233,6 +1233,18 @@ impl App {
                 }
             }
         }
+        // macOS: the user clicked in a page (seen as it happened, `browser::note_user_click`),
+        // whether or not the page says it took the keyboard (it had it already for an agent).
+        #[cfg(target_os = "macos")]
+        if let Some(key) = crate::browser::take_clicked_page()
+            && let Some(id) = self
+                .browsers
+                .values()
+                .find(|b| b.view.as_ref().is_some_and(|v| crate::browser::page_key(&crate::browser::web_view_of(v)) == key))
+                .map(|b| b.id)
+        {
+            focused = Some(id);
+        }
         for (project, url) in new_tabs {
             self.browser_tab_at(project, &url);
         }
@@ -1297,6 +1309,8 @@ impl App {
         if self.browsers.is_empty() {
             self.browser_pages.clear();
             self.run_browser_jobs(ctx);
+            self.browser_focus = None;
+            self.tell_key_watch();
             return;
         }
         // Pages agents use stay up out of view (outside the window, where they keep drawing).
@@ -1453,15 +1467,17 @@ impl App {
                 }
             }
         }
-        // A page under a question is dimmed; a page loading says so (from its request on). A
-        // page an agent acts in takes the keyboard when the agent focuses something in it: the
-        // keyboard goes back where the user had it (the agent's terminal). On macOS, once the
-        // agent's call is done: before, the page would lose its focus between two keys the agent
-        // types, and an editor (x.com's) its caret with it.
+        // A page under a question is dimmed; a page loading says so (from its request on). The
+        // keyboard stays where the user types (`browser_focus`): a page that has it otherwise
+        // (an agent focused something in it, or the page took it by itself) gives it back once
+        // no agent acts in it. On macOS not between the keys of an agent's call (the page would
+        // lose its focus between two keys, and an editor, x.com's, its caret with it): the
+        // user's keys go where they type meanwhile (`browser::route_user_key`). On Windows and
+        // Linux an agent's keys need no keyboard, and a page the user clicks says so only a
+        // moment after it took the keyboard: there only agents' pages give it back.
         let mut typing_in = self.browser_focus;
         let acting: std::collections::HashSet<PaneId> = if cfg!(target_os = "macos") { self.browser_jobs.iter().map(|j| j.browser).collect() } else { Default::default() };
-        #[cfg(target_os = "macos")]
-        let mut agents = Vec::new();
+        let mut back = Vec::new();
         for b in self.browsers.values_mut() {
             // A page out of sight that has the keyboard gives it back (else keys go nowhere).
             if !b.shown
@@ -1475,12 +1491,12 @@ impl App {
             }
             if let Some(v) = &b.view {
                 b.loading = crate::browser::is_loading(v);
-                if b.driven() && typing_in != Some(b.id) {
-                    #[cfg(target_os = "macos")]
-                    agents.push(crate::browser::page_key(&crate::browser::web_view_of(v)));
-                    if !acting.contains(&b.id) && crate::browser::has_keyboard(v) {
-                        let _ = v.focus_parent();
-                    }
+                if typing_in != Some(b.id)
+                    && (cfg!(target_os = "macos") || b.driven())
+                    && !acting.contains(&b.id)
+                    && crate::browser::has_keyboard(v)
+                {
+                    back.push(b.id);
                 }
             }
             if b.view.is_some() {
@@ -1498,9 +1514,9 @@ impl App {
         if typing_in != self.browser_focus {
             self.browser_focus = typing_in;
         }
-        // The user's keys while an agent types in a page go to the app (`browser::to_app_while_agent_types`).
-        #[cfg(target_os = "macos")]
-        crate::browser::set_agents_pages(agents);
+        for id in back {
+            self.keyboard_back_from(id);
+        }
         // An agent's page asleep a while after its agent ended (it left, or its terminal
         // closed): it closes (Reopen Closed Page brings it back). One whose agent still runs
         // in its terminal stays: the agent may come back to it.
@@ -1557,6 +1573,38 @@ impl App {
             }
             self.browser_focus = None;
         }
+        self.tell_key_watch();
+    }
+
+    /// The key and click watch (macOS, `browser::route_user_key`) learns the pages in the window
+    /// and where the user types.
+    fn tell_key_watch(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            crate::browser::set_pages(self.browsers.values().filter_map(|b| b.view.as_ref()).map(crate::browser::web_view_of).collect());
+            let user = self.browser_focus.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref());
+            crate::browser::set_user_page(user.map(|v| crate::browser::page_key(&crate::browser::web_view_of(v))));
+        }
+    }
+
+    /// A page has the keyboard though the user does not type in it: the keyboard goes back
+    /// where they type, the app or another page (its caret where it was: WebKit puts it at the
+    /// start of the field when the page gets the keyboard back).
+    fn keyboard_back_from(&mut self, id: PaneId) {
+        if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
+            let _ = v.focus_parent();
+        }
+        if let Some(v) = self.browser_focus.filter(|u| *u != id).and_then(|u| self.browsers.get(&u)).and_then(|b| b.view.as_ref()) {
+            let _ = v.focus();
+            crate::browser_agent::restore_caret(v);
+        }
+    }
+
+    /// The user types in the app from now on (a terminal or a field of the app took the
+    /// keyboard): the page they typed in lets go of it.
+    pub fn keyboard_to_app(&mut self) {
+        self.release_page_keyboard();
+        self.tell_key_watch();
     }
 }
 

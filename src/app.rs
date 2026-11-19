@@ -1667,6 +1667,10 @@ impl App {
             if let Some(d) = pane.fg_due {
                 next_due = Some(next_due.map_or(d, |n| n.min(d)));
             }
+            // A command waiting for the shell's prompt (an agent from Run Agent).
+            if let Some(d) = pane.type_pending(now) {
+                next_due = Some(next_due.map_or(d, |n| n.min(d)));
+            }
             // A Running that only Enter set, and the agent never confirmed.
             pane.tracker.expire(now);
             if let Some(d) = pane.tracker.deadline() {

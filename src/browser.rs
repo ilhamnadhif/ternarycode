@@ -1113,75 +1113,159 @@ fn watch_clicks() {
             // SAFETY: AppKit hands the monitor a live event, on the main thread.
             let ev = unsafe { e.as_ref() };
             let ty = ev.r#type();
-            if matches!(ty, NSEventType::KeyDown | NSEventType::KeyUp) {
+            if matches!(ty, NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged) {
                 // A key an agent pressed that its page did not take (WebKit hands it on to the
                 // app): it goes nowhere, as in a browser, never into a terminal.
                 if ty == NSEventType::KeyDown && crate::browser_input::agents_key(ev) {
                     return std::ptr::null_mut();
                 }
-                // The user's key while an agent's page has the keyboard (it types there): the
-                // key goes to the app, where the user types.
-                if to_app_while_agent_types(ev) {
-                    return std::ptr::null_mut();
-                }
                 if ty == NSEventType::KeyDown {
                     *LAST_KEY.lock() = Some(std::time::Instant::now());
+                }
+                // The user's key goes where the user types, whichever page has the keyboard.
+                if route_user_key(ev) {
+                    return std::ptr::null_mut();
                 }
             } else {
                 let at = ev.locationInWindow();
                 *LAST_CLICK.lock() = Some((std::time::Instant::now(), ev.windowNumber(), at.x, at.y));
+                note_user_click(ev);
             }
             // The event goes on as it came.
             e.as_ptr()
         });
-        let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown | NSEventMask::KeyDown | NSEventMask::KeyUp;
+        let mask = NSEventMask::LeftMouseDown
+            | NSEventMask::RightMouseDown
+            | NSEventMask::OtherMouseDown
+            | NSEventMask::KeyDown
+            | NSEventMask::KeyUp
+            | NSEventMask::FlagsChanged;
         // SAFETY: the block returns the event it was given. The monitor stays for the app's life.
         let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
         std::mem::forget(monitor);
     });
 }
 
-/// The pages (`page_key`) whose keyboard is an agent's: it acts in them and the user has not
-/// taken them. Set each frame (`App::sync_browsers`).
-#[cfg(target_os = "macos")]
-static AGENTS_PAGES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+// The user's keyboard and the pages (macOS). A page has the keyboard of the window (it is the
+// first responder) when the user clicked in it, and also while an agent acts in it: WebKit types
+// into a page only then, and taking the keyboard from a page clears its selection (the agent's
+// next key would go to the start of the field). So the user's keys are not left to the first
+// responder: each goes where the user types (`USER_PAGE`), a page or the app, whichever page
+// holds the keyboard for an agent meanwhile. The user moves it by a click (seen here at once) or
+// by the app (`App::browser_focus`, set here each frame).
 
-/// Sets the pages whose keyboard is an agent's.
-#[cfg(target_os = "macos")]
-pub fn set_agents_pages(pages: Vec<usize>) {
-    *AGENTS_PAGES.lock() = pages;
+thread_local! {
+    /// The pages in the window (each frame, `set_pages`): the key and click watch look at them.
+    #[cfg(target_os = "macos")]
+    static PAGE_VIEWS: std::cell::RefCell<Vec<objc2::rc::Retained<objc2_web_kit::WKWebView>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// A key of the user's comes while an agent's page has the keyboard of its window: it goes to
-/// the app (the page's parent view) as it would have, and the page keeps the keyboard. Taking
-/// the keyboard from the page would clear its selection (WebKit does), and the agent's next
-/// character would go to the start of the field. False: no agent's page had the keyboard.
+/// The page the user types in (`page_key`); `None`: the app.
 #[cfg(target_os = "macos")]
-fn to_app_while_agent_types(ev: &objc2_app_kit::NSEvent) -> bool {
-    use objc2_app_kit::{NSEventType, NSView};
-    let agents = AGENTS_PAGES.lock().clone();
-    if agents.is_empty() {
-        return false;
+static USER_PAGE: Mutex<Option<usize>> = Mutex::new(None);
+
+/// The page the user's last click was in, until the app takes it (`take_clicked_page`).
+#[cfg(target_os = "macos")]
+static CLICKED_PAGE: Mutex<Option<usize>> = Mutex::new(None);
+
+/// The pages of the window (called each frame, on the main thread).
+#[cfg(target_os = "macos")]
+pub fn set_pages(pages: Vec<objc2::rc::Retained<objc2_web_kit::WKWebView>>) {
+    PAGE_VIEWS.with(|p| *p.borrow_mut() = pages);
+}
+
+/// Where the user types: a page (`page_key`), or the app.
+#[cfg(target_os = "macos")]
+pub fn set_user_page(page: Option<usize>) {
+    *USER_PAGE.lock() = page;
+}
+
+/// Whether the user types in this page (not merely: it has the keyboard, which an agent's
+/// page has while the agent types, the user typing in a terminal meanwhile).
+#[cfg(target_os = "macos")]
+pub fn user_types_in(page: &objc2_web_kit::WKWebView) -> bool {
+    *USER_PAGE.lock() == Some(page_key(page))
+}
+
+/// The page the user clicked in since the last call, if the last click was in one.
+#[cfg(target_os = "macos")]
+pub fn take_clicked_page() -> Option<usize> {
+    CLICKED_PAGE.lock().take()
+}
+
+/// The user's click: in a page, the user types there now; elsewhere in the window, in the app.
+/// Agents' clicks go to their page's view itself and never come here (`browser_input`).
+#[cfg(target_os = "macos")]
+fn note_user_click(ev: &objc2_app_kit::NSEvent) {
+    let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+    let Some(window) = ev.window(mtm) else { return };
+    let at = ev.locationInWindow();
+    let (hit, ours) = PAGE_VIEWS.with(|p| {
+        let mut hit = None;
+        let mut ours = false;
+        for wk in p.borrow().iter() {
+            if wk.window().is_none_or(|w| !std::ptr::eq(&*w, &*window)) {
+                continue;
+            }
+            ours = true;
+            if wk.isHiddenOrHasHiddenAncestor() {
+                continue;
+            }
+            // The page's place in the window, as the click's point (from the window's bottom left).
+            let r = wk.convertRect_toView(wk.bounds(), None);
+            if at.x >= r.origin.x && at.x <= r.origin.x + r.size.width && at.y >= r.origin.y && at.y <= r.origin.y + r.size.height {
+                hit = Some(page_key(wk));
+            }
+        }
+        (hit, ours)
+    });
+    // A window without pages (a page's pop-up, the inspector) keeps its own keyboard.
+    if ours {
+        *USER_PAGE.lock() = hit;
+        *CLICKED_PAGE.lock() = hit;
     }
+}
+
+/// The user's key while a page has the keyboard: it goes to the page the user types in, or to
+/// the app: a shortcut to the app's menu first (⌘J and the others are the menu's on macOS,
+/// `ui::menu`; it has no Copy or Paste, whose actions would go to the page), the rest to the
+/// page's parent view, where egui hands it to a terminal or a field. True: it went to the app
+/// here. False: the key goes on as it came (the app has the keyboard, or the page is the user's).
+#[cfg(target_os = "macos")]
+fn route_user_key(ev: &objc2_app_kit::NSEvent) -> bool {
+    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSEventType, NSView};
     let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
     let Some(window) = ev.window(mtm) else { return false };
     let Some(first) = window.firstResponder() else { return false };
-    let Some(mut view) = first.downcast::<NSView>().ok() else { return false };
-    loop {
-        // SAFETY: a plain NSView getter on the main thread (the monitor runs there).
-        let up = unsafe { view.superview() };
-        if agents.contains(&(objc2::rc::Retained::as_ptr(&view) as usize)) {
-            let Some(app) = up else { return false };
-            if ev.r#type() == NSEventType::KeyDown {
-                app.keyDown(ev);
-            } else {
-                app.keyUp(ev);
-            }
-            return true;
+    let Ok(first) = first.downcast::<NSView>() else { return false };
+    let user = *USER_PAGE.lock();
+    PAGE_VIEWS.with(|p| {
+        let pages = p.borrow();
+        let Some(holder) = pages.iter().find(|wk| first.isDescendantOf(wk)) else { return false };
+        if user == Some(page_key(holder)) {
+            return false;
         }
-        let Some(up) = up else { return false };
-        view = up;
-    }
+        // The user types in another page: it takes the keyboard back, and the key goes there.
+        if let Some(mine) = user.and_then(|u| pages.iter().find(|wk| page_key(wk) == u)) {
+            window.makeFirstResponder(Some(mine));
+            return false;
+        }
+        // SAFETY: a plain NSView getter on the main thread (the monitor runs there).
+        let Some(app) = (unsafe { holder.superview() }) else { return false };
+        match ev.r#type() {
+            NSEventType::KeyDown => {
+                let shortcut = ev.modifierFlags().intersects(NSEventModifierFlags::Command.union(NSEventModifierFlags::Control))
+                    && NSApplication::sharedApplication(mtm).mainMenu().is_some_and(|m| m.performKeyEquivalent(ev));
+                if !shortcut {
+                    app.keyDown(ev);
+                }
+            }
+            NSEventType::KeyUp => app.keyUp(ev),
+            NSEventType::FlagsChanged => app.flagsChanged(ev),
+            _ => return false,
+        }
+        true
+    })
 }
 
 /// Whether the user's last click, a moment ago, was on this page. A page saying it was clicked
