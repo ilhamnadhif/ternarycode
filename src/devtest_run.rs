@@ -963,6 +963,15 @@ impl App {
                     None => self.devtest.check(false, "web-shot: no page"),
                 }
             }
+            // `window-shot NAME`: the app's window as it shows, pages' own windows over it included
+            // (macOS, `browser_host`), into the shot folder.
+            #[cfg(target_os = "macos")]
+            "window-shot" => {
+                let dir = std::env::var("TERNARYCODE_SHOT_DIR").unwrap_or_else(|_| ".".into());
+                let path = format!("{dir}/{}.png", arg.trim());
+                let ok = crate::browser_host::window_picture().is_some_and(|png| std::fs::write(&path, png).is_ok());
+                self.devtest.check(ok, &format!("window-shot {path}"));
+            }
             // `web-click EXPR`: the user's click (through the window; on Windows and Linux a real
             // click of the system's web view, as an agent's) at the middle of the element a script
             // finds in the open project's front page (`document.querySelector('#go')`).

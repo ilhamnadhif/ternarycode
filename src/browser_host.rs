@@ -406,6 +406,21 @@ impl View {
         crate::browser::holds_window_keys(&self.wk)
     }
 
+    /// Rounds the page's corners (`radius` points): its window's content clips it, WebKit's
+    /// drawing included.
+    pub fn set_corner_radius(&self, radius: f64) {
+        let Some(content) = self.host().contentView() else { return };
+        content.setWantsLayer(true);
+        // SAFETY: the layer of a layer-backed view, and CALayer's own setters, on the main thread.
+        unsafe {
+            let layer: *mut AnyObject = msg_send![&*content, layer];
+            if !layer.is_null() {
+                let _: () = msg_send![layer, setCornerRadius: radius];
+                let _: () = msg_send![layer, setMasksToBounds: radius > 0.0];
+            }
+        }
+    }
+
     /// The page's window shows where the app's does (on screen, in its Space: full screen too).
     pub fn on_screen(&self) -> bool {
         let host = self.host();
@@ -502,6 +517,53 @@ pub fn typing_in_page() -> bool {
     let Some(mtm) = MainThreadMarker::new() else { return false };
     let app = NSApplication::sharedApplication(mtm);
     app.isActive() && app.keyWindow().is_some_and(|w| w.downcast_ref::<PageWindow>().is_some())
+}
+
+/// A picture (PNG) of the app's window as it shows, the windows over it (its pages') included:
+/// a test's look at the pages laid over their panes. Only this app's windows are drawn in it.
+#[cfg(debug_assertions)]
+pub fn window_picture() -> Option<Vec<u8>> {
+    use objc2_app_kit::NSBitmapImageFileType;
+    /// CoreGraphics' image (a CGImageRef points at one).
+    #[repr(C)]
+    struct CGImage {
+        _private: [u8; 0],
+    }
+    // SAFETY: CGImageRef's encoding.
+    unsafe impl objc2::encode::RefEncode for CGImage {
+        const ENCODING_REF: objc2::encode::Encoding = objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("CGImage", &[]));
+    }
+    unsafe extern "C" {
+        // CoreGraphics; the image is the caller's to release.
+        fn CGWindowListCreateImage(rect: NSRect, options: u32, window: u32, image: u32) -> *mut CGImage;
+        fn CGImageRelease(image: *mut CGImage);
+    }
+    let mtm = MainThreadMarker::new()?;
+    let app = NSApplication::sharedApplication(mtm);
+    let windows = app.windows();
+    let main = (0..windows.count())
+        .map(|i| windows.objectAtIndex(i))
+        .filter(|w| w.downcast_ref::<PageWindow>().is_none() && w.isVisible())
+        .max_by(|a, b| (a.frame().size.width * a.frame().size.height).total_cmp(&(b.frame().size.width * b.frame().size.height)))?;
+    let f = main.frame();
+    let screen_h = main.screen()?.frame().size.height.max(NSApplication::sharedApplication(mtm).mainWindow()?.screen()?.frame().size.height);
+    // CoreGraphics counts y from the top of the main screen.
+    let rect = NSRect::new(NSPoint::new(f.origin.x, screen_h - f.origin.y - f.size.height), f.size);
+    // On screen, above this window, and this window itself.
+    let options = (1 << 1) | (1 << 3);
+    // SAFETY: CoreGraphics' capture of this app's windows; the image is released once copied.
+    unsafe {
+        let image = CGWindowListCreateImage(rect, options, main.windowNumber() as u32, 0);
+        if image.is_null() {
+            return None;
+        }
+        let rep = mtm.alloc::<objc2_app_kit::NSBitmapImageRep>();
+        let rep: Option<Retained<objc2_app_kit::NSBitmapImageRep>> = msg_send![rep, initWithCGImage: image];
+        CGImageRelease(image);
+        let props = objc2_foundation::NSDictionary::new();
+        let data = rep?.representationUsingType_properties(NSBitmapImageFileType::PNG, &props)?;
+        Some(data.to_vec())
+    }
 }
 
 /// The page window over the app's window at `at` (a point in the app's window), with the point

@@ -380,6 +380,10 @@ pub struct Browser {
     /// layout it has in Focus), and the zoom where it is drawn this frame.
     pub(crate) zoom: f32,
     pub zoom_want: f32,
+    /// How round its page's corners are (points, at the window's zoom), as laid and as its frame
+    /// wants this frame (within its frame's rounded border).
+    pub(crate) corner: f32,
+    pub corner_want: f32,
 }
 
 impl Browser {
@@ -428,6 +432,8 @@ impl Browser {
             dimmed: false,
             zoom: 1.0,
             zoom_want: 1.0,
+            corner: 0.0,
+            corner_want: 0.0,
         }
     }
 
@@ -1214,6 +1220,18 @@ pub fn clicked_in_view(wk: &objc2_web_kit::WKWebView, within: Duration) -> bool 
 pub fn has_keyboard(view: &View) -> bool {
     view.has_keyboard()
 }
+
+/// Rounds the page's corners (`radius` logical points) to sit within its frame's rounded
+/// border (macOS: the page's own window, `browser_host`).
+#[cfg(target_os = "macos")]
+pub fn round_corners(view: &View, radius: f64) {
+    view.set_corner_radius(radius);
+}
+
+/// [`round_corners`]: a page's own window on Windows and Linux keeps square corners (its web view
+/// keeps clear of its frame's rounded border instead, `WEB_INSET`).
+#[cfg(not(target_os = "macos"))]
+pub fn round_corners(_view: &View, _radius: f64) {}
 
 /// Whether the user's keys go to the page (on macOS a page may have its own window's keyboard
 /// for an agent, `has_keyboard`, while the user types elsewhere).

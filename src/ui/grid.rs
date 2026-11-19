@@ -874,15 +874,21 @@ impl App {
         let driven = b.driven();
         // The page in its own rounded frame, ringed in the accent while an agent uses it (as in
         // the Browser panel).
+        let round = super::browser_ui::PAGE_ROUND;
         if driven {
-            ui.painter().rect_stroke(rect, CornerRadius::same(8), Stroke::new(3.0, style::soft(p.accent, 0.16)), egui::StrokeKind::Outside);
+            ui.painter().rect_stroke(rect, CornerRadius::same(round as u8), Stroke::new(3.0, style::soft(p.accent, 0.16)), egui::StrokeKind::Outside);
         }
-        ui.painter().rect(rect, CornerRadius::same(8), p.canvas, Stroke::new(if driven { 2.0 } else { 1.0 }, if driven { p.accent } else { p.border }), egui::StrokeKind::Inside);
+        ui.painter().rect(rect, CornerRadius::same(round as u8), p.canvas, Stroke::new(if driven { 2.0 } else { 1.0 }, if driven { p.accent } else { p.border }), egui::StrokeKind::Inside);
         let page = rect.shrink(if driven { 2.0 } else { 1.0 });
+        // Its corners within the frame's rounded border (`browser::round_corners`).
+        let corner = round - if driven { 2.0 } else { 1.0 };
         let whole = ui.clip_rect().contains_rect(page) && page.width() >= 40.0 && page.height() >= 40.0;
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("tile-browser:{id}"), page);
         if whole && !b.url.is_empty() {
+            if let Some(b) = self.browsers.get_mut(&id) {
+                b.corner_want = corner;
+            }
             self.browser_pages.insert(id, page);
             return;
         }

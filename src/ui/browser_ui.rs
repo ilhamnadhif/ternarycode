@@ -18,6 +18,8 @@ use crate::i18n::{t, tf};
 pub const BAR_H: f32 = 40.0;
 /// How far a page's web view keeps from its pane's sides and foot (see `browser_pane`).
 const WEB_INSET: f32 = 3.0;
+/// How round a page's frame is (in the Browser panel and in a Grid tile).
+pub const PAGE_ROUND: f32 = 8.0;
 /// The bar under it while an agent uses the page.
 const AGENT_H: f32 = 44.0;
 /// The question about a site an agent's step would open.
@@ -307,9 +309,9 @@ impl App {
         let frame = Rect::from_min_max(pos2(rect.left() + 8.0, top.min(bottom)), pos2(rect.right() - 8.0, (bottom - 8.0).max(top.min(bottom))));
         let agent_on = driver.as_ref().is_some_and(|d| !d.paused);
         if agent_on {
-            ui.painter().rect_stroke(frame, CornerRadius::same(8), Stroke::new(3.0, style::soft(p.accent, 0.16)), egui::StrokeKind::Outside);
+            ui.painter().rect_stroke(frame, CornerRadius::same(PAGE_ROUND as u8), Stroke::new(3.0, style::soft(p.accent, 0.16)), egui::StrokeKind::Outside);
         }
-        ui.painter().rect(frame, CornerRadius::same(8), p.canvas, Stroke::new(if agent_on { 2.0 } else { 1.0 }, if agent_on { p.accent } else { p.border }), egui::StrokeKind::Inside);
+        ui.painter().rect(frame, CornerRadius::same(PAGE_ROUND as u8), p.canvas, Stroke::new(if agent_on { 2.0 } else { 1.0 }, if agent_on { p.accent } else { p.border }), egui::StrokeKind::Inside);
         let page = frame.shrink(if agent_on { 2.0 } else { 1.0 });
         // Its server does not answer: which terminal served it, and Reload.
         if self.browsers.get(&id).is_some_and(|b| b.down) {
@@ -338,8 +340,14 @@ impl App {
         crate::devtest::record(format!("browser:{id}"), page);
         // The web view keeps clear of the pane's sides and foot: a divider (or the Code drawer's
         // edge, the sidebar's) is dragged by a strip either side of it, and the page, always
-        // drawn over the app, would take its half.
-        let web = Rect::from_min_max(pos2(page.left() + WEB_INSET, page.top()), pos2(page.right() - WEB_INSET, page.bottom() - WEB_INSET));
+        // drawn over the app, would take its half. The frame is inset farther than that strip
+        // reaches; on macOS the page fills it, its corners rounded within the frame's border
+        // (`browser::round_corners`); elsewhere the web view's square corners keep clear of it.
+        let inset = if cfg!(target_os = "macos") { 0.0 } else { WEB_INSET };
+        let web = Rect::from_min_max(pos2(page.left() + inset, page.top()), pos2(page.right() - inset, page.bottom() - inset));
+        if let Some(b) = self.browsers.get_mut(&id) {
+            b.corner_want = PAGE_ROUND - if agent_on { 2.0 } else { 1.0 };
+        }
         self.browser_pages.insert(id, web);
         if self.focus_request == Some(id) {
             self.focus_request = None;
@@ -1394,6 +1402,7 @@ impl App {
                         b.shown = b.view.is_some();
                         b.dimmed = false;
                         b.zoom = 1.0;
+                        b.corner = 0.0;
                     } else if b.view.is_some() {
                         if b.placed != Some(*rect)
                             && let Some(v) = &b.view
@@ -1407,6 +1416,14 @@ impl App {
                             let _ = v.set_visible(true);
                             b.shown = true;
                         }
+                    }
+                    // The page's corners within its frame's rounded border.
+                    let corner = b.corner_want * zoom;
+                    if (b.corner - corner).abs() > 0.01
+                        && let Some(v) = &b.view
+                    {
+                        crate::browser::round_corners(v, f64::from(corner));
+                        b.corner = corner;
                     }
                     // Zoomed out in a Grid tile (the layout of Focus, smaller), as is in Focus.
                     // And the zoom the user chose for the page (⌘= / ⌘−).
