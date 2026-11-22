@@ -337,6 +337,9 @@ impl App {
     /// The IDE's keys while the text has the keyboard, before it sees them: the completion
     /// list and code action menu, and the commands' shortcuts.
     pub fn ide_keys(&mut self, ctx: &egui::Context, project: tc_core::ProjectId, cmds: &mut Vec<IdeCmd>) {
+        if self.overlay_open() || self.updater.dialog_open {
+            return;
+        }
         let Some(editor) = self.editors.get_mut(&project) else { return };
         let active = editor.active;
         let Some(file) = editor.files.get_mut(active) else { return };
@@ -904,12 +907,13 @@ impl App {
         ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
         let root = self.project(project).map(|x| x.path.clone()).unwrap_or_default();
         let current = self.editors.get(&project).and_then(|e| e.file()).map(|f| f.path.clone());
+        let show_project = self.problems_project || current.is_none();
         // Where a problem starts as its server counts (a column in the server's encoding).
         type ServerAt = (lt::Position, tc_lsp::pos::Encoding);
         // Each: severity, message, file, line, and where it starts.
         let mut rows: Vec<(u8, String, std::path::PathBuf, usize, ServerAt)> = Vec::new();
         for (path, (enc, diags)) in &self.lsp.diagnostics {
-            let here = if self.problems_project { path.starts_with(&root) } else { Some(path) == current.as_ref() };
+            let here = if show_project { path.starts_with(&root) } else { Some(path) == current.as_ref() };
             if !here {
                 continue;
             }
@@ -940,11 +944,14 @@ impl App {
         let close = Rect::from_center_size(pos2(head.right() - 6.0 - 11.0, head.center().y), vec2(22.0, 22.0));
         if ui.scope_builder(egui::UiBuilder::new().max_rect(close), |ui| kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0)).inner.clicked() {
             self.problems_open = false;
+            if self.drawer_tab == tc_core::model::DrawerTab::Problems {
+                self.drawer_tab = tc_core::model::DrawerTab::Terminals;
+            }
         }
         let options = [kit::Seg::new(t("This file"), ""), kit::Seg::new(t("Project"), "")];
         let sw = kit::segmented_width(ui, &options);
         let seg = Rect::from_min_size(pos2(close.left() - 6.0 - sw, head.center().y - kit::SEGMENTED_H / 2.0), vec2(sw, kit::SEGMENTED_H));
-        if let Some(i) = kit::segmented_in(ui, seg, egui::Id::new("problems-scope"), &options, self.problems_project as usize) {
+        if let Some(i) = kit::segmented_in(ui, seg, egui::Id::new("problems-scope"), &options, show_project as usize) {
             self.problems_project = i == 1;
         }
         // Rows.

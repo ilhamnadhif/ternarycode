@@ -941,12 +941,17 @@ impl App {
             IdeCmd::Forward => return self.ide_history(false),
             IdeCmd::UndoRefactor => return self.undo_refactor(),
             IdeCmd::Problems => {
-                // The panel at the bottom of the editor, shown or hidden.
-                self.problems_open = !self.problems_open;
-                if self.problems_open
-                    && let Some(e) = self.active.and_then(|id| self.editors.get_mut(&id))
-                {
-                    e.visible = true;
+                // Unify Problems with the secondary workspace drawer so there is only one panel.
+                self.exit_zen_mode();
+                self.drawer_maximized = false;
+                if self.settings.drawer_open && self.drawer_tab == tc_core::model::DrawerTab::Problems {
+                    self.drawer_tab = tc_core::model::DrawerTab::Terminals;
+                    self.problems_open = false;
+                } else {
+                    self.drawer_tab = tc_core::model::DrawerTab::Problems;
+                    self.settings.drawer_open = true;
+                    self.problems_open = true;
+                    self.settings_changed();
                 }
                 return;
             }

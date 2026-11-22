@@ -31,7 +31,7 @@ pub fn key_labels(action: &crate::actions::Action) -> Option<(&'static str, &'st
         A::ToggleSidebar => ("⌘B", "Ctrl+Shift+B"),
         A::ToggleCompactSidebar => ("⌥⌘B", "Ctrl+Alt+B"),
         A::ToggleEditor => ("⌘E", "Ctrl+Shift+Y"),
-        A::ToggleZenMode => ("⇧⌘Z", "Ctrl+Shift+Z"),
+        A::ToggleZenMode => ("⌥⌘Z", "Ctrl+Alt+Z"),
         A::ToggleDrawer => ("⇧⌘L", "Ctrl+Shift+L"),
         A::QuickOpen => ("⌘O", "Ctrl+Shift+O"),
         A::AddProject => ("⇧⌘O", "Ctrl+Shift+N"),
@@ -586,25 +586,26 @@ fn paint_segmented(
         }
         let color = if selected || resp.hovered() { p.text } else { p.text_faint };
         let content = segment_content(ui, s);
-        let mut x = r.center().x - content / 2.0;
+        let seg_painter = ui.painter().with_clip_rect(r.intersect(ui.clip_rect()));
+        let mut x = (r.center().x - content / 2.0).max(r.left() + 4.0);
         let cy = r.center().y;
         if let Some(k) = s.agent {
-            super::agent_logo::paint(ui.painter(), Rect::from_min_size(egui::pos2(x, cy - 6.0), vec2(12.0, 12.0)), k, p.text, !(selected || resp.hovered()));
+            super::agent_logo::paint(&seg_painter, Rect::from_min_size(egui::pos2(x, cy - 6.0), vec2(12.0, 12.0)), k, p.text, !(selected || resp.hovered()));
             x += 12.0 + 6.0;
         } else if let Some(icon) = s.icon {
-            let g = ui.painter().layout_no_wrap(icon.to_string(), style::icon_font(13.0), color);
-            ui.painter().galley(egui::pos2(x, cy - g.size().y / 2.0), g.clone(), color);
+            let g = seg_painter.layout_no_wrap(icon.to_string(), style::icon_font(13.0), color);
+            seg_painter.galley(egui::pos2(x, cy - g.size().y / 2.0), g.clone(), color);
             x += g.size().x + 5.0;
         }
-        let g = ui.painter().layout_no_wrap(s.text.to_string(), font.clone(), color);
+        let g = seg_painter.layout_no_wrap(s.text.to_string(), font.clone(), color);
         let w = g.size().x;
-        ui.painter().galley(egui::pos2(x, cy - g.size().y / 2.0), g, color);
+        seg_painter.galley(egui::pos2(x, cy - g.size().y / 2.0), g, color);
         x += w + 6.0;
         if let Some((n, c)) = &s.count {
             // A count in its own colour (amber for waiting), else quiet: ghost, faint when on.
             let c = if *c == p.text_faint { if selected { p.text_faint } else { p.text_ghost } } else { *c };
-            let g = ui.painter().layout_no_wrap(n.clone(), style::mono(10.5), c);
-            ui.painter().galley(egui::pos2(x, cy - g.size().y / 2.0), g, c);
+            let g = seg_painter.layout_no_wrap(n.clone(), style::mono(10.5), c);
+            seg_painter.galley(egui::pos2(x, cy - g.size().y / 2.0), g, c);
         }
         if resp.clicked() && !selected {
             out = Some(i);
@@ -1147,7 +1148,10 @@ pub fn field(ui: &mut Ui, id: egui::Id, text: &mut String, icon: Option<&str>, h
     let h = if small { 26.0 } else { 30.0 };
     let pad = if small { 8.0 } else { 10.0 };
     let font = egui::FontId::proportional(if small { 12.0 } else { 12.5 });
-    let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
+    let (rect, outer) = ui.allocate_exact_size(vec2(width, h), Sense::click());
+    if outer.clicked() {
+        ui.ctx().memory_mut(|m| m.request_focus(id));
+    }
     let focused = ui.ctx().memory(|m| m.has_focus(id));
     let painter = ui.painter();
     if focused {

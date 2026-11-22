@@ -183,16 +183,17 @@ impl App {
                 y = top.bottom() + 2.0;
             }
         }
-        if let Some(b) = self.inbox(ui, Rect::from_min_max(pos2(full.left() + PAD, y), pos2(full.right() - PAD, full.bottom()))) {
-            y = b + 10.0;
-        }
-
         // ----- the footer: Settings ---------------------------------------------------------------
         let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - FOOT_H), full.max);
         self.sidebar_footer(ui, foot);
 
+        if let Some(b) = self.inbox(ui, Rect::from_min_max(pos2(full.left() + PAD, y), pos2(full.right() - PAD, (foot.top() - 8.0).max(y)))) {
+            y = b + 10.0;
+        }
+
         // ----- projects -------------------------------------------------------------------------
-        let list = Rect::from_min_max(pos2(full.left(), y), pos2(full.right(), foot.top()));
+        let list_top = y.min(foot.top());
+        let list = Rect::from_min_max(pos2(full.left(), list_top), pos2(full.right(), foot.top()));
         ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
             ui.set_clip_rect(list);
             self.project_list(ui)
@@ -266,7 +267,8 @@ impl App {
             self.inbox_scroll = self.inbox_scroll.min(n - shown);
             (self.inbox_scroll, shown, 0)
         } else {
-            let shown = n.min(INBOX_MAX);
+            let max_fit = ((area.height() * 0.55 - HEAD_H - MORE_H) / (ROW_H + GAP)).floor().max(1.0) as usize;
+            let shown = n.min(INBOX_MAX).min(max_fit);
             (0, shown, n - shown)
         };
         let h = HEAD_H
@@ -395,25 +397,35 @@ impl App {
                 // What can be done with it: jump there, review it (when done), mark it as seen.
                 use super::statusbar::Choice;
                 let cy = top + ACT_H / 2.0;
-                let mut bx = tx;
-                let mut button = |ui: &mut Ui, kind: kit::Kind, icon: Option<&str>, text: &str, keys: Option<&str>| {
-                    let w = kit::button_width(ui, icon, text, keys, true);
-                    let r = Rect::from_min_size(pos2(bx, cy - 12.0), vec2(w, 24.0));
-                    bx += w + 6.0;
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::button_keys(ui, kind, icon, text, keys, true)).inner
+                let max_x = rect.right() - 6.0;
+                let mut bx = tx.min(max_x);
+                let button = |ui: &mut Ui, bx: &mut f32, kind: kit::Kind, icon: Option<&str>, text: &str, keys: Option<&str>| {
+                    let mut k = keys;
+                    let mut w = kit::button_width(ui, icon, text, k, true);
+                    if *bx + w > max_x {
+                        k = None;
+                        w = kit::button_width(ui, icon, text, None, true).min((max_x - *bx).max(0.0));
+                    }
+                    let r = Rect::from_min_size(pos2(*bx, cy - 12.0), vec2(w, 24.0));
+                    *bx += w + 6.0;
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+                        ui.set_clip_rect(r.intersect(rect));
+                        kit::button_keys(ui, kind, icon, text, k, true)
+                    })
+                    .inner
                 };
-                if button(ui, kit::Kind::Primary, None, t("Jump"), Some("↵")).clicked() {
+                if button(ui, &mut bx, kit::Kind::Primary, None, t("Jump"), Some("↵")).clicked() {
                     chosen = Some((i, Choice::Jump));
                 }
-                if it.status == Status::Done {
-                    let b = button(ui, kit::Kind::Secondary, Some(icons::GIT_DIFF), t("Review"), None);
+                if it.status == Status::Done && bx + 48.0 <= max_x {
+                    let b = button(ui, &mut bx, kit::Kind::Secondary, Some(icons::GIT_DIFF), t("Review"), None);
                     #[cfg(debug_assertions)]
                     crate::devtest::record(format!("att-review:{}", it.pane), b.rect);
                     if b.clicked() {
                         chosen = Some((i, Choice::Review));
                     }
                 }
-                if button(ui, kit::Kind::Secondary, None, t("Mark as Seen"), Some("⌫")).clicked() {
+                if bx + 44.0 <= max_x && button(ui, &mut bx, kit::Kind::Secondary, None, t("Mark as Seen"), Some("⌫")).clicked() {
                     chosen = Some((i, Choice::Seen));
                 }
                 top += ACT_H;
@@ -475,21 +487,37 @@ impl App {
         ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
         let label = t("Settings");
         let g = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(12.5), p.text_muted);
-        let w = 8.0 + 15.0 + 8.0 + g.size().x + 8.0;
-        let b = Rect::from_min_size(pos2(rect.left() + PAD, rect.center().y - 14.0), vec2(w, 28.0));
-        let r = ui.interact(b, egui::Id::new("sidebar-settings"), Sense::click());
-        #[cfg(debug_assertions)]
-        crate::devtest::record("sidebar-settings", b);
-        let painter = ui.painter();
-        let hot = r.hovered();
-        if hot {
-            painter.rect_filled(b, CornerRadius::same(style::RADIUS), p.hover);
-        }
-        painter.text(pos2(b.left() + 8.0 + 7.5, b.center().y), Align2::CENTER_CENTER, icons::GEAR_SIX, style::icon_font(15.0), if hot { p.text } else { p.text_faint });
-        let gw = g.size();
-        painter.galley(pos2(b.left() + 8.0 + 15.0 + 8.0, b.center().y - gw.y / 2.0), g, if hot { p.text } else { p.text_muted });
-        if r.clicked() {
-            self.actions.push(Action::Settings);
+        let full_w = 8.0 + 15.0 + 8.0 + g.size().x + 8.0;
+        let nav_w = 3.0 * 28.0 + 8.0;
+        let narrow = rect.width() - 2.0 * PAD - nav_w < full_w;
+        if narrow {
+            let b = Rect::from_min_size(pos2(rect.left() + PAD, rect.center().y - 13.0), vec2(26.0, 26.0));
+            let r = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(b), |ui| {
+                    kit::icon_button_ex(ui, icons::GEAR_SIX, &kit::tip(t("Settings"), Action::Settings), false, 26.0)
+                })
+                .inner;
+            #[cfg(debug_assertions)]
+            crate::devtest::record("sidebar-settings", b);
+            if r.clicked() {
+                self.actions.push(Action::Settings);
+            }
+        } else {
+            let b = Rect::from_min_size(pos2(rect.left() + PAD, rect.center().y - 14.0), vec2(full_w, 28.0));
+            let r = ui.interact(b, egui::Id::new("sidebar-settings"), Sense::click());
+            #[cfg(debug_assertions)]
+            crate::devtest::record("sidebar-settings", b);
+            let painter = ui.painter();
+            let hot = r.hovered();
+            if hot {
+                painter.rect_filled(b, CornerRadius::same(style::RADIUS), p.hover);
+            }
+            painter.text(pos2(b.left() + 8.0 + 7.5, b.center().y), Align2::CENTER_CENTER, icons::GEAR_SIX, style::icon_font(15.0), if hot { p.text } else { p.text_faint });
+            let gw = g.size();
+            painter.galley(pos2(b.left() + 8.0 + 15.0 + 8.0, b.center().y - gw.y / 2.0), g, if hot { p.text } else { p.text_muted });
+            if r.clicked() {
+                self.actions.push(Action::Settings);
+            }
         }
 
         // Compact ADE navigation icons at the right of the footer: Profiles, Monitor, Phone Pairing.
@@ -571,13 +599,14 @@ impl App {
         let open_id = egui::Id::new("project-filter-open");
         let typing = ui.memory(|m| m.has_focus(fid));
         let mut search_open = typing || !self.project_filter.is_empty() || ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
+        let was_open = search_open;
         let fr_find = ui
             .scope_builder(egui::UiBuilder::new().max_rect(find), |ui| {
                 kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS, t("Search Projects"), search_open, 22.0)
             })
             .inner;
         if fr_find.clicked() {
-            search_open = !search_open || !typing;
+            search_open = !was_open;
             if search_open {
                 ui.memory_mut(|m| m.request_focus(fid));
             } else {
@@ -594,7 +623,7 @@ impl App {
         let mut sel = self.project_filter_sel.min(n.saturating_sub(1));
         let mut reveal = false;
         let mut open = None;
-        if typing {
+        if typing && !self.overlay_open() {
             use egui::{Key, Modifiers};
             let (down, up, enter, esc) = ui.input_mut(|i| {
                 (
@@ -732,6 +761,12 @@ impl App {
         }
         let mut toggle_group: Option<&str> = None;
         let mut order = Vec::new();
+        let top_indices: std::collections::HashMap<tc_core::ProjectId, usize> = self
+            .top_order()
+            .into_iter()
+            .enumerate()
+            .map(|(idx, pid)| (pid, idx))
+            .collect();
         ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(vec2(PAD, 0.0))), |ui| {
             ui.set_clip_rect(list);
             // The search's results scroll on their own: the whole list keeps its place.
@@ -771,91 +806,103 @@ impl App {
                             Line::Row(row) => (&row.0, &row.1, &row.2, &row.3),
                         };
                         let worktree = self.projects[*i].is_worktree();
-                        let h = if worktree { WORKTREE_H } else { PROJECT_H };
-                        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
-                        #[cfg(debug_assertions)]
-                        crate::devtest::record(format!("project:{}", self.projects[*i].name), rect);
                         let id = self.projects[*i].id;
-                        let active = self.view == View::Focus && self.active == Some(id);
-                        // The keyboard's row (while the search has it) looks hovered, with ↵.
-                        let chosen = typing && !dim && result == sel;
-                        if !dim {
-                            result += 1;
-                            order.push(id);
-                        }
-                        if chosen && reveal {
-                            ui.scroll_to_rect(rect, None);
-                        }
-                        // Scrolled out of view: only its place (it is drawn when scrolled to).
-                        if !ui.is_rect_visible(rect) {
-                            continue;
-                        }
-                        let row = &self.project_row(&self.projects[*i], &p);
-                        let sessions = if !worktree && !filtering {
-                            self.merged_project_sessions(id)
-                        } else {
-                            Vec::new()
-                        };
-                        let hovered = response.hovered() || chosen;
-                        if worktree {
-                            let keys = chosen.then_some("↵");
-                            paint_worktree_row(ui, rect, row, marks, active, hovered, *more, keys, &p);
-                        } else {
-                            let keys = if chosen { Some("↵") } else { self.top_index(id).and_then(|t| kit::keys(&Action::SelectProjectIndex(t))) };
-                            let letters = self.projects[*i].letters();
-                            let (toggle, sess_toggle) = paint_project_row(
-                                ui,
-                                rect,
-                                row,
-                                &letters,
-                                marks,
-                                active,
-                                hovered,
-                                keys,
-                                *dim,
-                                sessions.len(),
-                                self.projects[*i].sessions_expanded,
-                                &p,
-                            );
-                            // "⑂ 2 ˅": folds and unfolds its worktrees.
-                            if let Some(fold) = toggle {
-                                let tr = ui.interact(fold, egui::Id::new(("fold-worktrees", id)), Sense::click());
-                                #[cfg(debug_assertions)]
-                                crate::devtest::record(format!("fold:{}", row.name), fold);
-                                let tip = if row.folded { t("Show Worktrees") } else { t("Hide Worktrees") };
-                                if tr.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
-                                    self.actions.push(Action::ToggleWorktrees(id));
-                                    continue;
+                        let sessions_expanded = !worktree && !filtering && self.projects[*i].sessions_expanded;
+                        let h = if worktree { WORKTREE_H } else { PROJECT_H };
+                        // Wrap each project + its nested sessions in a stable ID scope and ALWAYS
+                        // allocate expanded session rows regardless of whether the parent header
+                        // scrolled off the top edge so total scroll height never jumps!
+                        ui.push_id(id, |ui| {
+                            let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
+                            #[cfg(debug_assertions)]
+                            crate::devtest::record(format!("project:{}", self.projects[*i].name), rect);
+                            let active = self.view == View::Focus && self.active == Some(id);
+                            // The keyboard's row (while the search has it) looks hovered, with ↵.
+                            let chosen = typing && !dim && result == sel;
+                            if !dim {
+                                result += 1;
+                                order.push(id);
+                            }
+                            if chosen && reveal {
+                                ui.scroll_to_rect(rect, None);
+                            }
+                            let sessions = if sessions_expanded {
+                                Some(self.merged_project_sessions(id))
+                            } else {
+                                None
+                            };
+                            if ui.is_rect_visible(rect) {
+                                let row = &self.project_row(&self.projects[*i], &p);
+                                let sessions_count = match &sessions {
+                                    Some(v) => v.len(),
+                                    None if !worktree && !filtering => self.project_sessions_count(&self.projects[*i]),
+                                    None => 0,
+                                };
+                                let hovered = response.hovered() || chosen;
+                                let mut sub_clicked = false;
+                                if worktree {
+                                    let keys = chosen.then_some("↵");
+                                    paint_worktree_row(ui, rect, row, marks, active, hovered, *more, keys, &p);
+                                } else {
+                                    let top_ix = top_indices.get(&id).copied();
+                                    let keys = if chosen { Some("↵") } else { top_ix.and_then(|t| kit::keys(&Action::SelectProjectIndex(t))) };
+                                    let letters = self.projects[*i].letters();
+                                    let (toggle, sess_toggle) = paint_project_row(
+                                        ui,
+                                        rect,
+                                        row,
+                                        &letters,
+                                        marks,
+                                        active,
+                                        hovered,
+                                        keys,
+                                        *dim,
+                                        sessions_count,
+                                        self.projects[*i].sessions_expanded,
+                                        !filtering,
+                                        &p,
+                                    );
+                                    // "⑂ 2 ˅": folds and unfolds its worktrees.
+                                    if let Some(fold) = toggle {
+                                        let tr = ui.interact(fold, egui::Id::new(("fold-worktrees", id)), Sense::click());
+                                        #[cfg(debug_assertions)]
+                                        crate::devtest::record(format!("fold:{}", row.name), fold);
+                                        let tip = if row.folded { t("Show Worktrees") } else { t("Hide Worktrees") };
+                                        if tr.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
+                                            self.actions.push(Action::ToggleWorktrees(id));
+                                            sub_clicked = true;
+                                        }
+                                    }
+                                    // Inline disclosure chevron for project-nested agent sessions.
+                                    if let Some(stog) = sess_toggle {
+                                        let sr = ui.interact(stog, egui::Id::new(("fold-sessions", id)), Sense::click());
+                                        #[cfg(debug_assertions)]
+                                        crate::devtest::record(format!("sessions-toggle:{}", row.name), stog);
+                                        let tip = if self.projects[*i].sessions_expanded { t("Hide Agent Sessions") } else { t("Show Agent Sessions") };
+                                        if sr.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
+                                            self.actions.push(Action::ToggleProjectSessions(id));
+                                            sub_clicked = true;
+                                        }
+                                    }
+                                }
+                                if response.clicked() && !sub_clicked {
+                                    self.actions.push(Action::SelectProject(id));
+                                }
+                                let name = row.name.clone();
+                                let index = top_indices.get(&id).copied().unwrap_or(usize::MAX);
+                                let response = response.on_hover_ui(|ui| self.project_tooltip(ui, id, index));
+                                if worktree {
+                                    response.context_menu(|ui| self.worktree_menu(ui, id));
+                                } else {
+                                    response.context_menu(|ui| self.project_menu(ui, id, &name));
                                 }
                             }
-                            // Inline disclosure chevron for project-nested agent sessions.
-                            if let Some(stog) = sess_toggle {
-                                let sr = ui.interact(stog, egui::Id::new(("fold-sessions", id)), Sense::click());
-                                #[cfg(debug_assertions)]
-                                crate::devtest::record(format!("sessions-toggle:{}", row.name), stog);
-                                let tip = if self.projects[*i].sessions_expanded { t("Hide Agent Sessions") } else { t("Show Agent Sessions") };
-                                if sr.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
-                                    self.actions.push(Action::ToggleProjectSessions(id));
-                                    continue;
-                                }
-                            }
-                        }
-                        if response.clicked() {
-                            self.actions.push(Action::SelectProject(id));
-                        }
-                        let name = row.name.clone();
-                        let index = self.top_index(id).unwrap_or(usize::MAX);
-                        let response = response.on_hover_ui(|ui| self.project_tooltip(ui, id, index));
-                        if worktree {
-                            response.context_menu(|ui| self.worktree_menu(ui, id));
-                        } else {
-                            response.context_menu(|ui| self.project_menu(ui, id, &name));
-                        }
 
-                        // Project-nested agent session history (embedded directly in the sidebar tree).
-                        if !worktree && !filtering && self.projects[*i].sessions_expanded && !sessions.is_empty() {
-                            self.paint_project_sessions(ui, id, &sessions, &p);
-                        }
+                            // Project-nested agent session history (ALWAYS allocated while expanded so scroll height is invariant).
+                            if let Some(sessions) = sessions {
+                                self.paint_project_sessions(ui, id, &sessions, &p);
+                            }
+                        });
                     }
                 });
         });
@@ -1320,6 +1367,7 @@ fn paint_project_row(
     dim: bool,
     sessions_count: usize,
     sessions_expanded: bool,
+    allow_sessions_toggle: bool,
     p: &style::Palette,
 ) -> (Option<Rect>, Option<Rect>) {
     let painter = ui.painter_at(rect);
@@ -1349,48 +1397,60 @@ fn paint_project_row(
         painter.galley(pos2(right, l1 - g.size().y / 2.0), g, p.text_faint);
         right -= 6.0;
     }
-    // Inline sessions disclosure chevron + count when the project has live or saved sessions.
+    // Inline sessions disclosure chevron (always clickable on non-worktree rows so collapsed
+    // projects can be expanded cleanly; displays the session count when known).
     let mut sess_toggle = None;
-    if sessions_count > 0 {
-        let caret = painter.layout_no_wrap(if sessions_expanded { icons::CARET_DOWN } else { icons::CARET_RIGHT }.to_string(), style::icon_font(9.5), p.text_faint);
-        let cnt = painter.layout_no_wrap(sessions_count.to_string(), style::mono(10.0), p.text_ghost);
-        let sw = caret.size().x + 2.0 + cnt.size().x + 6.0;
-        if right - sw > x + 64.0 {
+    if allow_sessions_toggle {
+        let caret_color = if sessions_expanded || hovered || active || sessions_count > 0 { p.text_faint } else { p.text_ghost };
+        let caret = painter.layout_no_wrap(if sessions_expanded { icons::CARET_DOWN } else { icons::CARET_RIGHT }.to_string(), style::icon_font(9.5), caret_color);
+        let cnt = (sessions_count > 0).then(|| painter.layout_no_wrap(sessions_count.to_string(), style::mono(10.0), p.text_ghost));
+        let sw = caret.size().x + cnt.as_ref().map_or(0.0, |c| 2.0 + c.size().x) + 8.0;
+        if right - sw > x + 56.0 {
             let sr = Rect::from_min_max(pos2(right - sw, l1 - 9.0), pos2(right, l1 + 9.0));
-            let cx = sr.left() + 3.0;
-            painter.galley(pos2(cx, l1 - caret.size().y / 2.0 + 0.5), caret.clone(), p.text_faint);
-            painter.galley(pos2(cx + caret.size().x + 2.0, l1 - cnt.size().y / 2.0), cnt, p.text_ghost);
+            let cx = sr.left() + 4.0;
+            painter.galley(pos2(cx, l1 - caret.size().y / 2.0 + 0.5), caret.clone(), caret_color);
+            if let Some(cnt) = cnt {
+                painter.galley(pos2(cx + caret.size().x + 2.0, l1 - cnt.size().y / 2.0), cnt, p.text_ghost);
+            }
             sess_toggle = Some(sr);
             right = sr.left() - 4.0;
         }
     }
-    // The pane dots after the name.
+    // Reserve width for pane dots, browser globe, and worktrees fold button so long names truncate cleanly.
+    let wt_galleys = (row.worktrees > 0).then(|| {
+        let fork = painter.layout_no_wrap(icons::GIT_FORK.to_string(), style::icon_font(11.0), p.text_faint);
+        let count = painter.layout_no_wrap(row.worktrees.to_string(), style::mono(10.5), p.text_faint);
+        let caret = painter.layout_no_wrap(if row.folded { icons::CARET_RIGHT } else { icons::CARET_DOWN }.to_string(), style::icon_font(9.5), p.text_faint);
+        let w = fork.size().x + 2.0 + count.size().x + 2.0 + caret.size().x;
+        (fork, count, caret, w)
+    });
+    let wt_w = wt_galleys.as_ref().map_or(0.0, |(_, _, _, w)| *w + 10.0);
     let dots_w = if row.dots.is_empty() { 0.0 } else { row.dots.len() as f32 * 8.0 - 3.0 + 6.0 } + if row.web.is_some() { 14.0 } else { 0.0 };
     let name_color = if row.asleep && !active { p.text_muted } else { p.text };
     let mut job = name_job(&row.name, marks, style::medium(13.0), name_color, p);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x - dots_w).max(10.0));
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x - dots_w - wt_w).max(20.0));
     let g = painter.layout_job(job);
     let name_w = g.size().x;
     painter.galley(pos2(x, l1 - g.size().y / 2.0), g, name_color);
     let mut dx = x + name_w + 6.0 + 2.5;
     for c in &row.dots {
-        painter.circle_filled(pos2(dx, l1 + 0.5), 2.5, *c);
+        if dx + 2.5 <= right {
+            painter.circle_filled(pos2(dx, l1 + 0.5), 2.5, *c);
+        }
         dx += 8.0;
     }
     // Its browser: a globe, in the info colour while an agent uses it.
     if let Some(driven) = row.web {
         let gx = if row.dots.is_empty() { x + name_w + 6.0 } else { dx - 2.5 + 1.0 };
-        painter.text(pos2(gx + 5.0, l1 + 0.5), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(10.5), if driven { p.info } else { p.text_faint });
+        if gx + 10.0 <= right {
+            painter.text(pos2(gx + 5.0, l1 + 0.5), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(10.5), if driven { p.info } else { p.text_faint });
+        }
         dx = gx + 12.0 + 2.5;
     }
     // Its worktrees: how many, and the caret that folds them.
     let mut toggle = None;
-    if row.worktrees > 0 {
+    if let Some((fork, count, caret, w)) = wt_galleys {
         let start = if row.dots.is_empty() && row.web.is_none() { x + name_w + 6.0 } else { dx - 2.5 + 3.0 };
-        let fork = painter.layout_no_wrap(icons::GIT_FORK.to_string(), style::icon_font(11.0), p.text_faint);
-        let count = painter.layout_no_wrap(row.worktrees.to_string(), style::mono(10.5), p.text_faint);
-        let caret = painter.layout_no_wrap(if row.folded { icons::CARET_RIGHT } else { icons::CARET_DOWN }.to_string(), style::icon_font(9.5), p.text_faint);
-        let w = fork.size().x + 2.0 + count.size().x + 2.0 + caret.size().x;
         if start + w <= right {
             let mut cx = start;
             painter.galley(pos2(cx, l1 - fork.size().y / 2.0), fork.clone(), p.text_faint);
@@ -1594,14 +1654,25 @@ impl App {
     ) {
         let dark = ui.visuals().dark_mode;
         let current_pane = self.current_pane();
-        let shown = sessions.len().min(5);
+        let all_id = egui::Id::new(("sessions-show-all", project_id));
+        let show_all = ui.data(|d| d.get_temp::<bool>(all_id).unwrap_or(false));
+        let shown = if show_all { sessions.len() } else { sessions.len().min(5) };
+        let hidden = sessions.len().saturating_sub(shown);
+        if sessions.is_empty() && self.sessions_running.contains(&project_id) {
+            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+            if ui.is_rect_visible(rect) {
+                let painter = ui.painter_at(rect);
+                painter.vline(rect.left() + 19.5, rect.y_range(), Stroke::new(1.0, p.border_strong));
+                painter.text(pos2(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, t("Loading sessions…"), egui::FontId::proportional(11.0), p.text_faint);
+            }
+        }
         for (idx, item) in sessions.iter().take(shown).enumerate() {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("project-session:{project_id}:{idx}"), rect);
             if !ui.is_rect_visible(rect) {
                 continue;
             }
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("project-session:{project_id}:{idx}"), rect);
             let is_current = item.live_pane.is_some() && item.live_pane == current_pane && self.view == View::Focus;
             let painter = ui.painter_at(rect);
             let guide_x = rect.left() + 19.5;
@@ -1684,6 +1755,23 @@ impl App {
                         session_id: item.id.clone(),
                         profile_id: item.profile_id.clone(),
                     });
+                }
+            }
+        }
+        if hidden > 0 {
+            let (more_r, more_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+            if ui.is_rect_visible(more_r) {
+                let painter = ui.painter_at(more_r);
+                painter.vline(more_r.left() + 19.5, more_r.y_range(), Stroke::new(1.0, p.border_strong));
+                let row_r = Rect::from_min_max(pos2(more_r.left() + 26.0, more_r.top() + 1.0), pos2(more_r.right(), more_r.bottom() - 1.0));
+                if more_resp.hovered() {
+                    painter.rect_filled(row_r, CornerRadius::same(6), p.hover);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                let text = crate::i18n::tf("{} more…", &[&hidden.to_string()]);
+                painter.text(pos2(row_r.left() + 8.0, row_r.center().y), Align2::LEFT_CENTER, text, egui::FontId::proportional(11.0), p.text_faint);
+                if more_resp.clicked() {
+                    ui.data_mut(|d| d.insert_temp(all_id, true));
                 }
             }
         }

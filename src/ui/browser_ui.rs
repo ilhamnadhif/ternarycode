@@ -626,7 +626,9 @@ impl App {
         if clicked(ui, down, icons::CARET_DOWN, t("Next")) {
             step = Some(1);
         }
-        let esc = (resp.has_focus() || ui.memory(|m| m.had_focus_last_frame(fid))) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let esc = !self.overlay_open()
+            && (resp.has_focus() || ui.memory(|m| m.had_focus_last_frame(fid)))
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let close = clicked(ui, x_close, icons::X, t("Done")) || esc;
         if close {
             self.close_page_find(id);
@@ -807,7 +809,7 @@ impl App {
             }
         });
         // Esc while the bar has the keyboard: Cancel (OK for an alert).
-        if has_keys && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if has_keys && !self.overlay_open() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             answer = Some(d.kind == DialogKind::Alert);
         }
         #[cfg(debug_assertions)]
@@ -1034,7 +1036,7 @@ impl App {
             WebButton::Agent(who, true) => format!("{}\n{}", tf("{} is using the browser", &[who]), t("Hides the Browser panel · the agent keeps working")),
         };
         let tip = if self.pages_here() { format!("{tip}\n{}", t("⌥-click: a new page")) } else { tip };
-        let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
         let resp = resp.on_hover_text(tip);
         #[cfg(debug_assertions)]
         crate::devtest::record("browser-button", rect);
@@ -1343,6 +1345,7 @@ impl App {
             || self.palette.is_some()
             || self.review_full()
             || self.attention_open
+            || self.monitor_popover
             || egui::Popup::is_any_open(ctx);
         let zoom = ctx.zoom_factor();
         let sleep = crate::browser::sleep_after(self.settings.browser_sleep_minutes);

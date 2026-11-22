@@ -47,10 +47,13 @@ impl Roots {
     /// The agents' defaults under `home`, or where their own variables move them.
     pub fn from_env(home: &Path) -> Self {
         let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let gemini = var("GEMINI_CONFIG_DIR")
+            .or_else(|| var("GEMINI_CLI_HOME").map(|h| h.join(".gemini")))
+            .unwrap_or_else(|| home.join(".gemini"));
         Self {
             claude: var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
             codex: var("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
-            gemini: home.join(".gemini"),
+            gemini,
         }
     }
 
@@ -69,10 +72,17 @@ pub fn listable(agent: AgentKind) -> bool {
     matches!(agent, AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini)
 }
 
+pub fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('-')
+        && id.len() <= 128
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// The command that continues session `id`: the preset's own command (its flags kept) with the
 /// agent's option for it. `None` for other agents, or an id that is not plainly one.
 pub fn resume_command(agent: AgentKind, command: &str, id: &str) -> Option<String> {
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if !valid_session_id(id) {
         return None;
     }
     let command = command.trim();
@@ -126,12 +136,13 @@ fn edges(path: &Path, head: u64, tail: u64) -> (Vec<String>, Vec<String>) {
     let whole_head = len <= head;
     let mut last = Vec::new();
     if !whole_head {
-        let from = len.saturating_sub(tail);
-        if f.seek(SeekFrom::Start(from)).is_ok() {
+        // Never overlap the already-read `head` slice (prevents double-counting in usage scans).
+        let from = len.saturating_sub(tail).max(head);
+        if from < len && f.seek(SeekFrom::Start(from)).is_ok() {
             let _ = f.read_to_end(&mut last);
         }
         // The first line of the tail may be cut.
-        if from > 0 {
+        if from > 0 && !last.is_empty() {
             match last.iter().position(|b| *b == b'\n') {
                 Some(i) => last.drain(..=i),
                 None => last.drain(..),
@@ -333,8 +344,20 @@ fn codex_session(path: &Path, project: &Path, project_canon: Option<&Path>, titl
 
 // ----- Gemini CLI -----------------------------------------------------------------------------
 
+/// Resolves the actual Gemini state directory (Gemini CLI writes under `$GEMINI_CLI_HOME/.gemini`,
+/// whereas direct config roots may already point at `.gemini`).
+fn gemini_state_root(root: &Path) -> PathBuf {
+    let nested = root.join(".gemini");
+    if nested.join("tmp").is_dir() || nested.join("projects.json").is_file() {
+        nested
+    } else {
+        root.to_path_buf()
+    }
+}
+
 /// The folder under `<root>/tmp` that holds the project's chats.
 fn gemini_dir(project: &Path, root: &Path) -> Option<PathBuf> {
+    let root = gemini_state_root(root);
     let tmp = root.join("tmp");
     if let Ok(text) = fs::read_to_string(root.join("projects.json"))
         && let Ok(v) = serde_json::from_str::<Value>(&text)
@@ -395,13 +418,49 @@ impl TokenUsage {
     }
 }
 
-/// Copies a session file between two isolated profile roots of the same provider (e.g. `claude1`
-/// -> `claude2`) so `--resume <id>` preserves full conversation history on failover. Returns
-/// whether the target now has the session file.
-pub fn copy_session_between_roots(agent: AgentKind, project: &Path, from_root: &Path, to_root: &Path, id: &str) -> bool {
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || from_root == to_root {
+/// Atomically copies `src` to `dst` if `dst` is missing or older/different than `src`.
+fn copy_if_newer(src: &Path, dst: &Path) -> bool {
+    if dst.is_file() {
+        let same_or_newer = modified(dst) >= modified(src)
+            && fs::metadata(dst).ok().map(|m| m.len()) == fs::metadata(src).ok().map(|m| m.len());
+        if same_or_newer {
+            return true;
+        }
+    }
+    let Some(dir) = dst.parent() else { return false };
+    if fs::create_dir_all(dir).is_err() {
         return false;
     }
+    let tmp = dir.join(format!(
+        ".tc-copy-{}-{}.tmp",
+        std::process::id(),
+        dst.file_name().and_then(|n| n.to_str()).unwrap_or("session")
+    ));
+    if fs::copy(src, &tmp).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return false;
+    }
+    if fs::rename(&tmp, dst).is_ok() {
+        true
+    } else {
+        // Windows rename onto an existing file fails: remove target and retry once.
+        let _ = fs::remove_file(dst);
+        let ok = fs::rename(&tmp, dst).is_ok();
+        if !ok {
+            let _ = fs::remove_file(&tmp);
+        }
+        ok
+    }
+}
+
+/// Copies a session file between two isolated profile roots of the same provider (e.g. `claude1`
+/// -> `claude2`) so `--resume <id>` preserves full conversation history on failover. Returns
+/// whether the target now has the up-to-date session file.
+pub fn copy_session_between_roots(agent: AgentKind, project: &Path, from_root: &Path, to_root: &Path, id: &str) -> bool {
+    if !valid_session_id(id) {
+        return false;
+    }
+    let same_root = same_folder(from_root, to_root);
     match agent {
         AgentKind::Claude => {
             let slug = claude_dir_name(project);
@@ -415,23 +474,38 @@ pub fn copy_session_between_roots(agent: AgentKind, project: &Path, from_root: &
             let Some(src) = candidates.into_iter().find(|p| p.is_file()) else {
                 return false;
             };
-            let rel_dir = src.parent().and_then(|d| d.file_name()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(&slug));
-            let dst_dir = to_root.join("projects").join(rel_dir);
-            let dst = dst_dir.join(format!("{id}.jsonl"));
-            if dst.is_file() {
+            if same_root {
                 return true;
             }
-            fs::create_dir_all(&dst_dir).is_ok() && fs::copy(&src, &dst).is_ok()
+            let rel_dir = src.parent().and_then(|d| d.file_name()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(&slug));
+            let dst = to_root.join("projects").join(rel_dir).join(format!("{id}.jsonl"));
+            copy_if_newer(&src, &dst)
         }
         AgentKind::Codex => {
+            let matches_codex_id = |file: &Path| -> bool {
+                let Ok(f) = File::open(file) else { return false };
+                let mut line = String::new();
+                if BufReader::new(f).read_line(&mut line).is_err() {
+                    return false;
+                }
+                let Ok(meta) = serde_json::from_str::<Value>(&line) else { return false };
+                let payload = &meta["payload"];
+                text(&payload["id"]).or_else(|| text(&payload["session_id"])).as_deref() == Some(id)
+            };
             let mut found = None;
+            let mut checked = 0usize;
             'search: for year in names_desc(&from_root.join("sessions")) {
                 for month in names_desc(&year) {
                     for day in names_desc(&month) {
                         for file in names_desc(&day) {
-                            if file.extension().is_some_and(|x| x == "jsonl")
-                                && file.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains(id))
-                            {
+                            if file.extension().is_none_or(|x| x != "jsonl") {
+                                continue;
+                            }
+                            checked += 1;
+                            if checked > 400 {
+                                break 'search;
+                            }
+                            if matches_codex_id(&file) {
                                 found = Some(file);
                                 break 'search;
                             }
@@ -440,19 +514,50 @@ pub fn copy_session_between_roots(agent: AgentKind, project: &Path, from_root: &
                 }
             }
             let Some(src) = found else { return false };
-            let Ok(rel) = src.strip_prefix(from_root) else { return false };
-            let dst = to_root.join(rel);
-            if dst.is_file() {
+            if same_root {
                 return true;
             }
-            dst.parent().is_some_and(|d| fs::create_dir_all(d).is_ok()) && fs::copy(&src, &dst).is_ok()
+            let Ok(rel) = src.strip_prefix(from_root) else { return false };
+            copy_if_newer(&src, &to_root.join(rel))
+        }
+        AgentKind::Gemini => {
+            let Some(src_dir) = gemini_dir(project, from_root) else { return false };
+            let src = names_desc(&src_dir.join("chats")).into_iter().find(|p| {
+                if p.extension().is_none_or(|x| x != "jsonl") {
+                    return false;
+                }
+                let (head, _) = edges(p, 8 * 1024, 0);
+                head.first()
+                    .and_then(|l| serde_json::from_str::<Value>(l).ok())
+                    .and_then(|v| text(&v["sessionId"]))
+                    .as_deref()
+                    == Some(id)
+            });
+            let Some(src) = src else { return false };
+            if same_root {
+                return true;
+            }
+            let dst_base = if to_root.file_name().is_some_and(|n| n == ".gemini")
+                || to_root.join("tmp").is_dir()
+                || to_root.join("projects.json").is_file()
+            {
+                to_root.to_path_buf()
+            } else {
+                to_root.join(".gemini")
+            };
+            let proj_key = src_dir.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(claude_dir_name(project)));
+            let dst_proj = dst_base.join("tmp").join(proj_key);
+            let _ = fs::create_dir_all(&dst_proj);
+            let _ = fs::write(dst_proj.join(".project_root"), project.to_string_lossy().as_bytes());
+            let Some(fname) = src.file_name() else { return false };
+            copy_if_newer(&src, &dst_proj.join("chats").join(fname))
         }
         _ => false,
     }
 }
 
 /// Aggregates real token usage reported in recent session files (last 24 hours) under `root` for
-/// `agent`. Reads only tail slices of at most 24 newest files so it stays fast off the UI thread.
+/// `agent`. Reads non-overlapping slices of at most 24 newest files so it stays fast off the UI thread.
 pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
     let cutoff = SystemTime::now().checked_sub(std::time::Duration::from_secs(86_400)).unwrap_or(SystemTime::UNIX_EPOCH);
     let mut usage = TokenUsage::default();
@@ -476,31 +581,47 @@ pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
             files.sort_by_key(|f| std::cmp::Reverse(f.0));
             for (_, path) in files.into_iter().take(24) {
                 let (head, tail) = edges(&path, 64 * 1024, 256 * 1024);
-                let mut seen_ids = std::collections::HashSet::new();
+                // Keep the final (largest/complete) usage chunk per message.id instead of the first partial chunk.
+                let mut by_id: std::collections::HashMap<String, TokenUsage> = std::collections::HashMap::new();
+                let mut anon = TokenUsage::default();
                 for line in head.iter().chain(tail.iter()) {
                     if !line.contains("\"usage\"") {
                         continue;
                     }
                     let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
                     let msg = &v["message"];
-                    if let Some(id) = msg["id"].as_str()
-                        && !seen_ids.insert(id.to_string())
-                    {
+                    let u = if msg["usage"].is_object() { &msg["usage"] } else { &v["usage"] };
+                    if !u.is_object() {
                         continue;
                     }
-                    let u = if msg["usage"].is_object() { &msg["usage"] } else { &v["usage"] };
-                    if u.is_object() {
-                        usage.input = usage.input
-                            .saturating_add(u["input_tokens"].as_u64().unwrap_or(0))
+                    let entry = TokenUsage {
+                        input: u["input_tokens"]
+                            .as_u64()
+                            .unwrap_or(0)
                             .saturating_add(u["cache_read_input_tokens"].as_u64().unwrap_or(0))
-                            .saturating_add(u["cache_creation_input_tokens"].as_u64().unwrap_or(0));
-                        usage.output = usage.output.saturating_add(u["output_tokens"].as_u64().unwrap_or(0));
+                            .saturating_add(u["cache_creation_input_tokens"].as_u64().unwrap_or(0)),
+                        output: u["output_tokens"].as_u64().unwrap_or(0),
+                    };
+                    if let Some(id) = msg["id"].as_str() {
+                        let slot = by_id.entry(id.to_string()).or_default();
+                        slot.input = slot.input.max(entry.input);
+                        slot.output = slot.output.max(entry.output);
+                    } else {
+                        anon.input = anon.input.saturating_add(entry.input);
+                        anon.output = anon.output.saturating_add(entry.output);
                     }
                 }
+                for u in by_id.into_values() {
+                    usage.input = usage.input.saturating_add(u.input);
+                    usage.output = usage.output.saturating_add(u.output);
+                }
+                usage.input = usage.input.saturating_add(anon.input);
+                usage.output = usage.output.saturating_add(anon.output);
             }
         }
         AgentKind::Codex => {
-            let mut files = Vec::new();
+            let mut files: Vec<(SystemTime, PathBuf)> = Vec::new();
+            let mut scanned = 0usize;
             'days: for year in names_desc(&root.join("sessions")) {
                 for month in names_desc(&year) {
                     for day in names_desc(&month) {
@@ -508,19 +629,22 @@ pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
                             if file.extension().is_none_or(|x| x != "jsonl") {
                                 continue;
                             }
+                            scanned += 1;
+                            if scanned > 300 {
+                                break 'days;
+                            }
                             let m = modified(&file);
                             if m < cutoff {
-                                break 'days;
+                                // Do not break: resumed older sessions can have newer mtimes in earlier date dirs.
+                                continue;
                             }
-                            files.push(file);
-                            if files.len() >= 24 {
-                                break 'days;
-                            }
+                            files.push((m, file));
                         }
                     }
                 }
             }
-            for path in files {
+            files.sort_by_key(|f| std::cmp::Reverse(f.0));
+            for (_, path) in files.into_iter().take(24) {
                 let (_, tail) = edges(&path, 0, 128 * 1024);
                 // Codex emits cumulative `total_token_usage` snapshots: take the last one in the file.
                 for line in tail.iter().rev() {
@@ -538,7 +662,8 @@ pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
             }
         }
         AgentKind::Gemini => {
-            let mut files: Vec<(SystemTime, PathBuf)> = fs::read_dir(root.join("tmp"))
+            let state_root = gemini_state_root(root);
+            let mut files: Vec<(SystemTime, PathBuf)> = fs::read_dir(state_root.join("tmp"))
                 .ok()
                 .into_iter()
                 .flatten()
@@ -723,8 +848,35 @@ mod tests {
         assert_eq!(usage.output, 700);
         assert_eq!(usage.total(), 3000);
         assert!(copy_session_between_roots(AgentKind::Claude, proj, &from, &to, sid));
-        assert!(to.join("projects/-work-app").join(format!("{sid}.jsonl")).is_file());
-        // Path traversal or unsafe session id must be rejected.
+        let dst = to.join("projects/-work-app").join(format!("{sid}.jsonl"));
+        assert!(dst.is_file());
+        // Round-trip failover: updating `dst` to be newer and copying back overwrites stale `src`!
+        let newer = concat!(
+            "{\"type\":\"assistant\",\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":500,\"output_tokens\":10}}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":500,\"output_tokens\":120}}}\n",
+        );
+        fs::write(&dst, newer).unwrap();
+        age(&src, 60);
+        assert!(copy_session_between_roots(AgentKind::Claude, proj, &to, &from, sid));
+        assert!(fs::read_to_string(&src).unwrap().contains("\"output_tokens\":120"));
+        // Deduplicating by message.id keeps the FINAL/max output tokens (120, not 10!).
+        let dedup = recent_usage(AgentKind::Claude, &from);
+        assert_eq!((dedup.input, dedup.output), (500, 120));
+
+        // Leading dash (CLI flag injection) and path traversal must be rejected.
         assert!(!copy_session_between_roots(AgentKind::Claude, proj, &from, &to, "../evil"));
+        assert!(!copy_session_between_roots(AgentKind::Claude, proj, &from, &to, "--model"));
+        assert!(resume_command(AgentKind::Claude, "claude", "--dangerously-skip-permissions").is_none());
+
+        // Gemini session copy between isolated profile roots.
+        let gfrom = dir.path().join("gemini1");
+        let gto = dir.path().join("gemini2");
+        write(&gfrom.join(".gemini/projects.json"), "{\"projects\":{\"/work/app\":\"app\"}}");
+        write(
+            &gfrom.join(".gemini/tmp/app/chats/session-2026-11-23-g123.jsonl"),
+            "{\"sessionId\":\"g123-abcd\",\"kind\":\"main\"}\n{\"type\":\"user\",\"content\":[{\"text\":\"hello\"}]}\n",
+        );
+        assert!(copy_session_between_roots(AgentKind::Gemini, proj, &gfrom, &gto, "g123-abcd"));
+        assert!(gto.join(".gemini/tmp/app/chats/session-2026-11-23-g123.jsonl").is_file());
     }
 }

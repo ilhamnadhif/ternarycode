@@ -147,27 +147,84 @@ pub fn env_ref(name: &str) -> String {
 }
 
 /// `command` with a preset's environment variables set for it, as the pane's shell reads it:
-/// `KEY='value' command` (zsh, bash, fish), `$env:KEY='value'; command` in PowerShell (where
-/// they stay set in that shell). Names that are not variable names are left out.
+/// `KEY='value' command` (zsh, bash, fish), `$env:KEY='value'; command` in PowerShell.
+/// Names that are not variable names are left out.
 pub fn with_env(command: &str, env: &std::collections::BTreeMap<String, String>) -> String {
     with_env_for(command, env, cfg!(windows))
 }
 
+/// Like [`with_env`], additionally clearing `unset` variable names before launching `command` so
+/// switching from an isolated/API-key profile back to default OAuth never leaks prior env vars
+/// (especially in PowerShell where `$env:KEY=...` persists for the shell lifetime).
+pub fn with_env_and_unset(
+    command: &str,
+    env: &std::collections::BTreeMap<String, String>,
+    unset: &[&str],
+) -> String {
+    with_env_and_unset_for(command, env, unset, cfg!(windows))
+}
+
 fn with_env_for(command: &str, env: &std::collections::BTreeMap<String, String>, powershell: bool) -> String {
+    with_env_and_unset_for(command, env, &[], powershell)
+}
+
+fn with_env_and_unset_for(
+    command: &str,
+    env: &std::collections::BTreeMap<String, String>,
+    unset: &[&str],
+    powershell: bool,
+) -> String {
     let name_ok = |k: &str| k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     let vars: Vec<(&String, &String)> = env.iter().filter(|(k, _)| name_ok(k)).collect();
-    if vars.is_empty() {
+    let clears: Vec<&str> = unset.iter().copied().filter(|k| name_ok(k) && !env.contains_key(*k)).collect();
+    if vars.is_empty() && clears.is_empty() {
         return command.to_string();
     }
-    // Single quotes: nothing in them is expanded; a quote in the value is written as the
-    // shell wants it.
-    let quote = |v: &str| if powershell { format!("'{}'", v.replace('\'', "''")) } else { format!("'{}'", v.replace('\'', "'\\''")) };
+    let fish = !powershell
+        && std::env::var_os("SHELL")
+            .and_then(|s| s.into_string().ok())
+            .is_some_and(|s| s.ends_with("/fish") || s == "fish");
+    // Single quotes: nothing in them is expanded; escape inner quotes (and `\` in fish).
+    let quote = |v: &str| {
+        if powershell {
+            format!("'{}'", v.replace('\'', "''"))
+        } else if fish {
+            format!("'{}'", v.replace('\\', "\\\\").replace('\'', "\\'"))
+        } else {
+            format!("'{}'", v.replace('\'', "'\\''"))
+        }
+    };
     if powershell {
-        let sets: Vec<String> = vars.iter().map(|(k, v)| format!("$env:{k}={}", quote(v))).collect();
-        format!("{}; {command}", sets.join("; "))
+        let mut parts: Vec<String> = clears
+            .iter()
+            .map(|k| format!("Remove-Item Env:{k} -ErrorAction SilentlyContinue"))
+            .collect();
+        parts.extend(vars.iter().map(|(k, v)| format!("$env:{k}={}", quote(v))));
+        format!("{}; {command}", parts.join("; "))
+    } else if !clears.is_empty() {
+        let mut parts: Vec<String> = vec!["env".into()];
+        for k in &clears {
+            parts.push(format!("-u {k}"));
+        }
+        for (k, v) in &vars {
+            parts.push(format!("{k}={}", quote(v)));
+        }
+        format!("{} {command}", parts.join(" "))
     } else {
         let sets: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
         format!("{} {command}", sets.join(" "))
+    }
+}
+
+/// Inserts `flag` right after the program binary name in `command` (unless already present).
+pub fn insert_flag(command: &str, flag: &str) -> String {
+    let trimmed = command.trim();
+    if trimmed.is_empty() || trimmed.split_whitespace().any(|w| w == flag) {
+        return trimmed.to_string();
+    }
+    match trimmed.split_once(char::is_whitespace) {
+        Some((prog, rest)) => format!("{prog} {flag} {}", rest.trim_start()),
+        None => format!("{trimmed} {flag}"),
     }
 }
 

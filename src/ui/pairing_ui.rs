@@ -69,9 +69,11 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
                             ui.label(RichText::new(t("Mobile Companion Server")).font(style::semibold(13.5)).color(p.text));
                             kit::status_badge(
                                 ui,
@@ -104,23 +106,47 @@ impl App {
                     ui.spacing_mut().item_spacing = vec2(14.0, 8.0);
                     ui.vertical(|ui| {
                         ui.label(RichText::new(t("Local Port")).size(11.5).color(p.text_muted));
-                        let mut port_s = self.settings.companion.port.to_string();
-                        let r = kit::field(ui, egui::Id::new("companion-port"), &mut port_s, None, "7890", 96.0, false);
-                        if r.changed()
-                            && let Ok(port) = port_s.trim().parse::<u16>()
-                            && port >= 1024
-                        {
-                            self.settings.companion.port = port;
-                            self.settings_changed();
+                        let port_id = ui.id().with("companion-port");
+                        let draft_id = ui.id().with("companion-port-draft");
+                        let mut port_s = ui
+                            .data(|d| d.get_temp::<String>(draft_id))
+                            .unwrap_or_else(|| self.settings.companion.port.to_string());
+                        let r = kit::field(ui, port_id, &mut port_s, None, "7890", 96.0, false);
+                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let valid = port_s.trim().parse::<u16>().ok().filter(|&v| v >= 1024);
+                        if r.changed() {
+                            ui.data_mut(|d| d.insert_temp(draft_id, port_s.clone()));
+                        }
+                        if r.lost_focus() || enter {
+                            if let Some(port) = valid {
+                                if port != self.settings.companion.port {
+                                    self.settings.companion.port = port;
+                                    self.settings_changed();
+                                    self.sync_companion_server();
+                                }
+                                ui.data_mut(|d| d.insert_temp(draft_id, port.to_string()));
+                            } else {
+                                ui.data_mut(|d| d.insert_temp(draft_id, self.settings.companion.port.to_string()));
+                            }
+                        } else if !r.has_focus() {
+                            ui.data_mut(|d| d.insert_temp(draft_id, self.settings.companion.port.to_string()));
+                        }
+                        if valid.is_none() && r.has_focus() {
+                            ui.label(RichText::new("1024–65535").size(10.5).color(p.err));
                         }
                     });
                     ui.vertical(|ui| {
                         ui.label(RichText::new(t("Secure Tunnel URL (optional — Cloudflare / Tailscale / ngrok)")).size(11.5).color(p.text_muted));
                         let mut tunnel = self.settings.companion.tunnel_url.clone();
-                        let r = kit::field(ui, egui::Id::new("companion-tunnel"), &mut tunnel, Some(icons::GLOBE), "https://ade.example.com", 340.0, false);
+                        let tunnel_w = (ui.available_width()).clamp(200.0, 360.0);
+                        let r = kit::field(ui, ui.id().with("companion-tunnel"), &mut tunnel, Some(icons::GLOBE), "https://ade.example.com", tunnel_w, false);
                         if r.changed() {
                             self.settings.companion.tunnel_url = tunnel;
                             self.settings_changed();
+                        }
+                        let trimmed = self.settings.companion.tunnel_url.trim();
+                        if !trimmed.is_empty() && !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+                            ui.label(RichText::new(t("URL must start with https:// or http://")).size(10.5).color(p.err));
                         }
                     });
                 });
@@ -129,11 +155,16 @@ impl App {
         ui.add_space(16.0);
 
         // 2. QR Code + Pairing Token card (when server is running).
-        if let Some((pair_url, pair_code, local_addr)) = self.companion.as_ref().map(|c| {
+        if let Some((pair_url, pair_code, local_addr, preview_url, loopback_only)) = self.companion.as_ref().map(|c| {
+            let token = c.pair_token();
+            let tunnel = self.settings.companion.tunnel_url.trim();
+            let valid_tunnel = if tunnel.starts_with("http://") || tunnel.starts_with("https://") { tunnel } else { "" };
             (
-                c.pairing_url(&self.settings.companion.tunnel_url),
-                c.pair_token(),
+                c.pairing_url(valid_tunnel),
+                token.clone(),
                 format!("http://{}:{}", c.local_ip, c.port),
+                format!("http://127.0.0.1:{}/?pair={token}", c.port),
+                c.local_ip == "127.0.0.1" && valid_tunnel.is_empty(),
             )
         }) {
             egui::Frame::NONE
@@ -146,12 +177,12 @@ impl App {
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = 22.0;
 
-                        // Crisp native QR code inside a high-contrast quiet zone.
+                        // Crisp native QR code inside a high-contrast quiet zone (cached per URL).
                         let qr_box_size = 196.0;
                         let (qr_rect, _) = ui.allocate_exact_size(vec2(qr_box_size, qr_box_size), Sense::hover());
                         #[cfg(debug_assertions)]
                         crate::devtest::record("pairing-qr", qr_rect);
-                        paint_qr_card(ui.painter(), qr_rect, &pair_url, &p);
+                        paint_qr_card(ui, qr_rect, &pair_url, &p);
 
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 8.0;
@@ -161,9 +192,17 @@ impl App {
                                     .size(12.0)
                                     .color(p.text_muted),
                             );
+                            if loopback_only {
+                                ui.label(
+                                    RichText::new(t("No LAN IP detected — connect to Wi-Fi or configure a tunnel URL above."))
+                                        .size(11.5)
+                                        .color(p.warn),
+                                );
+                            }
                             ui.add_space(4.0);
                             ui.label(RichText::new(t("Pairing Code")).size(11.0).color(p.text_faint));
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
                                 egui::Frame::NONE
                                     .fill(p.inset)
                                     .stroke(Stroke::new(1.0, p.border_strong))
@@ -189,7 +228,7 @@ impl App {
                             );
                             ui.horizontal(|ui| {
                                 if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Preview Mobile UI"), true).clicked() {
-                                    crate::platform::open_url(&pair_url);
+                                    crate::platform::open_url(&preview_url);
                                 }
                             });
                         });
@@ -260,9 +299,21 @@ impl App {
 }
 
 /// Paints a standards-compliant crisp QR code inside a high-contrast white quiet zone.
-fn paint_qr_card(painter: &egui::Painter, rect: Rect, payload: &str, p: &style::Palette) {
-    painter.rect(rect, CornerRadius::same(10), Color32::WHITE, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
-    let Some(qr) = QrCode::encode(payload.as_bytes()) else {
+fn paint_qr_card(ui: &mut Ui, rect: Rect, payload: &str, p: &style::Palette) {
+    let painter = ui.painter();
+    let dark = ui.visuals().dark_mode;
+    let border = if dark { Color32::from_gray(90) } else { p.border_heavy };
+    painter.rect(rect, CornerRadius::same(10), Color32::WHITE, Stroke::new(1.0, border), StrokeKind::Inside);
+    let cache_id = ui.id().with("qr-cache");
+    let qr = match ui.data(|d| d.get_temp::<(String, Option<std::sync::Arc<QrCode>>)>(cache_id)) {
+        Some((cached_url, cached)) if cached_url == payload => cached,
+        _ => {
+            let encoded = QrCode::encode(payload.as_bytes()).map(std::sync::Arc::new);
+            ui.data_mut(|d| d.insert_temp(cache_id, (payload.to_string(), encoded.clone())));
+            encoded
+        }
+    };
+    let Some(qr) = qr else {
         painter.text(rect.center(), egui::Align2::CENTER_CENTER, t("URL too long for QR"), style::medium(11.5), Color32::BLACK);
         return;
     };
@@ -272,8 +323,8 @@ fn paint_qr_card(painter: &egui::Painter, rect: Rect, payload: &str, p: &style::
     let inner = rect.shrink(pad);
     let cell = (inner.width().min(inner.height()) / total as f32).floor().max(2.0);
     let grid_px = cell * total as f32;
-    let ox = inner.center().x - grid_px / 2.0;
-    let oy = inner.center().y - grid_px / 2.0;
+    let ox = (inner.center().x - grid_px / 2.0).round();
+    let oy = (inner.center().y - grid_px / 2.0).round();
     let ink = Color32::from_rgb(0x0b, 0x0c, 0x0e);
     for y in 0..qr.size {
         for x in 0..qr.size {

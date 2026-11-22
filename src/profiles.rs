@@ -69,10 +69,9 @@ impl ProfileRuntime {
 
     /// Seconds remaining until rate-limit / cooldown reset, if any.
     pub fn reset_remaining_secs(&self, now: Instant) -> Option<u64> {
-        self.reset_at
-            .and_then(|t| t.checked_duration_since(now))
-            .map(|d| d.as_secs())
-            .filter(|&s| s > 0)
+        let d = self.reset_at?.checked_duration_since(now)?;
+        let secs = d.as_secs() + u64::from(d.subsec_nanos() > 0);
+        (secs > 0).then_some(secs)
     }
 
     pub fn is_healthy(&self, now: Instant) -> bool {
@@ -96,6 +95,8 @@ pub struct RateLimitBanner {
     pub session_id: Option<String>,
     /// Populated when Auto-Resume already failed over to another profile (brief notice).
     pub auto_switched_to: Option<String>,
+    /// Timestamp when the banner was created (for auto-dismissing auto-switched notices).
+    pub created_at: Instant,
 }
 
 /// One structured entry in the Agent Logs drawer & Monitor event feed.
@@ -174,9 +175,13 @@ pub fn default_profiles() -> Vec<AgentProfile> {
     ]
 }
 
+pub fn has_custom_config_dir(profile: &AgentProfile) -> bool {
+    profile.config_dir.as_ref().is_some_and(|d| !d.as_os_str().is_empty())
+}
+
 /// Resolves the config/auth root folder for `profile`.
-/// - Explicit `profile.config_dir` wins.
-/// - `use_default_auth` maps to `~/.claude`, `~/.codex`, `~/.gemini`, etc.
+/// - Explicit non-empty `profile.config_dir` wins.
+/// - `use_default_auth` maps to `~/.claude`, `~/.codex`, `~/.gemini` (honoring standard env vars).
 /// - Otherwise isolates cleanly into `<data_dir>/profiles/<sanitized_id>`.
 pub fn resolved_config_dir(profile: &AgentProfile, home: &Path, data_dir: &Path) -> PathBuf {
     if let Some(dir) = &profile.config_dir
@@ -185,10 +190,13 @@ pub fn resolved_config_dir(profile: &AgentProfile, home: &Path, data_dir: &Path)
         return dir.clone();
     }
     if profile.use_default_auth {
+        let env_path = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
         return match profile.agent {
-            AgentKind::Claude => home.join(".claude"),
-            AgentKind::Codex => home.join(".codex"),
-            AgentKind::Gemini => home.join(".gemini"),
+            AgentKind::Claude => env_path("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
+            AgentKind::Codex => env_path("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
+            AgentKind::Gemini => env_path("GEMINI_CONFIG_DIR")
+                .or_else(|| env_path("GEMINI_CLI_HOME").map(|h| h.join(".gemini")))
+                .unwrap_or_else(|| home.join(".gemini")),
             AgentKind::OpenCode => home.join(".config").join("opencode"),
             AgentKind::Antigravity => home.join(".gemini").join("antigravity"),
             AgentKind::Custom => data_dir.join("profiles").join(sanitize_id(&profile.id)),
@@ -199,10 +207,12 @@ pub fn resolved_config_dir(profile: &AgentProfile, home: &Path, data_dir: &Path)
 
 pub fn sanitize_id(id: &str) -> String {
     let s: String = id
+        .trim()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c.to_ascii_lowercase() } else { '_' })
+        .take(32)
         .collect();
-    if s.is_empty() { "profile".into() } else { s }
+    if s.chars().any(|c| c.is_ascii_alphanumeric()) { s } else { "profile".into() }
 }
 
 /// Environment variables injected when launching an agent under `profile` so credentials, auth
@@ -211,8 +221,8 @@ pub fn profile_env(profile: &AgentProfile, home: &Path, data_dir: &Path) -> BTre
     let mut env = BTreeMap::new();
     let dir = resolved_config_dir(profile, home, data_dir);
     let dir_s = dir.to_string_lossy().into_owned();
-    if !profile.use_default_auth || profile.config_dir.is_some() {
-        let _ = std::fs::create_dir_all(&dir);
+    if !profile.use_default_auth || has_custom_config_dir(profile) {
+        let _ = tc_core::persist::ensure_private_dir(&dir);
         match profile.agent {
             AgentKind::Claude => {
                 env.insert("CLAUDE_CONFIG_DIR".into(), dir_s);
@@ -225,8 +235,12 @@ pub fn profile_env(profile: &AgentProfile, home: &Path, data_dir: &Path) -> BTre
                 env.insert("GEMINI_CONFIG_DIR".into(), dir_s);
             }
             AgentKind::OpenCode => {
-                env.insert("XDG_CONFIG_HOME".into(), dir.join("config").to_string_lossy().into_owned());
-                env.insert("XDG_DATA_HOME".into(), dir.join("data").to_string_lossy().into_owned());
+                let cfg = dir.join("config");
+                let dat = dir.join("data");
+                let _ = tc_core::persist::ensure_private_dir(&cfg);
+                let _ = tc_core::persist::ensure_private_dir(&dat);
+                env.insert("XDG_CONFIG_HOME".into(), cfg.to_string_lossy().into_owned());
+                env.insert("XDG_DATA_HOME".into(), dat.to_string_lossy().into_owned());
             }
             AgentKind::Custom => {
                 env.insert("TC_PROFILE_DIR".into(), dir_s);
@@ -256,6 +270,127 @@ pub fn profile_env(profile: &AgentProfile, home: &Path, data_dir: &Path) -> BTre
     }
     env.insert("TC_AGENT_PROFILE".into(), profile.id.clone());
     env
+}
+
+/// Provider auth/API-key env variables that must be cleared when switching to `profile` if not
+/// explicitly set by `profile_env` (prevents env leakage across profile switches, especially on
+/// PowerShell where `$env:KEY=...` persists for the shell lifetime).
+pub fn profile_unset_env(profile: &AgentProfile) -> Vec<&'static str> {
+    let mut unset = Vec::new();
+    let uses_default = profile.use_default_auth && !has_custom_config_dir(profile);
+    let has_key = profile.api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
+    match profile.agent {
+        AgentKind::Claude => {
+            if uses_default {
+                unset.push("CLAUDE_CONFIG_DIR");
+            }
+            if !has_key {
+                unset.push("ANTHROPIC_API_KEY");
+            }
+        }
+        AgentKind::Codex => {
+            if uses_default {
+                unset.push("CODEX_HOME");
+            }
+            if !has_key {
+                unset.push("OPENAI_API_KEY");
+            }
+        }
+        AgentKind::Gemini | AgentKind::Antigravity => {
+            if uses_default {
+                unset.push("GEMINI_CLI_HOME");
+                unset.push("GEMINI_CONFIG_DIR");
+            }
+            if !has_key {
+                unset.push("GEMINI_API_KEY");
+            }
+        }
+        AgentKind::OpenCode => {
+            if !has_key {
+                unset.push("TC_API_KEY");
+            }
+        }
+        AgentKind::Custom => {
+            if !has_key {
+                unset.push("TC_API_KEY");
+            }
+        }
+    }
+    unset
+}
+
+/// Redacts plaintext API keys, bearer tokens, and configured profile secrets from terminal text
+/// before persisting handoff files or streaming output over Mobile Companion HTTP/SSE.
+pub fn redact_secrets(text: &str, known_secrets: &[String]) -> String {
+    let mut out = text.to_string();
+    for secret in known_secrets {
+        let s = secret.trim();
+        if s.len() >= 8 && out.contains(s) {
+            out = out.replace(s, "[REDACTED]");
+        }
+    }
+    let mut scrubbed = Vec::new();
+    for line in out.lines() {
+        let mut s = line.to_string();
+        for key_prefix in [
+            "ANTHROPIC_API_KEY=",
+            "OPENAI_API_KEY=",
+            "GEMINI_API_KEY=",
+            "TC_API_KEY=",
+            "API_KEY=",
+            "SECRET_KEY=",
+            "ACCESS_TOKEN=",
+            "AUTH_TOKEN=",
+        ] {
+            let mut search_from = 0;
+            while let Some(rel) = s[search_from..].find(key_prefix) {
+                let start = search_from + rel + key_prefix.len();
+                let end = if s[start..].starts_with('\'') {
+                    s[start + 1..].find('\'').map(|i| start + 1 + i + 1).unwrap_or(s.len())
+                } else if s[start..].starts_with('"') {
+                    s[start + 1..].find('"').map(|i| start + 1 + i + 1).unwrap_or(s.len())
+                } else {
+                    s[start..].find(|c: char| c.is_whitespace() || c == ';').map(|i| start + i).unwrap_or(s.len())
+                };
+                s.replace_range(start..end, "'[REDACTED]'");
+                search_from = start + "'[REDACTED]'".len();
+            }
+        }
+        for auth_prefix in ["Bearer ", "bearer ", "BEARER "] {
+            let mut search_from = 0;
+            while let Some(rel) = s[search_from..].find(auth_prefix) {
+                let start = search_from + rel + auth_prefix.len();
+                let end = s[start..]
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '=' | '+' | '/')))
+                    .map(|i| start + i)
+                    .unwrap_or(s.len());
+                if end - start >= 12 {
+                    s.replace_range(start..end, "[REDACTED]");
+                    search_from = start + "[REDACTED]".len();
+                } else {
+                    search_from = end.max(start);
+                }
+            }
+        }
+        for tok_prefix in ["sk-ant-", "sk-proj-", "AIza", "ghp_", "gho_", "github_pat_"] {
+            let mut search_from = 0;
+            while let Some(rel) = s[search_from..].find(tok_prefix) {
+                let start = search_from + rel;
+                let end = s[start..]
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                    .map(|i| start + i)
+                    .unwrap_or(s.len());
+                if end - start >= tok_prefix.len() + 6 {
+                    s.replace_range(start..end, "[REDACTED]");
+                    search_from = start + "[REDACTED]".len();
+                } else {
+                    search_from = end;
+                }
+            }
+        }
+        scrubbed.push(s);
+    }
+    scrubbed.join("\n")
 }
 
 /// Interactive login command for signing into an isolated profile inside a terminal pane.
@@ -289,35 +424,75 @@ pub struct RateLimitHit {
     pub retry_after: Option<Duration>,
 }
 
+/// Returns true if a terminal line clearly looks like source code, diff output, or test logs
+/// rather than a genuine CLI rate-limit error banner.
+fn looks_like_code_or_test(trimmed: &str) -> bool {
+    trimmed.starts_with("+//")
+        || trimmed.starts_with("-//")
+        || trimmed.starts_with("//")
+        || trimmed.starts_with("+ ")
+        || trimmed.starts_with("- ")
+        || trimmed.starts_with("| ")
+        || trimmed.starts_with('"')
+        || trimmed.starts_with('\'')
+        || trimmed.starts_with("test ")
+        || trimmed.starts_with("assert")
+        || trimmed.contains("fn ")
+        || trimmed.contains("let ")
+        || trimmed.contains("pub fn ")
+        || trimmed.contains("detect_rate_limit")
+}
+
 /// Scans recent agent terminal lines for genuine rate-limit / usage-limit pauses across Claude
-/// Code, Codex / ChatGPT, and Gemini CLI.
+/// Code, Codex / ChatGPT, and Gemini CLI, supporting 2-line wrapped error messages while skipping
+/// source code / diff / test false positives.
 pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
     let patterns = [
         "you've hit your limit",
         "you have hit your limit",
         "hit your usage limit",
+        "hit your limit",
         "usage limit reached",
+        "usage_limit_reached",
         "claude usage limit",
         "rate limit exceeded",
         "rate_limit_error",
+        "rate_limit_reached",
         "429 too many requests",
         "status 429",
         "http 429",
+        "error 429",
+        "error: 429",
         "too many requests",
         "quota exceeded",
+        "insufficient_quota",
         "resource_exhausted",
+        "resource exhausted",
         "exceeded your current quota",
+        "spending cap",
+        "credit balance is too low",
+        "overloaded_error",
         "limit reached · resets",
         "limit reached. resets",
     ];
-    for line in tail.lines().rev().take(24) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
+    let lines: Vec<&str> = tail
+        .lines()
+        .rev()
+        .take(24)
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !looks_like_code_or_test(l))
+        .collect();
+    for (idx, trimmed) in lines.iter().enumerate() {
         let lower = trimmed.to_ascii_lowercase();
         if patterns.iter().any(|p| lower.contains(p)) {
-            let retry_after = parse_retry_duration(&lower);
+            // Check both the matched line and the following line (idx - 1 in reversed order) in
+            // case the reset timer wrapped across a narrow terminal width.
+            let combined = if idx > 0 {
+                format!("{lower} {}", lines[idx - 1].to_ascii_lowercase())
+            } else {
+                lower.clone()
+            };
+            let retry_after = parse_retry_duration(&combined);
             let reason: String = trimmed.chars().take(120).collect();
             return Some(RateLimitHit { reason, retry_after });
         }
@@ -325,10 +500,30 @@ pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
     None
 }
 
-/// Parses human durations like `"in 45m"`, `"in 2h 15m"`, `"in 30 seconds"`, `"after 12 min"`.
+/// Parses human durations after reset/retry clauses like `"resets in 1h 25m"`, `"try again in 45 seconds"`,
+/// `"retry after 12 min"`, or wall-clock times like `"resets 5pm"` / `"resets at 14:30"`.
 pub fn parse_retry_duration(lower: &str) -> Option<Duration> {
+    // Isolate the clause after reset/retry keywords so error codes like `429 Some...` or
+    // `5 hour limit · resets in 12m` are never misparsed as cooldown durations.
+    let slice = [
+        "resets in ",
+        "reset in ",
+        "try again in ",
+        "retry in ",
+        "retry after ",
+        "wait ",
+        "resets at ",
+        "resets ",
+        "after ",
+    ]
+    .iter()
+    .filter_map(|kw| lower.rfind(kw).map(|pos| &lower[pos + kw.len()..]))
+    .next()
+    .unwrap_or(lower);
+
+    let is_unit_end = |s: &str, len: usize| s.as_bytes().get(len).is_none_or(|b| !b.is_ascii_alphabetic());
     let mut total_secs = 0u64;
-    let bytes = lower.as_bytes();
+    let bytes = slice.as_bytes();
     let mut i = 0;
     let mut found = false;
     while i < bytes.len() {
@@ -337,23 +532,77 @@ pub fn parse_retry_duration(lower: &str) -> Option<Duration> {
             while i < bytes.len() && bytes[i].is_ascii_digit() {
                 i += 1;
             }
-            let Ok(num) = lower[start..i].parse::<u64>() else { continue };
-            let rest = lower[i..].trim_start();
-            if rest.starts_with("hour") || rest.starts_with("hr") || rest.starts_with('h') && !rest.starts_with("http") {
+            let Ok(num) = slice[start..i].parse::<u64>() else { continue };
+            let rest = slice[i..].trim_start();
+            let unit_hours = ["hours", "hour", "hrs", "hr", "h"].iter().find(|u| rest.starts_with(*u) && is_unit_end(rest, u.len()));
+            let unit_mins = ["minutes", "minute", "mins", "min", "m"].iter().find(|u| rest.starts_with(*u) && is_unit_end(rest, u.len()));
+            let unit_secs = ["seconds", "second", "secs", "sec", "s"].iter().find(|u| rest.starts_with(*u) && is_unit_end(rest, u.len()));
+            if let Some(u) = unit_hours {
                 total_secs = total_secs.saturating_add(num.saturating_mul(3600));
+                i = slice.len() - rest.len() + u.len();
                 found = true;
-            } else if rest.starts_with("min") || (rest.starts_with('m') && !rest.starts_with("ms") && !rest.starts_with("mb")) {
+            } else if let Some(u) = unit_mins {
                 total_secs = total_secs.saturating_add(num.saturating_mul(60));
+                i = slice.len() - rest.len() + u.len();
                 found = true;
-            } else if rest.starts_with("sec") || (rest.starts_with('s') && !rest.starts_with("status")) {
+            } else if let Some(u) = unit_secs {
                 total_secs = total_secs.saturating_add(num);
+                i = slice.len() - rest.len() + u.len();
                 found = true;
             }
         } else {
             i += 1;
         }
     }
-    (found && total_secs > 0 && total_secs <= 86_400).then(|| Duration::from_secs(total_secs))
+    if found && total_secs > 0 && total_secs <= 86_400 {
+        return Some(Duration::from_secs(total_secs));
+    }
+    parse_wall_clock_reset(slice)
+}
+
+/// Parses wall-clock reset times like `"5pm"`, `"3:30am"`, or `"14:00"` into a relative duration.
+fn parse_wall_clock_reset(slice: &str) -> Option<Duration> {
+    use chrono::Timelike;
+    let token = slice.split_whitespace().next()?.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':');
+    let (time_part, ampm) = if let Some(t) = token.strip_suffix("am") {
+        (t, Some(false))
+    } else if let Some(t) = token.strip_suffix("pm") {
+        (t, Some(true))
+    } else {
+        (token, None)
+    };
+    let (h_str, m_str) = match time_part.split_once(':') {
+        Some((h, m)) => (h, m),
+        None if ampm.is_some() => (time_part, "0"),
+        None => return None,
+    };
+    let mut hour: u32 = h_str.parse().ok()?;
+    let min: u32 = m_str.parse().ok()?;
+    if min >= 60 {
+        return None;
+    }
+    match ampm {
+        Some(false) => {
+            if hour == 0 || hour > 12 { return None; }
+            if hour == 12 { hour = 0; }
+        }
+        Some(true) => {
+            if hour == 0 || hour > 12 { return None; }
+            if hour < 12 { hour += 12; }
+        }
+        None => {
+            if hour >= 24 { return None; }
+        }
+    }
+    let now = chrono::Local::now();
+    let now_secs = now.num_seconds_from_midnight();
+    let target_secs = hour * 3600 + min * 60;
+    let diff = if target_secs > now_secs {
+        target_secs - now_secs
+    } else {
+        86_400 - now_secs + target_secs
+    };
+    (diff > 0 && diff <= 86_400).then(|| Duration::from_secs(u64::from(diff)))
 }
 
 /// Picks the next healthy enabled profile in fallback priority order when `current_id` hits its
@@ -439,6 +688,22 @@ pub fn test_profile_connection(
     data_dir: &Path,
     path_env: Option<&std::ffi::OsString>,
 ) -> Result<String, String> {
+    let dir = resolved_config_dir(profile, home, data_dir);
+    let has_key = profile.api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
+    let has_dir = dir.is_dir();
+    let has_files = has_dir
+        && std::fs::read_dir(&dir)
+            .ok()
+            .is_some_and(|mut it| it.next().is_some());
+    if profile.agent == AgentKind::Custom {
+        return Ok(if has_key {
+            "Custom profile ready · API key configured".into()
+        } else if has_files {
+            "Custom profile ready · isolated config folder present".into()
+        } else {
+            "Custom profile configured".into()
+        });
+    }
     let program = default_command(profile.agent);
     let found = match path_env {
         Some(p) => tc_lsp::servers::resolve(program, p).is_some(),
@@ -447,13 +712,6 @@ pub fn test_profile_connection(
     if !found {
         return Err(format!("CLI `{program}` not found on PATH"));
     }
-    let dir = resolved_config_dir(profile, home, data_dir);
-    let has_key = profile.api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
-    let has_dir = dir.is_dir();
-    let has_files = has_dir
-        && std::fs::read_dir(&dir)
-            .ok()
-            .is_some_and(|mut it| it.next().is_some());
     if has_key {
         Ok(format!("`{program}` ready · API key configured"))
     } else if has_files {
@@ -502,7 +760,29 @@ mod tests {
         let hit2 = detect_rate_limit("Error: 429 Too Many Requests. Please try again in 45 seconds.").unwrap();
         assert_eq!(hit2.retry_after, Some(Duration::from_secs(45)));
 
+        // Wrapped 2-line error where reset duration is on the next line.
+        let hit3 = detect_rate_limit("You've hit your usage limit.\nResets in 2h 10m").unwrap();
+        assert_eq!(hit3.retry_after, Some(Duration::from_secs(2 * 3600 + 10 * 60)));
+
+        // Must NOT parse unrelated numbers like "429" or "2026" as retry durations.
+        let hit4 = detect_rate_limit("HTTP 429 Too Many Requests from api.example.com").unwrap();
+        assert_eq!(hit4.retry_after, None);
+
+        // Must NOT trigger false positives on source code, git diffs, or cargo test output!
         assert!(detect_rate_limit("Running cargo test --workspace\nok 42 passed").is_none());
+        assert!(detect_rate_limit("+ // Error: 429 Too Many Requests\n- let s = \"rate limit exceeded\";").is_none());
+        assert!(detect_rate_limit("test profiles::tests::rate_limit_exceeded ... ok").is_none());
+        assert!(detect_rate_limit("fn detect_rate_limit() { \"usage limit reached\" }").is_none());
+    }
+
+    #[test]
+    fn redact_secrets_strips_api_keys_and_tokens() {
+        let input = "ANTHROPIC_API_KEY=sk-ant-api03-secretvalue1234567890 Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig custom=my-super-secret-val";
+        let out = redact_secrets(input, &["my-super-secret-val".into()]);
+        assert!(!out.contains("sk-ant-api03-secretvalue1234567890"), "{out}");
+        assert!(!out.contains("eyJhbGciOiJIUzI1NiJ9"), "{out}");
+        assert!(!out.contains("my-super-secret-val"), "{out}");
+        assert!(out.contains("[REDACTED]"), "{out}");
     }
 
     #[test]

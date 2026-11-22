@@ -47,10 +47,13 @@ impl App {
                 ui.add_space(4.0);
                 ui.label(RichText::new(t("Agent Profiles & Failover")).font(style::semibold(14.0)).color(p.text));
                 ui.add_space(8.0);
-                ui.label(
-                    RichText::new(t("Multi-account credentials, isolated auth sessions, and rate-limit recovery"))
-                        .size(12.0)
-                        .color(p.text_faint),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(t("Multi-account credentials, isolated auth sessions, and rate-limit recovery"))
+                            .size(12.0)
+                            .color(p.text_faint),
+                    )
+                    .truncate(),
                 );
             },
             None,
@@ -145,6 +148,14 @@ impl App {
         let mut save = false;
         let mut cancel = false;
 
+        let existing = self.effective_profiles();
+        let sanitized_id = profiles::sanitize_id(draft.id.trim());
+        let id_empty = draft.id.trim().is_empty();
+        let id_dup = !id_empty
+            && existing
+                .iter()
+                .any(|x| x.id == sanitized_id && draft.editing_id.as_deref() != Some(x.id.as_str()));
+
         egui::Frame::NONE
             .fill(p.surface)
             .stroke(Stroke::new(1.0, style::soft(p.accent, 0.45)))
@@ -168,6 +179,9 @@ impl App {
                     ui.vertical(|ui| {
                         ui.label(RichText::new(t("Profile ID")).size(11.5).color(p.text_muted));
                         kit::field(ui, egui::Id::new("prof-id"), &mut draft.id, None, "claude2", 150.0, false);
+                        if id_dup {
+                            ui.label(RichText::new(t("Profile ID already exists.")).size(11.0).color(p.err));
+                        }
                     });
                     ui.vertical(|ui| {
                         ui.label(RichText::new(t("Display Name")).size(11.5).color(p.text_muted));
@@ -181,6 +195,7 @@ impl App {
                             (AgentKind::Gemini, "Gemini CLI"),
                             (AgentKind::OpenCode, "OpenCode"),
                             (AgentKind::Antigravity, "Antigravity"),
+                            (AgentKind::Custom, "Custom"),
                         ];
                         let names: Vec<&str> = providers.iter().map(|(_, n)| *n).collect();
                         let cur = providers.iter().find(|(k, _)| *k == draft.agent).map(|(_, n)| *n).unwrap_or("Claude Code");
@@ -199,15 +214,22 @@ impl App {
                     ui.spacing_mut().item_spacing = vec2(12.0, 8.0);
                     ui.vertical(|ui| {
                         ui.label(RichText::new(t("Isolated Auth / Config Folder")).size(11.5).color(p.text_muted));
-                        let hint = format!("~/.ternarycode/profiles/{}", profiles::sanitize_id(&draft.id));
-                        kit::field(ui, egui::Id::new("prof-dir"), &mut draft.config_dir, Some(icons::FOLDER), &hint, 310.0, false);
+                        let hint = crate::paths::contract_tilde(
+                            &crate::paths::data_dir().join("profiles").join(&sanitized_id),
+                        );
+                        ui.add_enabled_ui(!draft.use_default_auth, |ui| {
+                            kit::field(ui, egui::Id::new("prof-dir"), &mut draft.config_dir, Some(icons::FOLDER), &hint, 310.0, false);
+                        });
                     });
                     ui.vertical(|ui| {
                         ui.label(RichText::new(t("API Key (optional)")).size(11.5).color(p.text_muted));
                         ui.horizontal(|ui| {
                             let w = 250.0;
                             let id = egui::Id::new("prof-key");
-                            let (rect, _) = ui.allocate_exact_size(vec2(w, 30.0), Sense::hover());
+                            let (rect, outer) = ui.allocate_exact_size(vec2(w, 30.0), Sense::click());
+                            if outer.clicked() {
+                                ui.ctx().memory_mut(|m| m.request_focus(id));
+                            }
                             let focused = ui.ctx().memory(|m| m.has_focus(id));
                             let fill = if dark { p.inset } else { Color32::WHITE };
                             ui.painter().rect(rect, CornerRadius::same(style::RADIUS), fill, Stroke::new(1.0, if focused { p.accent } else { p.border_strong }), StrokeKind::Inside);
@@ -230,7 +252,29 @@ impl App {
                 });
 
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(t("Extra Environment (KEY=VALUE per line, optional)")).size(11.5).color(p.text_muted));
+                    let env_w = ui.available_width().min(580.0);
+                    egui::Frame::NONE
+                        .fill(if dark { p.inset } else { Color32::WHITE })
+                        .stroke(Stroke::new(1.0, p.border_strong))
+                        .corner_radius(CornerRadius::same(style::RADIUS))
+                        .inner_margin(egui::Margin::symmetric(8, 6))
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut draft.extra_env_text)
+                                    .id(egui::Id::new("prof-extra-env"))
+                                    .desired_rows(2)
+                                    .desired_width(env_w)
+                                    .frame(egui::Frame::NONE)
+                                    .font(style::mono(11.5))
+                                    .hint_text(RichText::new("ANTHROPIC_BASE_URL=https://…").color(p.text_ghost)),
+                            );
+                        });
+                });
+
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
                     kit::switch(ui, &mut draft.use_default_auth);
                     ui.label(RichText::new(t("Use system default auth folder (~/.claude, ~/.codex, ~/.gemini)")).size(12.0).color(p.text_muted));
                     ui.add_space(14.0);
@@ -241,7 +285,7 @@ impl App {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let ok_enabled = !draft.id.trim().is_empty();
+                        let ok_enabled = !id_empty && !id_dup;
                         if ui.add_enabled_ui(ok_enabled, |ui| kit::button_ex(ui, kit::Kind::Primary, Some(icons::CHECK), t("Save Profile"), false)).inner.clicked() {
                             save = true;
                         }
@@ -254,7 +298,7 @@ impl App {
 
         if cancel {
             self.profile_draft = None;
-        } else if save {
+        } else if save && !id_empty && !id_dup {
             self.ensure_mutable_profiles();
             let editing = draft.editing_id.clone();
             let next_order = self.settings.profiles.iter().map(|x| x.fallback_order).max().unwrap_or(0) + 1;
@@ -262,10 +306,31 @@ impl App {
                 && let Some(slot) = self.settings.profiles.iter_mut().find(|x| x.id == old_id)
             {
                 let order = slot.fallback_order;
-                *slot = draft.into_profile(order);
+                let updated = draft.into_profile(order);
+                let new_id = updated.id.clone();
+                *slot = updated;
+                if old_id != new_id {
+                    if let Some(rt) = self.profiles_rt.remove(&old_id) {
+                        self.profiles_rt.insert(new_id.clone(), rt);
+                    }
+                    for pane in self.panes.values_mut() {
+                        if pane.active_profile.as_deref() == Some(old_id.as_str()) {
+                            pane.active_profile = Some(new_id.clone());
+                        }
+                        if let Some(b) = &mut pane.rate_limit
+                            && b.from_profile == old_id
+                        {
+                            b.from_profile = new_id.clone();
+                        }
+                    }
+                    for proj in &mut self.projects {
+                        if proj.active_profile.as_deref() == Some(old_id.as_str()) {
+                            proj.active_profile = Some(new_id.clone());
+                        }
+                    }
+                }
             } else {
                 let new_prof = draft.into_profile(next_order);
-                self.settings.profiles.retain(|x| x.id != new_prof.id);
                 self.settings.profiles.push(new_prof);
             }
             self.settings_changed();
@@ -394,9 +459,11 @@ impl App {
                                 });
 
                                 // Right-aligned row actions.
+                                let can_delete = profiles.len() > 1;
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     ui.spacing_mut().item_spacing.x = 6.0;
-                                    if kit::icon_button_ex(ui, icons::TRASH, t("Delete Profile"), false, 24.0).clicked() {
+                                    let del_tip = if can_delete { t("Delete Profile") } else { t("At least one profile is required") };
+                                    if ui.add_enabled_ui(can_delete, |ui| kit::icon_button_ex(ui, icons::TRASH, del_tip, false, 24.0)).inner.clicked() {
                                         delete_id = Some(prof.id.clone());
                                     }
                                     if kit::icon_button_ex(ui, icons::PENCIL_SIMPLE, t("Edit Profile"), false, 24.0).clicked() {
@@ -437,6 +504,7 @@ impl App {
                     item.fallback_order = (i + 1) as u32;
                 }
                 self.settings_changed();
+                self.push_companion_now();
             }
         }
         if let Some(id) = toggle_enabled {
@@ -444,13 +512,34 @@ impl App {
             if let Some(slot) = self.settings.profiles.iter_mut().find(|x| x.id == id) {
                 slot.enabled = !slot.enabled;
                 self.settings_changed();
+                self.push_companion_now();
             }
         }
         if let Some(id) = delete_id {
             self.ensure_mutable_profiles();
-            self.settings.profiles.retain(|x| x.id != id);
-            self.settings_changed();
-            self.toast(tf("Removed profile {}.", &[&id]));
+            if self.settings.profiles.len() > 1 {
+                self.settings.profiles.retain(|x| x.id != id);
+                self.profiles_rt.remove(&id);
+                for pane in self.panes.values_mut() {
+                    if pane.active_profile.as_deref() == Some(id.as_str()) {
+                        pane.active_profile = None;
+                    }
+                    if pane.rate_limit.as_ref().is_some_and(|b| b.from_profile == id) {
+                        pane.rate_limit = None;
+                    }
+                }
+                for proj in &mut self.projects {
+                    if proj.active_profile.as_deref() == Some(id.as_str()) {
+                        proj.active_profile = None;
+                    }
+                }
+                if self.profile_draft.as_ref().and_then(|d| d.editing_id.as_deref()) == Some(id.as_str()) {
+                    self.profile_draft = None;
+                }
+                self.settings_changed();
+                self.push_companion_now();
+                self.toast(tf("Removed profile {}.", &[&id]));
+            }
         }
         if let Some(prof) = edit_prof {
             self.profile_draft = Some(ProfileDraft::from_profile(&prof));
@@ -490,10 +579,9 @@ impl App {
             kit::menu_body(ui);
             ui.set_min_width(248.0);
             kit::menu_header(ui, t("Switch Account Profile"));
-            for prof in &profiles {
-                if !prof.enabled {
-                    continue;
-                }
+            let mut ordered: Vec<&AgentProfile> = profiles.iter().filter(|p| p.enabled).collect();
+            ordered.sort_by_key(|p| (agent.is_some_and(|a| p.agent != a), p.fallback_order, p.id.as_str()));
+            for prof in ordered {
                 // Show same-provider profiles first; still allow cross-provider selection.
                 let prt = self.profiles_rt.get(&prof.id);
                 let state = prt.map(|r| r.state).unwrap_or(ProfileState::Idle);
@@ -530,6 +618,7 @@ impl App {
                     FailoverMode::Manual => FailoverMode::Auto,
                 };
                 self.settings_changed();
+                self.push_companion_now();
                 ui.close();
             }
             if kit::menu_item(ui, Some(icons::USER_PLUS), t("Manage Profiles…"), None, false).clicked() {
@@ -562,12 +651,19 @@ impl App {
         painter.text(pos2(rect.left() + 12.0 + 6.0, cy), Align2::CENTER_CENTER, icon, style::icon_font(13.5), accent);
 
         let profiles = self.effective_profiles();
-        let fallbacks: Vec<String> = profiles
+        let cross = self.settings.failover.cross_provider;
+        let max_btns = if rect.width() < 420.0 { 1 } else if rect.width() < 560.0 { 2 } else { 3 };
+        let mut candidates: Vec<&AgentProfile> = profiles
             .iter()
-            .filter(|pr| pr.enabled && pr.id != banner.from_profile && self.profiles_rt.get(&pr.id).is_none_or(|rt| rt.is_healthy(now)))
-            .take(3)
-            .map(|pr| pr.id.clone())
+            .filter(|pr| {
+                pr.enabled
+                    && pr.id != banner.from_profile
+                    && (cross || pr.agent == banner.agent)
+                    && self.profiles_rt.get(&pr.id).is_none_or(|rt| rt.is_healthy(now))
+            })
             .collect();
+        candidates.sort_by_key(|pr| (pr.agent != banner.agent, pr.fallback_order, pr.id.as_str()));
+        let fallbacks: Vec<String> = candidates.into_iter().take(max_btns).map(|pr| pr.id.clone()).collect();
 
         let inner = Rect::from_min_max(pos2(rect.left() + 30.0, rect.top()), pos2(rect.right() - 6.0, rect.bottom()));
         let right_edge = ui
@@ -576,6 +672,7 @@ impl App {
                     .max_rect(inner)
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 |ui| {
+                    ui.set_clip_rect(inner.intersect(ui.clip_rect()));
                     ui.spacing_mut().item_spacing.x = 5.0;
                     if kit::icon_button_ex(ui, icons::X, t("Dismiss"), false, 20.0).clicked() {
                         self.actions.push(Action::DismissRateLimit(pane_id));
@@ -602,7 +699,8 @@ impl App {
         let text = if let Some(to) = &banner.auto_switched_to {
             tf("{} hit limit → auto-resumed on {}", &[&banner.from_profile, to])
         } else {
-            let rem = banner.reset_at.saturating_duration_since(now).as_secs();
+            let rem_dur = banner.reset_at.saturating_duration_since(now);
+            let rem = rem_dur.as_secs() + u64::from(rem_dur.subsec_nanos() > 0);
             if rem > 0 {
                 tf("{} hit usage limit · resets in {}", &[&banner.from_profile, &profiles::format_countdown(rem)])
             } else {

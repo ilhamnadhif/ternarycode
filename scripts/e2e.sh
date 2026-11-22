@@ -540,11 +540,29 @@ run ship 60 "sleep 1000;; action add-project $SH;; sleep 1500;; hook 2 claude Us
 run grid-tabs 60 "sleep 1000;; action add-project $P1;; sleep 1200;; action new-tab;; sleep 800;; wait-tabs 0:2 1:3;; action add-project $P2;; sleep 1200;; action grid;; sleep 1200;; expect-tile-tab alpha 1;; hook 2 claude PermissionRequest;; sleep 800;; expect-tile-tab alpha 0;; expect-shown tile-tab:alpha:1;; shot e2e-grid-tabs;; click tile-tab:alpha:1;; sleep 600;; expect-tile-tab alpha 1;; sleep 1200;; expect-tile-tab alpha 1;; hook 2 claude Stop;; sleep 800;; expect-tile-tab alpha 0;; click tile-tab:alpha:1;; sleep 600;; expect-tile-tab alpha 1;; click tile-pane:3;; sleep 500;; hook 2 claude PermissionRequest;; sleep 800;; expect-tile-tab alpha 1;; click tile-open:alpha;; sleep 800;; expect-project alpha;; expect-tab 1;; quit"
 
 # Ground-up ADE redesign E2E checks:
-# 1. Wide Code Editor (>= 60% width in Bottom & Right dock), collapsible drawer tabs, Focus / Zen Mode.
-run ade-workspace 60 "sleep 1000;; action add-project $P1;; sleep 1500;; open-file $P1/src/main.rs;; sleep 600;; expect-shown editor-stage;; expect-shown secondary-drawer;; expect-editor-min-pct 60;; shot e2e-ade-workspace;; action dock-right;; sleep 500;; expect-editor-min-pct 60;; shot e2e-ade-dock-right;; action drawer-logs;; sleep 400;; action drawer-problems;; sleep 400;; action drawer-terminals;; sleep 400;; action dock-bottom;; sleep 400;; action drawer;; sleep 400;; expect-hidden secondary-drawer;; expect-editor-min-pct 95;; action drawer;; sleep 400;; expect-shown secondary-drawer;; action zen;; sleep 500;; expect-hidden sidebar;; expect-hidden secondary-drawer;; expect-editor-min-pct 95;; shot e2e-ade-zen;; action zen;; sleep 500;; expect-shown sidebar;; expect-shown secondary-drawer;; quit"
+# 1. Wide Code Editor (>= 60% width in Bottom & Right dock), collapsible drawer tabs,
+#    Drawer maximize/restore, ToggleDrawer when Code Editor hidden, and Focus / Zen Mode (non-corrupting).
+run ade-workspace 70 "sleep 1000;; action add-project $P1;; sleep 1500;; open-file $P1/src/main.rs;; sleep 600;; expect-shown editor-stage;; expect-shown secondary-drawer;; expect-editor-min-pct 60;; shot e2e-ade-workspace;; action dock-right;; sleep 500;; expect-editor-min-pct 60;; shot e2e-ade-dock-right;; action drawer-logs;; sleep 400;; action drawer-problems;; sleep 400;; action drawer-terminals;; sleep 400;; action dock-bottom;; sleep 400;; click drawer-maximize;; sleep 400;; expect-hidden editor-stage;; expect-shown drawer-maximize;; click drawer-maximize;; sleep 400;; expect-shown editor-stage;; action drawer;; sleep 400;; expect-hidden secondary-drawer;; expect-editor-min-pct 95;; action drawer;; sleep 400;; expect-shown secondary-drawer;; action editor;; sleep 400;; expect-hidden editor-stage;; action drawer;; sleep 400;; expect-shown editor-stage;; expect-hidden secondary-drawer;; action drawer;; sleep 400;; expect-shown secondary-drawer;; action zen;; sleep 500;; expect-hidden sidebar;; expect-hidden secondary-drawer;; expect-editor-min-pct 95;; shot e2e-ade-zen;; action zen;; sleep 500;; expect-shown sidebar;; expect-shown secondary-drawer;; quit"
 
-# 2. Project-nested agent session history inside the left workspace sidebar tree + inline fold/unfold.
-run ade-sessions 50 "sleep 1000;; action add-project $P1;; sleep 1800;; expect-shown project-session:1:0;; expect-shown sessions-toggle:alpha;; shot e2e-ade-sessions;; click sessions-toggle:alpha;; sleep 400;; expect-hidden project-session:1:0;; click sessions-toggle:alpha;; sleep 400;; expect-shown project-session:1:0;; quit"
+# 2. Project-nested agent session history inside the left workspace sidebar tree (collapsed by default + inline fold/unfold).
+run ade-sessions 50 "sleep 1000;; action add-project $P1;; sleep 1200;; expect-hidden project-session:1:0;; expect-shown sessions-toggle:alpha;; click sessions-toggle:alpha;; sleep 1200;; expect-shown project-session:1:0;; shot e2e-ade-sessions;; click sessions-toggle:alpha;; sleep 400;; expect-hidden project-session:1:0;; quit"
+
+# 2b. Sidebar scroll stability with 20 projects (with expanded sessions!) — verifies zero infinite scroll jump.
+SCROLL_SCRIPT="sleep 800"
+for i in $(seq -w 1 20); do
+    PD="$WORK/proj-$i"
+    mkdir -p "$PD"
+    # Seed a fake Claude session under each project so expanding allocates real session rows!
+    SLUG=$(python3 -c 'import os,re,sys; p=os.path.realpath(sys.argv[1]); print(re.sub(r"[^A-Za-z0-9]","-",p))' "$PD")
+    mkdir -p "$TERNARYCODE_AGENT_HOME/.claude/projects/$SLUG"
+    cat > "$TERNARYCODE_AGENT_HOME/.claude/projects/$SLUG/11111111-1111-1111-1111-1111111111${i}.jsonl" <<JSONL
+{"type":"user","message":{"content":"work on proj-$i"},"gitBranch":"main"}
+{"type":"ai-title","aiTitle":"Session proj-$i"}
+JSONL
+    SCROLL_SCRIPT="$SCROLL_SCRIPT;; action add-project $PD"
+done
+SCROLL_SCRIPT="$SCROLL_SCRIPT;; sleep 1000;; action select-name proj-01;; sleep 500;; click sessions-toggle:proj-01;; sleep 500;; click sessions-toggle:proj-02;; sleep 500;; click sessions-toggle:proj-03;; sleep 600;; expect-shown project-session:1:0;; scroll sidebar@0.5,0.5 -220;; sleep 300;; scroll sidebar@0.5,0.5 -220;; sleep 300;; scroll sidebar@0.5,0.5 -220;; sleep 300;; scroll sidebar@0.5,0.5 -220;; sleep 300;; expect-hidden sessions-toggle:proj-01;; expect-hidden project-session:1:0;; expect-shown sessions-toggle:proj-18;; shot e2e-ade-scroll;; scroll sidebar@0.5,0.5 440;; sleep 300;; scroll sidebar@0.5,0.5 440;; sleep 300;; expect-shown sessions-toggle:proj-01;; expect-shown project-session:1:0;; quit"
+run ade-sidebar-scroll 90 "$SCROLL_SCRIPT"
 
 # 3. Multi-account Profiles view, Rate-Limit Manual & Auto Failover, and All-Agent Usage Monitor.
 run ade-profiles-monitor 60 "sleep 1000;; action add-project $P1;; sleep 1200;; set-failover manual;; trigger-limit claude1;; sleep 500;; expect-shown rate-limit-banner:2;; shot e2e-ade-failover;; set-failover auto;; trigger-limit claude1;; sleep 500;; wait-toast auto-resumed|otomatis dilanjutkan;; action profiles;; sleep 500;; expect-view profiles;; shot e2e-ade-profiles;; action monitor;; sleep 500;; expect-view monitor;; shot e2e-ade-monitor;; click view:focus;; sleep 400;; expect-view focus;; click telemetry-pill;; sleep 400;; expect-shown monitor-popover;; shot e2e-ade-popover;; click telemetry-pill;; sleep 300;; expect-hidden monitor-popover;; quit"

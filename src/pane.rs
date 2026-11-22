@@ -309,6 +309,8 @@ pub struct Pane {
     pub last_limit_check: Instant,
     /// Dedup key of the last rate-limit line handled in this pane.
     pub last_limit_sig: Option<String>,
+    /// Suppresses rate-limit re-scanning immediately after failover until new output replaces old text.
+    pub limit_ignore_until: Option<Instant>,
     /// Quick composer draft text for sending follow-up instructions directly to an agent pane.
     pub composer_text: String,
 }
@@ -377,6 +379,7 @@ impl Pane {
             rate_limit: None,
             last_limit_check: Instant::now(),
             last_limit_sig: None,
+            limit_ignore_until: None,
             composer_text: String::new(),
         };
         if start {
@@ -789,10 +792,11 @@ impl Pane {
             return None;
         }
         let at_prompt = self.shared.prompt.lock().at_prompt;
+        let in_program = matches!(self.tracker.fg, tc_core::status::Foreground::Program { .. });
         let quiet = if self.tracker.shell_marks || self.expects_marks { PROMPT_MARK_WAIT } else { QUIET_BEFORE_TYPING };
         let due = self.last_output + quiet;
-        if !at_prompt && now < due {
-            return Some(due);
+        if !at_prompt && (in_program || now < due) {
+            return Some(if in_program { now + Duration::from_millis(200) } else { due });
         }
         let command = self.pending_command.take()?;
         self.write(format!("{command}\r").into_bytes());

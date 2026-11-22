@@ -292,10 +292,10 @@ impl App {
             add(icons::MAGNIFYING_GLASS, t("Find in All Panes…"), Action::FindAll);
             add(icons::FILE, t("Open File…"), Action::QuickOpen);
             add(icons::CODE, t("Show/Hide Code"), Action::ToggleEditor);
-            add(icons::ROWS, t("Show/Hide Drawer"), Action::ToggleDrawer);
+            add(icons::ROWS, t("Show/Hide Terminal Panel"), Action::ToggleDrawer);
             add(icons::ARROWS_OUT, t("Focus / Zen Mode"), Action::ToggleZenMode);
-            add(icons::ROWS, t("Dock Drawer Bottom"), Action::SetDrawerDock(tc_core::model::DrawerDock::Bottom));
-            add(icons::COLUMNS, t("Dock Drawer Right"), Action::SetDrawerDock(tc_core::model::DrawerDock::Right));
+            add(icons::ROWS, t("Dock Panel Bottom"), Action::SetDrawerDock(tc_core::model::DrawerDock::Bottom));
+            add(icons::COLUMNS, t("Dock Panel Right"), Action::SetDrawerDock(tc_core::model::DrawerDock::Right));
             add(icons::USER, t("Agent Profiles…"), Action::OpenProfiles);
             add(icons::TIMER, t("Usage & Status Monitor"), Action::OpenMonitor);
             add(icons::DEVICE_MOBILE, t("Phone Pairing…"), Action::OpenPhonePairing);
@@ -552,9 +552,10 @@ impl App {
         };
         // Wide enough: the chosen row is shown at the right (what a waiting agent asks, a
         // project's terminal).
-        let wide = ctx.content_rect().width() >= 1200.0 && pal.mode != PaletteMode::Locations;
-        let width = if wide { WIDE } else { WIDTH };
-        let list_w = if wide { WIDE - PREVIEW_W } else { WIDTH };
+        let screen_w = ctx.content_rect().width();
+        let wide = screen_w >= 1200.0 && pal.mode != PaletteMode::Locations;
+        let width = (if wide { WIDE } else { WIDTH }).min((screen_w - 24.0).max(280.0));
+        let list_w = if wide { (width - PREVIEW_W).max(280.0) } else { width };
         let area = egui::Area::new(egui::Id::new("palette-area")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0));
         let dark = ctx.global_style().visuals.dark_mode;
         let modal = egui::Modal::new(egui::Id::new("palette"))

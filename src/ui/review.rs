@@ -165,6 +165,7 @@ impl App {
             || self.review.as_ref().is_some_and(|r| r.project == project_id && r.expanded);
         if !expanded {
             // The drawer opens as ⌘E opens it (a first time at its usual width).
+            self.drawer_maximized = false;
             self.editors.entry(project_id).or_insert_with(|| crate::editor::Editor { width: 0.54, ..Default::default() }).visible = true;
         }
         let load = next_work();
@@ -590,7 +591,7 @@ impl App {
         let mut select: Option<usize> = None;
         let mut hunk_step: i32 = 0;
         let mut open = false;
-        if self.dialog.is_none() && self.palette.is_none() && !self.attention_open && !self.updater.dialog_open && has_keys && !ship_typing {
+        if !self.overlay_open() && !self.updater.dialog_open && has_keys && !ship_typing {
             let filter_q = self.review_filter.trim().to_lowercase();
             let visible: Vec<usize> = r
                 .files

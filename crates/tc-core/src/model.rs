@@ -673,6 +673,51 @@ impl Settings {
         self.long_command_secs = self.long_command_secs.clamp(1, 86_400);
         self.failover.default_cooldown_mins = self.failover.default_cooldown_mins.clamp(1, 1440);
         self.companion.port = self.companion.port.clamp(1024, 65535);
+        // Sanitize & deduplicate hand-edited profiles so IDs, paths, keys, and env names are valid.
+        let mut seen_ids = std::collections::HashSet::new();
+        for (idx, pr) in self.profiles.iter_mut().enumerate() {
+            let mut id: String = pr
+                .id
+                .trim()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .take(32)
+                .collect::<String>()
+                .to_ascii_lowercase();
+            if !id.chars().any(|c| c.is_ascii_alphanumeric()) {
+                id = format!("profile{}", idx + 1);
+            }
+            if !seen_ids.insert(id.clone()) {
+                let mut n = 2u32;
+                while !seen_ids.insert(format!("{id}-{n}")) {
+                    n += 1;
+                }
+                id = format!("{id}-{n}");
+            }
+            pr.id = id;
+            if pr.name.trim().is_empty() {
+                pr.name = pr.id.clone();
+            }
+            if pr.config_dir.as_ref().is_some_and(|d| d.as_os_str().is_empty()) {
+                pr.config_dir = None;
+            }
+            if let Some(k) = pr.api_key.as_ref() {
+                let t = k.trim();
+                if t.is_empty() {
+                    pr.api_key = None;
+                } else if t.len() != k.len() {
+                    pr.api_key = Some(t.to_string());
+                }
+            }
+            if pr.daily_token_budget == Some(0) {
+                pr.daily_token_budget = None;
+            }
+            pr.extra_env.retain(|k, _| {
+                k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            });
+        }
+        self.profiles.sort_by_key(|p| (p.fallback_order, p.id.clone()));
         *self != before
     }
 

@@ -71,18 +71,10 @@ impl App {
             self.doc_panel(ui, project, body);
             return;
         }
-        // Path of the file, the problems (⇧⌘M) and the status line at the bottom.
+        // Path of the file and the status line at the bottom (Problems lives in the unified Secondary Drawer).
         let crumb = Rect::from_min_size(body.min, vec2(body.width(), CRUMB_H));
         let status = Rect::from_min_max(pos2(body.left(), body.bottom() - STATUS_H), body.max);
-        let problems_h = if self.problems_open { (30.0 + 6.0 * 26.0_f32).min(body.height() * 0.4) } else { 0.0 };
-        let problems = Rect::from_min_max(pos2(body.left(), status.top() - problems_h), pos2(body.right(), status.top()));
-        if self.problems_open {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(problems), |ui| {
-                ui.set_clip_rect(problems);
-                self.problems_panel(ui, project, problems);
-            });
-        }
-        let text_rect = Rect::from_min_max(pos2(body.left(), crumb.bottom()), pos2(body.right(), problems.top()));
+        let text_rect = Rect::from_min_max(pos2(body.left(), crumb.bottom()), pos2(body.right(), status.top()));
         self.want_line_marks(project);
         self.editor_crumb(ui, project, &root, crumb);
         self.editor_status(ui, project, status);
@@ -128,9 +120,14 @@ impl App {
         let strip = Rect::from_min_max(pos2(rect.left() + 8.0, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
         let mut select = None;
         let mut close_file = None;
+        let seen_id = egui::Id::new(("editor-tabs-active", project));
+        let scroll_to_active = ui.data(|d| d.get_temp::<(usize, usize)>(seen_id)) != Some((active, files.len()));
+        ui.data_mut(|d| d.insert_temp(seen_id, (active, files.len())));
         ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| {
             ui.set_clip_rect(strip.expand2(vec2(0.0, 1.0)));
-            egui::ScrollArea::horizontal()
+            ui.style_mut().always_scroll_the_only_direction = true;
+            ui.spacing_mut().scroll.fade.strength = 0.0;
+            let out = egui::ScrollArea::horizontal()
                 .id_salt(("editor-tabs", project))
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
@@ -143,6 +140,9 @@ impl App {
                             let mark_w = if changed.is_some() { 6.0 + 8.0 } else { 0.0 };
                             let w = 10.0 + 14.0 + 7.0 + galley.size().x + mark_w + 6.0 + 14.0 + 7.0;
                             let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
+                            if on && scroll_to_active {
+                                resp.scroll_to_me(None);
+                            }
                             let close_r = Rect::from_center_size(pos2(r.right() - 7.0 - 7.0, r.center().y), vec2(14.0, 14.0));
                             let close_resp = ui.interact(close_r, egui::Id::new(("tab-close", project, i)), Sense::click());
                             let painter = ui.painter();
@@ -179,6 +179,17 @@ impl App {
                         }
                     });
                 });
+            let shown = out.inner_rect;
+            let offset = out.state.offset.x;
+            let fade_w = 20.0_f32.min(shown.width() / 2.0);
+            if offset > 0.5 {
+                let r = Rect::from_min_max(shown.min, pos2(shown.left() + fade_w, shown.bottom()));
+                kit::fade(ui.painter(), r, p.canvas, false);
+            }
+            if offset + shown.width() < out.content_size.x - 0.5 {
+                let r = Rect::from_min_max(pos2(shown.right() - fade_w, shown.top()), shown.max);
+                kit::fade(ui.painter(), r, p.canvas, true);
+            }
         });
         if let Some(i) = select
             && let Some(e) = self.editors.get_mut(&project)
@@ -252,7 +263,6 @@ impl App {
             }
         }
         let Some(file) = self.editors.get(&project).and_then(|e| e.file()) else { return };
-        let crumb_end = paint_crumb(ui, rect, root, &file.path, &p);
         // The symbol the caret is in (the innermost function, type or module).
         let line = file.caret.0.saturating_sub(1) as u32;
         let symbol = self.lsp.outline.get(&file.path).and_then(|(_, items)| {
@@ -264,23 +274,10 @@ impl App {
                 .min_by_key(|s| s.end - s.start)
                 .map(|s| (s.name.clone(), matches!(s.kind, K::FUNCTION | K::METHOD | K::CONSTRUCTOR)))
         });
-        let dark = ui.visuals().dark_mode;
         let painter = ui.painter();
+        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
+        // Right-side badges first so breadcrumb + symbol clip cleanly before them.
         let mut right = rect.right() - 14.0;
-        if let Some((name, func)) = symbol {
-            let x = crumb_end;
-            let g = painter.layout_no_wrap(icons::CARET_RIGHT.to_string(), style::icon_font(9.0), p.text_ghost);
-            let gw = g.size().x;
-            painter.galley(pos2(x, rect.center().y - g.size().y / 2.0), g, p.text_ghost);
-            let x = x + gw + 6.0;
-            painter.text(pos2(x + 6.5, rect.center().y), Align2::CENTER_CENTER, if func { icons::FUNCTION } else { icons::CODE }, style::icon_font(13.0), p.info);
-            let mut job = egui::text::LayoutJob::simple_singleline(name, style::mono(11.5), p.text);
-            job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 160.0 - (x + 18.0)).max(30.0));
-            let g = painter.layout_job(job);
-            painter.galley(pos2(x + 18.0, rect.center().y - g.size().y / 2.0), g, p.text);
-        }
-        // What the file is: just changed by an agent (its logo), read-only.
-        let _ = dark;
         if let Some((agent, at)) = file.changed_by.as_ref().filter(|(_, at)| at.elapsed().as_secs() < 600) {
             let text = crate::i18n::tf("Changed by {} · {}", &[agent, &super::status::age(*at)]);
             let kind = tc_core::agent::AgentKind::ALL.iter().copied().find(|k| k.label() == agent).filter(|k| super::agent_logo::has(*k));
@@ -300,6 +297,29 @@ impl App {
             let text = if file.truncated { t("Read-only · first 2 MB") } else { t("Read-only") };
             let w = kit::pill_width(painter, None, text);
             kit::paint_pill(painter, pos2(right - w, rect.center().y), None, text, p.text_muted, p.subtle);
+            right -= w + 6.0;
+        }
+        let crumb_clip = Rect::from_min_max(rect.min, pos2((right - 6.0).max(rect.left()), rect.max.y));
+        let crumb_end = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(crumb_clip), |ui| {
+                ui.set_clip_rect(crumb_clip.intersect(ui.clip_rect()));
+                paint_crumb(ui, rect, root, &file.path, &p)
+            })
+            .inner;
+        if let Some((name, func)) = symbol {
+            let clip_painter = ui.painter_at(crumb_clip);
+            let x = crumb_end;
+            let g = clip_painter.layout_no_wrap(icons::CARET_RIGHT.to_string(), style::icon_font(9.0), p.text_ghost);
+            let gw = g.size().x;
+            if x + gw + 28.0 < crumb_clip.right() {
+                clip_painter.galley(pos2(x, rect.center().y - g.size().y / 2.0), g, p.text_ghost);
+                let x = x + gw + 6.0;
+                clip_painter.text(pos2(x + 6.5, rect.center().y), Align2::CENTER_CENTER, if func { icons::FUNCTION } else { icons::CODE }, style::icon_font(13.0), p.info);
+                let mut job = egui::text::LayoutJob::simple_singleline(name, style::mono(11.5), p.text);
+                job.wrap = egui::text::TextWrapping::truncate_at_width((crumb_clip.right() - (x + 18.0)).max(20.0));
+                let g = clip_painter.layout_job(job);
+                clip_painter.galley(pos2(x + 18.0, rect.center().y - g.size().y / 2.0), g, p.text);
+            }
         }
     }
 
@@ -318,8 +338,9 @@ impl App {
             parts.push(if file.crlf { "CRLF".into() } else { "LF".into() });
         }
         let text = parts.join("  ·  ");
-        let text_w = ui.painter().layout_no_wrap(text.clone(), style::mono(10.5), p.text_faint).size().x;
-        ui.painter().text(
+        let left_painter = ui.painter_at(Rect::from_min_max(rect.min, pos2((rect.right() - 12.0).max(rect.left()), rect.max.y)));
+        let text_w = left_painter.layout_no_wrap(text.clone(), style::mono(10.5), p.text_faint).size().x;
+        left_painter.text(
             pos2(rect.left() + 14.0, rect.center().y),
             Align2::LEFT_CENTER,
             text,
@@ -329,7 +350,8 @@ impl App {
         let dirty = file.dirty() && !file.read_only;
         // The language server and the file's problems at the right; Save for unsaved edits.
         let path = file.path.clone();
-        let inner = Rect::from_min_max(pos2(rect.left() + 12.0 + text_w + 20.0, rect.top() + 2.0), pos2(rect.right() - 12.0, rect.bottom() - 2.0));
+        let min_x = (rect.left() + 12.0 + text_w + 20.0).min(rect.right() - 12.0);
+        let inner = Rect::from_min_max(pos2(min_x, rect.top() + 2.0), pos2((rect.right() - 12.0).max(min_x), rect.bottom() - 2.0));
         if inner.width() > 40.0 {
             ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
                 ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
@@ -355,6 +377,7 @@ impl App {
         let mut ide_cmds = Vec::new();
         self.ide_keys(&ctx, project, &mut ide_cmds);
         let features = (self.settings.lsp, self.settings.auto_complete);
+        let overlay = self.overlay_open();
         let Some(editor) = self.editors.get_mut(&project) else { return };
         let crate::editor::Editor { files, active, find, refocus, .. } = editor;
         let Some(file) = files.get_mut(*active) else { return };
@@ -379,7 +402,7 @@ impl App {
             // Esc closes the bar only while the keyboard is in the editor (a terminal needs Esc).
             let find_id = egui::Id::new(("editor-find", project));
             let ours = ctx.memory(|m| m.has_focus(text_id) || m.has_focus(find_id) || m.had_focus_last_frame(find_id));
-            let mut close = ours && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            let mut close = ours && !overlay && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
             let mut go: Option<bool> = None;
             let mut enter = false;
             f.refresh(file);
@@ -622,7 +645,7 @@ impl App {
         let row_h = ui.fonts_mut(|f| f.row_height(&font));
         let char_w = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
         let digits = file.lines.max(1).to_string().len().max(3) as f32;
-        let gutter = (digits * char_w + 28.0).round();
+        let gutter = (digits * char_w + 28.0).round().min(127.0);
         let goto = file.goto_line.take();
         let mut area = egui::ScrollArea::both()
             .id_salt(("editor", project, file.path.clone()))
@@ -855,8 +878,8 @@ impl App {
                             .color(p.text_muted),
                         );
                         ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
                             if kit::button_keys(ui, kit::Kind::Primary, Some(icons::MAGNIFYING_GLASS), t("Open File…"), kit::keys(&Action::QuickOpen), false).clicked() {
                                 self.actions.push(Action::QuickOpen);
                             }
@@ -895,7 +918,10 @@ impl App {
                                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                         }
                                         ui.painter().text(pos2(row.left() + 14.0, row.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.5), color);
-                                        ui.painter().text(pos2(row.left() + 28.0, row.center().y), Align2::LEFT_CENTER, rel, style::mono(11.5), p.text);
+                                        let mut job = egui::text::LayoutJob::simple_singleline(rel, style::mono(11.5), p.text);
+                                        job.wrap = egui::text::TextWrapping::truncate_at_width((row.width() - 54.0).max(20.0));
+                                        let rg = ui.painter().layout_job(job);
+                                        ui.painter().galley(pos2(row.left() + 28.0, row.center().y - rg.size().y / 2.0), rg, p.text);
                                         ui.painter().text(pos2(row.right() - 14.0, row.center().y), Align2::RIGHT_CENTER, ch.letter(), style::mono_semibold(10.5), super::explorer_ui::change_color(*ch, &p));
                                         if resp.clicked() {
                                             self.actions.push(Action::OpenFile(path.clone(), None));
@@ -919,7 +945,10 @@ impl App {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                 }
                                 ui.painter().text(pos2(row.left() + 8.0 + 7.0, row.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.5), color);
-                                ui.painter().text(pos2(row.left() + 8.0 + 14.0 + 8.0, row.center().y), Align2::LEFT_CENTER, rel, style::mono(11.5), p.text_muted);
+                                let mut job = egui::text::LayoutJob::simple_singleline(rel, style::mono(11.5), p.text_muted);
+                                job.wrap = egui::text::TextWrapping::truncate_at_width((row.width() - 38.0).max(20.0));
+                                let rg = ui.painter().layout_job(job);
+                                ui.painter().galley(pos2(row.left() + 8.0 + 14.0 + 8.0, row.center().y - rg.size().y / 2.0), rg, p.text_muted);
                                 if resp.clicked() {
                                     self.actions.push(Action::OpenFile(path, None));
                                 }

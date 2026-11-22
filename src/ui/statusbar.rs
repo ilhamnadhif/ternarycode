@@ -115,7 +115,10 @@ impl App {
         }
         let queue = self.attention_queue();
         let mut close = false;
-        let on_top = self.dialog.is_none() && self.palette.is_none() && !self.updater.dialog_open;
+        let on_top = self.dialog.is_none()
+            && self.palette.is_none()
+            && !self.updater.dialog_open
+            && !self.monitor_popover;
         let in_sidebar = inbox.is_some();
         // The keyboard: ↑↓ choose, ↵ jump, R review, ⌫ mark as seen, Esc close.
         let n = queue.len();
@@ -210,6 +213,12 @@ impl App {
                     ui.painter().text(pos2(r.left() + 18.0, r.center().y), Align2::LEFT_CENTER, t("No agent is waiting for you."), egui::FontId::proportional(13.0), p.text_muted);
                 }
                 // Two groups, in the queue's order: what needs the user, what finished.
+                let max_h = (ctx.content_rect().height() - 240.0).clamp(180.0, 480.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("attention-modal-scroll")
+                    .max_height(max_h)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
                 let mut group: Option<bool> = None;
                 for (i, e) in queue.iter().enumerate() {
                     let Some(pane) = self.panes.get(&e.pane) else { continue };
@@ -292,6 +301,7 @@ impl App {
                         self.attention_sel = i;
                     }
                 }
+                });
                 // The keys.
                 ui.add_space(8.0);
                 let (foot, _) = ui.allocate_exact_size(vec2(LIST_W, 38.0), Sense::hover());

@@ -49,7 +49,8 @@ impl App {
         let name_w = name.size().x;
         ui.painter().galley(name_at, name, text);
 
-        let menus = Rect::from_min_max(pos2(name_at.x + name_w + 14.0, bar.top()), pos2(caption.left() - 8.0, bar.bottom()));
+        let menus_min_x = name_at.x + name_w + 14.0;
+        let menus = Rect::from_min_max(pos2(menus_min_x, bar.top()), pos2((caption.left() - 8.0).max(menus_min_x), bar.bottom()));
         #[cfg(debug_assertions)]
         crate::devtest::record("title-menus", menus);
         let chosen = ui
@@ -122,7 +123,7 @@ impl App {
                 Some((t("Show/Hide Sidebar"), A::ToggleSidebar)),
                 Some((t("Narrow Sidebar"), A::ToggleCompactSidebar)),
                 Some((t("Show/Hide Code"), A::ToggleEditor)),
-                Some((t("Show/Hide Drawer"), A::ToggleDrawer)),
+                Some((t("Show/Hide Terminal Panel"), A::ToggleDrawer)),
                 Some((t("Show/Hide Files"), A::ToggleFiles)),
                 Some((t("Focus / Zen Mode"), A::ToggleZenMode)),
                 None,

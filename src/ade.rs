@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 use eframe::egui;
 use tc_agent::integrate;
 use tc_core::agent::{AgentKind, Preset};
-use tc_core::model::{AgentProfile, DrawerDock, DrawerTab, FailoverMode, Integration, View};
+use tc_core::model::{AgentProfile, DrawerDock, FailoverMode, Integration, View};
 use tc_core::status::Status;
 use tc_core::{PaneId, ProjectId};
 
@@ -32,9 +32,7 @@ use crate::profiles::{
 /// Saved layout snapshot restored when exiting Focus / Zen Mode.
 #[derive(Clone, Copy, Debug)]
 pub struct ZenSaved {
-    pub sidebar_hidden: bool,
-    pub sidebar_compact: bool,
-    pub drawer_open: bool,
+    pub editor_project: Option<ProjectId>,
     pub editor_visible: bool,
 }
 
@@ -184,6 +182,23 @@ impl App {
             .cloned()
     }
 
+    /// Returns a preset for `agent`, synthesizing a default command preset when none is configured
+    /// (for example Gemini CLI or Custom accounts).
+    pub fn preset_for_agent(&self, agent: AgentKind) -> Preset {
+        self.presets()
+            .into_iter()
+            .find(|p| p.agent == Some(agent))
+            .unwrap_or_else(|| Preset {
+                id: agent.slug().into(),
+                name: agent.label().into(),
+                agent: Some(agent),
+                command: profiles::default_command(agent).into(),
+                resume: None,
+                env: BTreeMap::new(),
+                builtin: false,
+            })
+    }
+
     /// Builds a shell launch command for `preset` combining hooks, permissions flag, preset env,
     /// and isolated account profile env (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, API keys).
     pub fn launch_command_for_profile(&self, preset: &Preset, command: &str, profile: Option<&AgentProfile>) -> String {
@@ -196,15 +211,18 @@ impl App {
         if let Some(flag) = preset.agent.filter(|a| self.skips_permissions(*a)).and_then(tc_agent::sessions::skip_permissions_flag)
             && !command.split_whitespace().any(|w| w == flag)
         {
-            command = format!("{command} {flag}");
+            command = integrate::insert_flag(&command, flag);
         }
         let command = integrate::launch_command_with(&command, preset.agent, integration, self.codex_hooks, self.codex_own_notify);
         let mut env = preset.env.clone();
+        let mut unset = Vec::new();
         if let Some(profile) = profile {
             let penv = profiles::profile_env(profile, &paths::home_dir(), paths::data_dir());
             env.extend(penv);
+            unset = profiles::profile_unset_env(profile);
+            unset.retain(|k| !env.contains_key(*k));
         }
-        integrate::with_env(&command, &env)
+        integrate::with_env_and_unset(&command, &env, &unset)
     }
 
     /// Appends one structured entry to the Agent Logs drawer & Monitor event feed.
@@ -241,36 +259,49 @@ impl App {
         });
     }
 
-    /// Enters or exits one-keystroke Focus / Zen Mode, preserving exact prior panel visibility.
+    /// Exits Focus / Zen Mode cleanly without corrupting persisted sidebar or drawer settings.
+    pub fn exit_zen_mode(&mut self) {
+        if !self.zen_mode {
+            return;
+        }
+        self.zen_mode = false;
+        if let Some(saved) = self.zen_saved.take()
+            && let Some(pid) = saved.editor_project
+            && let Some(e) = self.editors.get_mut(&pid)
+        {
+            e.visible = saved.editor_visible;
+        }
+    }
+
+    /// Enters or exits one-keystroke Focus / Zen Mode without mutating persisted settings.
     pub fn toggle_zen_mode(&mut self) {
         if self.zen_mode {
-            self.zen_mode = false;
-            if let Some(saved) = self.zen_saved.take() {
-                self.settings.sidebar_hidden = saved.sidebar_hidden;
-                self.settings.sidebar_compact = saved.sidebar_compact;
-                self.settings.drawer_open = saved.drawer_open;
-                if let Some(e) = self.editor_mut() {
-                    e.visible = saved.editor_visible;
-                }
-            }
-        } else {
-            let editor_visible = self.active.and_then(|id| self.editors.get(&id)).is_some_and(|e| e.visible);
-            self.zen_saved = Some(ZenSaved {
-                sidebar_hidden: self.settings.sidebar_hidden,
-                sidebar_compact: self.settings.sidebar_compact,
-                drawer_open: self.settings.drawer_open,
-                editor_visible,
-            });
-            self.zen_mode = true;
-            self.settings.sidebar_hidden = true;
-            self.settings.drawer_open = false;
-            self.monitor_popover = false;
-            self.show_focus();
-            if let Some(e) = self.editor_mut() {
+            self.exit_zen_mode();
+            return;
+        }
+        if self.projects.is_empty() {
+            return;
+        }
+        let editor_project = self.active;
+        let editor_visible = editor_project
+            .and_then(|id| self.editors.get(&id))
+            .is_some_and(|e| e.visible);
+        self.zen_saved = Some(ZenSaved {
+            editor_project,
+            editor_visible,
+        });
+        self.zen_mode = true;
+        self.drawer_maximized = false;
+        self.monitor_popover = false;
+        self.attention_open = false;
+        self.show_focus();
+        self.release_page_keyboard();
+        if let Some(id) = editor_project {
+            self.ensure_editor_for_project(id, 0.0);
+            if let Some(e) = self.editors.get_mut(&id) {
                 e.visible = true;
             }
         }
-        self.settings_changed();
     }
 
     /// Periodic ADE background tick: updates profile states, expires cooldowns, scans agent panes
@@ -280,12 +311,18 @@ impl App {
         let now = Instant::now();
         let profiles = self.effective_profiles();
 
-        // 1. Recompute active panes per profile & expire finished rate-limit cooldowns.
+        // 1. Recompute active panes per profile & expire finished rate-limit cooldowns across ALL entries.
         let mut active_by_profile: BTreeMap<String, Vec<(PaneId, ProjectId, Status)>> = BTreeMap::new();
         for pane in self.panes.values() {
+            if !pane.alive() || pane.tracker.agent.is_none() {
+                continue;
+            }
             let pid = pane.active_profile.clone().or_else(|| {
                 pane.tracker.agent.and_then(|a| {
-                    profiles.iter().find(|p| p.agent == a && p.enabled).map(|p| p.id.clone())
+                    profiles
+                        .iter()
+                        .find(|p| p.agent == a && p.enabled && p.use_default_auth && !profiles::has_custom_config_dir(p))
+                        .map(|p| p.id.clone())
                 })
             });
             if let Some(prof_id) = pid {
@@ -294,8 +331,11 @@ impl App {
         }
 
         let mut next_wake: Option<Duration> = None;
-        for prof in &profiles {
-            let rt = self.profiles_rt.entry(prof.id.clone()).or_default();
+        let mut wake_at = |d: Duration| {
+            next_wake = Some(next_wake.map_or(d, |w| w.min(d)));
+        };
+
+        for rt in self.profiles_rt.values_mut() {
             if let Some(reset_at) = rt.reset_at {
                 if now >= reset_at {
                     rt.reset_at = None;
@@ -304,10 +344,13 @@ impl App {
                         rt.state = ProfileState::Idle;
                     }
                 } else {
-                    let rem = reset_at.saturating_duration_since(now).min(Duration::from_secs(1));
-                    next_wake = Some(next_wake.map_or(rem, |w| w.min(rem)));
+                    wake_at(reset_at.saturating_duration_since(now).min(Duration::from_secs(1)));
                 }
             }
+        }
+
+        for prof in &profiles {
+            let rt = self.profiles_rt.entry(prof.id.clone()).or_default();
             let panes = active_by_profile.get(&prof.id);
             rt.active_panes = panes.map(|v| v.iter().map(|(a, b, _)| (*a, *b)).collect()).unwrap_or_default();
             if !matches!(rt.state, ProfileState::RateLimited | ProfileState::Cooldown) {
@@ -323,21 +366,56 @@ impl App {
             }
         }
 
-        // 2. Scan active agent panes for rate-limit / usage-limit output (~1.2 s interval).
+        // Expire old pane rate-limit banners (auto-switched info banners dismiss after 12s; manual banners expire on reset).
+        for pane in self.panes.values_mut() {
+            if let Some(banner) = &pane.rate_limit {
+                if banner.auto_switched_to.is_some() {
+                    let age = now.duration_since(banner.created_at);
+                    if age >= Duration::from_secs(12) {
+                        pane.rate_limit = None;
+                    } else {
+                        wake_at(Duration::from_secs(12) - age);
+                    }
+                } else if now >= banner.reset_at {
+                    pane.rate_limit = None;
+                } else {
+                    wake_at(banner.reset_at.saturating_duration_since(now).min(Duration::from_secs(1)));
+                }
+            }
+        }
+
+        // 2. Scan live agent panes (currently running an agent, not at the shell prompt) for rate-limit output.
         let mut detected: Vec<(PaneId, RateLimitHit)> = Vec::new();
         for pane in self.panes.values_mut() {
-            let has_agent = pane.tracker.agent.is_some() || pane.active_profile.is_some();
-            if !has_agent || !pane.alive() || now.duration_since(pane.last_limit_check) < Duration::from_millis(1200) {
+            let in_agent = pane.alive()
+                && pane.tracker.agent.is_some()
+                && !matches!(pane.tracker.fg, tc_core::status::Foreground::Shell | tc_core::status::Foreground::Gone);
+            if !in_agent {
+                continue;
+            }
+            if let Some(until) = pane.limit_ignore_until {
+                if now < until {
+                    wake_at(until.saturating_duration_since(now));
+                    continue;
+                }
+                pane.limit_ignore_until = None;
+            }
+            let elapsed = now.duration_since(pane.last_limit_check);
+            if elapsed < Duration::from_millis(1200) {
+                if pane.last_output > pane.last_limit_check {
+                    wake_at(Duration::from_millis(1200) - elapsed);
+                }
                 continue;
             }
             pane.last_limit_check = now;
             let tail = pane.screen_tail(28);
             if let Some(hit) = profiles::detect_rate_limit(&tail) {
-                let sig = format!("{}:{}", pane.active_profile.as_deref().unwrap_or(""), hit.reason);
-                if pane.last_limit_sig.as_deref() != Some(sig.as_str()) {
-                    pane.last_limit_sig = Some(sig);
+                if pane.last_limit_sig.as_deref() != Some(hit.reason.as_str()) {
+                    pane.last_limit_sig = Some(hit.reason.clone());
                     detected.push((pane.id, hit));
                 }
+            } else {
+                pane.last_limit_sig = None;
             }
         }
         for (pane_id, hit) in detected {
@@ -364,25 +442,33 @@ impl App {
             });
         }
 
-        // 4. Refresh project-nested agent session history for expanded projects (every 15 s).
-        let to_scan: Vec<(ProjectId, std::path::PathBuf)> = self
-            .projects
-            .iter()
-            .filter(|p| !p.is_worktree() && p.sessions_expanded)
-            .filter(|p| self.sessions_scan_at.get(&p.id).is_none_or(|t| now.duration_since(*t) >= Duration::from_secs(15)))
-            .take(4)
-            .map(|p| (p.id, p.path.clone()))
-            .collect();
-        for (pid, path) in to_scan {
-            self.refresh_project_sessions(pid, path);
+        // 4. Refresh project-nested agent session history for expanded projects (bounded to 3 in-flight, every 45 s).
+        if !self.settings.sidebar_hidden && !self.zen_mode && self.sessions_running.len() < 3 {
+            let slots = 3usize.saturating_sub(self.sessions_running.len());
+            let to_scan: Vec<(ProjectId, std::path::PathBuf)> = self
+                .projects
+                .iter()
+                .filter(|p| !p.is_worktree() && p.sessions_expanded && !self.sessions_running.contains(&p.id))
+                .filter(|p| self.sessions_scan_at.get(&p.id).is_none_or(|t| now.duration_since(*t) >= Duration::from_secs(45)))
+                .take(slots)
+                .map(|p| (p.id, p.path.clone()))
+                .collect();
+            for (pid, path) in to_scan {
+                self.refresh_project_sessions(pid, path);
+            }
         }
 
         // 5. Publish live snapshot to connected Mobile Companion clients (throttled ~350 ms).
-        if self.companion.is_some() && now.duration_since(self.companion_last_push) >= Duration::from_millis(350) {
-            self.companion_last_push = now;
-            let snap = self.build_companion_snapshot();
-            if let Some(c) = &self.companion {
-                c.publish(&snap);
+        if self.companion.is_some() {
+            let elapsed = now.duration_since(self.companion_last_push);
+            if elapsed >= Duration::from_millis(350) {
+                self.companion_last_push = now;
+                let snap = self.build_companion_snapshot();
+                if let Some(c) = &self.companion {
+                    c.publish(&snap);
+                }
+            } else if self.panes.values().any(|p| p.last_output > self.companion_last_push) {
+                wake_at(Duration::from_millis(350) - elapsed);
             }
         }
 
@@ -394,6 +480,9 @@ impl App {
     /// Scans historical sessions for `project` across both default roots and every configured
     /// profile's isolated auth/config folder so the sidebar project tree shows all sessions.
     pub fn refresh_project_sessions(&mut self, project_id: ProjectId, project_path: std::path::PathBuf) {
+        if !self.sessions_running.insert(project_id) {
+            return;
+        }
         self.sessions_scan_at.insert(project_id, Instant::now());
         let profiles = self.effective_profiles();
         let home = paths::home_dir();
@@ -412,7 +501,10 @@ impl App {
                 None => tc_agent::sessions::Roots::from_env(&home),
             };
             for agent in [AgentKind::Claude, AgentKind::Codex, AgentKind::Gemini] {
-                let default_prof = profiles.iter().find(|p| p.agent == agent && p.use_default_auth).map(|p| p.id.clone());
+                let default_prof = profiles
+                    .iter()
+                    .find(|p| p.agent == agent && p.use_default_auth && !profiles::has_custom_config_dir(p))
+                    .map(|p| p.id.clone());
                 for s in tc_agent::sessions::list(agent, &project_path, &default_roots, 8) {
                     if seen.insert((agent, s.id.clone())) {
                         items.push(ProjectSessionItem {
@@ -431,7 +523,7 @@ impl App {
 
             // Scan every isolated multi-account profile config folder.
             for prof in &profiles {
-                if prof.use_default_auth && prof.config_dir.is_none() {
+                if prof.use_default_auth && !profiles::has_custom_config_dir(prof) {
                     continue;
                 }
                 if !tc_agent::sessions::listable(prof.agent) {
@@ -466,17 +558,47 @@ impl App {
         });
     }
 
+    /// Zero-allocation count of sessions (live agent panes + cached disk sessions) for a collapsed project row.
+    pub fn project_sessions_count(&self, proj: &crate::project::Project) -> usize {
+        let mut live_count = 0usize;
+        for pane_id in proj.panes() {
+            if let Some(pane) = self.panes.get(&pane_id)
+                && pane.alive()
+                && pane.tracker.agent.is_some()
+            {
+                live_count += 1;
+            }
+        }
+        let disk_count = self.project_sessions.get(&proj.id).map_or(0, |disk| {
+            disk.iter()
+                .filter(|item| {
+                    !proj.panes().into_iter().any(|pid| {
+                        self.panes.get(&pid).is_some_and(|p| {
+                            p.alive()
+                                && p.tracker.agent == Some(item.agent)
+                                && p.agent_session.as_deref() == Some(item.id.as_str())
+                        })
+                    })
+                })
+                .count()
+        });
+        live_count + disk_count
+    }
+
     /// Merged live panes + historical disk sessions for `project_id`, newest / live first.
     pub fn merged_project_sessions(&self, project_id: ProjectId) -> Vec<ProjectSessionItem> {
         let mut out: Vec<ProjectSessionItem> = Vec::new();
-        let mut live_ids: HashSet<String> = HashSet::new();
+        let mut live_ids: HashSet<(AgentKind, String)> = HashSet::new();
         if let Some(proj) = self.project(project_id) {
             let branch = proj.git.as_ref().map(|g| g.branch.clone());
             for pane_id in proj.panes() {
                 let Some(pane) = self.panes.get(&pane_id) else { continue };
-                let Some(agent) = pane.tracker.agent.or(pane.last_agent) else { continue };
+                if !pane.alive() {
+                    continue;
+                }
+                let Some(agent) = pane.tracker.agent else { continue };
                 let sid = pane.agent_session.clone().unwrap_or_else(|| format!("pane-{pane_id}"));
-                live_ids.insert(sid.clone());
+                live_ids.insert((agent, sid.clone()));
                 let title = pane
                     .title
                     .clone()
@@ -497,7 +619,7 @@ impl App {
         }
         if let Some(disk) = self.project_sessions.get(&project_id) {
             for item in disk {
-                if !live_ids.contains(&item.id) {
+                if !live_ids.contains(&(item.agent, item.id.clone())) {
                     out.push(item.clone());
                 }
             }
@@ -505,14 +627,37 @@ impl App {
         out
     }
 
+    /// Collects secret values from configured profiles for redaction before writing handoff files
+    /// or streaming pane tails to Mobile Companions.
+    fn known_profile_secrets(&self) -> Vec<String> {
+        let mut secrets = Vec::new();
+        for p in self.effective_profiles() {
+            if let Some(k) = p.api_key.filter(|k| k.len() >= 8) {
+                secrets.push(k);
+            }
+            for (k, v) in p.extra_env {
+                let ku = k.to_ascii_uppercase();
+                if v.len() >= 8
+                    && (ku.contains("KEY") || ku.contains("TOKEN") || ku.contains("SECRET") || ku.contains("PASS") || ku.contains("AUTH"))
+                {
+                    secrets.push(v);
+                }
+            }
+        }
+        secrets
+    }
+
     /// Handles a newly detected rate-limit pause on `pane_id`.
     pub fn handle_rate_limit(&mut self, ctx: &egui::Context, pane_id: PaneId, hit: RateLimitHit) {
         let now = Instant::now();
+        let profiles = self.effective_profiles();
         let Some((project_id, agent, from_profile, session_id)) = self.panes.get(&pane_id).map(|p| {
             let agent = p.tracker.agent.or(p.last_agent).unwrap_or(AgentKind::Claude);
             let prof = p.active_profile.clone().unwrap_or_else(|| {
-                self.preferred_profile_for(agent, Some(p.project))
-                    .map(|x| x.id)
+                profiles
+                    .iter()
+                    .find(|x| x.agent == agent && x.enabled && x.use_default_auth && !profiles::has_custom_config_dir(x))
+                    .map(|x| x.id.clone())
                     .unwrap_or_else(|| agent.slug().to_string())
             });
             (p.project, agent, prof, p.agent_session.clone())
@@ -538,7 +683,6 @@ impl App {
             format!("Rate limit detected on {from_profile}: {}", hit.reason),
         );
 
-        let profiles = self.effective_profiles();
         if self.settings.failover.mode == FailoverMode::Auto
             && let Some(next) = profiles::pick_failover_profile(
                 &profiles,
@@ -556,6 +700,7 @@ impl App {
                     agent,
                     reason: hit.reason.clone(),
                     reset_at,
+                    created_at: now,
                     session_id,
                     auto_switched_to: Some(next_id.clone()),
                 });
@@ -564,18 +709,20 @@ impl App {
             return;
         }
 
-        // Manual Resume mode (or no healthy fallback profile left): pause cleanly with inline banner.
+        // Manual Resume mode (or no healthy fallback profile left): pause cleanly with inline banner
+        // and force NeedsInput even when hooks are active so desktop & mobile alerts fire.
         if let Some(pane) = self.panes.get_mut(&pane_id) {
             pane.rate_limit = Some(RateLimitBanner {
                 from_profile: from_profile.clone(),
                 agent,
                 reason: hit.reason.clone(),
                 reset_at,
+                created_at: now,
                 session_id,
                 auto_switched_to: None,
             });
             let _ = pane.tracker.apply(
-                tc_core::status::Event::Notify {
+                tc_core::status::Event::RateLimited {
                     message: Some(format!("{from_profile} hit usage limit")),
                 },
                 now,
@@ -629,7 +776,7 @@ impl App {
         let to_root = profiles::resolved_config_dir(&target, &home, data);
 
         // If switching between two accounts of the same provider (e.g. claude1 -> claude2), copy
-        // the session JSONL file across isolated config roots so `--resume <id>` keeps full history.
+        // the session file across isolated config roots so native `--resume <id>` keeps full history.
         let mut copied_session = false;
         if let Some(sid) = session_id.as_deref()
             && from_agent == target.agent
@@ -637,11 +784,14 @@ impl App {
             let from_root = self
                 .profile_by_id(&from_profile_id)
                 .map(|p| profiles::resolved_config_dir(&p, &home, data))
-                .unwrap_or_else(|| match from_agent {
-                    AgentKind::Claude => home.join(".claude"),
-                    AgentKind::Codex => home.join(".codex"),
-                    AgentKind::Gemini => home.join(".gemini"),
-                    _ => to_root.clone(),
+                .unwrap_or_else(|| {
+                    let default_roots = tc_agent::sessions::Roots::from_env(&home);
+                    match from_agent {
+                        AgentKind::Claude => default_roots.claude,
+                        AgentKind::Codex => default_roots.codex,
+                        AgentKind::Gemini => default_roots.gemini,
+                        _ => to_root.clone(),
+                    }
                 });
             copied_session = tc_agent::sessions::copy_session_between_roots(
                 target.agent,
@@ -652,52 +802,55 @@ impl App {
             );
         }
 
-        // Write a concise handoff summary for cross-provider failover or fresh sessions.
-        let handoff_file = profiles::write_handoff_context(data, pane_id, &from_profile_id, task.as_deref(), &tail);
+        let preset = self.preset_for_agent(target.agent);
+        let native_resume = session_id
+            .as_deref()
+            .filter(|_| from_agent == target.agent && copied_session)
+            .and_then(|sid| tc_agent::sessions::resume_command(target.agent, &preset.command, sid));
 
-        let presets = self.presets();
-        let preset = presets
-            .into_iter()
-            .find(|p| p.agent == Some(target.agent))
-            .unwrap_or(Preset {
-                id: target.agent.slug().into(),
-                name: target.agent.label().into(),
-                agent: Some(target.agent),
-                command: profiles::default_command(target.agent).into(),
-                resume: None,
-                env: BTreeMap::new(),
-                builtin: false,
-            });
-
-        let base_cmd = if let Some(sid) = session_id.as_deref().filter(|_| from_agent == target.agent && copied_session)
-            && let Some(rc) = tc_agent::sessions::resume_command(target.agent, &preset.command, sid)
-        {
+        // Write a redacted handoff summary only when native same-provider resume is unavailable.
+        let base_cmd = if let Some(rc) = native_resume {
             rc
-        } else if let Some(handoff) = &handoff_file {
-            let prompt = format!(
-                "Continue the interrupted task from {} (handoff context saved at {})",
-                from_profile_id,
-                handoff.display()
-            );
-            let q = integrate::shell_quote(&prompt);
-            match target.agent {
-                AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini => format!("{} {q}", preset.command.trim()),
-                _ => preset.command.clone(),
-            }
         } else {
-            preset.command.clone()
+            let secrets = self.known_profile_secrets();
+            let safe_tail = profiles::redact_secrets(&tail, &secrets);
+            let safe_task = task.as_deref().map(|s| profiles::redact_secrets(s, &secrets));
+            if let Some(handoff) = profiles::write_handoff_context(data, pane_id, &from_profile_id, safe_task.as_deref(), &safe_tail) {
+                let prompt = format!(
+                    "Continue the interrupted task from {} (handoff context saved at {})",
+                    from_profile_id,
+                    handoff.display()
+                );
+                #[cfg(windows)]
+                let q = crate::platform::shell_quote(&prompt);
+                #[cfg(not(windows))]
+                let q = integrate::shell_quote(&prompt);
+                match target.agent {
+                    AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini => format!("{} {q}", preset.command.trim()),
+                    _ => preset.command.clone(),
+                }
+            } else {
+                preset.command.clone()
+            }
         };
 
         let typed = self.launch_command_for_profile(&preset, &base_cmd, Some(&target));
 
+        let now = Instant::now();
         if let Some(pane) = self.panes.get_mut(&pane_id) {
             if running {
                 // Cleanly interrupt the paused/rate-limited CLI so the shell takes the failover launch.
                 pane.input(vec![0x03, 0x03, b'\r']);
+                pane.last_output = now;
             }
             pane.active_profile = Some(target.id.clone());
             pane.preset = Some(preset.id.clone());
-            pane.last_limit_sig = None;
+            // Keep `last_limit_sig` and hold scanning for 6s so stale 429 output on screen never cascades!
+            pane.limit_ignore_until = Some(now + Duration::from_secs(6));
+            if !copied_session {
+                pane.agent_session = None;
+                pane.last_agent = Some(target.agent);
+            }
             if !auto {
                 pane.rate_limit = None;
             }
@@ -719,10 +872,13 @@ impl App {
             Some(target.id.clone()),
             msg.clone(),
         );
-        self.toast_with(ToastKind::Ok, msg, None);
-        self.settings.drawer_open = true;
-        self.drawer_tab = DrawerTab::Terminals;
-        self.focus_pane(pane_id);
+        if auto {
+            self.toast_with(ToastKind::Ok, msg, Some((t("Show").into(), Action::FocusPane(pane_id))));
+        } else {
+            self.toast_with(ToastKind::Ok, msg, None);
+            self.ensure_terminals_visible();
+            self.focus_pane(pane_id);
+        }
         self.push_companion_now();
     }
 
@@ -736,6 +892,9 @@ impl App {
         session_id: String,
         profile_id: Option<String>,
     ) {
+        if self.project(project).is_none() {
+            return;
+        }
         // Focus live pane immediately if already open.
         if let Some(live) = self
             .panes
@@ -743,47 +902,37 @@ impl App {
             .find(|p| p.project == project && p.agent_session.as_deref() == Some(session_id.as_str()))
             .map(|p| p.id)
         {
-            self.settings.drawer_open = true;
-            self.drawer_tab = DrawerTab::Terminals;
+            self.ensure_terminals_visible();
             self.focus_pane(live);
             return;
         }
         self.active = Some(project);
         self.show_focus();
-        self.settings.drawer_open = true;
-        self.drawer_tab = DrawerTab::Terminals;
+        self.ensure_terminals_visible();
         if let Some(prof_id) = &profile_id
             && let Some(p) = self.project_mut(project)
         {
             p.active_profile = Some(prof_id.clone());
         }
-        let preset_id = self
-            .presets()
-            .into_iter()
-            .find(|p| p.agent == Some(agent))
-            .map(|p| p.id)
-            .unwrap_or_else(|| agent.slug().to_string());
-        self.run_preset_with_profile(ctx, &preset_id, Launch::Session(session_id), Some(0), profile_id);
+        let preset = self.preset_for_agent(agent);
+        self.run_agent_preset_with_profile(ctx, preset, Launch::Session(session_id), Some(0), profile_id);
     }
 
     /// Starts a new session directly inside `project` with an optional chosen profile.
     pub fn new_project_session(&mut self, ctx: &egui::Context, project: ProjectId, profile_id: Option<String>) {
+        if self.project(project).is_none() {
+            return;
+        }
         self.active = Some(project);
         self.show_focus();
-        self.settings.drawer_open = true;
-        self.drawer_tab = DrawerTab::Terminals;
+        self.ensure_terminals_visible();
         let profile = profile_id
             .as_deref()
             .and_then(|id| self.profile_by_id(id))
             .or_else(|| self.effective_profiles().into_iter().find(|p| p.enabled));
         let agent = profile.as_ref().map(|p| p.agent).unwrap_or(AgentKind::Claude);
-        let preset_id = self
-            .presets()
-            .into_iter()
-            .find(|p| p.agent == Some(agent))
-            .map(|p| p.id)
-            .unwrap_or_else(|| "claude".into());
-        self.run_preset_with_profile(ctx, &preset_id, Launch::New, Some(0), profile.map(|p| p.id));
+        let preset = self.preset_for_agent(agent);
+        self.run_agent_preset_with_profile(ctx, preset, Launch::New, Some(0), profile.map(|p| p.id));
     }
 
     /// Runs an interactive login session inside a terminal pane with `profile_id`'s isolated auth
@@ -795,10 +944,11 @@ impl App {
             return;
         }
         let env = profiles::profile_env(&profile, &paths::home_dir(), paths::data_dir());
-        let cmd = integrate::with_env(profiles::login_command(profile.agent), &env);
+        let mut unset = profiles::profile_unset_env(&profile);
+        unset.retain(|k| !env.contains_key(*k));
+        let cmd = integrate::with_env_and_unset(profiles::login_command(profile.agent), &env, &unset);
         self.show_focus();
-        self.settings.drawer_open = true;
-        self.drawer_tab = DrawerTab::Terminals;
+        self.ensure_terminals_visible();
         if let Some(pane) = self.new_tab(ctx) {
             if let Some(p) = self.panes.get_mut(&pane) {
                 p.active_profile = Some(profile.id.clone());
@@ -831,6 +981,9 @@ impl App {
     /// Starts or stops the embedded Mobile Companion server based on `settings.companion.enabled`.
     pub fn sync_companion_server(&mut self) {
         if self.settings.companion.enabled {
+            if self.companion.as_ref().is_some_and(|c| c.port != self.settings.companion.port) {
+                self.companion = None;
+            }
             if self.companion.is_none() {
                 match CompanionHandle::start(
                     self.rt.handle(),
@@ -840,7 +993,6 @@ impl App {
                     self.ctx.clone(),
                 ) {
                     Ok(handle) => {
-                        self.settings.companion.port = handle.port;
                         self.companion = Some(handle);
                         self.push_companion_now();
                     }
@@ -871,6 +1023,7 @@ impl App {
     pub fn handle_companion_cmd(&mut self, ctx: &egui::Context, cmd: CompanionCmd) {
         match cmd {
             CompanionCmd::SendInput { pane, text, enter } => {
+                self.wake(ctx, pane);
                 if let Some(p) = self.panes.get_mut(&pane) {
                     let mut bytes = text.into_bytes();
                     if enter {
@@ -882,6 +1035,7 @@ impl App {
                 self.push_companion_now();
             }
             CompanionCmd::QuickAction { pane, kind } => {
+                self.wake(ctx, pane);
                 if let Some(p) = self.panes.get_mut(&pane) {
                     let now = Instant::now();
                     match kind {
@@ -915,9 +1069,16 @@ impl App {
                 self.toast_ok(tf("Paired mobile device: {}", &[&name]));
             }
             CompanionCmd::DeviceSeen { id, ip, at } => {
+                let mut changed = false;
                 if let Some(dev) = self.settings.companion.devices.iter_mut().find(|d| d.id == id) {
+                    if dev.ip != ip || at.saturating_sub(dev.last_seen) >= 60 {
+                        changed = true;
+                    }
                     dev.ip = ip;
                     dev.last_seen = at;
+                }
+                if changed {
+                    self.settings_changed();
                 }
             }
         }
@@ -928,6 +1089,7 @@ impl App {
     pub fn build_companion_snapshot(&self) -> CompanionSnapshot {
         let now = Instant::now();
         let profiles_cfg = self.effective_profiles();
+        let secrets = self.known_profile_secrets();
         let projects: Vec<CompanionProject> = self
             .projects
             .iter()
@@ -965,11 +1127,20 @@ impl App {
             .values()
             .map(|p| {
                 let proj = self.project(p.project);
-                let rate_limit = p.rate_limit.as_ref().filter(|b| b.auto_switched_to.is_none()).map(|b| CompanionRateLimit {
-                    from_profile: b.from_profile.clone(),
-                    reason: b.reason.clone(),
-                    reset_secs: b.reset_at.saturating_duration_since(now).as_secs(),
-                });
+                let rate_limit = p
+                    .rate_limit
+                    .as_ref()
+                    .filter(|b| b.auto_switched_to.is_none() && b.reset_at > now)
+                    .map(|b| {
+                        let rem = b.reset_at.saturating_duration_since(now);
+                        let secs = rem.as_secs() + u64::from(rem.subsec_nanos() > 0);
+                        CompanionRateLimit {
+                            from_profile: b.from_profile.clone(),
+                            reason: b.reason.clone(),
+                            reset_secs: secs,
+                        }
+                    });
+                let output = profiles::redact_secrets(&p.screen_tail(45), &secrets);
                 CompanionPane {
                     id: p.id,
                     project_id: p.project,
@@ -980,7 +1151,7 @@ impl App {
                     status: status_slug(p.tracker.status).into(),
                     status_label: crate::ui::status::text(p.tracker.status),
                     message: p.tracker.message.clone(),
-                    output: p.screen_tail(45),
+                    output,
                     rate_limit,
                 }
             })
@@ -1018,11 +1189,11 @@ impl App {
             .map(|e| CompanionAlert {
                 time: e.at.format("%H:%M:%S").to_string(),
                 level: match e.level {
-                    LogLevel::Info => "idle",
-                    LogLevel::Tool => "running",
-                    LogLevel::Warn => "needs_input",
+                    LogLevel::Info => "info",
+                    LogLevel::Tool => "tool",
+                    LogLevel::Warn => "warn",
                     LogLevel::Err => "error",
-                    LogLevel::Failover => "done",
+                    LogLevel::Failover => "failover",
                 }
                 .into(),
                 profile: e.profile.clone(),
@@ -1042,17 +1213,41 @@ impl App {
         }
     }
 
+    /// Deduplicated total input/output tokens across enabled profiles (sharing a config dir counts once).
+    pub fn deduped_token_totals(&self) -> (u64, u64) {
+        let home = paths::home_dir();
+        let data = paths::data_dir();
+        let mut seen_roots: HashSet<(AgentKind, std::path::PathBuf)> = HashSet::new();
+        let mut total_in = 0u64;
+        let mut total_out = 0u64;
+        for p in self.effective_profiles() {
+            if !p.enabled {
+                continue;
+            }
+            let dir = profiles::resolved_config_dir(&p, &home, data);
+            let canon = paths::canonical(&dir);
+            if !seen_roots.insert((p.agent, canon)) {
+                continue;
+            }
+            if let Some(rt) = self.profiles_rt.get(&p.id) {
+                total_in = total_in.saturating_add(rt.tokens_in);
+                total_out = total_out.saturating_add(rt.tokens_out);
+            }
+        }
+        (total_in, total_out)
+    }
+
     /// Convenience summary metrics for the top-bar Usage & Status telemetry pill.
     pub fn telemetry_summary(&self) -> (usize, usize, usize, u64) {
         let profiles = self.effective_profiles();
         let mut running = 0usize;
         let mut limited = 0usize;
         let mut errors = 0usize;
-        let mut total_tokens = 0u64;
         for p in &profiles {
-            let rt = self.profiles_rt.get(&p.id);
-            if let Some(rt) = rt {
-                total_tokens = total_tokens.saturating_add(rt.tokens_in).saturating_add(rt.tokens_out);
+            if !p.enabled {
+                continue;
+            }
+            if let Some(rt) = self.profiles_rt.get(&p.id) {
                 match rt.state {
                     ProfileState::Running => running += 1,
                     ProfileState::RateLimited | ProfileState::Cooldown => limited += 1,
@@ -1061,13 +1256,14 @@ impl App {
                 }
             }
         }
-        // Also count running agent panes even if not mapped to a custom profile.
+        // Also count live running agent panes even if not mapped to a custom profile.
         let active_panes = self
             .panes
             .values()
-            .filter(|p| matches!(p.tracker.status, Status::Running | Status::NeedsInput) && p.tracker.agent.is_some())
+            .filter(|p| p.alive() && matches!(p.tracker.status, Status::Running | Status::NeedsInput) && p.tracker.agent.is_some())
             .count();
-        (running.max(active_panes), limited, errors, total_tokens)
+        let (tin, tout) = self.deduped_token_totals();
+        (running.max(active_panes), limited, errors, tin.saturating_add(tout))
     }
 
     pub fn is_dock_right(&self) -> bool {

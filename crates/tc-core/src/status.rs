@@ -101,6 +101,8 @@ pub enum Event {
     },
     /// An OSC desktop-notification request.
     Notify { message: Option<String> },
+    /// Rate-limit pause detected for an account profile; forces NeedsInput even when hooks are active.
+    RateLimited { message: Option<String> },
     Bell,
     Shell(ShellMark),
     /// The user pressed Enter in the pane.
@@ -390,6 +392,15 @@ impl Tracker {
                     return false;
                 }
                 let changed = self.set(Status::NeedsInput, Source::Osc, true, now);
+                if message.is_some() {
+                    self.message = message;
+                    return true;
+                }
+                changed
+            }
+            Event::RateLimited { message } => {
+                let source = self.agent.map(Source::Hook).unwrap_or(Source::Osc);
+                let changed = self.set(Status::NeedsInput, source, true, now);
                 if message.is_some() {
                     self.message = message;
                     return true;
@@ -787,5 +798,23 @@ mod tests {
         t.apply(Event::Foreground(Foreground::Shell), t0);
         assert_eq!(t.agent, None);
         assert!(!t.hooks_active);
+    }
+
+    #[test]
+    fn rate_limited_event_forces_needs_input_even_with_hooks_active() {
+        let t0 = Instant::now();
+        let mut t = Tracker::new(t0);
+        t.apply(prog("claude", Some(AgentKind::Claude)), t0);
+        t.apply(hook(HookSignal::Working), t0);
+        assert!(t.hooks_active);
+        assert_eq!(t.status, Status::Running);
+        let changed = t.apply(
+            Event::RateLimited { message: Some("claude1 hit usage limit".into()) },
+            t0 + Duration::from_secs(1),
+        );
+        assert!(changed);
+        assert_eq!(t.status, Status::NeedsInput);
+        assert!(t.wants_attention());
+        assert_eq!(t.message.as_deref(), Some("claude1 hit usage limit"));
     }
 }

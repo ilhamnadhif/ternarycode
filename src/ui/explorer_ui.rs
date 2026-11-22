@@ -152,7 +152,7 @@ impl App {
             }
             self.want_project_files(pid);
         }
-        if fr.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if fr.has_focus() && !self.overlay_open() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             if let Some(ex) = self.explorer_mut(pid) {
                 ex.filter.clear();
             }

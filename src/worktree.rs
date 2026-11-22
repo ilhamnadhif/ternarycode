@@ -298,11 +298,13 @@ impl App {
         self.dispatch(ctx, Action::SelectProject(id));
         // The setup's command, then the agent (only when the setup worked).
         if let Some(preset) = self.presets().into_iter().find(|p| p.id == made.preset) {
-            let agent = self.launch_command(&preset, &preset.command);
+            let profile = preset.agent.and_then(|a| self.preferred_profile_for(a, Some(id)));
+            let agent = self.launch_command_for_profile(&preset, &preset.command, profile.as_ref());
             let run = setup.run.trim();
             let line = if run.is_empty() { agent } else { crate::ship::chain(&[run.to_string(), agent]) };
             if let Some(p) = self.panes.get_mut(&pane) {
                 p.preset = Some(preset.id.clone());
+                p.active_profile = profile.map(|pr| pr.id);
                 p.type_command(line);
             }
         }

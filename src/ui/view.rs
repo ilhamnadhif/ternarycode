@@ -36,6 +36,7 @@ impl App {
     pub fn draw(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
         self.editor_seen = false;
+        self.monitor_pill_rect = None;
         let spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         if !self.zen_mode {
@@ -62,7 +63,7 @@ impl App {
                 });
         }
         // Narrow: project tiles only, its width fixed.
-        if self.settings.sidebar_compact && !self.settings.sidebar_hidden {
+        if !self.zen_mode && self.settings.sidebar_compact && !self.settings.sidebar_hidden {
             egui::Panel::left("sidebar-compact")
                 .resizable(false)
                 .exact_size(super::sidebar::COMPACT_W)
@@ -73,7 +74,7 @@ impl App {
                     self.sidebar_compact(ui)
                 });
         }
-        if !self.settings.sidebar_compact {
+        if !self.zen_mode && !self.settings.sidebar_compact {
             let mut visible = !self.settings.sidebar_hidden;
             let response = egui::Panel::left("sidebar")
                 .resizable(true)
@@ -124,7 +125,7 @@ impl App {
     }
 
     /// Terminals take keys only while nothing floating over them does: a dialog, the palette,
-    /// the Review, a management view, or the attention list.
+    /// the Review, a management view, Zen Mode, a browser page, a menu popup, or the attention list.
     pub fn terminals_take_keys(&self) -> bool {
         self.dialog.is_none()
             && self.palette.is_none()
@@ -132,7 +133,11 @@ impl App {
             && !self.attention_open
             && !self.monitor_popover
             && !self.updater.dialog_open
+            && !self.zen_mode
+            && self.browser_focus.is_none()
+            && self.pane_search.is_none()
             && !crate::ade::is_management_view(self.view)
+            && !egui::Popup::is_any_open(&self.ctx)
     }
 
     fn central(&mut self, ui: &mut Ui) {
@@ -170,7 +175,14 @@ impl App {
             super::focus::paint_sheet(ui.painter(), body, &style::pal(ui), super::focus::SheetLook::Plain);
             ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                 ui.set_clip_rect(body.shrink(1.0));
-                self.welcome(ui)
+                egui::ScrollArea::vertical()
+                    .id_salt("welcome-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let min_h = body.height().max(560.0);
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(500.0), min_h), egui::Sense::hover());
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| self.welcome(ui));
+                    });
             });
             return;
         }

@@ -112,7 +112,14 @@ pub enum Dialog {
     ConfirmCloseFile(ProjectId, PathBuf, String),
     /// Run Agent found no `program` for this preset on the PATH a new shell gets: how to install
     /// it. With how it was started, for Run Anyway; `npm`: its installer (npm) is missing too.
-    AgentMissing { preset: String, launch: crate::actions::Launch, place: Option<usize>, program: String, npm: bool },
+    AgentMissing {
+        preset: String,
+        launch: crate::actions::Launch,
+        place: Option<usize>,
+        profile: Option<String>,
+        program: String,
+        npm: bool,
+    },
     /// Taking an agent's installed hooks out of its settings.
     ConfirmUninstall(AgentKind),
     ConfirmQuit(Vec<Busy>),
@@ -480,6 +487,7 @@ pub struct App {
     /// Historical disk sessions per project across default + isolated profile roots.
     pub project_sessions: HashMap<ProjectId, Vec<crate::profiles::ProjectSessionItem>>,
     pub sessions_scan_at: HashMap<ProjectId, Instant>,
+    pub sessions_running: HashSet<ProjectId>,
     pub usage_scan_at: Option<Instant>,
     /// Structured chronological event log (hooks, tools, rate limits, failovers) for the Logs drawer.
     pub agent_logs: std::collections::VecDeque<crate::profiles::AgentLogEntry>,
@@ -775,6 +783,7 @@ impl App {
             profiles_rt: HashMap::new(),
             project_sessions: HashMap::new(),
             sessions_scan_at: HashMap::new(),
+            sessions_running: HashSet::new(),
             usage_scan_at: None,
             agent_logs: std::collections::VecDeque::with_capacity(64),
             drawer_tab: tc_core::model::DrawerTab::Terminals,
@@ -1379,14 +1388,43 @@ impl App {
         ctx.memory(|m| m.focused()) == Some(egui::Id::new(("editor-text", path)))
     }
 
+    /// True when any modal overlay or popover covers the workspace stage and should own Escape/keys.
+    pub fn overlay_open(&self) -> bool {
+        self.dialog.is_some()
+            || self.palette.is_some()
+            || self.attention_open
+            || self.monitor_popover
+    }
+
+    /// Exits Zen Mode and ensures the Secondary Drawer is open on the Terminals tab.
+    pub fn ensure_terminals_visible(&mut self) {
+        self.exit_zen_mode();
+        self.settings.drawer_open = true;
+        self.drawer_tab = tc_core::model::DrawerTab::Terminals;
+    }
+
     /// The pane the user is looking at: the focused pane of the visible project, while the
-    /// window is active and no dialog covers it.
+    /// window is active, no overlay covers it, and the terminal panel is actually on screen.
     fn looking_at(&self) -> Option<PaneId> {
-        if !self.window_focused || self.dialog.is_some() || self.review_full() {
+        if !self.window_focused || self.overlay_open() || self.review_full() || self.browser_focus.is_some() {
             return None;
         }
         match self.view {
-            View::Focus => self.current_pane(),
+            View::Focus => {
+                if self.zen_mode || self.drawer_tab != tc_core::model::DrawerTab::Terminals {
+                    return None;
+                }
+                let pid = self.active?;
+                let review_here = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
+                let editor_on = review_here || self.editors.get(&pid).is_some_and(|e| e.visible);
+                if editor_on && !self.settings.drawer_open {
+                    return None;
+                }
+                if self.project(pid).is_some_and(|p| p.panel.open && p.panel.max) {
+                    return None;
+                }
+                self.current_pane()
+            }
             View::Grid => self.grid_focus,
             View::Profiles | View::Monitor | View::Pairing => None,
         }
@@ -1572,6 +1610,7 @@ impl App {
         }
         self.active = Some(project);
         self.show_focus();
+        self.ensure_terminals_visible();
         self.focus_request = Some(pane);
         // A terminal takes the keyboard from a page that had it.
         if self.panes.contains_key(&pane) {
@@ -1758,23 +1797,30 @@ impl App {
                     }
                 }
                 AppMsg::ProfileTest(id, res) => {
-                    let rt = self.profiles_rt.entry(id.clone()).or_default();
-                    rt.connection = Some(match res {
-                        Ok(msg) => crate::profiles::ConnectionTest::Ok(msg),
-                        Err(err) => {
-                            rt.last_error = Some(err.clone());
-                            crate::profiles::ConnectionTest::Err(err)
-                        }
-                    });
+                    if self.effective_profiles().iter().any(|p| p.id == id) {
+                        let rt = self.profiles_rt.entry(id).or_default();
+                        rt.connection = Some(match res {
+                            Ok(msg) => crate::profiles::ConnectionTest::Ok(msg),
+                            Err(err) => {
+                                rt.last_error = Some(err.clone());
+                                crate::profiles::ConnectionTest::Err(err)
+                            }
+                        });
+                    }
                 }
                 AppMsg::ProfileUsage(id, usage) => {
-                    let rt = self.profiles_rt.entry(id).or_default();
-                    rt.tokens_in = usage.input;
-                    rt.tokens_out = usage.output;
-                    rt.usage_updated = Some(now);
+                    if self.effective_profiles().iter().any(|p| p.id == id) {
+                        let rt = self.profiles_rt.entry(id).or_default();
+                        rt.tokens_in = usage.input;
+                        rt.tokens_out = usage.output;
+                        rt.usage_updated = Some(now);
+                    }
                 }
                 AppMsg::ProjectSessions(pid, list) => {
-                    self.project_sessions.insert(pid, list);
+                    self.sessions_running.remove(&pid);
+                    if self.project(pid).is_some() {
+                        self.project_sessions.insert(pid, list);
+                    }
                 }
                 AppMsg::Companion(cmd) => self.handle_companion_cmd(ctx, cmd),
             }
@@ -2000,7 +2046,9 @@ impl App {
         };
         self.active = Some(project);
         // The editor is in the Focus view.
+        self.drawer_maximized = false;
         self.show_focus();
+        self.ensure_editor_for_project(project, 0.0);
         if let Some(explorer) = self.explorer_mut(project) {
             explorer.reveal(&path);
         }
@@ -2232,8 +2280,15 @@ impl App {
         self.conflict_warned.remove(&id);
         self.project_files.remove(&id);
         self.project_files_at.remove(&id);
+        self.project_sessions.remove(&id);
+        self.sessions_scan_at.remove(&id);
+        self.sessions_running.remove(&id);
+        self.agent_logs.retain(|e| e.project != Some(id));
         for pane in project.panes().into_iter().chain(project.panel.pages.iter().copied()) {
             self.drop_pane(pane);
+        }
+        if self.projects.is_empty() {
+            self.exit_zen_mode();
         }
         if self.active == Some(id) {
             self.active = self
@@ -2268,6 +2323,13 @@ impl App {
         if self.grid_focus == Some(id) {
             self.grid_focus = None;
         }
+        if self.pane_search.as_ref().is_some_and(|s| s.pane == id) {
+            self.pane_search = None;
+        }
+        for rt in self.profiles_rt.values_mut() {
+            rt.active_panes.retain(|(pid, _)| *pid != id);
+        }
+        let _ = std::fs::remove_file(paths::data_dir().join("handoffs").join(format!("pane-{id}.md")));
     }
 
     fn split(&mut self, ctx: &egui::Context, dir: SplitDir) -> Option<PaneId> {
@@ -2388,10 +2450,27 @@ impl App {
         place: Option<usize>,
         explicit_profile: Option<String>,
     ) {
-        let check = !std::mem::take(&mut self.skip_agent_check);
-        let Some(preset) = self.presets().into_iter().find(|p| p.id == preset_id) else {
+        let preset = self
+            .presets()
+            .into_iter()
+            .find(|p| p.id == preset_id)
+            .or_else(|| AgentKind::from_slug(preset_id).map(|a| self.preset_for_agent(a)));
+        let Some(preset) = preset else {
+            self.skip_agent_check = false;
             return;
         };
+        self.run_agent_preset_with_profile(ctx, preset, launch, place, explicit_profile);
+    }
+
+    pub(crate) fn run_agent_preset_with_profile(
+        &mut self,
+        ctx: &egui::Context,
+        preset: Preset,
+        launch: crate::actions::Launch,
+        place: Option<usize>,
+        explicit_profile: Option<String>,
+    ) {
+        let check = !std::mem::take(&mut self.skip_agent_check);
         if self.active.is_none() {
             self.toast(t("Add a project first.").into());
             return;
@@ -2399,7 +2478,14 @@ impl App {
         // The agent's program is not on the PATH a new shell gets: say how to install it rather
         // than type a command the shell refuses.
         if check && let Some((program, npm)) = self.missing_agent(&preset) {
-            self.dialog = Some(Dialog::AgentMissing { preset: preset.id.clone(), launch, place, program, npm });
+            self.dialog = Some(Dialog::AgentMissing {
+                preset: preset.id.clone(),
+                launch,
+                place,
+                profile: explicit_profile,
+                program,
+                npm,
+            });
             // Read the user's PATH again: it may change while the dialog shows (an install).
             #[cfg(not(windows))]
             self.lsp_find_path();
@@ -2410,8 +2496,7 @@ impl App {
         if let crate::actions::Launch::Session(id) = &launch
             && let Some(pane) = self.panes.values().find(|p| p.agent_session.as_deref() == Some(id.as_str())).map(|p| p.id)
         {
-            self.settings.drawer_open = true;
-            self.drawer_tab = tc_core::model::DrawerTab::Terminals;
+            self.ensure_terminals_visible();
             self.focus_pane(pane);
             return;
         }
@@ -2439,8 +2524,7 @@ impl App {
             (None, None) => self.split(ctx, SplitDir::Horizontal),
         };
         let Some(pane) = pane else { return };
-        self.settings.drawer_open = true;
-        self.drawer_tab = tc_core::model::DrawerTab::Terminals;
+        self.ensure_terminals_visible();
         let base = match &launch {
             crate::actions::Launch::Last => preset.resume.clone().filter(|r| !r.trim().is_empty()),
             crate::actions::Launch::Session(id) => {
@@ -2462,8 +2546,12 @@ impl App {
         if let Some(p) = self.panes.get_mut(&pane) {
             p.preset = Some(preset.id.clone());
             p.active_profile = profile.as_ref().map(|x| x.id.clone());
+            if let crate::actions::Launch::Session(id) = &launch {
+                p.agent_session = Some(id.clone());
+            }
             p.rate_limit = None;
             p.last_limit_sig = None;
+            p.limit_ignore_until = None;
             p.type_command(command);
             project = Some(p.project);
         }
@@ -2559,24 +2647,29 @@ impl App {
     fn resume(&mut self, ctx: &egui::Context, pane: PaneId) {
         self.wake(ctx, pane);
         let presets = self.presets();
-        let Some(p) = self.panes.get(&pane) else { return };
-        let Some((agent, command)) = p.resume.clone() else {
+        let Some((proj_id, agent, command, pane_preset, pane_profile)) = self.panes.get(&pane).and_then(|p| {
+            let (agent, command) = p.resume.clone()?;
+            Some((p.project, agent, command, p.preset.clone(), p.active_profile.clone()))
+        }) else {
             return;
         };
-        let preset = p
-            .preset
+        let preset = pane_preset
             .as_ref()
             .and_then(|id| presets.iter().find(|x| &x.id == id))
             .or_else(|| presets.iter().find(|x| x.agent == Some(agent)))
-            .cloned();
-        let typed = match preset {
-            Some(preset) => self.launch_command(&preset, &command),
-            None => command,
-        };
+            .cloned()
+            .unwrap_or_else(|| self.preset_for_agent(agent));
+        let profile = pane_profile
+            .as_deref()
+            .and_then(|id| self.profile_by_id(id))
+            .or_else(|| self.preferred_profile_for(agent, Some(proj_id)));
+        let typed = self.launch_command_for_profile(&preset, &command, profile.as_ref());
         if let Some(p) = self.panes.get_mut(&pane) {
             p.resume = None;
+            p.active_profile = profile.map(|x| x.id);
             p.type_command(typed);
         }
+        self.ensure_terminals_visible();
         self.focus_pane(pane);
     }
 
@@ -2926,6 +3019,7 @@ impl App {
                 }
             }
             Action::NewTab => {
+                self.ensure_terminals_visible();
                 self.new_tab(ctx);
             }
             Action::SelectTab(i) => {
@@ -2933,6 +3027,7 @@ impl App {
                     && i < p.tabs.len()
                 {
                     p.active_tab = i;
+                    self.ensure_terminals_visible();
                     self.focus_request = self.current_pane();
                     self.mark_dirty();
                 }
@@ -2947,6 +3042,7 @@ impl App {
                     } else {
                         (p.active_tab + n - 1) % n
                     };
+                    self.ensure_terminals_visible();
                     self.focus_request = self.current_pane();
                     self.mark_dirty();
                 }
@@ -3067,9 +3163,11 @@ impl App {
                 }
             }
             Action::SplitRight => {
+                self.ensure_terminals_visible();
                 self.split(ctx, SplitDir::Horizontal);
             }
             Action::SplitDown => {
+                self.ensure_terminals_visible();
                 self.split(ctx, SplitDir::Vertical);
             }
             Action::ClosePane => {
@@ -3077,17 +3175,22 @@ impl App {
                 // pane typed into (in the Grid, the tile), asking first when a program runs there.
                 if (self.editor_keyboard || self.editor_has_keyboard(ctx))
                     && self.view == View::Focus
+                    && !self.overlay_open()
                     && let Some(i) = self.editor_mut().filter(|e| e.visible && !e.files.is_empty()).map(|e| e.active)
                 {
                     self.dispatch(ctx, Action::CloseFile(i));
                     return;
                 }
                 // A page with the keyboard: that page.
-                if let Some(id) = self.browser_focus.filter(|id| self.browsers.contains_key(id)) {
+                if !self.overlay_open()
+                    && let Some(id) = self.browser_focus.filter(|id| self.browsers.contains_key(id))
+                {
                     self.close_page(id);
                     return;
                 }
-                if let Some(id) = self.target_pane() {
+                if self.terminals_take_keys()
+                    && let Some(id) = self.target_pane()
+                {
                     match self.panes.get(&id).and_then(Pane::busy_with) {
                         Some(what) => self.dialog = Some(Dialog::ConfirmClosePane(id, what)),
                         None => self.close_pane(ctx, id),
@@ -3139,15 +3242,16 @@ impl App {
                 {
                     tab.focused = tab.layout.neighbor(tab.focused, action == Action::NextPane);
                     let f = tab.focused;
+                    self.ensure_terminals_visible();
                     self.focus_request = Some(f);
                     self.mark_dirty();
                 }
             }
             Action::RunPreset(id) => self.run_preset(ctx, &id, crate::actions::Launch::New, None),
             Action::RunAgent(id, launch, place) => self.run_preset(ctx, &id, launch, Some(place)),
-            Action::RunPresetAnyway(id, launch, place) => {
+            Action::RunPresetAnyway(id, launch, place, profile) => {
                 self.skip_agent_check = true;
-                self.run_preset(ctx, &id, launch, place);
+                self.run_preset_with_profile(ctx, &id, launch, place, profile);
             }
             Action::TypeInTerminal(command) => self.type_in_terminal(ctx, command),
             Action::Resume(id) => self.resume(ctx, id),
@@ -3183,6 +3287,11 @@ impl App {
             }
             Action::ToggleAttention => {
                 self.attention_open = !self.attention_open;
+                if self.attention_open {
+                    self.monitor_popover = false;
+                    self.palette = None;
+                    self.dialog = None;
+                }
                 self.attention_sel = 0;
                 self.inbox_scroll = 0;
             }
@@ -3206,6 +3315,9 @@ impl App {
                 if self.active.is_none() {
                     self.toast(t("Add a project first.").into());
                 } else {
+                    self.monitor_popover = false;
+                    self.attention_open = false;
+                    self.palette = None;
                     let preferred = self.active_project().and_then(|p| p.preset.clone());
                     let selected = preferred.and_then(|id| self.presets().iter().position(|p| p.id == id)).unwrap_or(0);
                     // Listed again each time it opens (sessions change while agents run).
@@ -3219,9 +3331,12 @@ impl App {
                 }
             }
             Action::SetView(v) => {
+                self.monitor_popover = false;
+                self.drawer_maximized = false;
                 if v == View::Focus {
                     self.show_focus();
                 } else {
+                    self.exit_zen_mode();
                     self.view = v;
                 }
                 self.grid_focus = None;
@@ -3233,12 +3348,23 @@ impl App {
                 self.dispatch(ctx, Action::SetView(v));
             }
             Action::Settings => {
-                self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::General))
+                self.monitor_popover = false;
+                self.attention_open = false;
+                self.palette = None;
+                self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::General));
             }
             Action::Integrations => {
-                self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::Integrations))
+                self.monitor_popover = false;
+                self.attention_open = false;
+                self.palette = None;
+                self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::Integrations));
             }
-            Action::About => self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::About)),
+            Action::About => {
+                self.monitor_popover = false;
+                self.attention_open = false;
+                self.palette = None;
+                self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::About));
+            }
             Action::PlanInstall(agent) => {
                 let Some(path) = Self::agent_config_path(agent) else {
                     return;
@@ -3419,7 +3545,19 @@ impl App {
                 }
             }
             Action::ToggleEditor => {
-                if let Some(e) = self.editor_mut() {
+                if self.zen_mode {
+                    self.exit_zen_mode();
+                }
+                if self.drawer_maximized {
+                    // Clicking Code while the Terminal Panel is maximized restores the split with Code visible.
+                    self.drawer_maximized = false;
+                    if let Some(pid) = self.active {
+                        self.ensure_editor_for_project(pid, 0.0);
+                    }
+                    if let Some(e) = self.editor_mut() {
+                        e.visible = true;
+                    }
+                } else if let Some(e) = self.editor_mut() {
                     e.visible = !e.visible;
                 }
                 // Review in the drawer goes with it.
@@ -3436,6 +3574,7 @@ impl App {
             Action::ToggleFiles => {
                 // The Files column of the Code Editor: shown with the editor when it was closed,
                 // else shown or hidden. A right-docked editor too narrow for it is widened.
+                self.drawer_maximized = false;
                 let pid = self.active.unwrap_or_default();
                 let drawer_shown = self.editors.get(&pid).is_some_and(|e| e.visible);
                 let full_rect = self.last_full_body.unwrap_or(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0)));
@@ -3471,6 +3610,7 @@ impl App {
                     let text = format!("{} ", platform::shell_quote(&shown.to_string_lossy()));
                     pane.input(text.into_bytes());
                     self.show_focus();
+                    self.ensure_terminals_visible();
                     self.focus_request = Some(id);
                 }
             }
@@ -3555,7 +3695,11 @@ impl App {
                 self.new_tab_in(ctx, Some(dir));
             }
             Action::QuickOpen => self.open_palette(PaletteMode::Files),
-            // A document shown in the editor, with the keyboard not in a terminal: search it.
+            // Settings open: its search takes priority over background editor/terminal.
+            Action::Find if matches!(self.dialog, Some(Dialog::Settings(_))) => {
+                self.ctx.memory_mut(|m| m.request_focus(egui::Id::new("settings-search")));
+            }
+            Action::Find if self.dialog.is_some() => {}
             // A page with the keyboard: its find bar.
             Action::Find if self.page_with_keys().is_some() => {
                 if let Some(id) = self.page_with_keys() {
@@ -3572,15 +3716,13 @@ impl App {
                     e.find.get_or_insert_with(Default::default).focus = true;
                 }
             }
-            // Settings open: its search.
-            Action::Find if matches!(self.dialog, Some(Dialog::Settings(_))) => {
-                self.ctx.memory_mut(|m| m.request_focus(egui::Id::new("settings-search")));
-            }
             Action::Find => {
                 if let Some(pane) = self.command_pane() {
                     // From the Grid: the tile typed into, in the Focus view (its find bar is there).
                     if self.view == View::Grid {
                         self.focus_pane(pane);
+                    } else {
+                        self.ensure_terminals_visible();
                     }
                     self.pane_search = Some(PaneSearch {
                         pane,
@@ -3678,17 +3820,19 @@ impl App {
             Action::Copy => {
                 // The menu takes ⌘C before any widget: a text field (the editor, a dialog, the
                 // palette) or text selected in a document gets it as egui's own copy; else the
-                // terminal copies its selection.
+                // terminal copies its selection when terminals own keyboard focus.
                 if self.text_field_focused(ctx) || ui::docview_ui::has_doc_selection(ctx) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy);
-                } else if let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id)) {
+                } else if self.terminals_take_keys()
+                    && let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id))
+                {
                     tc_term::widget::copy_selection(ctx, &p.shared);
                 }
             }
             Action::Paste => {
                 // A terminal pastes the clipboard as text (on Windows and Linux a paste event
                 // without Shift would reach it as a typed Ctrl+V); a text field gets egui's own.
-                match self.target_pane().filter(|_| !self.text_field_focused(ctx)) {
+                match self.target_pane().filter(|_| !self.text_field_focused(ctx) && self.terminals_take_keys()) {
                     Some(id) if let Some(p) = self.panes.get_mut(&id) => p.view.request_paste(ctx),
                     _ => ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste),
                 }
@@ -3706,12 +3850,16 @@ impl App {
                             modifiers: egui::Modifiers::COMMAND,
                         })
                     });
-                } else if let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id)) {
+                } else if self.terminals_take_keys()
+                    && let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id))
+                {
                     tc_term::widget::select_all(&p.shared);
                 }
             }
             Action::ClearScrollback => {
-                if let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id)) {
+                if self.terminals_take_keys()
+                    && let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id))
+                {
                     tc_term::widget::clear_scrollback(&p.shared);
                 }
             }
@@ -3749,11 +3897,32 @@ impl App {
             Action::ToggleZenMode => self.toggle_zen_mode(),
             Action::ToggleDrawer => {
                 if self.zen_mode {
-                    self.toggle_zen_mode();
+                    self.exit_zen_mode();
                     self.settings.drawer_open = true;
-                } else {
-                    self.settings.drawer_open = !self.settings.drawer_open;
                     self.drawer_maximized = false;
+                } else {
+                    let editor_on = self.active.is_some_and(|pid| {
+                        let review_here = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
+                        review_here || self.editors.get(&pid).is_some_and(|e| e.visible)
+                    });
+                    if !editor_on && let Some(pid) = self.active {
+                        // When the Code Editor is hidden, terminals already fill the workspace;
+                        // clicking Terminal Panel switches to Code Editor with the panel collapsed
+                        // so the toggle always produces an immediate visible change.
+                        self.ensure_editor_for_project(pid, 0.0);
+                        if let Some(e) = self.editors.get_mut(&pid) {
+                            e.visible = true;
+                        }
+                        self.settings.drawer_open = false;
+                        self.drawer_maximized = false;
+                        self.show_focus();
+                    } else if self.drawer_maximized {
+                        self.drawer_maximized = false;
+                        self.settings.drawer_open = false;
+                    } else {
+                        self.settings.drawer_open = !self.settings.drawer_open;
+                        self.drawer_maximized = false;
+                    }
                 }
                 self.settings_changed();
                 if self.settings.drawer_open {
@@ -3761,28 +3930,42 @@ impl App {
                 }
             }
             Action::SetDrawerDock(dock) => {
+                self.exit_zen_mode();
                 self.settings.drawer_dock = dock;
                 self.settings.drawer_open = true;
                 self.drawer_maximized = false;
                 self.settings_changed();
             }
             Action::SetDrawerTab(tab) => {
+                self.exit_zen_mode();
                 self.drawer_tab = tab;
                 self.settings.drawer_open = true;
                 self.settings_changed();
             }
             Action::OpenProfiles => {
+                self.exit_zen_mode();
+                self.drawer_maximized = false;
                 self.monitor_popover = false;
+                self.attention_open = false;
+                self.palette = None;
                 self.view = View::Profiles;
                 self.mark_dirty();
             }
             Action::OpenMonitor => {
+                self.exit_zen_mode();
+                self.drawer_maximized = false;
                 self.monitor_popover = false;
+                self.attention_open = false;
+                self.palette = None;
                 self.view = View::Monitor;
                 self.mark_dirty();
             }
             Action::OpenPhonePairing => {
+                self.exit_zen_mode();
+                self.drawer_maximized = false;
                 self.monitor_popover = false;
+                self.attention_open = false;
+                self.palette = None;
                 self.view = View::Pairing;
                 self.mark_dirty();
             }
@@ -3806,7 +3989,10 @@ impl App {
                 self.new_project_session(ctx, project, profile_id);
             }
             Action::SetPaneProfile(pane, profile_id) => {
-                let is_limited = self.panes.get(&pane).is_some_and(|p| p.rate_limit.is_some());
+                let is_limited = self
+                    .panes
+                    .get(&pane)
+                    .is_some_and(|p| p.rate_limit.as_ref().is_some_and(|b| b.auto_switched_to.is_none()));
                 if is_limited {
                     self.switch_pane_profile_and_resume(ctx, pane, &profile_id, false);
                 } else {
@@ -3842,6 +4028,12 @@ impl App {
                     rt.reset_reason = None;
                     rt.state = crate::profiles::ProfileState::Idle;
                 }
+                for pane in self.panes.values_mut() {
+                    if pane.rate_limit.as_ref().is_some_and(|b| b.from_profile == id) {
+                        pane.rate_limit = None;
+                        pane.last_limit_sig = None;
+                    }
+                }
                 self.toast_ok(tf("Cleared cooldown for {}.", &[&id]));
                 self.push_companion_now();
             }
@@ -3859,7 +4051,7 @@ impl App {
             Action::RevokeDevice(id) => {
                 self.settings.companion.devices.retain(|d| d.id != id);
                 if let Some(c) = &self.companion {
-                    c.sync_devices(&self.settings.companion.devices);
+                    c.revoke_device(&id);
                 }
                 self.settings_changed();
                 self.toast(t("Device access revoked.").into());
@@ -3885,6 +4077,9 @@ impl App {
 
     pub fn open_palette(&mut self, mode: PaletteMode) {
         self.pane_search = None;
+        self.attention_open = false;
+        self.monitor_popover = false;
+        self.dialog = None;
         if mode == PaletteMode::Files && self.active.is_none() {
             return;
         }
@@ -4415,7 +4610,6 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
         (Key::G, Action::FindAll),
         (Key::R, Action::Review),
         (Key::Y, Action::ToggleEditor),
-        (Key::Z, Action::ToggleZenMode),
         (Key::L, Action::ToggleDrawer),
         // GNOME Terminal's tab keys, with Shift (Shift+PageUp alone still scrolls).
         (Key::PageDown, Action::NextTab),
@@ -4434,6 +4628,7 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
     keys.extend(map.map(|(key, action)| (cmd, key, action)));
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::J, Action::BackAttention));
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::B, Action::ToggleCompactSidebar));
+    keys.push((Modifiers::CTRL | Modifiers::ALT, Key::Z, Action::ToggleZenMode));
     keys
 }
 

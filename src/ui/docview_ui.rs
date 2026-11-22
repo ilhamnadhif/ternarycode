@@ -35,6 +35,7 @@ impl App {
         let ctx = ui.ctx().clone();
         let p = style::pal(ui);
         let root = self.project(project).map(|x| x.path.clone()).unwrap_or_default();
+        let allow_keys = !self.overlay_open() && !self.updater.dialog_open;
         let Some(view) = self
             .editors
             .get_mut(&project)
@@ -54,10 +55,10 @@ impl App {
         // inside (a sheet's grid) take it from there.
         let doc_id = egui::Id::new(("doc-view", project));
         let doc_area = ui.interact(content, doc_id, Sense::click());
-        if ui.input(|i| i.pointer.primary_pressed()) && ui.rect_contains_pointer(content) {
+        if allow_keys && ui.input(|i| i.pointer.primary_pressed()) && ui.rect_contains_pointer(content) {
             doc_area.request_focus();
         }
-        if doc_area.has_focus() {
+        if doc_area.has_focus() && allow_keys {
             self.editor_seen = true;
             // ← → move through a deck's slides.
             if let State::Ready(Content::Slides(deck)) = &view.state {
@@ -81,7 +82,7 @@ impl App {
         status_line(ui, view, status);
         if view.find.is_some() {
             refresh_find(view);
-            if find_bar(ui, view, find_rect, project) {
+            if find_bar(ui, view, find_rect, project, allow_keys) {
                 // The search field has the keyboard: the editor's keys (⌘W…) apply.
                 self.editor_seen = true;
             }
@@ -339,11 +340,11 @@ fn failed(ui: &mut Ui, rect: Rect, error: &str, ask: &mut Option<Ask>) {
 // ----- search ---------------------------------------------------------------------------------
 
 /// The search bar under the toolbar. Returns whether its field has the keyboard.
-fn find_bar(ui: &mut Ui, view: &mut DocView, rect: Rect, project: ProjectId) -> bool {
+fn find_bar(ui: &mut Ui, view: &mut DocView, rect: Rect, project: ProjectId, allow_keys: bool) -> bool {
     let p = style::pal(ui);
     let Some(f) = view.find.as_mut() else { return false };
     let id = egui::Id::new(("doc-find", project));
-    let mut close = ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    let mut close = allow_keys && ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     let mut focused = false;
     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.chrome);
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));

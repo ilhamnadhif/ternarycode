@@ -295,47 +295,7 @@ impl App {
                 kit::paint_kbd_text(ui.painter(), pos2(search_rect.right() - 8.0 - w, search_rect.center().y), keys, &p);
             }
         }
-        let mut y = search_rect.bottom() + 14.0;
-        for (i, (pg, icon, name, rows)) in pages().into_iter().enumerate() {
-            if i == 8 {
-                ui.painter().hline((nav.left() + 18.0)..=(nav.right() - 18.0), y + 7.0, Stroke::new(1.0, p.border));
-                y += 15.0;
-            }
-            let label = t(name);
-            let matches = !search.trim().is_empty() && rows.iter().any(|r| hit(&search, t(r), ""));
-            let item = Rect::from_min_size(pos2(nav.left() + 10.0, y), vec2(NAV_W - 20.0, 31.0));
-            y += 32.0;
-            let r = ui.interact(item, egui::Id::new(("settings-page", i)), Sense::click());
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("settings:{name}"), item);
-            let on = *page == pg;
-            if on {
-                ui.painter().rect(item, CornerRadius::same(7), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-                kit::paint_highlight(ui.painter(), item, 7, &p);
-            } else if r.hovered() {
-                ui.painter().rect_filled(item, CornerRadius::same(7), p.hover);
-            }
-            let (ic, tc) = if on || r.hovered() { (p.text, p.text) } else { (p.text_faint, p.text_muted) };
-            ui.painter().text(pos2(item.left() + 10.0 + 8.0, item.center().y), Align2::CENTER_CENTER, icon, style::icon_font(15.0), ic);
-            ui.painter().text(pos2(item.left() + 10.0 + 16.0 + 10.0, item.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.0), tc);
-            // At the right: what a page has for the user (an update, agents without hooks).
-            if pg == SettingsPage::Updates && self.updater.available_version().is_some() {
-                ui.painter().circle_filled(pos2(item.right() - 10.0 - 3.0, item.center().y), 3.0, p.accent_text);
-            }
-            if pg == SettingsPage::Agents {
-                let n = self.agents_without_hooks();
-                if n > 0 {
-                    kit::paint_badge(ui.painter(), pos2(item.right() - 8.0, item.center().y), &n.to_string(), style::soft(p.warn, 0.15), p.warn, 16.0);
-                }
-            }
-            if matches {
-                ui.painter().circle_filled(pos2(item.right() - 12.0, item.center().y), 3.0, p.accent);
-            }
-            if r.clicked() {
-                *page = pg;
-            }
-        }
-        // The version at the bottom.
+        // The version at the bottom (placed before nav list so nav scrolls safely above it).
         let ver = Rect::from_min_max(pos2(nav.left() + 10.0, nav.bottom() - 12.0 - 38.0), pos2(nav.right() - 10.0, nav.bottom() - 12.0));
         ui.painter().hline(ver.x_range(), ver.top() + 0.5, Stroke::new(1.0, p.border));
         let logo = Rect::from_min_size(pos2(ver.left() + 8.0, ver.top() + 10.0), vec2(26.0, 26.0));
@@ -346,6 +306,61 @@ impl App {
             None => env!("CARGO_PKG_VERSION").to_string(),
         };
         ui.painter().text(pos2(logo.right() + 10.0, logo.bottom() + 1.0), Align2::LEFT_BOTTOM, version, style::mono(10.5), p.text_faint);
+
+        let nav_list = Rect::from_min_max(
+            pos2(nav.left() + 10.0, search_rect.bottom() + 10.0),
+            pos2(nav.right() - 10.0, (ver.top() - 8.0).max(search_rect.bottom() + 10.0)),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(nav_list), |ui| {
+            ui.set_clip_rect(nav_list);
+            egui::ScrollArea::vertical()
+                .id_salt("settings-nav-scroll")
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    for (i, (pg, icon, name, rows)) in pages().into_iter().enumerate() {
+                        if i == 8 {
+                            let (sr, _) = ui.allocate_exact_size(vec2(NAV_W - 20.0, 14.0), Sense::hover());
+                            ui.painter().hline((sr.left() + 8.0)..=(sr.right() - 8.0), sr.center().y, Stroke::new(1.0, p.border));
+                        }
+                        let label = t(name);
+                        let matches = !search.trim().is_empty() && rows.iter().any(|r| hit(&search, t(r), ""));
+                        let (item, r) = ui.allocate_exact_size(vec2(NAV_W - 20.0, 31.0), Sense::click());
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record(format!("settings:{name}"), item);
+                        let on = *page == pg;
+                        if on {
+                            ui.painter().rect(item, CornerRadius::same(7), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+                            kit::paint_highlight(ui.painter(), item, 7, &p);
+                        } else if r.hovered() {
+                            ui.painter().rect_filled(item, CornerRadius::same(7), p.hover);
+                        }
+                        let (ic, tc) = if on || r.hovered() { (p.text, p.text) } else { (p.text_faint, p.text_muted) };
+                        ui.painter().text(pos2(item.left() + 10.0 + 8.0, item.center().y), Align2::CENTER_CENTER, icon, style::icon_font(15.0), ic);
+                        ui.painter().text(pos2(item.left() + 10.0 + 16.0 + 10.0, item.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.0), tc);
+                        // At the right: what a page has for the user (an update, agents without hooks).
+                        let mut badge_right = item.right() - 10.0;
+                        if pg == SettingsPage::Updates && self.updater.available_version().is_some() {
+                            ui.painter().circle_filled(pos2(badge_right - 3.0, item.center().y), 3.0, p.accent_text);
+                            badge_right -= 12.0;
+                        }
+                        if pg == SettingsPage::Agents {
+                            let n = self.agents_without_hooks();
+                            if n > 0 {
+                                let b = kit::paint_badge(ui.painter(), pos2(item.right() - 8.0, item.center().y), &n.to_string(), style::soft(p.warn, 0.15), p.warn, 16.0);
+                                badge_right = b.left() - 6.0;
+                            }
+                        }
+                        if matches {
+                            ui.painter().circle_filled(pos2(badge_right - 2.0, item.center().y), 3.0, p.accent);
+                        }
+                        if r.clicked() {
+                            *page = pg;
+                        }
+                    }
+                });
+        });
 
         // ----- the page's head: its title and line, "Saved as you change them", × -------------
         let main_full = Rect::from_min_max(pos2(nav.right(), full.top()), full.max);
@@ -364,9 +379,9 @@ impl App {
         crate::devtest::record("settings-body", main);
         let before = self.settings.clone();
         ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
-            egui::ScrollArea::vertical().id_salt("settings-page").auto_shrink([false, false]).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt(("settings-page", *page as u8)).auto_shrink([false, false]).show(ui, |ui| {
                 egui::Frame::NONE.inner_margin(egui::Margin { left: 34, right: 34, top: 4, bottom: 30 }).show(ui, |ui| {
-                    ui.set_width(main.width() - 68.0);
+                    ui.set_width((main.width() - 68.0).max(160.0));
                     ui.spacing_mut().item_spacing.y = 0.0;
                     match *page {
                         SettingsPage::General => self.general_page(ui, &search),
@@ -388,14 +403,16 @@ impl App {
         });
         // The head's title and line, given by the page just drawn.
         if let Some((title, lead)) = ui.ctx().data(|d| d.get_temp::<(String, String)>(egui::Id::new("settings-head"))) {
+            let max_head_w = (sx - 20.0 - (head.left() + 34.0)).max(60.0);
             let mut job = egui::text::LayoutJob::default();
             let mut f = egui::TextFormat::simple(style::semibold(21.0), p.text);
             f.extra_letter_spacing = -0.42;
             job.append(&title, 0.0, f);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(max_head_w);
             let g = ui.painter().layout_job(job);
             ui.painter().galley(pos2(head.left() + 34.0, head.top() + 24.0), g, p.text);
             let mut job = egui::text::LayoutJob::simple_singleline(lead, egui::FontId::proportional(13.0), p.text_muted);
-            job.wrap = egui::text::TextWrapping::truncate_at_width(sx - 20.0 - (head.left() + 34.0));
+            job.wrap = egui::text::TextWrapping::truncate_at_width(max_head_w);
             let g = ui.painter().layout_job(job);
             ui.painter().galley(pos2(head.left() + 34.0, head.top() + 24.0 + 26.0 + 5.0), g, p.text_muted);
         }

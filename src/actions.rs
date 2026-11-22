@@ -73,7 +73,7 @@ pub enum Action {
     RunAgent(String, Launch, usize),
     /// Starts a preset although its program was not found on the PATH (an alias or a shell
     /// function the check can't see): as `RunAgent` with a place, else as `RunPreset`.
-    RunPresetAnyway(String, Launch, Option<usize>),
+    RunPresetAnyway(String, Launch, Option<usize>, Option<String>),
     /// Types a command in the project's shell waiting at its prompt, or in a new tab (an
     /// agent's install command).
     TypeInTerminal(String),

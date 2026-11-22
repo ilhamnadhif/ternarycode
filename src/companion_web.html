@@ -29,11 +29,11 @@ nav{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--
 nav button{background:none;border:0;color:var(--faint);font-family:var(--sans);font-size:11px;font-weight:500;padding:7px 4px;border-radius:7px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
 nav button.active{color:var(--text);background:var(--surface)}
 .badge{display:inline-block;padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:10px;font-weight:600;border:1px solid var(--border)}
-.badge.running{color:var(--info);border-color:rgba(96,165,250,.35);background:rgba(96,165,250,.1)}
-.badge.needs_input,.badge.rate_limited{color:var(--warn);border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.1)}
-.badge.done,.badge.ok{color:var(--ok);border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.1)}
+.badge.running,.badge.tool,.badge.info{color:var(--info);border-color:rgba(96,165,250,.35);background:rgba(96,165,250,.1)}
+.badge.needs_input,.badge.rate_limited,.badge.warn{color:var(--warn);border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.1)}
+.badge.done,.badge.ok,.badge.failover{color:var(--ok);border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.1)}
 .badge.failed,.badge.error{color:var(--err);border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.1)}
-.badge.idle,.badge.cooldown{color:var(--muted);background:rgba(255,255,255,.04)}
+.badge.idle,.badge.cooldown,.badge.disabled{color:var(--muted);background:rgba(255,255,255,.04)}
 .section-label{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);margin:14px 0 8px}
 .section-label:first-child{margin-top:2px}
 .panel{background:var(--canvas);border:1px solid var(--border);border-radius:9px;overflow:hidden;margin-bottom:10px}
@@ -41,6 +41,7 @@ nav button.active{color:var(--text);background:var(--surface)}
 .row:last-child{border-bottom:0}
 .row.click{cursor:pointer}
 .row.click:active{background:var(--surface)}
+.row.dim{opacity:.55}
 .title{font-weight:500;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sub{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mono{font-family:var(--mono)}
@@ -64,6 +65,7 @@ nav button.active{color:var(--text);background:var(--surface)}
 .pair-box p{margin:0 0 14px;color:var(--muted);font-size:12.5px}
 .pair-box label{display:block;font-size:11.5px;color:var(--muted);margin:10px 0 4px}
 .pair-err{color:var(--err);font-size:12px;margin-top:8px}
+.toast{margin:0 0 10px;padding:8px 10px;border-radius:7px;background:rgba(239,68,68,.14);border:1px solid rgba(239,68,68,.38);color:var(--err);font-size:12px}
 .empty{padding:26px 14px;text-align:center;color:var(--faint);font-size:12.5px}
 .chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:4px}
 .chip{flex-shrink:0;padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--canvas);color:var(--muted);font-size:12px;cursor:pointer}
@@ -78,29 +80,55 @@ let token = localStorage.getItem(KEY) || "";
 let state = null;
 let tab = "live";
 let selectedPane = null;
+let lastRenderedPane = null;
 let es = null;
+let retryTimer = null;
+let retryMs = 1000;
 let connected = false;
 let pairError = "";
+let toastMsg = "";
+let toastTimer = null;
 
 const params = new URLSearchParams(location.search);
 const urlPair = params.get("pair") || "";
+const root = document.getElementById("root");
 
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function fmtTok(n){n=Number(n||0);if(n>=1e6)return(n/1e6).toFixed(1)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
 function fmtSec(s){if(!s||s<=0)return"";const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),r=s%60;return h?`${h}h ${String(m).padStart(2,"0")}m`:m?`${m}m ${String(r).padStart(2,"0")}s`:`${r}s`}
+
+function showError(msg){
+  toastMsg = msg || "Request failed";
+  if(toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>{ toastMsg = ""; render(); }, 4000);
+  render();
+}
+
+function clearAuth(){
+  localStorage.removeItem(KEY);
+  token = "";
+  state = null;
+  connected = false;
+  if(es){ es.close(); es = null; }
+  if(retryTimer){ clearTimeout(retryTimer); retryTimer = null; }
+  render();
+}
 
 async function api(path, opts={}){
   const headers = Object.assign({"Content-Type":"application/json"}, opts.headers||{});
   if(token) headers["Authorization"] = "Bearer " + token;
   const res = await fetch(path, Object.assign({}, opts, {headers}));
   if(res.status === 401){
-    localStorage.removeItem(KEY);
-    token = "";
-    if(es){es.close();es=null;}
-    render();
+    clearAuth();
     throw new Error("Unauthorized");
   }
-  return res.json();
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok){
+    const err = data.error || `HTTP ${res.status}`;
+    showError(err);
+    throw new Error(err);
+  }
+  return data;
 }
 
 async function doPair(code, deviceName){
@@ -111,13 +139,18 @@ async function doPair(code, deviceName){
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({token:code.trim(), device_name:deviceName.trim()||navigator.platform||"Mobile"})
     });
-    const data = await res.json();
-    if(!res.ok || !data.device_token){ pairError = data.error || "Invalid pairing code"; render(); return; }
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok || !data.device_token){
+      pairError = data.error || "Invalid pairing code";
+      render();
+      return;
+    }
     token = data.device_token;
     localStorage.setItem(KEY, token);
     if(urlPair){ history.replaceState({}, "", "/"); }
+    render();
     startLive();
-  }catch(e){
+  }catch(_){
     pairError = "Connection failed";
     render();
   }
@@ -127,22 +160,44 @@ async function startLive(){
   try{
     state = await api("/api/state");
     connected = true;
+    retryMs = 1000;
     ensureSelection();
     render();
     connectSse();
-  }catch(_){}
+  }catch(_){
+    if(token) scheduleReconnect();
+  }
+}
+
+function scheduleReconnect(){
+  if(retryTimer || !token) return;
+  retryTimer = setTimeout(async ()=>{
+    retryTimer = null;
+    if(!token) return;
+    await startLive();
+  }, retryMs);
+  retryMs = Math.min(retryMs * 2, 8000);
 }
 
 function connectSse(){
-  if(es) es.close();
+  if(es){ es.close(); es = null; }
   if(!token) return;
   es = new EventSource("/api/events?token=" + encodeURIComponent(token));
-  es.onopen = ()=>{ connected = true; renderHeaderOnly(); };
-  es.onerror = ()=>{ connected = false; renderHeaderOnly(); };
+  es.onopen = ()=>{ connected = true; retryMs = 1000; renderHeaderOnly(); };
+  es.onerror = ()=>{
+    connected = false;
+    renderHeaderOnly();
+    if(es && es.readyState === EventSource.CLOSED){
+      es.close();
+      es = null;
+      scheduleReconnect();
+    }
+  };
   es.onmessage = (ev)=>{
     try{
       state = JSON.parse(ev.data);
       connected = true;
+      retryMs = 1000;
       ensureSelection();
       render();
     }catch(_){}
@@ -158,25 +213,33 @@ function ensureSelection(){
 }
 
 async function sendAction(paneId, action){
-  await api(`/api/pane/${paneId}/input`, {method:"POST", body:JSON.stringify({action})});
+  try{ await api(`/api/pane/${paneId}/input`, {method:"POST", body:JSON.stringify({action})}); }catch(_){}
 }
 
 async function sendPrompt(paneId){
   const el = document.getElementById("prompt-input");
   if(!el || !el.value.trim()) return;
   const text = el.value;
-  el.value = "";
-  await api(`/api/pane/${paneId}/input`, {method:"POST", body:JSON.stringify({text, enter:true})});
+  try{
+    await api(`/api/pane/${paneId}/input`, {method:"POST", body:JSON.stringify({text, enter:true})});
+    const cur = document.getElementById("prompt-input");
+    if(cur && cur.value === text) cur.value = "";
+  }catch(_){}
 }
 
 async function switchProfile(paneId, profileId){
-  await api(`/api/pane/${paneId}/switch-profile`, {method:"POST", body:JSON.stringify({profile_id:profileId})});
+  try{ await api(`/api/pane/${paneId}/switch-profile`, {method:"POST", body:JSON.stringify({profile_id:profileId})}); }catch(_){}
 }
 
 async function resumeSession(projectId, agent, sessionId, profileId){
-  await api("/api/session/resume", {method:"POST", body:JSON.stringify({project_id:projectId, agent, session_id:sessionId, profile_id:profileId})});
-  tab = "live";
-  render();
+  try{
+    await api("/api/session/resume", {
+      method:"POST",
+      body:JSON.stringify({project_id:Number(projectId), agent, session_id:sessionId, profile_id:profileId || null})
+    });
+    tab = "live";
+    render();
+  }catch(_){}
 }
 
 function renderHeaderOnly(){
@@ -185,7 +248,6 @@ function renderHeaderOnly(){
 }
 
 function renderPair(){
-  const root = document.getElementById("root");
   root.innerHTML = `<div class="pair-wrap"><div class="pair-box">
     <h1>Pair with TernaryCode</h1>
     <p>Scan the QR code from Desktop Settings → Phone Pairing or enter the pairing token below.</p>
@@ -195,30 +257,29 @@ function renderPair(){
     <input id="p-name" value="${esc(/iPhone/.test(navigator.userAgent)?"iPhone":/Android/.test(navigator.userAgent)?"Android Phone":"Mobile Browser")}">
     ${pairError?`<div class="pair-err">${esc(pairError)}</div>`:""}
     <div class="actions" style="margin-top:14px">
-      <button class="btn primary" style="width:100%" id="p-go">Connect Device</button>
+      <button class="btn primary" style="width:100%" data-act="pair">Connect Device</button>
     </div>
   </div></div>`;
-  document.getElementById("p-go").onclick = ()=>{
-    doPair(document.getElementById("p-code").value, document.getElementById("p-name").value);
-  };
 }
 
 function renderLive(){
   const panes = state.panes || [];
   if(!panes.length) return `<div class="empty">No active panes in desktop workspace.</div>`;
   const pane = panes.find(p=>p.id===selectedPane) || panes[0];
-  const healthy = (state.profiles||[]).filter(p=>p.enabled && p.state!=="rate_limited" && p.state!=="cooldown" && p.id!==pane.profile);
+  const healthy = (state.profiles||[]).filter(
+    p=>p.enabled && p.state!=="rate_limited" && p.state!=="cooldown" && p.state!=="error" && p.id!==pane.profile
+  );
   let html = `<div class="chips">` + panes.map(p=>{
     const cls = p.id===pane.id ? "chip active" : "chip";
     const mark = p.rate_limit ? " !" : p.status==="needs_input" ? " ?" : p.status==="running" ? " ●" : "";
-    return `<button class="${cls}" onclick="selectedPane=${p.id};render()">${esc(p.project_name)} · ${esc(p.label)}${mark}</button>`;
+    return `<button class="${cls}" data-act="select-pane" data-pane="${p.id}">${esc(p.project_name)} · ${esc(p.label)}${mark}</button>`;
   }).join("") + `</div>`;
 
   html += `<div class="panel">
     <div class="row">
       <div style="min-width:0">
         <div class="title">${esc(pane.project_name)} / ${esc(pane.label)}</div>
-        <div class="sub mono">${esc(pane.profile||"default")} · ${esc(pane.branch||"")}</div>
+        <div class="sub mono">${esc(pane.profile||"default")}${pane.branch?` · ${esc(pane.branch)}`:""}</div>
       </div>
       <span class="badge ${esc(pane.rate_limit?"rate_limited":pane.status)}">${esc(pane.rate_limit?"Rate-Limited":pane.status_label)}</span>
     </div>`;
@@ -228,31 +289,31 @@ function renderLive(){
       <div class="banner-title">${esc(pane.rate_limit.from_profile)} hit usage limit${pane.rate_limit.reset_secs?` · resets in ${fmtSec(pane.rate_limit.reset_secs)}`:""}</div>
       <div class="sub">${esc(pane.rate_limit.reason)}</div>
       <div class="actions">` +
-      (healthy.length ? healthy.map(pr=>`<button class="btn primary" onclick="switchProfile(${pane.id},'${esc(pr.id)}')">Resume on ${esc(pr.id)}</button>`).join("") : `<span class="sub">No healthy fallback profile available</span>`)
+      (healthy.length ? healthy.map(pr=>`<button class="btn primary" data-act="switch" data-pane="${pane.id}" data-profile="${esc(pr.id)}">Resume on ${esc(pr.id)}</button>`).join("") : `<span class="sub">No healthy fallback profile available</span>`)
       + `</div></div>`;
   } else if(pane.status === "needs_input"){
     html += `<div class="banner">
       <div class="banner-title">Approval / Input Required</div>
       <div class="sub">${esc(pane.message || "Agent is waiting for your confirmation")}</div>
       <div class="actions">
-        <button class="btn ok" onclick="sendAction(${pane.id},'approve')">Approve (↵)</button>
-        <button class="btn danger" onclick="sendAction(${pane.id},'reject')">Reject (Esc)</button>
-        <button class="btn" onclick="sendAction(${pane.id},'interrupt')">Interrupt (^C)</button>
+        <button class="btn ok" data-act="quick" data-pane="${pane.id}" data-kind="approve">Approve (↵)</button>
+        <button class="btn danger" data-act="quick" data-pane="${pane.id}" data-kind="reject">Reject (Esc)</button>
+        <button class="btn" data-act="quick" data-pane="${pane.id}" data-kind="interrupt">Interrupt (^C)</button>
       </div>
     </div>`;
   }
 
   html += `<div class="term" id="term-box">${esc(pane.output || "(no output yet)")}</div>`;
   html += `<div class="composer">
-    <input id="prompt-input" placeholder="Send instruction to ${esc(pane.label)}…" onkeydown="if(event.key==='Enter')sendPrompt(${pane.id})">
-    <button class="btn primary" onclick="sendPrompt(${pane.id})">Send</button>
+    <input id="prompt-input" data-pane="${pane.id}" placeholder="Send instruction to ${esc(pane.label)}…">
+    <button class="btn primary" data-act="send-prompt" data-pane="${pane.id}">Send</button>
   </div>`;
 
   if(healthy.length && !pane.rate_limit){
     html += `<div class="row" style="border-top:1px solid var(--border)">
       <span class="sub">Switch account profile</span>
       <div style="display:flex;gap:5px;flex-wrap:wrap">` +
-      healthy.slice(0,4).map(pr=>`<button class="btn" style="padding:4px 8px;min-height:26px;font-size:11px" onclick="switchProfile(${pane.id},'${esc(pr.id)}')">${esc(pr.id)}</button>`).join("")
+      healthy.slice(0,4).map(pr=>`<button class="btn" style="padding:4px 8px;min-height:26px;font-size:11px" data-act="switch" data-pane="${pane.id}" data-profile="${esc(pr.id)}">${esc(pr.id)}</button>`).join("")
       + `</div></div>`;
   }
   html += `</div>`;
@@ -266,7 +327,7 @@ function renderProjects(){
     const sessions = pr.sessions || [];
     return `<div class="section-label">${esc(pr.name)} ${pr.branch?`<span class="mono" style="text-transform:none;font-weight:400">· ${esc(pr.branch)}</span>`:""}</div>
     <div class="panel">` + (sessions.length ? sessions.map(s=>`
-      <div class="row click" onclick="${s.live_pane?`selectedPane=${s.live_pane};tab='live';render()`:`resumeSession(${pr.id},'${esc(s.agent)}','${esc(s.id)}',${s.profile?`'${esc(s.profile)}'`:'null'})`}">
+      <div class="row click" data-act="${s.live_pane?"focus-live":"resume-session"}" data-pane="${s.live_pane||""}" data-project="${pr.id}" data-agent="${esc(s.agent)}" data-session="${esc(s.id)}" data-profile="${esc(s.profile||"")}">
         <div style="min-width:0">
           <div class="title">${esc(s.title)}</div>
           <div class="sub mono">${esc(s.profile||s.agent)} · ${esc(s.age)}</div>
@@ -282,10 +343,12 @@ function renderProfiles(){
   <div class="panel">` + profiles.map(p=>{
     const pct = p.quota_pct != null ? Math.round(p.quota_pct) : null;
     const barColor = p.state==="rate_limited"?"var(--warn)":pct!=null&&pct<20?"var(--err)":"var(--accent)";
-    return `<div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
+    const badgeCls = p.enabled ? p.state : "disabled";
+    const badgeText = p.enabled ? p.state.replace("_"," ") : "disabled";
+    return `<div class="row${p.enabled?"":" dim"}" style="flex-direction:column;align-items:stretch;gap:4px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <div><span class="title mono">${esc(p.id)}</span> <span class="sub">(${esc(p.provider)})</span></div>
-        <span class="badge ${esc(p.state)}">${esc(p.state.replace("_"," "))}</span>
+        <span class="badge ${esc(badgeCls)}">${esc(badgeText)}</span>
       </div>
       <div class="sub mono">In ${fmtTok(p.tokens_in)} · Out ${fmtTok(p.tokens_out)}${p.reset_secs?` · resets ${fmtSec(p.reset_secs)}`:""}${p.active_session?` · ${esc(p.active_session)}`:""}</div>
       ${pct!=null?`<div class="bar"><div style="width:${pct}%;background:${barColor}"></div></div>`:""}
@@ -308,30 +371,108 @@ function renderAlerts(){
 
 function render(){
   if(!token){ renderPair(); return; }
-  if(!state){ document.getElementById("root").innerHTML = `<div class="empty">Connecting to desktop ADE…</div>`; return; }
+  if(!state){ root.innerHTML = `<div class="empty">Connecting to desktop ADE…</div>`; return; }
+
+  // Preserve active input value, focus, selection, and scroll positions across live SSE renders.
+  const prevInput = document.getElementById("prompt-input");
+  const samePane = prevInput && Number(prevInput.dataset.pane) === selectedPane;
+  const savedInput = samePane ? {
+    val: prevInput.value,
+    focused: document.activeElement === prevInput,
+    start: prevInput.selectionStart,
+    end: prevInput.selectionEnd
+  } : null;
+  const prevMain = root.querySelector("main");
+  const savedMainScroll = prevMain ? prevMain.scrollTop : 0;
+  const prevTerm = document.getElementById("term-box");
+  const paneChanged = lastRenderedPane !== selectedPane;
+  const termNearBottom = !prevTerm || paneChanged || (prevTerm.scrollHeight - prevTerm.scrollTop - prevTerm.clientHeight) < 36;
+  const savedTermScroll = prevTerm ? prevTerm.scrollTop : 0;
+
   const activeCount = (state.panes||[]).filter(p=>p.status==="running").length;
-  const alertCount = (state.panes||[]).filter(p=>p.rate_limit||p.status==="needs_input").length;
-  const body = tab==="live"?renderLive():tab==="projects"?renderProjects():tab==="profiles"?renderProfiles():renderAlerts();
-  document.getElementById("root").innerHTML = `<div class="app">
+  const urgentCount = (state.panes||[]).filter(p=>p.rate_limit||p.status==="needs_input").length;
+  const alertLogCount = (state.alerts||[]).filter(a=>a.level==="warn"||a.level==="error"||a.level==="failover").length;
+  const body = (toastMsg?`<div class="toast">${esc(toastMsg)}</div>`:"") +
+    (tab==="live"?renderLive():tab==="projects"?renderProjects():tab==="profiles"?renderProfiles():renderAlerts());
+
+  root.innerHTML = `<div class="app">
     <header>
       <div class="brand"><span id="conn-dot" class="dot ${connected?"ok":"warn"}"></span>TernaryCode</div>
-      <div class="pill">${activeCount} active${alertCount?` · ${alertCount} alert`:""}</div>
+      <div class="pill">${activeCount} active${urgentCount?` · ${urgentCount} waiting`:""}</div>
     </header>
     <main>${body}</main>
     <nav>
-      <button class="${tab==="live"?"active":""}" onclick="tab='live';render()"><span>●</span>Live</button>
-      <button class="${tab==="projects"?"active":""}" onclick="tab='projects';render()"><span>☰</span>Projects</button>
-      <button class="${tab==="profiles"?"active":""}" onclick="tab='profiles';render()"><span>◈</span>Profiles</button>
-      <button class="${tab==="alerts"?"active":""}" onclick="tab='alerts';render()"><span>!</span>Alerts${alertCount?` (${alertCount})`:""}</button>
+      <button class="${tab==="live"?"active":""}" data-act="tab" data-tab="live"><span>●</span>Live${urgentCount?` (${urgentCount})`:""}</button>
+      <button class="${tab==="projects"?"active":""}" data-act="tab" data-tab="projects"><span>☰</span>Projects</button>
+      <button class="${tab==="profiles"?"active":""}" data-act="tab" data-tab="profiles"><span>◈</span>Profiles</button>
+      <button class="${tab==="alerts"?"active":""}" data-act="tab" data-tab="alerts"><span>!</span>Alerts${alertLogCount?` (${alertLogCount})`:""}</button>
     </nav>
   </div>`;
-  const t = document.getElementById("term-box");
-  if(t) t.scrollTop = t.scrollHeight;
+
+  lastRenderedPane = selectedPane;
+  const newMain = root.querySelector("main");
+  if(newMain) newMain.scrollTop = savedMainScroll;
+  const newTerm = document.getElementById("term-box");
+  if(newTerm) newTerm.scrollTop = termNearBottom ? newTerm.scrollHeight : savedTermScroll;
+  if(savedInput){
+    const cur = document.getElementById("prompt-input");
+    if(cur){
+      cur.value = savedInput.val;
+      if(savedInput.focused){
+        cur.focus({preventScroll:true});
+        try{ cur.setSelectionRange(savedInput.start, savedInput.end); }catch(_){}
+      }
+    }
+  }
 }
 
-if(!token && urlPair){
+// Single delegated click & key handler (zero inline JS string interpolation / zero XSS).
+root.addEventListener("click", (ev)=>{
+  const el = ev.target.closest("[data-act]");
+  if(!el) return;
+  const act = el.dataset.act;
+  if(act === "pair"){
+    const code = document.getElementById("p-code")?.value || "";
+    const name = document.getElementById("p-name")?.value || "";
+    doPair(code, name);
+  } else if(act === "tab"){
+    tab = el.dataset.tab || "live";
+    render();
+  } else if(act === "select-pane"){
+    selectedPane = Number(el.dataset.pane);
+    render();
+  } else if(act === "focus-live"){
+    selectedPane = Number(el.dataset.pane);
+    tab = "live";
+    render();
+  } else if(act === "switch"){
+    switchProfile(Number(el.dataset.pane), el.dataset.profile);
+  } else if(act === "quick"){
+    sendAction(Number(el.dataset.pane), el.dataset.kind);
+  } else if(act === "send-prompt"){
+    sendPrompt(Number(el.dataset.pane));
+  } else if(act === "resume-session"){
+    resumeSession(el.dataset.project, el.dataset.agent, el.dataset.session, el.dataset.profile);
+  }
+});
+
+root.addEventListener("keydown", (ev)=>{
+  if(ev.key !== "Enter" || ev.isComposing) return;
+  if(ev.target && ev.target.id === "prompt-input"){
+    sendPrompt(Number(ev.target.dataset.pane));
+  } else if(ev.target && (ev.target.id === "p-code" || ev.target.id === "p-name")){
+    const code = document.getElementById("p-code")?.value || "";
+    const name = document.getElementById("p-name")?.value || "";
+    doPair(code, name);
+  }
+});
+
+if(urlPair){
+  // Explicit QR pairing link always takes precedence over any stale saved token.
+  render();
   doPair(urlPair, /iPhone/.test(navigator.userAgent)?"iPhone":/Android/.test(navigator.userAgent)?"Android":"Mobile");
 }else if(token){
+  render();
   startLive();
 }else{
   render();

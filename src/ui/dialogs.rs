@@ -417,8 +417,8 @@ impl App {
                 Dialog::WorktreeSetup { id, copy, adding, run, fresh } => {
                     keep = self.worktree_setup_dialog(ui, *id, copy, adding, run, fresh, enter);
                 }
-                Dialog::AgentMissing { preset, launch, place, program, npm } => {
-                    keep = self.agent_missing_dialog(ui, preset, launch, *place, program, *npm, enter);
+                Dialog::AgentMissing { preset, launch, place, profile, program, npm } => {
+                    keep = self.agent_missing_dialog(ui, preset, launch, *place, profile.as_deref(), program, *npm, enter);
                 }
                 Dialog::ConfirmCloseFile(project, path, name) => {
                     ui.set_width(460.0);
@@ -1490,7 +1490,17 @@ impl App {
     /// Run Agent found no program for a preset: how to install it (Install in Terminal types the
     /// command), or Run Anyway (an alias or a function the check can't see).
     #[allow(clippy::too_many_arguments)]
-    fn agent_missing_dialog(&mut self, ui: &mut Ui, preset: &str, launch: &crate::actions::Launch, place: Option<usize>, program: &str, npm: bool, enter: bool) -> bool {
+    fn agent_missing_dialog(
+        &mut self,
+        ui: &mut Ui,
+        preset: &str,
+        launch: &crate::actions::Launch,
+        place: Option<usize>,
+        profile: Option<&str>,
+        program: &str,
+        npm: bool,
+        enter: bool,
+    ) -> bool {
         let p = style::pal(ui);
         ui.set_width(480.0);
         let mut keep = true;
@@ -1563,7 +1573,7 @@ impl App {
             keep = false;
         }
         if anyway {
-            self.actions.push(Action::RunPresetAnyway(preset.to_string(), launch.clone(), place));
+            self.actions.push(Action::RunPresetAnyway(preset.to_string(), launch.clone(), place, profile.map(str::to_string)));
             keep = false;
         }
         if let Some(command) = now

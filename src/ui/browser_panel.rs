@@ -40,7 +40,9 @@ impl App {
 
     /// The Code drawer shows for the project (the panel waits behind it).
     pub fn drawer_shown(&self, project: ProjectId) -> bool {
-        self.editors.get(&project).is_some_and(|e| e.visible)
+        self.zen_mode
+            || self.review.as_ref().is_some_and(|r| r.project == project && !r.expanded)
+            || self.editors.get(&project).is_some_and(|e| e.visible)
     }
 
     /// The page the project's panel shows in Focus now: open, with a page in front, the Code
@@ -70,6 +72,10 @@ impl App {
     /// Shows `project`'s panel with `page` in front; the Code drawer (and Review in it) makes
     /// way.
     pub fn show_page(&mut self, project: ProjectId, page: PaneId) {
+        self.exit_zen_mode();
+        self.drawer_maximized = false;
+        self.drawer_tab = tc_core::model::DrawerTab::Terminals;
+        self.settings.drawer_open = true;
         if let Some(panel) = self.panel_mut(project) {
             panel.front = Some(page);
             panel.open = true;
@@ -267,7 +273,7 @@ impl App {
             && let Some(pos) = r.interact_pointer_pos()
             && let Some(panel) = self.panel_mut(project)
         {
-            panel.width = ((full.right() - pos.x) / full.width()).clamp(0.25, 0.75);
+            panel.width = ((full.right() - pos.x) / full.width().max(1.0)).clamp(0.25, 0.75);
         }
         if r.drag_stopped() {
             self.mark_dirty();

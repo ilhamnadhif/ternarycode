@@ -86,13 +86,14 @@ impl App {
         // Left part, clipped before the middle part or the toolbar.
         let mut left_rect = Rect::from_min_max(inner.min, pos2(left_end.max(inner.left()), inner.bottom()));
         let fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-        if self.settings.sidebar_hidden {
+        if self.settings.sidebar_hidden || self.zen_mode {
             left_rect.min.x = header.left() + crate::platform::traffic_light_inset(fullscreen).max(10.0);
         } else if self.settings.sidebar_compact {
             // The window's buttons reach past the narrow sidebar.
             let lights = crate::platform::traffic_light_inset(fullscreen) - super::sidebar::COMPACT_W;
             left_rect.min.x = left_rect.min.x.max(header.left() + lights.max(0.0) + 4.0);
         }
+        left_rect.max.x = left_rect.max.x.max(left_rect.min.x);
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(left_rect)
@@ -100,7 +101,8 @@ impl App {
             |ui| {
                 ui.set_clip_rect(left_rect.intersect(ui.clip_rect()));
                 ui.spacing_mut().item_spacing.x = 4.0;
-                if self.settings.sidebar_hidden
+                if !self.zen_mode
+                    && self.settings.sidebar_hidden
                     && kit::icon_button_ex(ui, icons::SIDEBAR_SIMPLE, &kit::tip(t("Show Sidebar"), Action::ToggleSidebar), false, 26.0)
                         .clicked()
                 {
@@ -108,7 +110,7 @@ impl App {
                 }
                 // The views' switch lives at the top of the sidebar; with the sidebar hidden or
                 // narrow, here.
-                if (self.settings.sidebar_hidden || self.settings.sidebar_compact) && !self.projects.is_empty() {
+                if !self.zen_mode && (self.settings.sidebar_hidden || self.settings.sidebar_compact) && !self.projects.is_empty() {
                     self.view_switch_compact(ui);
                     ui.add_space(6.0);
                 }
@@ -168,17 +170,18 @@ impl App {
             self.telemetry_pill(ui);
             return;
         }
-        let editor_on = self.active.and_then(|id| self.editors.get(&id)).is_some_and(|e| e.visible);
-        let drawer_on = self.settings.drawer_open;
+        let review_here = self.active.is_some_and(|pid| self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded));
+        let editor_on = !self.drawer_maximized && (review_here || self.active.and_then(|id| self.editors.get(&id)).is_some_and(|e| e.visible));
+        let drawer_on = !editor_on || self.settings.drawer_open;
         let drawer_icon = if self.is_dock_right() { icons::COLUMNS } else { icons::ROWS };
-        // Added right to left: Zen Mode, Secondary Drawer, Code Editor, Browser, Telemetry Pill, Run Agent.
+        // Added right to left: Zen Mode, Terminal Panel, Code Editor, Browser, Telemetry Pill, Run Agent.
         let zen = kit::icon_button_ex(ui, icons::ARROWS_OUT, &kit::tip(t("Focus / Zen Mode"), Action::ToggleZenMode), self.zen_mode, 28.0);
         #[cfg(debug_assertions)]
         crate::devtest::record("toggle-zen", zen.rect);
         if zen.clicked() {
             self.actions.push(Action::ToggleZenMode);
         }
-        let dr = kit::icon_button_ex(ui, drawer_icon, &kit::tip(t("Drawer"), Action::ToggleDrawer), drawer_on, 28.0);
+        let dr = kit::icon_button_ex(ui, drawer_icon, &kit::tip(t("Show/Hide Terminal Panel"), Action::ToggleDrawer), drawer_on, 28.0);
         #[cfg(debug_assertions)]
         crate::devtest::record("toggle-drawer", dr.rect);
         if dr.clicked() {
@@ -458,13 +461,13 @@ impl App {
 
         // The sheets sit on the base below the bar, the window's edge beside them (and a margin
         // at the left too when the sidebar is hidden).
-        let body = sheets_area(body, self.settings.sidebar_hidden);
+        let body = sheets_area(body, self.settings.sidebar_hidden || self.zen_mode);
 
         // ----- Wide Code Editor primary stage + collapsible Bottom / Right secondary drawer -----
         self.last_full_body = Some(body);
         let (editor_stage, drawer_stage) = self.workspace_split(pid, body);
         let dock_right = self.is_dock_right();
-        let has_editor = editor_stage.is_some();
+        let editor_active = editor_stage.is_some() || self.drawer_maximized;
 
         if let Some(stage) = editor_stage {
             #[cfg(debug_assertions)]
@@ -499,14 +502,14 @@ impl App {
             return;
         };
 
-        // Secondary Drawer chrome: when Code Editor is visible (or when viewing Logs/Problems),
-        // render the crisp drawer tab strip (Terminals | Agent Logs | Problems) + dock controls.
-        let show_drawer_bar = has_editor || self.drawer_tab != tc_core::model::DrawerTab::Terminals;
+        // Secondary Drawer chrome: when Code Editor is active (even if the panel is maximized)
+        // or when viewing Logs/Problems, render the drawer tab strip + dock/restore controls.
+        let show_drawer_bar = editor_active || self.drawer_tab != tc_core::model::DrawerTab::Terminals;
         let drawer_content = if show_drawer_bar {
             #[cfg(debug_assertions)]
             crate::devtest::record("secondary-drawer", drawer_rect);
             let bar = Rect::from_min_size(drawer_rect.min, vec2(drawer_rect.width(), DRAWER_BAR_H));
-            self.secondary_drawer_bar(ui, bar, pid, has_editor);
+            self.secondary_drawer_bar(ui, bar, pid, editor_active);
             Rect::from_min_max(pos2(drawer_rect.left(), bar.bottom() + 2.0), drawer_rect.max)
         } else {
             drawer_rect
@@ -536,7 +539,7 @@ impl App {
         self.panel_follow(pid);
         let cell = widget::cell_size(ui.ctx(), self.settings.font_size);
         let place = match self.project(pid).and_then(|p| p.tab()) {
-            Some(tab) if !has_editor => self.focus_place(pid, &tab.layout, body_panes, cell),
+            Some(tab) if !editor_active => self.focus_place(pid, &tab.layout, body_panes, cell),
             _ => crate::project::PanelPlace::without(body_panes),
         };
         let told = self.panel_of(pid).is_some_and(|x| x.told_stacked);
@@ -617,11 +620,18 @@ impl App {
                 let foot = Rect::from_min_max(pos2(rect.left() + 6.0, rect.bottom() - 6.0 - FOOT_H), pos2(rect.right() - 6.0, rect.bottom() - 6.0));
                 self.exit_bar(ui, pane_id, foot);
                 term_rect.max.y = foot.top() - 2.0;
-            } else if self.panes.get(&pane_id).is_some_and(|x| x.tracker.status == Status::NeedsInput && x.tracker.agent.is_some() && x.rate_limit.is_none()) && term_rect.height() > 110.0 {
+            } else if self.panes.get(&pane_id).is_some_and(|x| {
+                x.tracker.status == Status::NeedsInput
+                    && x.tracker.agent.is_some()
+                    && x.rate_limit.as_ref().is_none_or(|b| b.auto_switched_to.is_some())
+            }) && term_rect.height() > 110.0
+            {
                 let bar = Rect::from_min_max(pos2(rect.left() + 8.0, rect.bottom() - 6.0 - APPROVAL_H), pos2(rect.right() - 8.0, rect.bottom() - 6.0));
                 self.approval_bar(ui, pane_id, bar);
                 term_rect.max.y = bar.top() - 2.0;
             }
+            term_rect.max.y = term_rect.max.y.max(term_rect.min.y);
+            term_rect.max.x = term_rect.max.x.max(term_rect.min.x);
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("pane:{pane_id}"), term_rect);
             self.pane_rects.insert(pane_id, term_rect);
@@ -997,7 +1007,7 @@ impl App {
 
     /// The ⌘F bar over the pane being searched: Enter finds older output, Shift+Enter newer.
     fn find_bar(&mut self, ui: &mut Ui) {
-        let take_keys = self.terminals_take_keys();
+        let take_keys = !self.overlay_open() && !self.updater.dialog_open && !self.review_full();
         let Some(search) = self.pane_search.as_mut() else { return };
         let Some(rect) = self.pane_rects.get(&search.pane).copied() else {
             self.pane_search = None;
@@ -1115,13 +1125,15 @@ impl App {
         // Inline Active Profile Switcher pill inside agent panes (or panes bound to a profile).
         let show_profile = has_agent || self.panes.get(&pane_id).is_some_and(|x| x.active_profile.is_some());
         if show_profile && rect.width() > 300.0 {
-            let switcher_area = Rect::from_min_max(pos2((right - 160.0).max(rect.left() + 140.0), rect.top()), pos2(right, rect.bottom()));
+            let left = (right - 160.0).max(rect.left() + 140.0).min(right);
+            let switcher_area = Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom()));
             let used_left = ui
                 .scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(switcher_area)
                         .layout(egui::Layout::right_to_left(egui::Align::Center)),
                     |ui| {
+                        ui.set_clip_rect(switcher_area.intersect(ui.clip_rect()));
                         self.pane_profile_switcher(ui, pane_id);
                         ui.min_rect().left()
                     },
@@ -1407,7 +1419,7 @@ impl App {
     fn secondary_drawer_bar(&mut self, ui: &mut Ui, rect: Rect, pid: tc_core::ProjectId, has_editor: bool) {
         let p = style::pal(ui);
         let tab = self.drawer_tab;
-        let logs_count = self.agent_logs.iter().filter(|e| e.project == Some(pid)).count();
+        let logs_count = self.agent_logs.iter().filter(|e| e.project.is_none() || e.project == Some(pid)).count();
         let (diag_errs, diag_warns) = self.project_diagnostic_counts(pid);
         let diag_total = diag_errs + diag_warns;
 
@@ -1420,19 +1432,22 @@ impl App {
                 |ui| {
                     ui.spacing_mut().item_spacing.x = 3.0;
                     if has_editor
-                        && kit::icon_button_ex(ui, icons::X, &kit::tip(t("Hide Drawer"), Action::ToggleDrawer), false, 22.0).clicked()
+                        && kit::icon_button_ex(ui, icons::X, &kit::tip(t("Hide Terminal Panel"), Action::ToggleDrawer), false, 22.0).clicked()
                     {
                         self.actions.push(Action::ToggleDrawer);
                     }
                     if has_editor {
                         let max_icon = if self.drawer_maximized { icons::ARROWS_IN } else { icons::ARROWS_OUT };
-                        let max_tip = if self.drawer_maximized { t("Restore Drawer") } else { t("Maximize Drawer") };
-                        if kit::icon_button_ex(ui, max_icon, max_tip, self.drawer_maximized, 22.0).clicked() {
+                        let max_tip = if self.drawer_maximized { t("Restore Terminal Panel") } else { t("Maximize Terminal Panel") };
+                        let mr = kit::icon_button_ex(ui, max_icon, max_tip, self.drawer_maximized, 22.0);
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record("drawer-maximize", mr.rect);
+                        if mr.clicked() {
                             self.drawer_maximized = !self.drawer_maximized;
                         }
                         let is_right = self.is_dock_right();
                         let dock_icon = if is_right { icons::ROWS } else { icons::COLUMNS };
-                        let dock_tip = if is_right { t("Dock Drawer Bottom") } else { t("Dock Drawer Right") };
+                        let dock_tip = if is_right { t("Dock Panel Bottom") } else { t("Dock Panel Right") };
                         if kit::icon_button_ex(ui, dock_icon, dock_tip, false, 22.0).clicked() {
                             self.actions.push(Action::SetDrawerDock(if is_right {
                                 tc_core::model::DrawerDock::Bottom
@@ -1455,9 +1470,9 @@ impl App {
             )
             .inner;
 
-        let left_max = (right_used.left() - 6.0).max(rect.left() + 60.0);
+        let left_max = (right_used.left() - 6.0).max(rect.left());
         let left_rect = Rect::from_min_max(rect.min, pos2(left_max, rect.bottom()));
-        let compact = left_rect.width() < 260.0;
+        let compact = left_rect.width() < 340.0;
         let diag_c = if diag_errs > 0 { p.err } else { p.warn };
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -1502,13 +1517,13 @@ impl App {
             crate::devtest::record("editor-divider", divider);
             if resp.hovered() || resp.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                ui.painter().rect_filled(Rect::from_center_size(pos2(split_x, full.center().y), vec2(2.0, full.height() - 16.0)), CornerRadius::same(1), p.accent);
+                ui.painter().rect_filled(Rect::from_center_size(pos2(split_x, full.center().y), vec2(2.0, (full.height() - 16.0).max(0.0))), CornerRadius::same(1), p.accent);
             }
             if resp.dragged()
                 && let Some(pos) = resp.interact_pointer_pos()
                 && let Some(e) = self.editors.get_mut(&pid)
             {
-                e.width = ((pos.x - full.left()) / full.width()).clamp(0.40, 0.85);
+                e.width = ((pos.x - full.left()) / full.width().max(1.0)).clamp(0.40, 0.85);
             }
             if resp.drag_stopped() {
                 self.mark_dirty();
@@ -1521,12 +1536,12 @@ impl App {
             crate::devtest::record("drawer-divider", divider);
             if resp.hovered() || resp.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                ui.painter().rect_filled(Rect::from_center_size(pos2(full.center().x, split_y), vec2(full.width() - 16.0, 2.0)), CornerRadius::same(1), p.accent);
+                ui.painter().rect_filled(Rect::from_center_size(pos2(full.center().x, split_y), vec2((full.width() - 16.0).max(0.0), 2.0)), CornerRadius::same(1), p.accent);
             }
             if resp.dragged()
                 && let Some(pos) = resp.interact_pointer_pos()
             {
-                self.settings.drawer_size = ((full.bottom() - pos.y) / full.height()).clamp(0.18, 0.70);
+                self.settings.drawer_size = ((full.bottom() - pos.y) / full.height().max(1.0)).clamp(0.18, 0.70);
             }
             if resp.drag_stopped() {
                 self.settings_changed();
@@ -1540,11 +1555,12 @@ impl App {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let mut filter = self.logs_filter.clone();
-                kit::field(ui, egui::Id::new("logs-filter"), &mut filter, Some(icons::MAGNIFYING_GLASS), t("Filter agent logs…"), 240.0, true);
+                let filter_w = (ui.available_width() - 90.0).clamp(80.0, 240.0);
+                kit::field(ui, egui::Id::new("logs-filter"), &mut filter, Some(icons::MAGNIFYING_GLASS), t("Filter agent logs…"), filter_w, true);
                 self.logs_filter = filter;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::BROOM), t("Clear"), true).clicked() {
-                        self.agent_logs.clear();
+                        self.agent_logs.retain(|e| e.project.is_some() && e.project != Some(pid));
                     }
                 });
             });
@@ -1758,7 +1774,7 @@ impl App {
         );
         // The same area as the Focus view's (one top bar above both): panes shown in the Grid
         // are sized against it.
-        self.last_full_body = Some(body);
+        self.last_full_body = Some(sheets_area(body, self.settings.sidebar_hidden));
         body
     }
 

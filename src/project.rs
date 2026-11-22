@@ -379,7 +379,7 @@ impl Project {
             missing: false,
             merge_offered: false,
             ship: saved.ship.unwrap_or_default(),
-            sessions_expanded: saved.sessions_expanded.unwrap_or(true),
+            sessions_expanded: saved.sessions_expanded.unwrap_or(false),
             active_profile: saved.active_profile.clone(),
             panel: saved.browser_panel.as_ref().map_or_else(Panel::default, |b| Panel {
                 open: b.open,

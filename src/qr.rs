@@ -42,7 +42,10 @@ impl QrCode {
         let spec = SPECS.iter().find(|s| {
             let count_bits = if s.version <= 9 { 8 } else { 16 };
             let header_bits = 4 + count_bits;
-            header_bits + data.len() * 8 <= s.data_codewords * 8
+            data.len()
+                .checked_mul(8)
+                .and_then(|b| b.checked_add(header_bits))
+                .is_some_and(|bits| bits <= s.data_codewords * 8)
         })?;
 
         let data_cw = encode_data_codewords(data, spec);
