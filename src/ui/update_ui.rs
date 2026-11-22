@@ -373,8 +373,9 @@ impl Updater {
         update::launch_installer(prepared)
     }
 
-    /// `running`: the agents at work and their projects, for the promise that they keep running.
-    pub fn show_dialog(&mut self, ctx: &egui::Context, settings: &mut Settings, running: &[String]) -> UpdateEvent {
+    /// `running_count` / `running`: how many agents work now and their projects, for the promise
+    /// that they keep running.
+    pub fn show_dialog(&mut self, ctx: &egui::Context, settings: &mut Settings, running_count: usize, running: &[String]) -> UpdateEvent {
         if !self.dialog_open {
             return UpdateEvent::None;
         }
@@ -468,7 +469,7 @@ impl Updater {
                                 ui.add(egui::Label::new(RichText::new(update::manual_reason()).size(style::SMALL).color(p.text_muted)).wrap());
                             } else {
                                 ui.add_space(12.0);
-                                promise(ui, running);
+                                promise(ui, running_count, running);
                                 ui.add_space(10.0);
                                 ui.horizontal_top(|ui| {
                                     ui.spacing_mut().item_spacing.x = 8.0;
@@ -487,7 +488,7 @@ impl Updater {
                         });
                         dialogs::footer_with(ui, Some(t("Later keeps it in the status bar.")), |ui| {
                             if installable {
-                                let install = kit::button_keys(ui, kit::Kind::Primary, None, t("Install Update"), Some("↵"), false);
+                                let install = kit::button_keys(ui, kit::Kind::Primary, None, t("Install Update"), None, false);
                                 #[cfg(debug_assertions)]
                                 crate::devtest::record("update-install", install.rect);
                                 if install.clicked() {
@@ -614,8 +615,10 @@ impl crate::app::App {
         }
         // The projects where an agent works now (they keep running through a restart in place).
         let mut running: Vec<String> = self.panes.values().filter(|x| x.tracker.agent.is_some() && x.alive()).map(|x| self.project_label(x.project)).collect();
+        let running_count = running.len();
+        running.sort();
         running.dedup();
-        if let UpdateEvent::Restart = self.updater.show_dialog(ctx, &mut self.settings, &running) {
+        if let UpdateEvent::Restart = self.updater.show_dialog(ctx, &mut self.settings, running_count, &running) {
             self.actions.push(crate::actions::Action::RestartToUpdate);
         }
         if (self.settings.skipped_version.clone(), self.settings.last_update_check) != before {
@@ -801,9 +804,9 @@ fn update_head(ui: &mut egui::Ui, title: &str, sub: &str) -> bool {
 
 /// The promise of a restart in place: what runs keeps running (where TernaryCode can hand its
 /// panes over), else that the panes and tabs come back.
-fn promise(ui: &mut egui::Ui, running: &[String]) {
+fn promise(ui: &mut egui::Ui, running_count: usize, running: &[String]) {
     let p = style::pal(ui);
-    let in_place = cfg!(unix);
+    let in_place = update::restarts_in_place();
     let r = egui::Frame::NONE
         .fill(style::soft(p.accent, 0.08))
         .stroke(Stroke::new(1.0, style::soft(p.accent, 0.25)))
@@ -820,13 +823,13 @@ fn promise(ui: &mut egui::Ui, running: &[String]) {
                     let title = if in_place { t("Agents and programs keep running through the update") } else { t("Your projects and tabs come back after the update") };
                     ui.label(RichText::new(title).font(style::medium(13.0)).color(p.text));
                     let mut text = String::new();
-                    if !running.is_empty() && in_place {
+                    if running_count > 0 && in_place {
                         let list = match running {
                             [one] => one.clone(),
                             [rest @ .., last] => format!("{} {} {last}", rest.join(", "), t("and")),
                             [] => String::new(),
                         };
-                        text.push_str(&crate::i18n::count(running.len(), &tf("1 agent is working now, in {}.", &[&list]), &tf("{} agents are working now, in {}.", &["{}", &list])));
+                        text.push_str(&crate::i18n::count(running_count, &tf("1 agent is working now, in {}.", &[&list]), &tf("{} agents are working now, in {}.", &["{}", &list])));
                         text.push(' ');
                     }
                     text.push_str(if in_place {

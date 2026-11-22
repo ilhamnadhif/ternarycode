@@ -300,11 +300,7 @@ impl App {
         if let Some(preset) = self.presets().into_iter().find(|p| p.id == made.preset) {
             let agent = self.launch_command(&preset, &preset.command);
             let run = setup.run.trim();
-            let line = match (run.is_empty(), cfg!(windows)) {
-                (true, _) => agent,
-                (false, false) => format!("{run} && {agent}"),
-                (false, true) => format!("{run}; {agent}"),
-            };
+            let line = if run.is_empty() { agent } else { crate::ship::chain(&[run.to_string(), agent]) };
             if let Some(p) = self.panes.get_mut(&pane) {
                 p.preset = Some(preset.id.clone());
                 p.type_command(line);

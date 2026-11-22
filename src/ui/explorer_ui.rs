@@ -144,7 +144,7 @@ impl App {
         crate::devtest::record("files-filter", fr.rect);
         // Esc is the field's (egui would otherwise take the keyboard away on it first).
         if fr.has_focus() {
-            ui.memory_mut(|m| m.set_focus_lock_filter(fid, egui::EventFilter { escape: true, ..Default::default() }));
+            ui.memory_mut(|m| m.set_focus_lock_filter(fid, egui::EventFilter { escape: true, horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
         }
         if fr.changed() {
             if let Some(ex) = self.explorer_mut(pid) {

@@ -520,18 +520,28 @@ mod linux {
     /// Whether an agent may open `url` without asking (as the app's `agent_may_open`): local
     /// files and blank pages, its sites, the host the user let it open once.
     fn agent_may_open(url: &str, sites: &[String], pass: Option<&str>) -> bool {
-        let scheme = url.split_once(':').map_or("", |(s, _)| s).to_ascii_lowercase();
+        if url.bytes().any(|b| b < 0x20 || b == 0x7f) {
+            return false;
+        }
+        let Some((scheme, after)) = url.split_once(':') else { return false };
+        let scheme = scheme.to_ascii_lowercase();
         if !matches!(scheme.as_str(), "http" | "https") {
             return matches!(scheme.as_str(), "about" | "file" | "data" | "blob");
         }
-        let rest = url.split_once("://").map_or(url, |(_, r)| r);
+        let Some(rest) = after.strip_prefix("//") else { return false };
         let host = rest.split(['/', '?', '#', '\\']).next().unwrap_or("");
         let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
         let host = if let Some(v6) = host.strip_prefix('[') { format!("[{}]", v6.split(']').next().unwrap_or("")) } else { host.split(':').next().unwrap_or("").to_ascii_lowercase() };
+        if host.is_empty() {
+            return false;
+        }
         if pass == Some(host.as_str()) {
             return true;
         }
         sites.iter().any(|s| {
+            if s.trim() == "*" {
+                return true;
+            }
             let s = s.trim().trim_start_matches("*.").to_ascii_lowercase();
             !s.is_empty() && (host == s || host.ends_with(&format!(".{s}")))
         })
@@ -574,8 +584,11 @@ mod linux {
                 }
                 None => {
                     w.set_default_size(600, 700);
+                    w.set_focus_on_map(agent.is_none());
                     w.show_all();
                     s.set(true);
+                    POPUPS.with_borrow_mut(|p| p.insert(pid, Popup { view: pv.clone(), window: w.clone(), opener: id }));
+                    ev(id, "popup", json!({ "pid": pid, "url": u }));
                 }
             }
         });

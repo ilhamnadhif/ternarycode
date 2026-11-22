@@ -705,6 +705,7 @@ pub fn end_session(feeder: &mut Feeder, text: &str) {
     }
     feeder.parser = Processor::new();
     feeder.osc.reset();
+    feeder.servers = crate::servers::ServerScanner::default();
     // No shell waits at its prompt any more: a resize must not clear "its prompt" (the last
     // output, the message under it), which nobody would draw again.
     {

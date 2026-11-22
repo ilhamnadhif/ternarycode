@@ -586,12 +586,19 @@ impl App {
         let ship_typing = ui.ctx().memory(|m| m.focused().is_some_and(|f| f == App::ship_message_id(r.project) || f == egui::Id::new(("ship-branch", r.project))));
         let mut toggle_in: Option<usize> = None;
         let mut close = false;
-        let expand = false;
         let mut to_terminal = false;
         let mut select: Option<usize> = None;
         let mut hunk_step: i32 = 0;
         let mut open = false;
-        if self.dialog.is_none() && self.palette.is_none() && has_keys && !ship_typing {
+        if self.dialog.is_none() && self.palette.is_none() && !self.attention_open && !self.updater.dialog_open && has_keys && !ship_typing {
+            let filter_q = self.review_filter.trim().to_lowercase();
+            let visible: Vec<usize> = r
+                .files
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| filter_q.is_empty() || f.path.to_lowercase().contains(&filter_q))
+                .map(|(i, _)| i)
+                .collect();
             ui.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::NONE, Key::Escape) {
                     if drawer {
@@ -604,11 +611,15 @@ impl App {
                     return;
                 }
                 let sel = r.selected;
-                if i.consume_key(egui::Modifiers::NONE, Key::J) && sel + 1 < nfiles {
-                    select = Some(sel + 1);
+                if i.consume_key(egui::Modifiers::NONE, Key::J)
+                    && let Some(&next) = visible.iter().find(|&&idx| idx > sel)
+                {
+                    select = Some(next);
                 }
-                if i.consume_key(egui::Modifiers::NONE, Key::K) && sel > 0 {
-                    select = Some(sel - 1);
+                if i.consume_key(egui::Modifiers::NONE, Key::K)
+                    && let Some(&prev) = visible.iter().rev().find(|&&idx| idx < sel)
+                {
+                    select = Some(prev);
                 }
                 if i.consume_key(egui::Modifiers::NONE, Key::N) {
                     hunk_step = 1;
@@ -1260,9 +1271,6 @@ impl App {
         }
         if let Some(pc) = pick_click {
             self.review_pick(pc);
-        }
-        if expand && let Some(r) = self.review.as_mut() {
-            r.expanded = true;
         }
         if let Some(d) = fold
             && let Some(r) = self.review.as_mut()

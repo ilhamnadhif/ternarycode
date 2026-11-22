@@ -250,7 +250,7 @@ pub fn line_marks(root: &Path, base: &str, path: &str) -> Result<Vec<LineMark>, 
 /// The marks of a `--unified=0` diff: each hunk header `@@ -a,b +c,d @@` (a count left out is 1).
 pub fn parse_line_marks(diff: &str) -> Vec<LineMark> {
     let range = |s: &str| -> Option<(u32, u32)> {
-        let s = &s[1..];
+        let s = s.strip_prefix(['-', '+'])?;
         Some(match s.split_once(',') {
             Some((a, b)) => (a.parse().ok()?, b.parse().ok()?),
             None => (s.parse().ok()?, 1),
@@ -568,5 +568,12 @@ mod tests {
         let mut cmd = git(Path::new("."));
         cmd.args(["-c", "core.splitIndex=false", "add", "--all"]);
         assert_eq!(describe(&cmd), "git add --all");
+    }
+
+    #[test]
+    fn parse_line_marks_handles_non_ascii_safely() {
+        let diff = "@@ -1,0 +1,2 @@\n+hello\nébad\n";
+        let marks = parse_line_marks(diff);
+        assert_eq!(marks.len(), 1);
     }
 }

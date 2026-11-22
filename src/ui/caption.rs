@@ -145,6 +145,7 @@ impl App {
             chosen = menu_rows(ui, &[
                 Some((t("Run Agent…"), A::PickPreset)),
                 Some((t("Review Changes…"), A::Review)),
+                Some((t("Commit…"), A::Commit)),
                 None,
                 Some((t("Go to Next Waiting Agent"), A::NextAttention)),
                 Some((t("Back to Where I Was"), A::BackAttention)),

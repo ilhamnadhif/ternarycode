@@ -191,11 +191,38 @@ fn command_browser(command: &str, cwd: Option<&Path>) -> Option<Other> {
         let mut i = 0;
         while i < w.len() {
             let x = w[i].as_str();
-            // `VAR=value` before the program, and programs that run the next one.
-            if (x.contains('=') && !x.starts_with('-') && !x.contains('/')) || WRAPPERS.contains(&x) {
+            // `VAR=value` before the program, and programs that run the next one (with their options).
+            if x.contains('=') && !x.starts_with('-') && !x.contains('/') {
                 i += 1;
+            } else if WRAPPERS.contains(&x) {
+                i += 1;
+                while i < w.len() && w[i].starts_with('-') {
+                    let opt = w[i].as_str();
+                    i += 1;
+                    if opt == "--" {
+                        break;
+                    }
+                    let takes_val = matches!(opt, "-u" | "-g" | "-n" | "-C" | "-a" | "-t" | "-w" | "-e" | "-f" | "-p" | "-s" | "--unset" | "--chdir" | "--user" | "--group" | "--adjustment");
+                    if takes_val && i < w.len() {
+                        i += 1;
+                    }
+                }
             } else if x == "timeout" {
-                i += 2;
+                i += 1;
+                while i < w.len() && w[i].starts_with('-') {
+                    let opt = w[i].as_str();
+                    i += 1;
+                    if opt == "--" {
+                        break;
+                    }
+                    if matches!(opt, "-k" | "-s" | "--kill-after" | "--signal") && i < w.len() {
+                        i += 1;
+                    }
+                }
+                // Duration argument after timeout options.
+                if i < w.len() {
+                    i += 1;
+                }
             } else {
                 break;
             }
@@ -246,25 +273,33 @@ fn command_browser(command: &str, cwd: Option<&Path>) -> Option<Other> {
         if INTERPRETERS.contains(&base.as_str()) && args.windows(2).any(|p| p[0] == "-m" && p[1] == "webbrowser") {
             return Some(DEFAULT);
         }
-        // Windows `start chrome …`, `Start-Process msedge …`, `start "" https://…`.
-        for (k, a) in w.iter().enumerate() {
-            let a = a.to_lowercase();
-            if a == "start" || a == "start-process" {
-                let next = w[k + 1..].iter().find(|x| !x.is_empty() && !x.starts_with('/') && !x.starts_with('-'));
-                if let Some(next) = next {
-                    let lower = next.to_lowercase();
-                    let nb = lower.rsplit(['/', '\\']).next().unwrap_or(&lower).to_string();
-                    if let Some(b) = program_browser(&nb) {
-                        return Some(b);
-                    }
-                    if is_url(next) {
-                        return Some(DEFAULT);
-                    }
+        // Windows `start chrome …`, `Start-Process msedge …`, `cmd /c start "" https://…`.
+        let is_shell_cmd = matches!(base.as_str(), "cmd" | "cmd.exe" | "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe");
+        let start_at = if base == "start" || base == "start-process" {
+            Some(i)
+        } else if is_shell_cmd {
+            w[i + 1..].iter().position(|a| {
+                let a = a.to_lowercase();
+                a == "start" || a == "start-process"
+            }).map(|p| i + 1 + p)
+        } else {
+            None
+        };
+        if let Some(k) = start_at {
+            let next = w[k + 1..].iter().find(|x| !x.is_empty() && !x.starts_with('/') && !x.starts_with('-'));
+            if let Some(next) = next {
+                let lower = next.to_lowercase();
+                let nb = lower.rsplit(['/', '\\']).next().unwrap_or(&lower).to_string();
+                if let Some(b) = program_browser(&nb) {
+                    return Some(b);
+                }
+                if is_url(next) {
+                    return Some(DEFAULT);
                 }
             }
         }
         // The Playwright command line opening a page (its tests and installs are fine).
-        if let Some(k) = w.iter().position(|a| a.to_lowercase().rsplit('/').next() == Some("playwright"))
+        if let Some(k) = w.iter().position(|a| a.to_lowercase().rsplit(['/', '\\']).next() == Some("playwright"))
             && matches!(w.get(k + 1).map(|s| s.to_lowercase()).as_deref(), Some("open" | "codegen" | "screenshot" | "pdf" | "cr" | "ff" | "wk"))
         {
             return Some(PLAYWRIGHT);
@@ -560,5 +595,13 @@ mod tests {
         .unwrap();
         assert_eq!(last_prompt(&rollout).as_deref(), Some("screenshot it in safari"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wrapper_flags_and_start_positions() {
+        assert_eq!(command_browser("echo start chrome", None), None);
+        assert!(command_browser("sudo -u root google-chrome https://x.dev", None).is_some());
+        assert!(command_browser("timeout -s KILL 5 firefox https://x.dev", None).is_some());
+        assert!(command_browser("cmd /c start https://x.dev", None).is_some());
     }
 }

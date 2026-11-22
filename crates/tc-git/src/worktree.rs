@@ -39,7 +39,7 @@ pub fn remove(repo: &Path, dir: &Path, force: bool) -> Result<(), String> {
     if force {
         cmd.arg("--force");
     }
-    run(cmd.arg(dir)).map(|_| ()).map_err(reason)
+    run(cmd.arg("--").arg(dir)).map(|_| ()).map_err(reason)
 }
 
 /// Deletes a branch: only when it is merged into its upstream or HEAD, unless `force`.
@@ -95,7 +95,7 @@ pub fn ahead_behind(repo: &Path, base: &str, head: &str) -> Result<(usize, usize
 pub fn files_changed(repo: &Path, base: &str, head: &str) -> Result<usize, String> {
     check_rev(base)?;
     check_rev(head)?;
-    let out = run(git(repo).args(["diff", "--no-ext-diff", "--name-only", "-z", &format!("{base}...{head}"), "--"]))?;
+    let out = run(git(repo).args(["diff", "--no-ext-diff", "--no-relative", "--name-only", "-z", &format!("{base}...{head}"), "--"]))?;
     Ok(out.split(|b| *b == 0).filter(|r| !r.is_empty()).count())
 }
 
@@ -103,7 +103,7 @@ pub fn files_changed(repo: &Path, base: &str, head: &str) -> Result<usize, Strin
 pub fn diff_stat(repo: &Path, base: &str, head: &str) -> Result<(usize, u32, u32), String> {
     check_rev(base)?;
     check_rev(head)?;
-    let out = run(git(repo).args(["diff", "--no-ext-diff", "--numstat", "-z", &format!("{base}...{head}"), "--"]))?;
+    let out = run(git(repo).args(["diff", "--no-ext-diff", "--no-relative", "--numstat", "-z", &format!("{base}...{head}"), "--"]))?;
     let text = String::from_utf8_lossy(&out);
     let (mut files, mut adds, mut dels) = (0, 0, 0);
     // "<added>\t<removed>\t<path>\0" (a rename: "<added>\t<removed>\t\0<old>\0<new>\0").
@@ -211,7 +211,6 @@ pub fn ignored_top(repo: &Path) -> Vec<String> {
     for rec in out.split(|b| *b == 0).filter(|r| !r.is_empty()) {
         let path = String::from_utf8_lossy(rec);
         let top = match path.split_once('/') {
-            Some((first, rest)) if !rest.is_empty() => format!("{first}/"),
             Some((first, _)) => format!("{first}/"),
             None => path.into_owned(),
         };
@@ -238,11 +237,11 @@ pub fn valid_branch(name: &str) -> bool {
         && name.len() <= 200
         && !name.contains("..")
         && !name.ends_with('/')
-        && !name.ends_with(".lock")
         && name.split('/').all(|part| {
             !part.is_empty()
                 && !part.starts_with('.')
                 && !part.starts_with('-')
+                && !part.ends_with(".lock")
                 && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         })
 }
@@ -268,7 +267,7 @@ mod tests {
         for ok in ["tc/generics", "claude-2", "fix_lexer", "a/b/c", "v1.2"] {
             assert!(valid_branch(ok), "{ok}");
         }
-        for bad in ["", "-x", "tc/", "a..b", ".hidden", "a/.b", "x.lock", "has space", "tc//x", "ünï"] {
+        for bad in ["", "-x", "tc/", "a..b", ".hidden", "a/.b", "x.lock", "a.lock/b", "has space", "tc//x", "ünï"] {
             assert!(!valid_branch(bad), "{bad}");
         }
     }

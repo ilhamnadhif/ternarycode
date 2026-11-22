@@ -92,21 +92,23 @@ impl App {
             .filter(|x| x.parent.is_none())
             .map(|x| {
                 // Its dot: the most urgent of it and its worktrees, when it asks for the user.
-                let mut dot = None;
+                let mut dot: Option<(u8, egui::Color32)> = None;
                 for pr in self.projects.iter().filter(|c| c.id == x.id || c.parent == Some(x.id)) {
                     if let Some((st, attention)) = self.project_status(pr) {
-                        let c = match st {
-                            Status::NeedsInput => Some(p.warn),
-                            Status::Failed(_) => Some(p.err),
-                            Status::Done | Status::CommandDone if attention => Some(p.ok),
+                        let cand = match st {
+                            Status::NeedsInput => Some((3, p.warn)),
+                            Status::Failed(_) => Some((2, p.err)),
+                            Status::Done | Status::CommandDone if attention => Some((1, p.ok)),
                             _ => None,
                         };
-                        if c.is_some() && (dot.is_none() || c == Some(p.warn)) {
-                            dot = c;
+                        if let Some((rank, c)) = cand
+                            && dot.is_none_or(|(best, _)| rank > best)
+                        {
+                            dot = Some((rank, c));
                         }
                     }
                 }
-                (x.id, x.name.clone(), x.letters(), x.color32(), dot)
+                (x.id, x.name.clone(), x.letters(), x.color32(), dot.map(|(_, c)| c))
             })
             .collect();
         let mut pick = None;
@@ -621,7 +623,7 @@ impl App {
         // Esc and ↑ ↓ are the field's (egui would otherwise take the keyboard away on them).
         if fr.has_focus() {
             ui.memory_mut(|m| {
-                m.set_focus_lock_filter(fid, egui::EventFilter { vertical_arrows: true, escape: true, ..Default::default() })
+                m.set_focus_lock_filter(fid, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, escape: true, ..Default::default() })
             });
         }
         // An × empties it (and keeps the keyboard there).

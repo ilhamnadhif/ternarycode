@@ -760,7 +760,7 @@ pub fn read_docx(path: &Path) -> Result<RichDoc, String> {
                             p.para.spans.push(Span::Image(ix, drawing_size.take()));
                         }
                     }
-                    b"tbl" => tables.push(WordTable::default()),
+                    b"tbl" if !is_empty => tables.push(WordTable::default()),
                     b"tr" => {
                         if let Some(t) = tables.last_mut() {
                             t.rows.push(Vec::new());
@@ -964,10 +964,19 @@ fn read_slide(pkg: &mut Package, part: &str, images: &mut Images) -> Slide {
     let mut in_t = false;
     let mut in_xfrm = false;
     let mut table: Option<Vec<Vec<Vec<Para>>>> = None;
+    let mut alternates = Alternates::default();
     let mut r = Reader::from_reader(xml.as_slice());
     let mut buf = Vec::new();
     let mut skipped = Vec::new();
     while let Ok(ev) = r.read_event_into(&mut buf) {
+        if let Event::Start(e) = &ev
+            && alternates.skip(e)
+        {
+            let _ = r.read_to_end_into(e.name(), &mut skipped);
+            skipped.clear();
+            buf.clear();
+            continue;
+        }
         // The slide's background picture is no content.
         if let Event::Start(e) = &ev
             && local(e.name().as_ref()) == b"bg"
@@ -988,7 +997,7 @@ fn read_slide(pkg: &mut Package, part: &str, images: &mut Images) -> Slide {
         };
         match ev {
             Event::Start(e) | Event::Empty(e) => match local(e.name().as_ref()) {
-                b"sp" | b"pic" | b"graphicFrame" | b"cxnSp" => shape = Some(Shape::default()),
+                b"sp" | b"pic" | b"graphicFrame" | b"cxnSp" if !is_empty => shape = Some(Shape::default()),
                 b"ph" => {
                     if let Some(s) = shape.as_mut() {
                         s.title = matches!(attr(&e, b"type").as_deref(), Some("title" | "ctrTitle"));
@@ -1002,7 +1011,7 @@ fn read_slide(pkg: &mut Package, part: &str, images: &mut Images) -> Slide {
                         s.at = (y, x);
                     }
                 }
-                b"tbl" => table = Some(Vec::new()),
+                b"tbl" if !is_empty => table = Some(Vec::new()),
                 b"tr" => {
                     if let Some(t) = table.as_mut() {
                         t.push(Vec::new());
@@ -1110,6 +1119,7 @@ fn read_slide(pkg: &mut Package, part: &str, images: &mut Images) -> Slide {
                         s.table = Some(t);
                     }
                 }
+                b"AlternateContent" => alternates.end(),
                 b"sp" | b"pic" | b"graphicFrame" | b"cxnSp" => {
                     if let Some(s) = shape.take() {
                         shapes.push(s);
@@ -1425,5 +1435,37 @@ pub(crate) mod tests {
         // A list starting at a huge number: digits, not megabytes of letters.
         assert_eq!(number_text(100_000_000, "lowerLetter"), "100000000");
         assert_eq!(number_text(4000, "lowerRoman"), "4000");
+    }
+
+    #[test]
+    fn self_closing_tags_and_slide_alternates_do_not_corrupt_or_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        // DOCX: self-closing <w:tbl/> must not swallow the following paragraph.
+        let docx = dir.path().join("empty_tbl.docx");
+        let doc = format!(r#"<w:document {W}><w:body><w:tbl/><w:p><w:r><w:t>After</w:t></w:r></w:p></w:body></w:document>"#);
+        write_zip(&docx, &[("word/document.xml", &doc)]);
+        let d = read_docx(&docx).unwrap();
+        assert_eq!(outline(&d), ["After"]);
+
+        // PPTX: self-closing <p:sp/> and mc:AlternateContent Choice + Fallback.
+        let pptx = dir.path().join("alt.pptx");
+        let ns = r#"xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006""#;
+        let slide = format!(
+            r#"<p:sld {ns}><p:cSld><p:spTree><p:sp/><mc:AlternateContent><mc:Choice Requires="p14"><p:sp><p:txBody><a:p><a:r><a:t>Chosen</a:t></a:r></a:p></p:txBody></p:sp></mc:Choice><mc:Fallback><p:sp><p:txBody><a:p><a:r><a:t>Duplicate</a:t></a:r></a:p></p:txBody></p:sp></mc:Fallback></mc:AlternateContent><p:sp><p:txBody><a:p><a:r><a:t>Next</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#
+        );
+        write_zip_bytes(
+            &pptx,
+            &[
+                ("ppt/presentation.xml", format!(r#"<p:presentation {ns}><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>"#).as_bytes()),
+                ("ppt/_rels/presentation.xml.rels", br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId2" Target="slides/slide1.xml"/></Relationships>"#),
+                ("ppt/slides/slide1.xml", slide.as_bytes()),
+            ],
+        );
+        let s = read_pptx(&pptx).unwrap();
+        let texts: Vec<String> = s.slides[0].blocks.iter().filter_map(|b| match b {
+            Block::Para(p) => Some(p.spans.iter().filter_map(|sp| match sp { Span::Text { text, .. } => Some(text.as_str()), _ => None }).collect::<String>()),
+            _ => None,
+        }).collect();
+        assert_eq!(texts, ["Chosen", "Next"]);
     }
 }

@@ -463,14 +463,6 @@ fn toml_key(s: &str, key: &str, next: &[char]) -> bool {
         .is_some_and(|rest| rest.trim_start().starts_with(next))
 }
 
-/// `hooks = …`, `hooks.Stop = …`, `[hooks]`, `[hooks.Stop]` or `[[hooks.Stop]]`.
-fn defines_hooks(line: &str) -> bool {
-    toml_key(line, "hooks", &['=', '.'])
-        || line.trim_start().strip_prefix('[').is_some_and(|h| {
-            toml_key(h.strip_prefix('[').unwrap_or(h), "hooks", &[']', '.'])
-        })
-}
-
 /// Whether the user's Codex configuration has a `notify` of its own (at the top, before any
 /// table; the one in TernaryCode's block is not the user's).
 pub fn codex_has_own_notify(config_toml: &str) -> bool {
@@ -493,13 +485,31 @@ pub fn codex_has_own_notify(config_toml: &str) -> bool {
 /// are not the user's.
 pub fn codex_has_own_hooks(config_toml: &str) -> bool {
     let mut ours = false;
+    let mut in_table = false;
     config_toml.lines().any(|l| {
         match l {
-            MARK_BEGIN => ours = true,
-            MARK_END => ours = false,
+            MARK_BEGIN => {
+                ours = true;
+                return false;
+            }
+            MARK_END => {
+                ours = false;
+                return false;
+            }
             _ => {}
         }
-        !ours && defines_hooks(l)
+        let table = toml_table(l);
+        if table.is_some() {
+            in_table = true;
+        }
+        if ours {
+            return false;
+        }
+        if let Some(name) = table {
+            name == "hooks" || name.starts_with("hooks.")
+        } else {
+            !in_table && toml_key(l, "hooks", &['=', '.'])
+        }
     })
 }
 
@@ -1029,7 +1039,8 @@ fn without_marked(text: &str) -> String {
             out.push('\n');
         }
     }
-    out.trim_end_matches('\n').to_string() + "\n"
+    let trimmed = out.trim_end_matches('\n');
+    if trimmed.is_empty() { String::new() } else { format!("{trimmed}\n") }
 }
 
 fn has_ours(agent: AgentKind, text: &str, hooks: &Hooks) -> bool {
@@ -1706,5 +1717,13 @@ mod tests {
         let record = apply(&plan_opencode(&hooks(), &path).unwrap(), &backups).unwrap();
         assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Removed));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn codex_hooks_ignores_unrelated_tables_and_strips_empty_blocks() {
+        assert!(!codex_has_own_hooks("[other]\nhooks = true\n"));
+        assert!(codex_has_own_hooks("hooks = true\n"));
+        assert!(codex_has_own_hooks("[hooks]\nStop = []\n"));
+        assert_eq!(without_marked(&format!("{MARK_BEGIN}\nnotify = [\"ternarycode-hook\", \"codex\"]\n{MARK_END}\n")), "");
     }
 }

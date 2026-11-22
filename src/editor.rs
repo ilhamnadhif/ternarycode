@@ -36,6 +36,8 @@ pub struct OpenFile {
     pub caret: (usize, usize),
     /// The character index `caret` was worked out for.
     pub caret_index: Option<usize>,
+    /// The buffer revision `caret` was worked out for.
+    pub caret_rev: u64,
     /// Number of lines (for the width of the line numbers).
     pub lines: usize,
     /// Lines end with CR LF.
@@ -273,6 +275,7 @@ pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
         compare_diff: None,
         caret: (1, 1),
         caret_index: None,
+        caret_rev: 0,
         lines,
         crlf,
         lossy,
@@ -305,6 +308,7 @@ impl OpenFile {
             compare_diff: None,
             caret: (1, 1),
             caret_index: None,
+            caret_rev: 0,
             lines: 0,
             crlf: false,
             lossy: false,

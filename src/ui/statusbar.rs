@@ -115,7 +115,7 @@ impl App {
         }
         let queue = self.attention_queue();
         let mut close = false;
-        let on_top = self.dialog.is_none() && self.palette.is_none() && !self.review_full();
+        let on_top = self.dialog.is_none() && self.palette.is_none() && !self.updater.dialog_open;
         let in_sidebar = inbox.is_some();
         // The keyboard: ↑↓ choose, ↵ jump, R review, ⌫ mark as seen, Esc close.
         let n = queue.len();

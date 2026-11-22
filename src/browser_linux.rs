@@ -81,8 +81,9 @@ impl View {
     }
 
     pub fn set_bounds(&self, b: Bounds) -> Result<(), Error> {
+        let ppp = f64::from(f32::from_bits(PPP.load(Ordering::Relaxed))).max(0.25);
         let z = self.page.zoom.get().max(0.01);
-        self.page.size.set((b.w / z, b.h / z));
+        self.page.size.set((b.w / (ppp * z), b.h / (ppp * z)));
         self.send("bounds", json!({ "x": b.x, "y": b.y, "w": b.w, "h": b.h }));
         Ok(())
     }
@@ -172,8 +173,15 @@ type Answer = Box<dyn FnOnce(Result<String, String>)>;
 type Shot = Box<dyn FnOnce(Option<Vec<u8>>)>;
 
 struct Helper {
+    epoch: u64,
     child: std::process::Child,
     stdin: std::process::ChildStdin,
+}
+
+impl Drop for Helper {
+    fn drop(&mut self) {
+        let _ = self.child.try_wait();
+    }
 }
 
 thread_local! {
@@ -278,7 +286,12 @@ fn ensure_helper() -> bool {
             .stderr(std::process::Stdio::inherit())
             .spawn();
         let Ok(mut child) = child else { return false };
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else { return false };
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return false;
+        };
+        let epoch = NEXT.fetch_add(1, Ordering::Relaxed);
         let _ = std::thread::Builder::new().name("browser-helper".into()).spawn(move || {
             for line in std::io::BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
@@ -289,12 +302,12 @@ fn ensure_helper() -> bool {
                     }
                 }
             }
-            INBOX.lock().push(json!({ "ev": "gone" }));
+            INBOX.lock().push(json!({ "ev": "gone", "epoch": epoch }));
             if let Some(ctx) = &*WAKE.lock() {
                 ctx.request_repaint();
             }
         });
-        *h = Some(Helper { child, stdin });
+        *h = Some(Helper { epoch, child, stdin });
         true
     })
 }
@@ -312,7 +325,8 @@ pub fn build_view(window: &impl raw_window_handle::HasWindowHandle, url: &str, b
     *WAKE.lock() = Some(sink.ctx().clone());
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let page = new_page(n, url);
-    page.size.set((bounds.w, bounds.h));
+    let ppp = f64::from(f32::from_bits(PPP.load(Ordering::Relaxed))).max(0.25);
+    page.size.set((bounds.w / ppp, bounds.h / ppp));
     PAGES.with_borrow_mut(|p| p.insert(n, (sink, page.clone())));
     let downloads = if cfg!(debug_assertions) { std::env::var("TERNARYCODE_DOWNLOAD_DIR").unwrap_or_default() } else { String::new() };
     send(json!({
@@ -332,17 +346,46 @@ pub fn pump() {
         let n = v["id"].as_u64().unwrap_or(0);
         let ev = v["ev"].as_str().unwrap_or("");
         if ev == "gone" {
-            // Its pages went with it: each loads again in a new helper when shown.
+            let epoch = v["epoch"].as_u64().unwrap_or(0);
+            let active = HELPER.with_borrow(|h| h.as_ref().is_some_and(|h| h.epoch == epoch));
+            if !active {
+                continue;
+            }
+            // Its pages and pop-ups went with it: each loads again in a new helper when shown.
             PAGES.with_borrow(|p| p.values().for_each(|(_, page)| page.dead.set(true)));
+            POPUPS.with_borrow_mut(|p| {
+                for (.., page) in p.drain(..) {
+                    page.dead.set(true);
+                }
+            });
+            for (_, (_, done)) in RETURNS.with_borrow_mut(std::mem::take) {
+                done(Err("the page went away".into()));
+            }
+            for (_, (_, path, done)) in SHOTS.with_borrow_mut(std::mem::take) {
+                let _ = std::fs::remove_file(&path);
+                done(None);
+            }
+            UPLOADS.with_borrow_mut(HashMap::clear);
+            WAITING.with_borrow_mut(HashMap::clear);
             HELPER.with_borrow_mut(|h| *h = None);
             continue;
         }
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
-        // A pop-up's own address and loading (its page's stay as they are).
+        // A pop-up's own events (its page's address and loading stay as they are).
         if let Some(popup) = POPUPS.with_borrow(|p| p.iter().find(|(pid, ..)| *pid == n).map(|(.., page)| page.clone())) {
             match ev {
                 "url" => *popup.url.borrow_mut() = s("v"),
                 "loading" => popup.loading.set(v["v"].as_bool().unwrap_or(false)),
+                "ipc" => {
+                    ipc_return(&s("v"));
+                }
+                "shot" => finish_shot(&v),
+                "chooser" => {
+                    UPLOADS.with_borrow_mut(|u| u.remove(&n));
+                }
+                "blocked" => {
+                    BLOCKED.with_borrow_mut(|b| b.insert(n, s("url")));
+                }
                 _ => {}
             }
             continue;
@@ -395,14 +438,7 @@ pub fn pump() {
                     sink.push(Event::Key(key, mods));
                 }
             }
-            "shot" => {
-                let token = v["token"].as_u64().unwrap_or(0);
-                if let Some((_, path, done)) = SHOTS.with_borrow_mut(|m| m.remove(&token)) {
-                    let png = v["ok"].as_bool().unwrap_or(false).then(|| std::fs::read(&path).ok()).flatten();
-                    let _ = std::fs::remove_file(&path);
-                    done(png);
-                }
-            }
+            "shot" => finish_shot(&v),
             "chooser" => {
                 UPLOADS.with_borrow_mut(|u| u.remove(&n));
             }
@@ -423,17 +459,40 @@ pub fn pump() {
     }
     let old = |at: &Instant| at.elapsed() > Duration::from_secs(120);
     RETURNS.with_borrow_mut(|r| r.retain(|_, (at, _)| !old(at)));
-    SHOTS.with_borrow_mut(|r| r.retain(|_, (at, ..)| !old(at)));
+    SHOTS.with_borrow_mut(|r| {
+        r.retain(|_, (at, path, _)| {
+            if old(at) {
+                let _ = std::fs::remove_file(path);
+                false
+            } else {
+                true
+            }
+        });
+    });
+}
+
+fn finish_shot(v: &Value) {
+    let token = v["token"].as_u64().unwrap_or(0);
+    if let Some((_, path, done)) = SHOTS.with_borrow_mut(|m| m.remove(&token)) {
+        let png = v["ok"].as_bool().unwrap_or(false).then(|| std::fs::read(&path).ok()).flatten();
+        let _ = std::fs::remove_file(&path);
+        done(png);
+    }
+}
+
+fn ipc_return(body: &str) -> bool {
+    let Some(rest) = body.strip_prefix("ret:") else { return false };
+    let mut parts = rest.splitn(3, ':');
+    let (Some(t), Some(ok), Some(text)) = (parts.next().and_then(|t| t.parse::<u64>().ok()), parts.next(), parts.next()) else { return true };
+    if let Some((_, done)) = RETURNS.with_borrow_mut(|r| r.remove(&t)) {
+        done(if ok == "1" { Ok(text.to_string()) } else { Err(text.to_string()) });
+    }
+    true
 }
 
 /// A message the page posted (`window.ipc`): a script's answer, its console.
 fn ipc(sink: &Sink, body: &str) {
-    if let Some(rest) = body.strip_prefix("ret:") {
-        let mut parts = rest.splitn(3, ':');
-        let (Some(t), Some(ok), Some(text)) = (parts.next().and_then(|t| t.parse::<u64>().ok()), parts.next(), parts.next()) else { return };
-        if let Some((_, done)) = RETURNS.with_borrow_mut(|r| r.remove(&t)) {
-            done(if ok == "1" { Ok(text.to_string()) } else { Err(text.to_string()) });
-        }
+    if ipc_return(body) {
     } else if let Some(json) = body.strip_prefix("console:") {
         let lines: Vec<(String, String, String)> = serde_json::from_str(json).unwrap_or_default();
         let lines: Vec<ConsoleLine> = lines.into_iter().map(|(level, text, src)| ConsoleLine { level, text, src }).collect();

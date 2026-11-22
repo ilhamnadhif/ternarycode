@@ -188,8 +188,9 @@ impl ShellUser {
     #[cfg(target_os = "macos")]
     fn login_shell(&self) -> Command {
         let name = self.shell.rsplit('/').next().unwrap_or(&self.shell);
+        let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
         // `exec -a` puts the '-' of a login shell before its name (zsh's builtin, hence zsh).
-        let exec = format!("exec -a -{name} {}", self.shell);
+        let exec = format!("exec -a {} {}", q(&format!("-{name}")), q(&self.shell));
         // -f: no password for the user already logged in; -l: no cd to $HOME (and no '-'); -p:
         // the environment kept; -q: quiet, as a ~/.hushlogin asks (login looks for one only in
         // the folder it starts in).
@@ -416,15 +417,32 @@ pub fn hang_up_all(ptys: &[Arc<LocalPty>], grace: Duration) {
 impl Drop for LocalPty {
     fn drop(&mut self) {
         // SIGHUP, then the program is waited for (reaped: see `poll_exit`) and the terminal
-        // closed after it. Never on the UI thread.
+        // closed after it. Never on the UI thread; escalate to SIGKILL if it ignores SIGHUP so
+        // this thread and the master fd cannot leak forever.
         if let Some(file) = self.pty.lock().take() {
             let pid = self.pid as libc::pid_t;
             std::thread::spawn(move || {
                 // SAFETY: kill and waitpid on this process's own child.
                 unsafe {
+                    libc::kill(-pid, libc::SIGHUP);
                     libc::kill(pid, libc::SIGHUP);
                     let mut status = 0;
-                    while libc::waitpid(pid, &mut status, 0) == -1 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {}
+                    let start = std::time::Instant::now();
+                    let reaped = loop {
+                        let r = libc::waitpid(pid, &mut status, libc::WNOHANG);
+                        if r == pid || (r == -1 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)) {
+                            break true;
+                        }
+                        if start.elapsed() >= Duration::from_secs(2) {
+                            break false;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    };
+                    if !reaped {
+                        libc::kill(-pid, libc::SIGKILL);
+                        libc::kill(pid, libc::SIGKILL);
+                        while libc::waitpid(pid, &mut status, 0) == -1 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {}
+                    }
                 }
                 drop(file);
             });

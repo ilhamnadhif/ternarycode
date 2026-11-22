@@ -488,12 +488,11 @@ impl App {
                                 line(ui, ("", p.text_faint), &tf("{} more", &[&(uncommitted.len() - 5).to_string()]), false);
                             }
                         }
-                        for r in &running {
-                            if first {
-                                section(ui, icons::TERMINAL_WINDOW, t("Stopped"), first);
-                                first = false;
+                        if !running.is_empty() {
+                            section(ui, icons::TERMINAL_WINDOW, t("Stopped"), first);
+                            for r in &running {
+                                line(ui, ("", p.text_faint), r, false);
                             }
-                            line(ui, ("", p.text_faint), r, false);
                         }
                     });
                 ui.add_space(4.0);

@@ -37,13 +37,31 @@ const NAV_W: f32 = 236.0;
 /// The pages, their icons, and the rows on each (for the search).
 fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 9] {
     [
-        (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically", "Group active projects at the top"]),
+        (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically", "Group active projects at the top", "Worktrees"]),
         (SettingsPage::Appearance, icons::PAINT_BRUSH, "Appearance", &["Theme", "Language", "With the dark theme", "With the light theme", "Font", "Size", "Cursor", "Blinking cursor"]),
-        (SettingsPage::Terminal, icons::TERMINAL, "Terminal", &["Scrollback per pane", "Scrollback memory for all panes", "Option key as Meta", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]),
-        (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "When an agent opens a page", "Put browsers to sleep after", "Pages in Grid tiles", "Logins & cookies", "Agents can use the browser", "Sites agents may open without asking", "Agents may run JavaScript in pages"]),
+        (
+            SettingsPage::Terminal,
+            icons::TERMINAL,
+            "Terminal",
+            if cfg!(target_os = "macos") {
+                &["Scrollback per pane", "Scrollback memory for all panes", "Option key as Meta", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]
+            } else {
+                &["Scrollback per pane", "Scrollback memory for all panes", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]
+            },
+        ),
+        (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "When an agent opens a page", "Put browsers to sleep after", "Pages in Grid tiles", "Logins & cookies", "Agents can use the browser", "Ask before agents open a site", "Sites agents may open without asking", "Agents may run JavaScript in pages"]),
         (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks"]),
         (SettingsPage::Editor, icons::CODE, "Editor", &["Language features", "Start servers only when needed", "Completion while typing", "Format on save"]),
-        (SettingsPage::Notifications, icons::BELL, "Notifications", &["An agent needs input", "A process failed", "An agent finished its turn", "A long command finished", "Badge on the Dock icon"]),
+        (
+            SettingsPage::Notifications,
+            icons::BELL,
+            "Notifications",
+            if cfg!(target_os = "macos") {
+                &["An agent needs input", "A process failed", "An agent finished its turn", "A long command finished", "Badge on the Dock icon"]
+            } else {
+                &["An agent needs input", "A process failed", "An agent finished its turn", "A long command finished"]
+            },
+        ),
         (SettingsPage::Updates, icons::ARROW_CIRCLE_UP, "Updates", &["Check for updates automatically", "Version"]),
         (SettingsPage::About, icons::INFO, "About", &["License"]),
     ]
@@ -767,8 +785,11 @@ impl App {
         if sites.is_empty() || !self.settings.browser_agent_ask {
             return;
         }
-        let labels = [(t("Sites added for a project"), "")];
-        if hit(search, labels[0].0, "") {
+        let mut labels: Vec<(&str, &str)> = vec![(t("Sites added for a project"), "")];
+        for (_, project, site) in &sites {
+            labels.push((site.as_str(), project.as_str()));
+        }
+        if labels.iter().any(|(l, n)| hit(search, l, n)) {
             group(ui, t("Sites added for a project"));
         }
         let mut remove = None;
@@ -817,14 +838,16 @@ impl App {
 
     fn terminal_page(&mut self, ui: &mut Ui, search: &str) {
         page_head(ui, t("Terminal"), t("How panes behave."));
-        let labels = [
+        let mut labels = vec![
             (t("Scrollback per pane"), t("Applies to new panes.")),
             (t("Scrollback memory for all panes"), ""),
-            (t("Option key as Meta"), ""),
             (t("Copy on select"), ""),
             (t("Programs may copy to the clipboard"), ""),
             (t("Shell integration"), ""),
         ];
+        if cfg!(target_os = "macos") {
+            labels.push((t("Option key as Meta"), ""));
+        }
         card(ui, search, &labels, |c| {
             c.row(t("Scrollback per pane"), t("Applies to new panes."), |ui| {
                 let n = self.settings.scrollback;
@@ -947,13 +970,15 @@ impl App {
     fn notifications_page(&mut self, ui: &mut Ui, search: &str) {
         let p = style::pal(ui);
         page_head(ui, t("Notifications"), t("Only when you are not already looking. Keyboard focus never moves by itself."));
-        let labels = [
+        let mut labels = vec![
             (t("An agent needs input"), ""),
             (t("A process failed"), ""),
             (t("An agent finished its turn"), ""),
             (t("A long command finished"), ""),
-            (t("Badge on the Dock icon"), ""),
         ];
+        if cfg!(target_os = "macos") {
+            labels.push((t("Badge on the Dock icon"), ""));
+        }
         card(ui, search, &labels, |c| {
             let icon_row = |c: &mut Card, icon: &'static str, color: Color32, label: &str, note: &str, on: &mut bool| {
                 c.row_icon(icon, color, label, note, |ui| {
@@ -1010,6 +1035,7 @@ impl App {
     }
 
     fn about_page(&mut self, ui: &mut Ui) {
+        page_head(ui, t("About"), "");
         let p = style::pal(ui);
         ui.add_space(10.0);
         ui.horizontal(|ui| {

@@ -250,7 +250,7 @@ impl Install {
     fn find() -> Self {
         let Some(exe) = std::env::current_exe()
             .ok()
-            .and_then(|e| e.canonicalize().ok())
+            .map(|e| crate::paths::canonical(&e))
         else {
             return Install::Manual;
         };
@@ -274,10 +274,16 @@ impl Install {
         if !dir.join("unins000.exe").exists() {
             return Install::Manual;
         }
+        let exe_lc = crate::paths::canonical(exe).to_string_lossy().to_ascii_lowercase();
         let all_users = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
             .iter()
             .filter_map(std::env::var_os)
-            .any(|p| exe.starts_with(PathBuf::from(p)));
+            .any(|p| {
+                let base = crate::paths::canonical(Path::new(&p)).to_string_lossy().to_ascii_lowercase();
+                let base = base.trim_end_matches(['\\', '/']);
+                !base.is_empty()
+                    && exe_lc.strip_prefix(base).is_some_and(|rest| rest.is_empty() || rest.starts_with(['\\', '/']))
+            });
         Install::WindowsSetup {
             exe: exe.to_path_buf(),
             all_users,

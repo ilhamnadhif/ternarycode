@@ -604,6 +604,9 @@ impl App {
                 ff.focus = false;
             }
         }
+        if resp.has_focus() {
+            ui.memory_mut(|m| m.set_focus_lock_filter(fid, egui::EventFilter { escape: true, horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
+        }
         let mut step = None;
         if resp.changed() {
             if let Some(ff) = self.browsers.get_mut(&id).and_then(|b| b.find.as_mut()) {
@@ -623,7 +626,8 @@ impl App {
         if clicked(ui, down, icons::CARET_DOWN, t("Next")) {
             step = Some(1);
         }
-        let close = clicked(ui, x_close, icons::X, t("Done")) || (resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)));
+        let esc = (resp.has_focus() || ui.memory(|m| m.had_focus_last_frame(fid))) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let close = clicked(ui, x_close, icons::X, t("Done")) || esc;
         if close {
             self.close_page_find(id);
         } else if let Some(step) = step {
@@ -759,7 +763,10 @@ impl App {
             if focus {
                 resp.request_focus();
             }
-            has_keys |= resp.has_focus();
+            if resp.has_focus() {
+                ui.memory_mut(|m| m.set_focus_lock_filter(fid, egui::EventFilter { escape: true, horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
+            }
+            has_keys |= resp.has_focus() || ui.memory(|m| m.had_focus_last_frame(fid));
             if resp.changed()
                 && let Some(b) = self.browsers.get_mut(&id)
                 && let Some(dd) = b.dialog.as_mut()
@@ -779,7 +786,10 @@ impl App {
             if focus && !prompt {
                 ok.request_focus();
             }
-            has_keys |= ok.has_focus();
+            if ok.has_focus() {
+                ui.memory_mut(|m| m.set_focus_lock_filter(ok.id, egui::EventFilter { escape: true, ..Default::default() }));
+            }
+            has_keys |= ok.has_focus() || ui.memory(|m| m.had_focus_last_frame(ok.id));
             if ok.clicked() {
                 answer = Some(true);
             }
@@ -787,14 +797,17 @@ impl App {
                 let cancel = kit::button_ex(ui, kit::Kind::Ghost, None, t("Cancel"), true);
                 #[cfg(debug_assertions)]
                 crate::devtest::record(format!("browser-dialog-cancel:{id}"), cancel.rect);
-                has_keys |= cancel.has_focus();
+                if cancel.has_focus() {
+                    ui.memory_mut(|m| m.set_focus_lock_filter(cancel.id, egui::EventFilter { escape: true, ..Default::default() }));
+                }
+                has_keys |= cancel.has_focus() || ui.memory(|m| m.had_focus_last_frame(cancel.id));
                 if cancel.clicked() {
                     answer = Some(false);
                 }
             }
         });
         // Esc while the bar has the keyboard: Cancel (OK for an alert).
-        if has_keys && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if has_keys && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             answer = Some(d.kind == DialogKind::Alert);
         }
         #[cfg(debug_assertions)]
@@ -837,7 +850,8 @@ impl App {
                     crate::platform::reveal(&d.path);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS, t("Show in Finder"), false, 22.0).clicked() {
+                    let tip = if cfg!(target_os = "macos") { t("Show in Finder") } else { t("Show in Folder") };
+                    if kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS, tip, false, 22.0).clicked() {
                         crate::platform::reveal_in_folder(&d.path);
                     }
                 });
@@ -944,30 +958,30 @@ impl App {
             ui.close();
         }
         kit::menu_sep(ui);
-        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS), t("Find…"), kit::keys(&Action::Find), true).clicked() {
+        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS), t("Find…"), kit::keys(&Action::Find), false).clicked() {
             self.open_page_find(id);
             ui.close();
         }
-        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS_PLUS), t("Zoom In"), kit::keys(&Action::FontBigger), true).clicked() {
+        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS_PLUS), t("Zoom In"), kit::keys(&Action::FontBigger), false).clicked() {
             self.zoom_page(id, 1);
             ui.close();
         }
-        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS_MINUS), t("Zoom Out"), kit::keys(&Action::FontSmaller), true).clicked() {
+        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS_MINUS), t("Zoom Out"), kit::keys(&Action::FontSmaller), false).clicked() {
             self.zoom_page(id, -1);
             ui.close();
         }
-        if kit::menu_item(ui, None, t("Actual Size"), None, true).clicked() {
+        if kit::menu_item(ui, None, t("Actual Size"), None, false).clicked() {
             self.zoom_page(id, 0);
             ui.close();
         }
         kit::menu_sep(ui);
-        if kit::menu_item(ui, Some(icons::CODE), t("Inspect Element"), None, true).clicked() {
+        if kit::menu_item(ui, Some(icons::CODE), t("Inspect Element"), None, false).clicked() {
             if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
                 v.open_devtools();
             }
             ui.close();
         }
-        if kit::menu_item(ui, None, t("Print…"), None, true).clicked() {
+        if kit::menu_item(ui, None, t("Print…"), None, false).clicked() {
             if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
                 crate::browser::print(v);
             }

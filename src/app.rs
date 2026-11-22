@@ -2110,8 +2110,11 @@ impl App {
             self.agent_pane_closed(id);
             self.agent_panel_shown.remove(&id);
         }
-        // A browser's page goes with its pane (its web view leaves the window).
-        self.browsers.remove(&id);
+        // A browser's page goes with its pane (its pop-ups and web view leave the window).
+        if self.browsers.contains_key(&id) {
+            crate::browser_popup::close_of(id);
+            self.browsers.remove(&id);
+        }
         if self.browser_focus == Some(id) {
             self.browser_focus = None;
         }
@@ -2901,10 +2904,11 @@ impl App {
                 self.split(ctx, SplitDir::Vertical);
             }
             Action::ClosePane => {
-                // ⌘W closes what has the keyboard: the file in the editor, else the pane typed
-                // into (in the Grid, the tile), asking first when a program runs there.
-                if self.editor_has_keyboard(ctx)
-                    && let Some(i) = self.editor_mut().filter(|e| !e.files.is_empty()).map(|e| e.active)
+                // ⌘W closes what has the keyboard: the file or document in the editor, else the
+                // pane typed into (in the Grid, the tile), asking first when a program runs there.
+                if (self.editor_keyboard || self.editor_has_keyboard(ctx))
+                    && self.view == View::Focus
+                    && let Some(i) = self.editor_mut().filter(|e| e.visible && !e.files.is_empty()).map(|e| e.active)
                 {
                     self.dispatch(ctx, Action::CloseFile(i));
                     return;
@@ -3950,7 +3954,7 @@ impl App {
             }
             pane.scrollback_limit = lines;
             tc_term::core::limit_scrollback(&pane.shared, lines, cursor_style(self.settings.cursor_shape), blink);
-            total = total + tc_term::core::scrollback_bytes(&pane.shared) - before;
+            total = total.saturating_add(tc_term::core::scrollback_bytes(&pane.shared)).saturating_sub(before);
         }
     }
 

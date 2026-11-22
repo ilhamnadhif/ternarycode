@@ -296,8 +296,17 @@ pub fn join_paths_once(lists: &[Vec<PathBuf>]) -> Option<OsString> {
 #[cfg(unix)]
 pub fn login_shell_path() -> Option<OsString> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let is_fish = Path::new(&shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "fish");
+    let script = if is_fish {
+        "printf '\\n__TC_PATH__%s__TC_END__\\n' (string join : -- $PATH)"
+    } else {
+        "printf '\\n__TC_PATH__%s__TC_END__\\n' \"$PATH\""
+    };
     let mut child = Command::new(shell)
-        .args(["-ilc", "printf '\\n__TC_PATH__%s__TC_END__\\n' \"$PATH\""])
+        .args(["-ilc", script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

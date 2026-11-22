@@ -38,16 +38,28 @@ fn lock_path() -> PathBuf {
     paths::data_dir().join("instance.lock")
 }
 
-/// The socket lives in the per-user temporary folder (private on macOS): socket paths are
-/// limited to about 100 bytes, which a long home folder path can exceed. The name is derived
-/// from the data folder, so separate data folders (tests) don't meet.
+/// The socket lives in a private per-user folder: socket paths are limited to about 100 bytes,
+/// which a long home folder path can exceed. On macOS the per-user temp dir is private; on Linux
+/// we use `$XDG_RUNTIME_DIR` or `/tmp/ternarycode-<uid>` (`0o700`) so other users on a shared
+/// machine cannot squat on or connect to the socket.
 #[cfg(unix)]
 fn socket_path() -> PathBuf {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in paths::data_dir().as_os_str().as_encoded_bytes() {
         hash = (hash ^ *b as u64).wrapping_mul(0x0100_0000_01b3);
     }
-    std::env::temp_dir().join(format!("ternarycode-{hash:016x}.sock"))
+    let base = if cfg!(target_os = "macos") {
+        std::env::temp_dir()
+    } else {
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                // SAFETY: getuid never fails.
+                PathBuf::from(format!("/tmp/ternarycode-{}", unsafe { libc::getuid() }))
+            })
+    };
+    base.join(format!("ternarycode-{hash:016x}.sock"))
 }
 
 /// Whether TernaryCode already runs for this user (its lock is held).
@@ -102,10 +114,31 @@ pub fn acquire(args: &[String]) -> Instance {
 
 #[cfg(unix)]
 fn listen() -> Option<Inbox> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     let path = socket_path();
+    if let Some(dir) = path.parent()
+        && !cfg!(target_os = "macos")
+        && dir.file_name().is_some_and(|n| n.to_string_lossy().starts_with("ternarycode-"))
+    {
+        // SAFETY: getuid never fails.
+        let me = unsafe { libc::getuid() };
+        match std::fs::symlink_metadata(dir) {
+            Ok(m) if m.is_dir() && m.uid() == me => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::DirBuilder::new().mode(0o700).create(dir).ok()?;
+            }
+            _ => return None,
+        }
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).ok()?;
+        let m = std::fs::symlink_metadata(dir).ok()?;
+        if !m.is_dir() || m.uid() != me || m.mode() & 0o077 != 0 {
+            return None;
+        }
+    }
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).ok()?;
-    // Only this user can connect (the socket's folder is private), so no token is needed.
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    // Only this user can connect (the socket and its folder are private), so no token is needed.
     Some(serve(move || listener.accept().map(|(s, _)| s), |_| true))
 }
 

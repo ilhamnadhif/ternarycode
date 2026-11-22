@@ -101,6 +101,10 @@ fn line_text(term: &Term<Listener>, line: i32) -> String {
 /// Selects the match and scrolls it into view.
 pub fn reveal(shared: &TermShared, m: &Match) {
     let mut term = shared.term.lock();
+    let inside = |p: &Point| p.line >= term.topmost_line() && p.line <= term.bottommost_line() && p.column <= term.last_column();
+    if !inside(m.start()) || !inside(m.end()) {
+        return;
+    }
     let mut sel = Selection::new(SelectionType::Simple, *m.start(), Side::Left);
     sel.update(*m.end(), Side::Right);
     term.selection = Some(sel);

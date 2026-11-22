@@ -101,19 +101,28 @@ pub fn load_json<T: DeserializeOwned + Serialize + Default>(path: &Path) -> T {
     }
 }
 
-/// Renames a damaged file to a name not used yet.
+/// Moves (or copies, if `path` is a symlink) a damaged file to a name not used yet so that
+/// symlinks to dotfiles stay symlinks.
 fn keep_aside(path: &Path) {
+    let symlink = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     let mut n = 0;
     loop {
         let mut name = path.as_os_str().to_owned();
         name.push(if n == 0 { ".broken".to_string() } else { format!(".broken-{n}") });
         let target = std::path::PathBuf::from(name);
         if !target.exists() {
-            let _ = fs::rename(path, target);
+            let _ = if symlink { fs::copy(path, &target).map(|_| ()) } else { fs::rename(path, &target) };
             return;
         }
         n += 1;
         if n > 100 {
+            let mut name = path.as_os_str().to_owned();
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            name.push(format!(".broken-{ts}"));
+            let target = std::path::PathBuf::from(name);
+            let _ = if symlink { fs::copy(path, &target).map(|_| ()) } else { fs::rename(path, &target) };
             return;
         }
     }
@@ -210,5 +219,20 @@ mod tests {
         std::os::unix::fs::symlink("not-cloned/far.json", &far).unwrap();
         assert!(write_private(&far, b"{}").is_err());
         assert!(!dir.path().join("not-cloned").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn damaged_symlinked_json_preserves_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("dotfiles")).unwrap();
+        let target = dir.path().join("dotfiles/settings.json");
+        fs::write(&target, b"{ broken").unwrap();
+        let link = dir.path().join("settings.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let loaded: Settings = load_json(&link);
+        assert_eq!(loaded, Settings::default());
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(dir.path().join("settings.json.broken").is_file());
     }
 }

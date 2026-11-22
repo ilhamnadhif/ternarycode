@@ -150,15 +150,18 @@ pub fn run(args: &[String]) -> i32 {
     if let Some((sock, msg)) = message(args, env, || stdin) {
         let _ = send(&sock, &msg);
         // A call that would open a page in another browser: refused (Claude Code, Codex).
-        if let Some(agent) = AgentKind::from_slug(&msg.agent) {
+        if msg.event == "PreToolUse"
+            && let Some(agent) = AgentKind::from_slug(&msg.agent)
+            && matches!(agent, AgentKind::Claude | AgentKind::Codex)
+        {
             let payload: Value = raw.and_then(|r| serde_json::from_slice(&r).ok()).unwrap_or(Value::Null);
-            let transcript = payload["transcript_path"].as_str().map(std::path::PathBuf::from);
-            let tools = || crate::guard::tools_on(agent, env);
-            let prompt = || transcript.as_deref().and_then(crate::guard::last_prompt);
-            if msg.event == "PreToolUse"
-                && let Some(out) = crate::guard::decision(agent, &msg.event, &payload, tools(), prompt)
-            {
-                println!("{out}");
+            if crate::guard::other_browser(&payload).is_some() {
+                let transcript = payload["transcript_path"].as_str().map(std::path::PathBuf::from);
+                let tools = crate::guard::tools_on(agent, env);
+                let prompt = || transcript.as_deref().and_then(crate::guard::last_prompt);
+                if let Some(out) = crate::guard::decision(agent, &msg.event, &payload, tools, prompt) {
+                    println!("{out}");
+                }
             }
         }
     }
@@ -185,11 +188,16 @@ pub fn browse(args: &[String]) -> i32 {
 
 /// Opens `url` in the system's default browser.
 fn open_default(url: &str) -> i32 {
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    let allowed = lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:") || lower.starts_with("file://");
+    if !allowed || url.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return 1;
+    }
     let mut cmd = if cfg!(target_os = "macos") {
         std::process::Command::new("/usr/bin/open")
     } else if cfg!(windows) {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
         c
     } else {
         std::process::Command::new("xdg-open")

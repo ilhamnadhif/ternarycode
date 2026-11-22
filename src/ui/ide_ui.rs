@@ -369,6 +369,7 @@ impl App {
                     let line = ix.line_of(at);
                     file.caret = (line + 1, at - ix.line_start(line) + 1);
                     file.caret_index = Some(at);
+                    file.caret_rev = file.rev;
                     kit::select_text(ctx, text_id, at, at);
                 }
                 ide.completion = None;
@@ -380,15 +381,30 @@ impl App {
             }
         }
         if let Some(menu) = ide.actions.as_mut().filter(|a| a.path == file.path) {
-            let n = menu.items.len().max(1);
-            if take(Key::ArrowDown, none) {
-                menu.selected = (menu.selected + 1) % n;
+            let enabled = |i: usize| !matches!(menu.items.get(i), Some(lt::CodeActionOrCommand::CodeAction(a)) if a.disabled.is_some());
+            let n = menu.items.len();
+            if n > 0 && take(Key::ArrowDown, none) {
+                for step in 1..=n {
+                    let cand = (menu.selected + step) % n;
+                    if enabled(cand) {
+                        menu.selected = cand;
+                        break;
+                    }
+                }
             }
-            if take(Key::ArrowUp, none) {
-                menu.selected = (menu.selected + n - 1) % n;
+            if n > 0 && take(Key::ArrowUp, none) {
+                for step in 1..=n {
+                    let cand = (menu.selected + n - step) % n;
+                    if enabled(cand) {
+                        menu.selected = cand;
+                        break;
+                    }
+                }
             }
             if take(Key::Enter, none) {
-                cmds.push(IdeCmd::RunAction(menu.selected));
+                if enabled(menu.selected) {
+                    cmds.push(IdeCmd::RunAction(menu.selected));
+                }
             } else if take(Key::Escape, none) {
                 ide.actions = None;
             }
@@ -541,7 +557,11 @@ impl App {
                             underline: if strong { Stroke::new(1.0, p.accent_text) } else { Stroke::NONE },
                             ..Default::default()
                         };
-                        let part = |from: usize, to: usize| chars[from.min(chars.len())..to.min(chars.len())].iter().collect::<String>();
+                        let part = |from: usize, to: usize| {
+                            let from = from.min(chars.len());
+                            let to = to.min(chars.len()).max(from);
+                            chars[from..to].iter().collect::<String>()
+                        };
                         if a < chars.len() {
                             job.append(&part(0, a), 0.0, fmt(false));
                             job.append(&part(a, b), 0.0, fmt(true));
@@ -648,9 +668,12 @@ impl App {
                                 None => name,
                             };
                             let mut right = rect.right() - 10.0;
-                            let links = [(t("References"), IdeCmd::References), (t("Go to Definition"), IdeCmd::Goto(Goto::Definition))];
-                            for (k, (label, cmd)) in links.into_iter().enumerate() {
-                                let keys = kit::keys(&crate::actions::Action::Ide(cmd.clone())).unwrap_or_default();
+                            let links = [
+                                (t("References"), IdeCmd::References, IdeCmd::ReferencesAt(h.at)),
+                                (t("Go to Definition"), IdeCmd::Goto(Goto::Definition), IdeCmd::DefinitionAt(h.at)),
+                            ];
+                            for (k, (label, key_cmd, cmd)) in links.into_iter().enumerate() {
+                                let keys = kit::keys(&crate::actions::Action::Ide(key_cmd)).unwrap_or_default();
                                 let kw = if keys.is_empty() { 0.0 } else { kit::kbd_width(ui.painter(), keys) + 5.0 };
                                 let g = ui.painter().layout_no_wrap(label.to_string(), style::medium(11.5), p.accent_text);
                                 let w = g.size().x + kw;
@@ -689,19 +712,16 @@ impl App {
                     egui::Frame::menu(ui.style()).show(ui, |ui| {
                         kit::menu_body(ui);
                         ui.set_min_width(300.0);
-                        // Grouped by kind: quick fixes first, then refactors, then the rest.
+                        // Already grouped by kind (quickfix, refactor, other) when received.
                         let kind_of = |it: &lt::CodeActionOrCommand| match it {
                             lt::CodeActionOrCommand::CodeAction(a) => {
-                                let k = a.kind.as_ref().map(|k| k.as_str().to_string()).unwrap_or_default();
+                                let k = a.kind.as_ref().map(|k| k.as_str()).unwrap_or("");
                                 if k.starts_with("quickfix") { 0 } else if k.starts_with("refactor") { 1 } else { 2 }
                             }
                             lt::CodeActionOrCommand::Command(_) => 2,
                         };
-                        let mut order: Vec<usize> = (0..menu.items.len()).collect();
-                        order.sort_by_key(|i| kind_of(&menu.items[*i]));
                         let mut group = None;
-                        for i in order {
-                            let it = &menu.items[i];
+                        for (i, it) in menu.items.iter().enumerate() {
                             let k = kind_of(it);
                             if group != Some(k) {
                                 group = Some(k);

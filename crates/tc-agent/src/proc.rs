@@ -151,7 +151,7 @@ pub fn ppid(pid: i32) -> Option<i32> {
 pub fn ppid(pid: i32) -> Option<i32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // pid (comm) state ppid …; comm may contain spaces and parentheses.
-    let after = &stat[stat.rfind(')')? + 2..];
+    let after = stat.get(stat.rfind(')')? + 2..)?;
     after.split_whitespace().nth(1)?.parse().ok()
 }
 

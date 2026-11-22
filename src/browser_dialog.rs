@@ -161,6 +161,7 @@ pub fn answer(id: u64, accept: bool, text: &str) -> bool {
 pub fn tidy(live: &[&WKWebView]) {
     let live: Vec<usize> = live.iter().map(|w| key(w)).collect();
     PAGES.with_borrow_mut(|p| p.retain(|k, _| live.contains(k)));
+    UPLOADS.with_borrow_mut(|u| u.retain(|k, _| live.contains(k)));
     let gone: Vec<u64> = WAITING.with_borrow(|d| d.iter().filter(|(_, w)| !live.contains(&w.web)).map(|(id, _)| *id).collect());
     for id in gone {
         answer(id, false, "");

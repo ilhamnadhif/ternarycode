@@ -231,6 +231,9 @@ impl DocView {
         self.layout = None;
         self.pictures.clear();
         self.image = None;
+        if let Some(f) = self.find.as_mut() {
+            f.key = None;
+        }
         match self.kind {
             Kind::Unsupported => {
                 self.state = State::Failed(crate::i18n::t("This format cannot be shown here.").to_string());
@@ -282,6 +285,11 @@ impl DocView {
                         Doc::Slides(s) => Content::Slides(s),
                         Doc::Sheet(b) => {
                             self.sheet = self.sheet.min(b.sheets.len().saturating_sub(1));
+                            if let Some((r, c)) = self.cell
+                                && b.sheets.get(self.sheet).is_none_or(|s| r >= s.rows || c >= s.cols)
+                            {
+                                self.cell = None;
+                            }
                             Content::Sheet(b)
                         }
                         Doc::Image(img) => {

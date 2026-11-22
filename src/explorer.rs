@@ -175,7 +175,9 @@ impl Explorer {
     pub fn commit_edit(&mut self) -> Result<Option<(PathBuf, Option<PathBuf>)>, String> {
         let Some(edit) = self.edit.clone() else { return Ok(None) };
         let name = edit.text.trim();
-        if name.is_empty() {
+        if name.is_empty()
+            || matches!(&edit.kind, EditKind::Rename(old) if old.parent() == Some(edit.dir.as_path()) && old.file_name().is_some_and(|o| o == name))
+        {
             self.cancel_edit();
             return Ok(None);
         }
@@ -285,7 +287,7 @@ pub fn apply_edit(dir: &Path, kind: &EditKind, name: &str) -> Result<PathBuf, St
         }
         EditKind::NewFolder => std::fs::create_dir_all(&target).map_err(io)?,
         EditKind::Rename(old) => {
-            if !old.exists() {
+            if old.symlink_metadata().is_err() {
                 return Err(t("It no longer exists.").to_string());
             }
             std::fs::rename(old, &target).map_err(io)?;
@@ -509,5 +511,24 @@ mod tests {
         assert_eq!(names(ex.rows()), ["a", "  b", "    deep.rs", "many"]);
         assert_eq!(ex.selected.as_deref(), Some(root.join("a/b/deep.rs").as_path()));
         assert!(ex.expanded.contains(&root.join("a")) && ex.expanded.contains(&root.join("a/b")));
+    }
+
+    #[test]
+    fn rename_unchanged_cancels_and_broken_symlink_renames() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let a = root.join("a.txt");
+        std::fs::write(&a, "x").unwrap();
+        let mut ex = Explorer::new(root.to_path_buf());
+        ex.start_rename(&a);
+        assert_eq!(ex.commit_edit().unwrap(), None);
+        assert!(ex.edit.is_none());
+        #[cfg(unix)]
+        {
+            let broken = root.join("dangling");
+            std::os::unix::fs::symlink(root.join("does-not-exist"), &broken).unwrap();
+            let renamed = apply_edit(root, &EditKind::Rename(broken), "still-dangling").unwrap();
+            assert!(renamed.symlink_metadata().unwrap().file_type().is_symlink());
+        }
     }
 }

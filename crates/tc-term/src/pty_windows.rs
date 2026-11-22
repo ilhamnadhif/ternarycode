@@ -26,7 +26,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, watch};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, S_OK, WAIT_OBJECT_0,
+    CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, S_OK, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Console::{
     COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
@@ -260,12 +260,9 @@ fn start_time(handle: HANDLE) -> Option<u64> {
 
 /// Whether the process behind `handle` still runs.
 fn running(handle: HANDLE) -> bool {
-    let mut code = 0u32;
-    // SAFETY: a handle with query rights and a valid out-pointer.
-    unsafe { GetExitCodeProcess(handle, &mut code) != 0 && code == STILL_ACTIVE }
+    // SAFETY: a handle with synchronize/query rights; 0 ms poll never blocks.
+    unsafe { WaitForSingleObject(handle, 0) == WAIT_TIMEOUT }
 }
-
-const STILL_ACTIVE: u32 = 259;
 
 impl LocalPty {
     pub fn spawn(opts: &SpawnOptions) -> io::Result<Arc<Self>> {
@@ -487,11 +484,23 @@ impl LocalPty {
     }
 }
 
-/// Ends these programs as the app quits: each pseudoconsole closes, and a program still there
-/// after `grace` is terminated (its pseudoconsole's end takes its programs with it).
+/// Ends these programs as the app quits: each pseudoconsole closes, and any program still there
+/// after `grace` is terminated, waited for here so shutdown never orphans running shells.
 pub fn hang_up_all(ptys: &[Arc<LocalPty>], grace: Duration) {
     for p in ptys {
-        p.hang_up(grace);
+        p.close_console();
+    }
+    let start = std::time::Instant::now();
+    while start.elapsed() < grace && ptys.iter().any(|p| p.poll_exit().is_none()) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for p in ptys {
+        if p.poll_exit().is_none() {
+            // SAFETY: our own process handle, kept open by `p`.
+            unsafe {
+                TerminateProcess(p.handle(), 1);
+            }
+        }
     }
 }
 

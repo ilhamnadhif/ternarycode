@@ -755,39 +755,49 @@ pub fn take_blocked(page: usize) -> Option<String> {
 
 /// Pop-ups whose page closed them (`window.close()`: WebView2 closed wry's window in it) close.
 fn tidy_popups() {
-    use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, IsWindow};
-    POPUPS.with_borrow_mut(|p| {
-        p.retain(|pop| {
-            // SAFETY: plain window queries and calls on the window's thread.
-            unsafe {
-                let open = IsWindow(Some(pop.window)).as_bool();
-                if !open {
-                    let _ = pop.controller.Close();
-                } else if !IsWindow(Some(pop.page.hwnd)).as_bool() {
-                    let _ = DestroyWindow(pop.window);
-                }
-                open
+    use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+    let closed: Vec<Popup> = POPUPS.with_borrow_mut(|p| {
+        let mut gone = Vec::new();
+        let mut i = 0;
+        while i < p.len() {
+            // SAFETY: plain window query on the window's thread.
+            let open = unsafe { IsWindow(Some(p[i].window)).as_bool() };
+            if open {
+                i += 1;
+            } else {
+                gone.push(p.remove(i));
             }
-        });
+        }
+        gone
     });
+    for pop in closed {
+        // SAFETY: WebView2 COM call outside the POPUPS borrow.
+        unsafe { let _ = pop.controller.Close(); }
+    }
 }
 
-/// Closes the pop-ups a pane's page opened (its agent went to another address).
+/// Closes the pop-ups a pane's page opened (its agent went to another address, or the pane closed).
 pub fn close_of(pane: PaneId) {
     use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
-    POPUPS.with_borrow_mut(|p| {
-        p.retain(|pop| {
-            if pop.opener == pane {
-                // SAFETY: the pop-up's own window, on the window's thread.
-                unsafe {
-                    let _ = DestroyWindow(pop.window);
-                }
-                false
+    let closing: Vec<Popup> = POPUPS.with_borrow_mut(|p| {
+        let mut gone = Vec::new();
+        let mut i = 0;
+        while i < p.len() {
+            if p[i].opener == pane {
+                gone.push(p.remove(i));
             } else {
-                true
+                i += 1;
             }
-        });
+        }
+        gone
     });
+    for pop in closing {
+        // SAFETY: closed outside POPUPS borrow so WM_SIZE during teardown cannot re-enter mutably.
+        unsafe {
+            let _ = pop.controller.Close();
+            let _ = DestroyWindow(pop.window);
+        }
+    }
 }
 
 /// The newest pop-up a pane's page opened, still open.

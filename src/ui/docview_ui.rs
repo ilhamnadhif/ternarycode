@@ -87,6 +87,7 @@ impl App {
             }
             follow_sheet_match(view);
         }
+        let mut sheet_focused = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
             ui.set_clip_rect(content);
             // Pinch or Ctrl+wheel over the document zooms it.
@@ -104,11 +105,14 @@ impl App {
                 }
                 State::Ready(Content::Pdf) => pdf_body(ui, view, content),
                 State::Ready(Content::Text(_) | Content::Slides(_)) => rich_body(ui, view, content, &p),
-                State::Ready(Content::Sheet(_)) => sheet_body(ui, view, content, &p),
+                State::Ready(Content::Sheet(_)) => sheet_focused = sheet_body(ui, view, content, &p),
                 State::Ready(Content::Image) => image_body(ui, view, content, &p),
             }
         });
         let path = view.path.clone();
+        if sheet_focused {
+            self.editor_seen = true;
+        }
         match ask {
             Some(Ask::OpenDefault) => crate::platform::reveal(&path),
             Some(Ask::Reveal) => crate::platform::reveal_in_folder(&path),
@@ -359,7 +363,7 @@ fn find_bar(ui: &mut Ui, view: &mut DocView, rect: Rect, project: ProjectId) -> 
             // Esc is the field's: it closes the bar (egui would otherwise take the keyboard
             // away on it first).
             if focused {
-                ui.memory_mut(|m| m.set_focus_lock_filter(id, egui::EventFilter { escape: true, ..Default::default() }));
+                ui.memory_mut(|m| m.set_focus_lock_filter(id, egui::EventFilter { escape: true, horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
             }
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let back = ui.input(|i| i.modifiers.shift);
@@ -1118,14 +1122,14 @@ fn cell_name(sheet: &tc_doc::sheet::Sheet, row: usize, col: usize) -> String {
     )
 }
 
-fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
-    let State::Ready(Content::Sheet(book)) = &view.state else { return };
+fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -> bool {
+    let State::Ready(Content::Sheet(book)) = &view.state else { return false };
     let multi = book.sheets.len() > 1;
     let names: Vec<String> = book.sheets.iter().map(|s| s.name.clone()).collect();
     let tabs = Rect::from_min_max(pos2(rect.left(), rect.bottom() - TABS_H), rect.max);
     let grid_rect = Rect::from_min_max(pos2(rect.left(), rect.top() + CELL_BAR_H), if multi { pos2(rect.right(), tabs.top()) } else { rect.max });
     let bar = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + CELL_BAR_H));
-    let Some(sheet) = book.sheets.get(view.sheet) else { return };
+    let Some(sheet) = book.sheets.get(view.sheet) else { return false };
     let z = view.zoom;
     let dark = ui.visuals().dark_mode;
     let fs = 11.5 * z;
@@ -1193,6 +1197,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
     let total = vec2(rn_w + acc, head_h + sheet.rows as f32 * row_h);
     let mut select = None;
     let mut keys_moved = None;
+    let mut focused = false;
     ui.scope_builder(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
         ui.set_clip_rect(grid_rect);
         let salt = ("sheet", view.path.clone(), view.sheet);
@@ -1369,6 +1374,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
                 ui.ctx().copy_text(sheet.cell(r, c).text().to_string());
             }
             if resp.has_focus() {
+                focused = true;
                 let (rows, cols) = (sheet.rows, widths.len());
                 let moved = ui.input_mut(|i| {
                     let mut d = (0i64, 0i64);
@@ -1423,6 +1429,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
             view.cell = None;
         }
     }
+    focused
 }
 
 /// Where to scroll (from `at`) so the cell the arrows moved to is in view.

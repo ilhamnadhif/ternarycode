@@ -114,6 +114,8 @@ pub enum IdeCmd {
     /// ⌘-click: go to the definition of what is at this char.
     DefinitionAt(usize),
     References,
+    /// Hover link: find references of what is at this char.
+    ReferencesAt(usize),
     Rename,
     /// Rename to this name (the rename field was confirmed).
     RenameTo(String),
@@ -987,7 +989,7 @@ impl App {
         }
         let again = (!quiet).then(|| cmd.clone());
         let at = match cmd {
-            IdeCmd::DefinitionAt(a) | IdeCmd::HoverAt(a) => a,
+            IdeCmd::DefinitionAt(a) | IdeCmd::ReferencesAt(a) | IdeCmd::HoverAt(a) => a,
             _ => caret,
         };
         let Some((key, pos)) = self.text_pos(&path, at) else {
@@ -1008,7 +1010,7 @@ impl App {
                 };
                 self.lsp_request(&key, method, pos, Pending::Goto(kind))
             }
-            IdeCmd::References => {
+            IdeCmd::References | IdeCmd::ReferencesAt(_) => {
                 let mut p = pos;
                 p["context"] = json!({"includeDeclaration": true});
                 self.lsp_request(&key, "textDocument/references", p, Pending::References)
@@ -1034,15 +1036,21 @@ impl App {
             }
             IdeCmd::Signature => self.lsp_request(&key, "textDocument/signatureHelp", pos, Pending::Signature { path: path.clone() }),
             IdeCmd::Rename => {
-                let prepare = self.lsp.servers.get(&key).is_some_and(|s| {
-                    matches!(&s.caps.rename_provider, Some(lt::OneOf::Right(o)) if o.prepare_provider == Some(true))
-                });
-                if prepare {
-                    self.lsp_request(&key, "textDocument/prepareRename", pos, Pending::PrepareRename { path: path.clone(), at })
-                } else {
-                    let word = word_at(&self.editors, &path, at).unwrap_or_default();
-                    self.lsp.ide.rename = Some(RenameField { path: path.clone(), at, text: word, focus: true });
-                    true
+                let ready = self.lsp.servers.get(&key).filter(|s| s.state == ServerState::Ready);
+                match ready.map(|s| &s.caps.rename_provider) {
+                    None => false,
+                    Some(None | Some(lt::OneOf::Left(false))) => {
+                        self.toast(t("This can't be renamed.").into());
+                        true
+                    }
+                    Some(Some(lt::OneOf::Right(o))) if o.prepare_provider == Some(true) => {
+                        self.lsp_request(&key, "textDocument/prepareRename", pos, Pending::PrepareRename { path: path.clone(), at })
+                    }
+                    Some(_) => {
+                        let word = word_at(&self.editors, &path, at).unwrap_or_default();
+                        self.lsp.ide.rename = Some(RenameField { path: path.clone(), at, text: word, focus: true });
+                        true
+                    }
                 }
             }
             IdeCmd::RenameTo(name) => {
@@ -1101,7 +1109,7 @@ impl App {
             .lsp
             .servers
             .get(&key)
-            .is_some_and(|s| s.state == ServerState::Ready && s.caps.document_formatting_provider.is_some());
+            .is_some_and(|s| s.state == ServerState::Ready && matches!(s.caps.document_formatting_provider, Some(lt::OneOf::Left(true) | lt::OneOf::Right(_))));
         if !can {
             return false;
         }
@@ -1220,7 +1228,8 @@ impl App {
                                 take
                             }).count()
                         };
-                        Some((to_char(*a), to_char(*b)))
+                        let (a, b) = (to_char(*a), to_char(*b));
+                        (a <= b).then_some((a, b))
                     }
                 });
                 self.lsp.ide.signature = Some(SignaturePopup { path, label: sig.label.clone(), active });
@@ -1232,7 +1241,7 @@ impl App {
                         open_text(&self.editors, &path).map(|(text, _)| {
                             let ix = LineIndex::new(text);
                             let (a, b) = ix.chars(text, &r, enc);
-                            text.chars().skip(a).take(b - a).collect()
+                            text.chars().skip(a).take(b.saturating_sub(a)).collect()
                         })
                     }
                     Ok(Some(lt::PrepareRenameResponse::DefaultBehavior { .. })) => word_at(&self.editors, &path, at),
@@ -1258,11 +1267,22 @@ impl App {
                 }
             }
             Pending::CodeActions { path, revs } => {
-                let items = serde_json::from_value::<Option<Vec<lt::CodeActionOrCommand>>>(v).ok().flatten().unwrap_or_default();
+                let mut items = serde_json::from_value::<Option<Vec<lt::CodeActionOrCommand>>>(v).ok().flatten().unwrap_or_default();
                 if items.is_empty() {
                     self.toast(t("No code actions here.").into());
                 } else {
-                    self.lsp.ide.actions = Some(ActionsMenu { path, key: key.clone(), items, selected: 0, revs });
+                    items.sort_by_key(|it| match it {
+                        lt::CodeActionOrCommand::CodeAction(a) => {
+                            let k = a.kind.as_ref().map(|k| k.as_str()).unwrap_or("");
+                            if k.starts_with("quickfix") { 0 } else if k.starts_with("refactor") { 1 } else { 2 }
+                        }
+                        lt::CodeActionOrCommand::Command(_) => 2,
+                    });
+                    let selected = items
+                        .iter()
+                        .position(|it| !matches!(it, lt::CodeActionOrCommand::CodeAction(a) if a.disabled.is_some()))
+                        .unwrap_or(0);
+                    self.lsp.ide.actions = Some(ActionsMenu { path, key: key.clone(), items, selected, revs });
                 }
             }
             Pending::Execute => {}
@@ -1382,14 +1402,15 @@ impl App {
     }
 
     fn symbol_items(&self, syms: &[(String, lt::SymbolKind, lt::Location)], enc: Encoding) -> Vec<LocItem> {
-        let locs: Vec<(PathBuf, lt::Range)> = syms
+        let kept: Vec<(&String, lt::SymbolKind, PathBuf, lt::Range)> = syms
             .iter()
-            .filter_map(|(_, _, l)| Some((tc_lsp::pos::path(&l.uri)?, l.range)))
+            .filter_map(|(name, kind, l)| Some((name, *kind, tc_lsp::pos::path(&l.uri)?, l.range)))
             .collect();
+        let locs: Vec<(PathBuf, lt::Range)> = kept.iter().map(|(_, _, p, r)| (p.clone(), *r)).collect();
         let mut items = self.loc_items(&locs, enc);
-        for (item, (name, kind, _)) in items.iter_mut().zip(syms) {
+        for (item, (name, kind, _, _)) in items.iter_mut().zip(kept) {
             let file = item.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            item.detail = format!("{} · {file}:{}", symbol_kind(*kind), item.line + 1);
+            item.detail = format!("{} · {file}:{}", symbol_kind(kind), item.line + 1);
             item.label = name.clone();
         }
         items
@@ -1424,7 +1445,7 @@ impl App {
                 let ix = LineIndex::new(text);
                 let line = range.start.line as usize;
                 let at = ix.char_index(text, range.start, enc);
-                let col = at - ix.line_start(line);
+                let col = at.saturating_sub(ix.line_start(line));
                 let shown = path.strip_prefix(&root).unwrap_or(path).display().to_string();
                 LocItem {
                     path: path.clone(),
@@ -1494,7 +1515,7 @@ impl App {
             .unwrap_or_else(|| std::fs::read_to_string(&path).unwrap_or_default());
         let ix = LineIndex::new(&text);
         let line = ix.line_of(at);
-        self.actions.push(crate::actions::Action::GotoLocation(path, line, at - ix.line_start(line)));
+        self.actions.push(crate::actions::Action::GotoLocation(path, line, at.saturating_sub(ix.line_start(line))));
     }
 
     // ----- typing help -----------------------------------------------------------------------
@@ -1564,8 +1585,11 @@ impl App {
                         let _ = crate::editor::save(f, false);
                     }
                 }
-            } else {
-                write_atomic(&path, &after)?;
+            } else if let Err(e) = write_atomic(&path, &after) {
+                if !undo.is_empty() {
+                    self.lsp.ide.undo = Some(RefactorUndo { files: undo, at: Instant::now() });
+                }
+                return Err(e);
             }
             undo.push((path, before, after));
         }
@@ -1617,6 +1641,9 @@ impl App {
         let command = match item {
             lt::CodeActionOrCommand::Command(c) => Some(c),
             lt::CodeActionOrCommand::CodeAction(a) => {
+                if a.disabled.is_some() {
+                    return;
+                }
                 if let Some(edit) = &a.edit
                     && let Err(e) = self.apply_workspace_edit(edit, enc, Some(&menu.revs))
                 {
@@ -1660,7 +1687,7 @@ pub fn refilter_in(text: &str, caret: usize, popup: &mut CompletionPopup) {
             sa.cmp(sb)
         })
     });
-    scored.truncate(200);
+    scored.truncate(100);
     popup.shown = scored.into_iter().map(|(_, i)| i).collect();
     popup.selected = popup.selected.min(popup.shown.len().saturating_sub(1));
 }
@@ -1696,7 +1723,7 @@ pub fn accept_completion(text: &str, popup: &CompletionPopup, item: &lt::Complet
         .iter()
         .map(|e| (ix.chars(text, &e.range, popup.enc), e.new_text.chars().count()))
         .filter(|((a, _), _)| *a < from)
-        .map(|((a, b), n)| n as isize - (b - a) as isize)
+        .map(|((a, b), n)| n as isize - b.saturating_sub(a) as isize)
         .sum();
     let mut all = extra;
     all.push(main);

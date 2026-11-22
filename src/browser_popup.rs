@@ -165,8 +165,8 @@ fn open(opener: &WKWebView, url: &str, config: &WKWebViewConfiguration, size: Op
     let (w, h) = fit(size, (room.size.width, room.size.height));
     // Centred over the page that opened it, on its screen.
     let page = own.convertRectToScreen(opener.convertRect_toView(opener.bounds(), None));
-    let x = (page.origin.x + (page.size.width - w) / 2.0).clamp(room.origin.x + SCREEN_MARGIN, (room.origin.x + room.size.width - w - SCREEN_MARGIN).max(room.origin.x));
-    let y = (page.origin.y + (page.size.height - h) / 2.0).clamp(room.origin.y + SCREEN_MARGIN, (room.origin.y + room.size.height - h - SCREEN_MARGIN).max(room.origin.y));
+    let x = (page.origin.x + (page.size.width - w) / 2.0).clamp(room.origin.x + SCREEN_MARGIN, (room.origin.x + room.size.width - w - SCREEN_MARGIN).max(room.origin.x + SCREEN_MARGIN));
+    let y = (page.origin.y + (page.size.height - h) / 2.0).clamp(room.origin.y + SCREEN_MARGIN, (room.origin.y + room.size.height - h - SCREEN_MARGIN).max(room.origin.y + SCREEN_MARGIN));
     // Not minimized on its own: it rides on the app's window.
     let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
     let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));

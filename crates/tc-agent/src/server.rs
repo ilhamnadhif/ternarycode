@@ -128,6 +128,8 @@ pub struct HookServer {
     /// The listening socket's fd, and the task accepting on it.
     #[cfg(unix)]
     listener: (std::os::fd::RawFd, tokio::task::AbortHandle),
+    #[cfg(windows)]
+    accept: tokio::task::AbortHandle,
 }
 
 /// The hook server as the app's next run takes it over (the app restarting in place for an
@@ -331,7 +333,7 @@ impl HookServer {
         let known = tokens.clone();
         let calls: Calls = Arc::default();
         let answers = calls.clone();
-        rt.spawn(async move {
+        let accept = rt.spawn(async move {
             let mut server = first;
             loop {
                 let connected = server.connect().await;
@@ -348,7 +350,7 @@ impl HookServer {
                 }
             }
         });
-        Ok(Self { path, tokens, calls })
+        Ok(Self { path, tokens, calls, accept: accept.abort_handle() })
     }
 
     /// From now on tool calls go to `on_call` (the agents' browser tools).
@@ -390,14 +392,17 @@ impl HookServer {
 
 impl Drop for HookServer {
     fn drop(&mut self) {
-        // Only while the path is still our socket: another instance may have bound it since.
+        // Stop accepting new connections; only remove the path while it is still our socket.
         #[cfg(unix)]
         {
+            self.listener.1.abort();
             use std::os::unix::fs::MetadataExt;
             if std::fs::symlink_metadata(&self.path).is_ok_and(|m| (m.dev(), m.ino()) == self.socket) {
                 let _ = std::fs::remove_file(&self.path);
             }
         }
+        #[cfg(windows)]
+        self.accept.abort();
     }
 }
 

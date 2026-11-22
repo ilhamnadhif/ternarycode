@@ -184,7 +184,9 @@ pub fn launch_detached(targets: &[String], detached: bool) -> bool {
     {
         use std::io::IsTerminal;
         use std::os::unix::process::CommandExt;
-        if detached || !(std::io::stdin().is_terminal() || std::io::stdout().is_terminal())
+        if detached
+            || (cfg!(debug_assertions) && std::env::var_os("TERNARYCODE_DEV_SCRIPT").is_some())
+            || !(std::io::stdin().is_terminal() || std::io::stdout().is_terminal())
         {
             return false;
         }

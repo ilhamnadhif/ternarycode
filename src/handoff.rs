@@ -103,16 +103,38 @@ pub fn read_at_launch() -> bool {
     unsafe { std::env::remove_var(ENV) };
     let ours = path.parent().is_some_and(|p| same_dir(p, &dir()));
     let text = ours.then(|| std::fs::read_to_string(&path).ok()).flatten();
-    let _ = std::fs::remove_file(&path);
+    if ours {
+        let _ = std::fs::remove_file(&path);
+    }
     if let Some(t) = &text {
         keep_from_children(t);
     }
     let handoff = text
-        .and_then(|t| serde_json::from_str::<Handoff>(&t).ok())
+        .as_deref()
+        .and_then(|t| serde_json::from_str::<Handoff>(t).ok())
         .filter(|h| h.version == VERSION);
+    if handoff.is_none()
+        && let Some(t) = &text
+    {
+        close_handed_fds(t);
+    }
     let found = handoff.is_some();
     *TAKEN.lock().unwrap_or_else(|e| e.into_inner()) = handoff;
     found
+}
+
+/// Closes all fds listed in an unusable handoff so they don't leak for this process's lifetime.
+fn close_handed_fds(text: &str) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else { return };
+    let masters = v["panes"].as_array().into_iter().flatten().filter_map(|p| p["master"].as_i64());
+    for fd in masters.chain(v["hooks"]["fd"].as_i64()) {
+        if let Ok(fd) = i32::try_from(fd)
+            && fd > 2
+        {
+            // SAFETY: fds handed to this run alone, unused because the handoff was rejected.
+            unsafe { libc::close(fd) };
+        }
+    }
 }
 
 /// The fds handed over came through `exec` open: closed on exec again at once, before this run
@@ -174,4 +196,17 @@ pub fn ago(now: Instant, t: Instant) -> u64 {
 /// The instant `ms` before `now`.
 pub fn back(now: Instant, ms: u64) -> Instant {
     now.checked_sub(Duration::from_millis(ms)).unwrap_or(now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_dir_distinguishes_outside_paths() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        assert!(same_dir(a.path(), a.path()));
+        assert!(!same_dir(a.path(), b.path()));
+    }
 }

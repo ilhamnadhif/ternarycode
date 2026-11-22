@@ -168,15 +168,15 @@ fn upload_path(f: &str, root: &std::path::Path) -> Result<std::path::PathBuf, St
         return Err(format!("Not a file: {f}"));
     }
     let mut places = vec![root.to_path_buf()];
-    if let Some(home) = std::env::var_os("HOME") {
-        places.push(std::path::PathBuf::from(home).join("Downloads"));
+    if let Some(dl) = dirs::download_dir().or_else(|| Some(crate::paths::home_dir().join("Downloads"))) {
+        places.push(dl);
     }
     #[cfg(debug_assertions)]
     if let Some(d) = std::env::var_os("TERNARYCODE_DOWNLOAD_DIR") {
         places.push(d.into());
     }
     if places.iter().filter_map(|d| d.canonicalize().ok()).any(|d| p.starts_with(d)) {
-        Ok(p)
+        Ok(crate::paths::canonical(&p))
     } else {
         Err(format!("{f} is outside the project's folder and Downloads: only files there can be uploaded. Ask the user to copy it into the project."))
     }
@@ -193,11 +193,65 @@ pub fn restore_caret(view: &crate::browser::View) {
     crate::browser::run_js(view, &helper_call("caret", &json!({})), |_| {});
 }
 
+/// Whether `src` is a top-level JS function or arrow function expression (not an expression
+/// that merely contains an inline arrow callback like `.map(a => a.href)`).
+fn is_js_function(s: &str) -> bool {
+    let rest = if let Some(r) = s.strip_prefix("async")
+        && r.chars().next().is_some_and(|c| c.is_ascii_whitespace() || c == '(')
+    {
+        r.trim_start()
+    } else {
+        s
+    };
+    if let Some(r) = rest.strip_prefix("function")
+        && r.chars().next().is_some_and(|c| c.is_ascii_whitespace() || matches!(c, '(' | '*'))
+    {
+        return true;
+    }
+    if rest.starts_with('(') {
+        let mut depth = 0usize;
+        let mut quote: Option<char> = None;
+        let mut esc = false;
+        for (i, c) in rest.char_indices() {
+            if let Some(q) = quote {
+                if esc {
+                    esc = false;
+                } else if c == '\\' {
+                    esc = true;
+                } else if c == q {
+                    quote = None;
+                }
+                continue;
+            }
+            match c {
+                '\'' | '"' | '`' => quote = Some(c),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return rest[i + 1..].trim_start().starts_with("=>");
+                    }
+                }
+                _ => {}
+            }
+        }
+        return false;
+    }
+    let mut chars = rest.char_indices();
+    let Some((_, first)) = chars.next() else { return false };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
+        return false;
+    }
+    let end = chars
+        .find(|&(_, c)| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+        .map_or(rest.len(), |(i, _)| i);
+    rest[end..].trim_start().starts_with("=>")
+}
+
 /// The agent's function (or expression) run in the page, its result as JSON.
 fn eval_call(src: &str) -> String {
-    let s = src.trim();
-    let function = s.starts_with("function") || s.starts_with("async") || s.contains("=>");
-    let f = if function { s.to_string() } else { format!("async () => ({s})") };
+    let s = src.trim().trim_end_matches(';').trim();
+    let f = if is_js_function(s) { s.to_string() } else { format!("async () => ({s})") };
     format!(
         "try {{ const r = await ({f})(); let s; try {{ s = JSON.stringify(r === undefined ? null : r); }} catch (e) {{ s = JSON.stringify(String(r)); }} return JSON.stringify({{ result: s }}); }} catch (e) {{ return JSON.stringify({{ error: String(e && e.stack || e) }}); }}"
     )
@@ -718,6 +772,13 @@ impl App {
                 done.remove(s);
             }
         }
+        if job.uploading {
+            let popup = crate::browser_popup::popup_of(job.browser);
+            let view = popup.or_else(|| self.browsers.get(&job.browser).and_then(|b| b.view.as_ref().map(crate::browser::web_view_of)));
+            if let Some(wk) = view.as_deref() {
+                let _ = crate::browser_dialog::upload_unused(wk);
+            }
+        }
         // Ended with its question open (the pane was closed, the user took the browser over):
         // the question goes, and the agent is no longer waiting for the user.
         if matches!(job.waiting, Some(Waiting::User { .. })) {
@@ -1195,6 +1256,12 @@ impl App {
                         op => {
                             // The other steps need the page up: until then, they wait.
                             let Some(view) = view.as_deref() else {
+                                if here.is_empty() && popup.is_none() {
+                                    return Some(Some("This tab has no page loaded yet: use browser_navigate first.".into()));
+                                }
+                                if now.duration_since(job.since) > LOAD_LIMIT {
+                                    return Some(Some("The browser page did not finish opening in time.".into()));
+                                }
                                 job.ops.push_front(op);
                                 return None;
                             };
@@ -1381,6 +1448,9 @@ mod tests {
         assert!(eval_call("() => document.title").contains("await (() => document.title)()"));
         assert!(eval_call("document.title").contains("await (async () => (document.title))()"));
         assert!(eval_call("async function () { return 1 }").contains("await (async function () { return 1 })()"));
+        assert!(eval_call("[...document.querySelectorAll('a')].map(a => a.href)").contains("await (async () => ([...document.querySelectorAll('a')].map(a => a.href)))()"));
+        assert!(eval_call("functionName()").contains("await (async () => (functionName()))()"));
+        assert!(eval_call("async () => 1").contains("await (async () => 1)()"));
     }
 
     #[test]

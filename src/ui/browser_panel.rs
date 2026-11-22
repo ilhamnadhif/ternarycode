@@ -241,6 +241,7 @@ impl App {
         // Filling the window: Esc puts it back beside the terminals (unless a page has the keys).
         if self.panel_of(project).is_some_and(|x| x.max)
             && self.browser_focus.is_none()
+            && self.terminals_take_keys()
             && ui.input(|i| i.key_pressed(egui::Key::Escape))
             && let Some(panel) = self.panel_mut(project)
         {

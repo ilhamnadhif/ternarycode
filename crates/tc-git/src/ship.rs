@@ -237,13 +237,16 @@ impl PushError {
 /// Pushes `branch` to `remote` (with `-u` when it tracks nothing yet). `path` is the PATH to run
 /// with (credential helpers such as `gh` are found on it).
 pub fn push(root: &Path, remote: &str, branch: &str, set_upstream: bool, path: Option<&OsStr>) -> Result<(), PushError> {
+    if remote.is_empty() || remote.starts_with('-') || branch.is_empty() || branch.starts_with('-') {
+        return Err(PushError::Failed("Invalid remote or branch name.".into()));
+    }
     let mut cmd = git(root);
     no_prompts(&mut cmd, root);
     cmd.arg("push");
     if set_upstream {
         cmd.arg("-u");
     }
-    cmd.args([remote, branch]);
+    cmd.arg("--").args([remote, branch]);
     if let Some(path) = path {
         cmd.env("PATH", path);
     }
@@ -452,10 +455,11 @@ pub fn parse_remote_url(url: &str) -> Option<Web> {
     } else {
         return None;
     };
-    let rest = rest.rsplit_once('@').map_or(rest.as_str(), |(_, r)| r).to_string();
-    let (host, path) = rest.split_once('/')?;
+    let (authority, path) = rest.split_once('/')?;
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = host.split(':').next()?.to_lowercase();
-    let repo = path.trim_matches('/').trim_end_matches(".git").trim_matches('/').to_string();
+    let repo = path.trim_matches('/');
+    let repo = repo.strip_suffix(".git").unwrap_or(repo).trim_matches('/').to_string();
     if repo.split('/').filter(|p| !p.is_empty()).count() < 2 {
         return None;
     }
@@ -512,7 +516,7 @@ pub fn diff_text(root: &Path, from: &str, to: &str, paths: &[String], max: usize
     super::check_rev(from)?;
     super::check_rev(to)?;
     let specs: Vec<String> = paths.iter().map(|p| literal_pathspec(p)).collect();
-    let out = run(git(root).args(["diff", "--no-color", "--no-ext-diff", "--stat", "--patch", from, to, "--"]).args(&specs))?;
+    let out = run(git(root).args(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--stat", "--patch", from, to, "--"]).args(&specs))?;
     let text = String::from_utf8_lossy(&out).into_owned();
     if text.len() <= max {
         return Ok(text);
@@ -618,6 +622,10 @@ mod tests {
         assert_eq!(parse_remote_url("https://user:token@github.com/acme/storefront.git"), gh("acme/storefront"));
         assert_eq!(parse_remote_url("ssh://git@github.com:22/acme/storefront.git"), gh("acme/storefront"));
         assert_eq!(parse_remote_url("git@github-work:acme/storefront.git"), gh("acme/storefront"));
+        assert_eq!(parse_remote_url("https://github.com/acme/repo@v2.git"), gh("acme/repo@v2"));
+        assert_eq!(parse_remote_url("https://github.com/acme/my.git.git"), gh("acme/my.git"));
+        assert!(push(Path::new("."), "--delete", "main", false, None).is_err());
+        assert!(push(Path::new("."), "origin", "--all", false, None).is_err());
         assert_eq!(
             parse_remote_url("git@gitlab.com:group/sub/app.git"),
             Some(Web { forge: Forge::GitLab, host: "gitlab.com".into(), repo: "group/sub/app".into() })

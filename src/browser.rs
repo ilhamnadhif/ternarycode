@@ -675,9 +675,13 @@ pub fn agent_page_keep() -> Duration {
 
 /// The host (with its port) and the rest of an address, for the address field. The host ends
 /// where WebKit ends it: at `/`, `?`, `#` or `\` (so `evil.example#@localhost` is not at
-/// localhost).
+/// localhost). Only strips a scheme prefix at the start of `url` (never a `://` inside a query
+/// or fragment).
 pub fn split_url(url: &str) -> (String, String) {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let rest = match url.split_once("://") {
+        Some((scheme, after)) if !scheme.is_empty() && scheme.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) => after,
+        _ => url,
+    };
     match rest.find(['/', '?', '#', '\\']) {
         Some(i) => (rest[..i].to_string(), rest[i..].to_string()),
         None => (rest.to_string(), String::new()),
@@ -710,11 +714,23 @@ pub fn site_listed(host: &str, sites: &[String]) -> bool {
 /// the lists (every project's, from Settings, and this project's own: `sites`), and `pass` (a
 /// host the user let it open once).
 pub fn agent_may_open(url: &str, sites: &[String], pass: Option<&str>) -> bool {
-    let scheme = url.split_once(':').map_or("", |(s, _)| s).to_ascii_lowercase();
+    if url.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return false;
+    }
+    let Some((scheme, after)) = url.split_once(':') else { return false };
+    let scheme = scheme.to_ascii_lowercase();
     if !matches!(scheme.as_str(), "http" | "https") {
         return matches!(scheme.as_str(), "about" | "file" | "data" | "blob");
     }
+    // Special schemes without `//` (`https:evil.com/?://localhost`) are parsed by browsers with
+    // `evil.com` as host; refuse anything that is not `http://` or `https://`.
+    if !after.starts_with("//") {
+        return false;
+    }
     let host = host_of(url);
+    if host.is_empty() {
+        return false;
+    }
     pass == Some(host.as_str()) || site_listed(&host, sites)
 }
 
@@ -778,17 +794,33 @@ pub fn normalize(input: &str) -> String {
     format!("https://www.google.com/search?q={q}")
 }
 
-/// A local file as an address.
+/// A local file as a `file://` URL (handles Windows drive letters and UNC paths).
 pub fn file_url(path: &std::path::Path) -> String {
-    let s = path.to_string_lossy();
-    let encoded: String = s
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect();
-    format!("file://{encoded}")
+    let encode_bytes = |bytes: &[u8], keep_colon: bool| -> String {
+        bytes
+            .iter()
+            .map(|&b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => (b as char).to_string(),
+                b':' if keep_colon => ":".to_string(),
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    };
+    #[cfg(windows)]
+    {
+        let raw = path.to_string_lossy().replace('\\', "/");
+        if let Some(unc) = raw.strip_prefix("//?/UNC/").or_else(|| raw.strip_prefix("//")) {
+            return format!("file://{}", encode_bytes(unc.as_bytes(), false));
+        }
+        let trimmed = raw.strip_prefix("//?/").unwrap_or(&raw);
+        let with_slash = if trimmed.starts_with('/') { trimmed.to_string() } else { format!("/{trimmed}") };
+        format!("file://{}", encode_bytes(with_slash.as_bytes(), true))
+    }
+    #[cfg(not(windows))]
+    {
+        let s = path.to_string_lossy();
+        format!("file://{}", encode_bytes(s.as_bytes(), false))
+    }
 }
 
 /// Reports the user's click in the page (it takes the keyboard): the app then lets go of its
@@ -1389,9 +1421,20 @@ mod tests {
         for ok in ["http://localhost:5173/cart", "http://127.0.0.1:8080", "http://app.local/", "about:blank", "file:///tmp/a.html", "https://checkout.stripe.com/x", "https://stripe.com"] {
             assert!(agent_may_open(ok, &sites, None), "{ok}");
         }
-        for asks in ["https://github.com/", "https://notstripe.com/", "https://stripe.com.evil.io/", "javascript:alert(1)", "ftp://x.org/", "http://localhost.evil.io/"] {
+        for asks in [
+            "https://github.com/",
+            "https://notstripe.com/",
+            "https://stripe.com.evil.io/",
+            "javascript:alert(1)",
+            "ftp://x.org/",
+            "http://localhost.evil.io/",
+            "https:evil.com/?://localhost",
+            "https://localhost\n",
+            "https://",
+        ] {
             assert!(!agent_may_open(asks, &sites, None), "{asks}");
         }
+        assert!(!agent_may_open("https://", &["*".into()], None));
         assert!(agent_may_open("https://github.com/x", &[], Some("github.com")));
         // Agents that don't ask (the default) may open any site.
         assert!(agent_may_open("https://www.youtube.com/watch?v=1", &["*".into()], None));

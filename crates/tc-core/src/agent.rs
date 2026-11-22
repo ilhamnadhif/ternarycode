@@ -187,13 +187,17 @@ fn basename(s: &str) -> &str {
 /// from `…/claude/versions/<version>`.
 pub fn recognize(argv: &[String], exe: Option<&str>) -> Option<AgentKind> {
     let by_name = |name: &str| -> Option<AgentKind> {
-        match name {
+        match name.to_ascii_lowercase().as_str() {
             "claude" => Some(AgentKind::Claude),
             "codex"
             | "codex-aarch64-apple-darwin"
             | "codex-x86_64-apple-darwin"
             | "codex-x86_64-pc-windows-msvc"
-            | "codex-aarch64-pc-windows-msvc" => {
+            | "codex-aarch64-pc-windows-msvc"
+            | "codex-x86_64-unknown-linux-gnu"
+            | "codex-x86_64-unknown-linux-musl"
+            | "codex-aarch64-unknown-linux-gnu"
+            | "codex-aarch64-unknown-linux-musl" => {
                 Some(AgentKind::Codex)
             }
             "opencode" => Some(AgentKind::OpenCode),
@@ -210,7 +214,7 @@ pub fn recognize(argv: &[String], exe: Option<&str>) -> Option<AgentKind> {
             Some(AgentKind::Codex)
         } else if path.contains("/@google/gemini-cli/") {
             Some(AgentKind::Gemini)
-        } else if path.contains("/opencode-ai/") || path.contains("/opencode/") {
+        } else if path.contains("/opencode-ai/") || path.contains("/node_modules/opencode/") || path.contains("/opencode/bin/") {
             Some(AgentKind::OpenCode)
         } else {
             None
@@ -220,11 +224,11 @@ pub fn recognize(argv: &[String], exe: Option<&str>) -> Option<AgentKind> {
     if let Some(a) = first.and_then(by_name) {
         return Some(a);
     }
-    if let Some(a) = exe.and_then(by_path) {
+    if let Some(a) = exe.and_then(|e| by_name(basename(e)).or_else(|| by_path(e))) {
         return Some(a);
     }
     // Interpreters: the script is the first argument that is not an option.
-    if matches!(first, Some("node" | "bun" | "deno" | "nodejs")) {
+    if first.is_some_and(|f| matches!(f.to_ascii_lowercase().as_str(), "node" | "bun" | "deno" | "nodejs")) {
         for arg in argv.iter().skip(1).filter(|a| !a.starts_with('-')).take(2) {
             if let Some(a) = by_name(basename(arg)).or_else(|| by_path(arg)) {
                 return Some(a);
@@ -326,5 +330,15 @@ mod tests {
         assert_eq!(install_command(AgentKind::Custom), None);
         assert_eq!(command_program("  codex -c x"), Some("codex"));
         assert_eq!(command_program(""), None);
+    }
+
+    #[test]
+    fn recognizes_case_insensitive_linux_triples_and_avoids_opencode_false_positives() {
+        assert_eq!(recognize(&["CLAUDE.EXE".into()], None), Some(AgentKind::Claude));
+        assert_eq!(recognize(&["NODE.EXE".into(), "C:\\tools\\codex".into()], None), Some(AgentKind::Codex));
+        assert_eq!(recognize(&["codex-x86_64-unknown-linux-gnu".into()], None), Some(AgentKind::Codex));
+        assert_eq!(recognize(&["codex-aarch64-unknown-linux-musl".into()], None), Some(AgentKind::Codex));
+        assert_eq!(recognize(&["node".into(), "/projects/opencode/server.js".into()], None), None);
+        assert_eq!(recognize(&["node".into(), "/usr/lib/node_modules/opencode/bin/opencode".into()], None), Some(AgentKind::OpenCode));
     }
 }

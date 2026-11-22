@@ -548,7 +548,6 @@ impl App {
         let wide = ctx.content_rect().width() >= 1200.0 && pal.mode != PaletteMode::Locations;
         let width = if wide { WIDE } else { WIDTH };
         let list_w = if wide { WIDE - PREVIEW_W } else { WIDTH };
-        let preview_of = items.get(pal.selected).map(|(_, it)| (it.preview, it.label.clone(), it.detail.clone(), it.right.clone(), it.action.clone()));
         let area = egui::Area::new(egui::Id::new("palette-area")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0));
         let dark = ctx.global_style().visuals.dark_mode;
         let modal = egui::Modal::new(egui::Id::new("palette"))
@@ -619,6 +618,7 @@ impl App {
                         m.set_focus_lock_filter(
                             r.id,
                             egui::EventFilter {
+                                horizontal_arrows: true,
                                 vertical_arrows: true,
                                 tab: true,
                                 ..Default::default()
@@ -830,6 +830,7 @@ impl App {
                         });
                     });
                     if wide {
+                        let preview_of = items.get(pal.selected).map(|(_, it)| (it.preview, it.label.clone(), it.detail.clone(), it.right.clone(), it.action.clone()));
                         let (pr, _) = ui.allocate_exact_size(vec2(PREVIEW_W, max_h + 4.0 + 8.0), Sense::hover());
                         if let Some((preview, label, detail, right, action)) = &preview_of {
                             let open = self.palette_preview(ui, pr, *preview, label, detail, right, action);

@@ -418,6 +418,7 @@ if (!window.__tc) window.__tc = (() => {
   // `allowed`: the sites the agent may open (`example.com` or `*.example.com`: that host and
   // its subdomains).
   const listed = (host, allowed) => allowed.some((s) => {
+    if (String(s).trim() === '*') return true;
     const h = String(s).trim().replace(/^\*\./, '').toLowerCase();
     return h && (host === h || host.endsWith('.' + h));
   });

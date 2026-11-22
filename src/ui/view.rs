@@ -124,7 +124,7 @@ impl App {
     /// the Review or the attention list. The panes are drawn first, so they would read an Esc
     /// meant for those (and send it to the agent) before it closes them.
     pub fn terminals_take_keys(&self) -> bool {
-        self.dialog.is_none() && self.palette.is_none() && !self.review_full() && !self.attention_open
+        self.dialog.is_none() && self.palette.is_none() && !self.review_full() && !self.attention_open && !self.updater.dialog_open
     }
 
     fn central(&mut self, ui: &mut Ui) {
@@ -259,7 +259,7 @@ impl App {
         };
         let roots = self.onboarding.found.as_ref().map(|f| f.roots.iter().take(2).map(|r| crate::paths::contract_tilde(r)).collect::<Vec<_>>().join(&format!(" {} ", t("and")))).unwrap_or_default();
         let sub = if roots.is_empty() { None } else { Some(tf("git repositories in {}", &[&roots])) };
-        section(&painter, left.min, t("Found on this Mac"), sub.as_deref());
+        section(&painter, left.min, if cfg!(target_os = "macos") { t("Found on this Mac") } else { t("Found on this computer") }, sub.as_deref());
         let again = egui::Rect::from_min_size(egui::pos2(left.right() - kit::button_width(ui, Some(icons::ARROW_CLOCKWISE), t("Look Again"), None, true), left.top() - 4.0), egui::vec2(kit::button_width(ui, Some(icons::ARROW_CLOCKWISE), t("Look Again"), None, true), 24.0));
         if ui.scope_builder(egui::UiBuilder::new().max_rect(again), |ui| kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_CLOCKWISE), t("Look Again"), true)).inner.clicked() {
             self.onboarding.found = None;

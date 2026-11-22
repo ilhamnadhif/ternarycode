@@ -32,6 +32,7 @@ enum Ask {
     NewBranch,
     CancelBranch,
     Terminal(Vec<String>),
+    TerminalFrom { from: usize, prefix: Option<String> },
     ToggleCommands,
     Write,
     Undo,
@@ -187,7 +188,7 @@ impl App {
                 parts.push(Part::To);
                 if show_commands && plan.blocked.is_none() {
                     let req = self.ship_request(project, plan, &root, &paths, &message);
-                    parts.push(Part::Commands(req.commands(0)));
+                    parts.push(Part::Commands(req.preview_commands(0)));
                     req_for_go = Some(req);
                 }
             }
@@ -412,16 +413,14 @@ impl App {
                     match run.failed() {
                         Some((i, f)) => {
                             close = (t("Close"), "ship-act-close");
-                            let rest = run.req.commands(i);
                             match f {
                                 Failure::Rejected(_) => {
                                     let remote = run.req.remote.clone().unwrap_or_else(|| "origin".into());
-                                    let mut cmds = vec![format!("git pull --rebase {} {}", ship::quote(&remote), ship::quote(&run.req.branch))];
-                                    cmds.extend(rest);
-                                    btns.push((Act::new(kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Pull & Push in Terminal"), "ship-act-pull"), Ask::Terminal(cmds)));
+                                    let pull = format!("git pull --rebase {} {}", ship::quote(&remote), ship::quote(&run.req.branch));
+                                    btns.push((Act::new(kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Pull & Push in Terminal"), "ship-act-pull"), Ask::TerminalFrom { from: i, prefix: Some(pull) }));
                                 }
                                 Failure::Credentials(_) => {
-                                    btns.push((Act::new(kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Push in Terminal"), "ship-act-push"), Ask::Terminal(rest)));
+                                    btns.push((Act::new(kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Push in Terminal"), "ship-act-push"), Ask::TerminalFrom { from: i, prefix: None }));
                                 }
                                 Failure::SignedOut(_) => {
                                     if let Some(web) = &run.req.web {
@@ -436,7 +435,7 @@ impl App {
                                     if commit && let Some(a) = agent {
                                         btns.push((Act::new(kit::Kind::Primary, None, &tf("Ask {} to Fix", &[a.label()]), "ship-act-fix"), Ask::Fix(out.clone())));
                                     }
-                                    btns.push((Act::new(kit::Kind::Secondary, Some(icons::TERMINAL_WINDOW), t("Run in Terminal"), "ship-act-terminal"), Ask::Terminal(rest)));
+                                    btns.push((Act::new(kit::Kind::Secondary, Some(icons::TERMINAL_WINDOW), t("Run in Terminal"), "ship-act-terminal"), Ask::TerminalFrom { from: i, prefix: None }));
                                 }
                             }
                         }
@@ -594,7 +593,8 @@ impl App {
                     painter.rect_filled(copy, CornerRadius::same(5), if resp.hovered() { p.hover } else { fill });
                     painter.text(copy.center(), Align2::CENTER_CENTER, icons::COPY, style::icon_font(11.5), p.text_faint);
                     if resp.on_hover_text(t("Copy")).clicked() {
-                        asks.push(Ask::Copy(ship::chain(cmds)));
+                        let materialized = req_for_go.as_ref().map(|r| r.commands(0));
+                        asks.push(Ask::Copy(ship::chain(materialized.as_deref().unwrap_or(cmds))));
                     }
                 }
             }
@@ -606,7 +606,12 @@ impl App {
             match ask {
                 Ask::Go => {
                     let Some(plan) = &plan else { continue };
-                    if plan.blocked.is_some() || plan.idle() || (plan.has(&StepKind::Commit) && message.trim().is_empty()) {
+                    if plan.blocked.is_some()
+                        || plan.idle()
+                        || (plan.has(&StepKind::Commit) && message.trim().is_empty())
+                        || writing.is_some()
+                        || new_branch.as_deref().is_some_and(|b| !tc_git::worktree::valid_branch(b.trim()))
+                    {
                         continue;
                     }
                     let req = req_for_go.take().unwrap_or_else(|| self.ship_request(project, plan, &root, &paths, &message));
@@ -636,6 +641,17 @@ impl App {
                 Ask::Terminal(cmds) => {
                     let ctx = ui.ctx().clone();
                     self.ship_mut(project).run = None;
+                    self.ship_in_terminal(&ctx, project, cmds);
+                }
+                Ask::TerminalFrom { from, prefix } => {
+                    let ctx = ui.ctx().clone();
+                    let mut cmds = Vec::new();
+                    if let Some(first) = prefix {
+                        cmds.push(first);
+                    }
+                    if let Some(r) = self.ship_mut(project).run.take() {
+                        cmds.extend(r.req.commands(from));
+                    }
                     self.ship_in_terminal(&ctx, project, cmds);
                 }
                 Ask::ToggleCommands => {

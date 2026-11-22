@@ -1,6 +1,7 @@
 /// Indonesian translations of the UI strings (English → Indonesian).
 const ID: &[(&str, &str)] = &[
     // Menu
+    ("About", "Tentang"),
     ("About TernaryCode", "Tentang TernaryCode"),
     ("Terminal workspace for AI coding agents", "Workspace terminal untuk AI coding agent"),
     ("Settings…", "Pengaturan…"),
@@ -759,7 +760,6 @@ const ID: &[(&str, &str)] = &[
     ("Loading {}…", "Memuat {}…"),
     ("Pages can't show in TernaryCode here: ↗ opens it in your browser.", "Halaman tidak bisa tampil di TernaryCode di sini: ↗ membukanya di browser kamu."),
     ("Leave this page? Changes you made may not be saved.", "Tinggalkan halaman ini? Perubahan yang kamu buat mungkin tidak tersimpan."),
-    ("Forward", "Maju"),
     ("Reload", "Muat Ulang"),
     ("Browser", "Browser"),
     ("More", "Lainnya"),
@@ -819,9 +819,7 @@ const ID: &[(&str, &str)] = &[
     ("Web pages beside your terminals, for you and your agents.", "Halaman web di samping terminal, untuk kamu dan agent-mu."),
     ("Open web pages in TernaryCode", "Buka halaman web di TernaryCode"),
     ("Put browsers to sleep after", "Tidurkan browser setelah"),
-    ("{} min", "{} menit"),
     ("Logins & cookies", "Login & cookie"),
-    ("Clear", "Hapus"),
     ("Logins, cookies and history were cleared.", "Login, cookie, dan riwayat sudah dihapus."),
     ("In the sidebar, projects where something runs or waits come first, under Active.", "Di sidebar, project yang sedang menjalankan sesuatu atau menunggu tampil paling atas, di grup Aktif."),
     ("{} changed nothing since it started: these are the changes since the last commit.", "{} tidak mengubah apa pun sejak mulai: ini perubahan sejak commit terakhir."),

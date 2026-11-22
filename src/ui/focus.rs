@@ -927,6 +927,7 @@ impl App {
 
     /// The ⌘F bar over the pane being searched: Enter finds older output, Shift+Enter newer.
     fn find_bar(&mut self, ui: &mut Ui) {
+        let take_keys = self.terminals_take_keys();
         let Some(search) = self.pane_search.as_mut() else { return };
         let Some(rect) = self.pane_rects.get(&search.pane).copied() else {
             self.pane_search = None;
@@ -938,7 +939,7 @@ impl App {
         };
         let p = style::pal(ui);
         // Esc closes the bar (taken before the text field, which would swallow it).
-        let mut close = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let mut close = take_keys && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         // Kept inside the pane, however narrow (else it covers the pane beside it, or leaves the
         // window): the field gives up width first.
         let field_w = (rect.width() - 200.0).clamp(60.0, 170.0);

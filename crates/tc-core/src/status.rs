@@ -300,7 +300,8 @@ impl Tracker {
             }
             self.asked_at = Some(now);
         }
-        let changed = status != self.status || source != self.source || attention != self.unseen;
+        let unseen = attention && (!self.focused || status == Status::NeedsInput);
+        let changed = status != self.status || source != self.source || unseen != self.unseen;
         if status != self.status {
             self.since = now;
             if !matches!(status, Status::NeedsInput | Status::Done) {
@@ -311,7 +312,7 @@ impl Tracker {
         self.source = source;
         // Nothing to bring to the user's attention while they look at the pane, except a
         // question: it waits until it is answered.
-        self.unseen = attention && (!self.focused || status == Status::NeedsInput);
+        self.unseen = unseen;
         changed
     }
 
@@ -463,27 +464,36 @@ impl Tracker {
         let ran = now.duration_since(self.fg_since);
         self.fg_since = now;
         match fg {
-            Foreground::Shell => match prev {
-                Foreground::Program { agent: Some(_), .. } => {
-                    // The agent was quit.
-                    self.agent = None;
-                    self.hooks_active = false;
-                    self.set(Status::Idle, Source::Process, false, now)
-                }
-                Foreground::Program { agent: None, .. } => {
-                    // With shell integration the finish mark reports this (with the code).
-                    if self.shell_marks {
-                        return matches!(self.status, Status::Running)
-                            && self.set(Status::Idle, Source::Process, false, now);
-                    }
-                    if ran >= self.long_command {
-                        self.set(Status::CommandDone, Source::Process, true, now)
-                    } else {
+            Foreground::Shell => {
+                let was_agent = self.agent.is_some();
+                self.agent = None;
+                self.hooks_active = false;
+                match prev {
+                    Foreground::Program { agent: Some(_), .. } => {
+                        // The agent was quit: don't let its shell-integration finish mark turn
+                        // into a spurious "command finished" notice.
+                        self.command_started = None;
                         self.set(Status::Idle, Source::Process, false, now)
                     }
+                    Foreground::Program { agent: None, .. } => {
+                        if was_agent {
+                            self.command_started = None;
+                            return self.set(Status::Idle, Source::Process, false, now);
+                        }
+                        // With shell integration the finish mark reports this (with the code).
+                        if self.shell_marks {
+                            return matches!(self.status, Status::Running)
+                                && self.set(Status::Idle, Source::Process, false, now);
+                        }
+                        if ran >= self.long_command {
+                            self.set(Status::CommandDone, Source::Process, true, now)
+                        } else {
+                            self.set(Status::Idle, Source::Process, false, now)
+                        }
+                    }
+                    _ => self.set(Status::Idle, Source::Process, false, now),
                 }
-                _ => self.set(Status::Idle, Source::Process, false, now),
-            },
+            }
             Foreground::Program {
                 agent: Some(agent), ..
             } => {
@@ -754,5 +764,28 @@ mod tests {
         let mut other = Tracker::new(later);
         other.apply(Event::Hook { agent: AgentKind::Claude, signal: HookSignal::NeedsInput, message: None }, later);
         assert!(other.ask > r.ask);
+    }
+
+    #[test]
+    fn quitting_long_agent_and_non_agent_transitions_clean_up() {
+        let t0 = Instant::now();
+        let mut t = Tracker::new(t0);
+        t.apply(Event::Shell(ShellMark::CommandStart), t0);
+        t.apply(prog("claude", Some(AgentKind::Claude)), t0);
+        t.apply(hook(HookSignal::SessionStart), t0);
+        t.apply(Event::Foreground(Foreground::Shell), t0 + LONG_COMMAND);
+        assert_eq!(t.status, Status::Idle);
+        assert_eq!(t.agent, None);
+        assert!(!t.hooks_active);
+        t.apply(Event::Shell(ShellMark::CommandFinished(Some(0))), t0 + LONG_COMMAND);
+        assert_eq!(t.status, Status::Idle, "exiting an agent must not trigger CommandDone");
+
+        // Agent -> non-agent child -> shell still clears agent and hooks_active.
+        t.apply(prog("claude", Some(AgentKind::Claude)), t0);
+        t.apply(hook(HookSignal::SessionStart), t0);
+        t.apply(prog("vim", None), t0);
+        t.apply(Event::Foreground(Foreground::Shell), t0);
+        assert_eq!(t.agent, None);
+        assert!(!t.hooks_active);
     }
 }

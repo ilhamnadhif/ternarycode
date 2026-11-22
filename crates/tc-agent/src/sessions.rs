@@ -258,7 +258,11 @@ fn names_desc(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn same_folder(a: &Path, b: &Path) -> bool {
-    a == b || (fs::canonicalize(a).ok().is_some_and(|x| fs::canonicalize(b).ok().is_some_and(|y| x == y)))
+    same_folder_canon(a, b, fs::canonicalize(b).ok().as_deref())
+}
+
+fn same_folder_canon(a: &Path, b: &Path, b_canon: Option<&Path>) -> bool {
+    a == b || b_canon.is_some_and(|y| fs::canonicalize(a).ok().as_deref() == Some(y))
 }
 
 fn codex(project: &Path, root: &Path, limit: usize) -> Vec<Session> {
@@ -273,7 +277,9 @@ fn codex(project: &Path, root: &Path, limit: usize) -> Vec<Session> {
             }
         }
     }
+    let project_canon = fs::canonicalize(project).ok();
     let mut out = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
     let mut looked = 0;
     'days: for year in names_desc(&root.join("sessions")) {
         for month in names_desc(&year) {
@@ -283,10 +289,11 @@ fn codex(project: &Path, root: &Path, limit: usize) -> Vec<Session> {
                         continue;
                     }
                     looked += 1;
-                    if looked > 2000 || out.len() >= limit {
+                    if looked > 2000 || seen_ids.len() >= limit {
                         break 'days;
                     }
-                    if let Some(s) = codex_session(&file, project, &titles) {
+                    if let Some(s) = codex_session(&file, project, project_canon.as_deref(), &titles) {
+                        seen_ids.insert(s.id.clone());
                         out.push(s);
                     }
                 }
@@ -296,13 +303,13 @@ fn codex(project: &Path, root: &Path, limit: usize) -> Vec<Session> {
     out
 }
 
-fn codex_session(path: &Path, project: &Path, titles: &HashMap<String, String>) -> Option<Session> {
+fn codex_session(path: &Path, project: &Path, project_canon: Option<&Path>, titles: &HashMap<String, String>) -> Option<Session> {
     let f = File::open(path).ok()?;
     let mut lines = BufReader::new(f).lines().map_while(Result::ok);
     let meta: Value = serde_json::from_str(&lines.next()?).ok()?;
     let payload = &meta["payload"];
     let cwd = text(&payload["cwd"])?;
-    if !same_folder(Path::new(&cwd), project) {
+    if !same_folder_canon(Path::new(&cwd), project, project_canon) {
         return None;
     }
     let id = text(&payload["id"]).or_else(|| text(&payload["session_id"]))?;

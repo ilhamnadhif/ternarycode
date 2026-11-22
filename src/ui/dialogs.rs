@@ -751,7 +751,7 @@ impl App {
                             let okr = kit::button_keys(ui, kit::Kind::Primary, None, t("Install"), Some("↵"), false);
                             #[cfg(debug_assertions)]
                             crate::devtest::record("dialog-ok", okr.rect);
-                            ok = okr.clicked();
+                            ok = okr.clicked() || enter;
                             cancel = kit::button_ex(ui, kit::Kind::Ghost, None, t("Cancel"), false).clicked();
                         },
                     );
@@ -793,8 +793,13 @@ impl App {
         if modal.should_close() {
             keep = false;
             // As its Cancel: back to the integrations it was asked from.
-            if matches!(dialog, Dialog::Install(..)) {
+            if matches!(dialog, Dialog::Install(..) | Dialog::ConfirmUninstall(..)) {
                 self.actions.push(Action::Integrations);
+            }
+            match &dialog {
+                Dialog::MergeWorktree(id) => ctx.data_mut(|d| d.remove::<(usize, u32, u32)>(egui::Id::new(("merge-stat", *id)))),
+                Dialog::RemoveWorktree(id, _) => ctx.data_mut(|d| d.remove::<Vec<(String, String)>>(egui::Id::new(("remove-commits", *id)))),
+                _ => {}
             }
         }
         // A dialog that opened another while it was drawn (Settings' "Clear…"): that one shows,

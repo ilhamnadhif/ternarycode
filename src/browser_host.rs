@@ -202,7 +202,7 @@ impl PageMouse {
     }
 
     /// Watches the mouse over `content` (the page's window) for `web`, while the app is in front.
-    fn watch(mtm: MainThreadMarker, content: &NSView, web: &WKWebView) -> Retained<Self> {
+    fn watch(mtm: MainThreadMarker, content: &NSView, web: &WKWebView) -> (Retained<Self>, Retained<NSObject>) {
         let this = mtm.alloc::<Self>().set_ivars(PageMouseIvars { web: Weak::from(web) });
         // SAFETY: NSObject's init, on the main thread.
         let mouse: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -210,12 +210,13 @@ impl PageMouse {
         let options: usize = 0x01 | 0x02 | 0x40 | 0x200;
         // SAFETY: NSTrackingArea's initializer (its owner is not retained: `View` keeps it) and
         // NSView's addTrackingArea:, on the main thread.
-        unsafe {
+        let area: Retained<NSObject> = unsafe {
             let area: Allocated<NSObject> = msg_send![objc2::class!(NSTrackingArea), alloc];
             let area: Retained<NSObject> = msg_send![area, initWithRect: NSRect::ZERO, options: options, owner: &*mouse, userInfo: std::ptr::null::<AnyObject>()];
             let _: () = msg_send![content, addTrackingArea: &*area];
-        }
-        mouse
+            area
+        };
+        (mouse, area)
     }
 }
 
@@ -227,8 +228,10 @@ pub struct View {
     host: Option<Retained<PageWindow>>,
     /// The app's window it sits over.
     app: Retained<NSWindow>,
-    /// The real mouse over it (kept: its tracking area does not keep it).
-    _mouse: Retained<PageMouse>,
+    /// The real mouse over it (kept: its tracking area does not keep it; autoreleased on drop).
+    mouse: Option<Retained<PageMouse>>,
+    /// The tracking area attached to `host`'s content view (removed on drop).
+    area: Option<Retained<NSObject>>,
     /// Has the page window's keyboard while the page has not (`KeyHolder`).
     holder: Retained<NSView>,
     /// It is over the app's window (a child of it, on screen or out of the window).
@@ -284,7 +287,7 @@ impl View {
         content.addSubview(&holder);
         content.addSubview(&wk);
         host.makeFirstResponder(Some(&holder));
-        let mouse = PageMouse::watch(mtm, &content, &wk);
+        let (mouse, area) = PageMouse::watch(mtm, &content, &wk);
         // The app's view keeps the app window's keyboard (the web view may have had it there).
         let app_view = app.contentView();
         let first_is_app = app.firstResponder().and_then(|f| f.downcast::<NSView>().ok()).zip(app_view.as_ref()).is_some_and(|(f, v)| f.isDescendantOf(v));
@@ -293,7 +296,7 @@ impl View {
         }
         // SAFETY: both windows are alive, on the main thread.
         unsafe { app.addChildWindow_ordered(&host, NSWindowOrderingMode::Above) };
-        let view = Self { web, wk, host: Some(host), app, _mouse: mouse, holder, shown: Cell::new(true), parked: Cell::new(false) };
+        let view = Self { web, wk, host: Some(host), app, mouse: Some(mouse), area: Some(area), holder, shown: Cell::new(true), parked: Cell::new(false) };
         view.note_parked(frame.origin.x - view.app.frame().origin.x < PARKED_X);
         tell(view.host());
         crate::browser_popup::raise();
@@ -436,13 +439,22 @@ impl View {
 impl Drop for View {
     fn drop(&mut self) {
         let Some(host) = self.host.take() else { return };
+        if let (Some(content), Some(area)) = (host.contentView(), self.area.take()) {
+            // SAFETY: removing the tracking area we added to `content`, on the main thread.
+            unsafe {
+                let _: () = msg_send![&*content, removeTrackingArea: &*area];
+            }
+        }
         if is_key(&host) {
             self.app.makeKeyWindow();
         }
         self.app.removeChildWindow(&host);
         host.orderOut(None);
         // Let go once AppKit is done with this turn of the event loop (wry takes the web view
-        // out of the window right after this).
+        // out of the window right after this; any queued tracking events still reference `mouse`).
+        if let Some(mouse) = self.mouse.take() {
+            let _ = Retained::autorelease_ptr(mouse);
+        }
         let _ = Retained::autorelease_ptr(host);
     }
 }

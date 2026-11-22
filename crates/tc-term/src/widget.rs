@@ -1428,6 +1428,14 @@ fn show_inner(
             }
         }
     } else if input_enabled {
+        // Releasing a mouse button while holding Shift (after pressing it in mouse mode) must
+        // clear the tracked button so it does not stay stuck once Shift is released.
+        if mouse_mode && view.reported_button.is_some() {
+            let released = ui.input(|i| i.events.iter().any(|e| matches!(e, Event::PointerButton { pressed: false, .. })));
+            if released {
+                view.reported_button = None;
+            }
+        }
         let press_origin = ui.input(|i| i.pointer.press_origin());
         if response.drag_started_by(PointerButton::Primary)
             && let Some(p) = press_origin
@@ -1595,8 +1603,18 @@ fn show_inner(
             out.push(egui::Shape::rect_filled(r, CornerRadius::ZERO, color));
         }
     };
+    struct CursorCell {
+        row: usize,
+        col: usize,
+        text: String,
+        fg: Color32,
+        bg: Color32,
+        wide: bool,
+        bold: bool,
+        italic: bool,
+    }
     let mut current: Option<(usize, TextRun)> = None;
-    let mut cursor_cell: Option<(usize, usize, String, Color32, Color32, bool)> = None;
+    let mut cursor_cell: Option<CursorCell> = None;
 
     for indexed in content.display_iter {
         let Some(vp) = term::point_to_viewport(offset, indexed.point) else {
@@ -1679,7 +1697,16 @@ fn show_inner(
             if let Some(extra) = indexed.cell.zerowidth() {
                 text.extend(extra.iter());
             }
-            cursor_cell = Some((row, col, text, fg, bg.unwrap_or(default_bg), width == 2));
+            cursor_cell = Some(CursorCell {
+                row,
+                col,
+                text,
+                fg,
+                bg: bg.unwrap_or(default_bg),
+                wide: width == 2,
+                bold: run_style.bold,
+                italic: run_style.italic,
+            });
         }
 
         let zerowidth = indexed.cell.zerowidth().is_some_and(|z| !z.is_empty());
@@ -1850,7 +1877,7 @@ fn show_inner(
         true
     };
     let mut cursor_rect = None;
-    if let Some((row, col, text, fg, bg, wide)) = cursor_cell {
+    if let Some(CursorCell { row, col, text, fg, bg, wide, bold, italic }) = cursor_cell {
         let r = cell_rect(col, row, if wide { 2 } else { 1 });
         cursor_rect = Some(r);
         if !view.preedit.is_empty() {
@@ -1892,8 +1919,8 @@ fn show_inner(
                     if text.trim() != "" {
                         let st = RunStyle {
                             fg: text_color,
-                            bold: false,
-                            italic: false,
+                            bold,
+                            italic,
                             underline: 0,
                             underline_color: None,
                             strike: false,

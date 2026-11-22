@@ -369,6 +369,7 @@ impl App {
             let line = ix.line_of(a);
             file.caret = (line + 1, a - ix.line_start(line) + 1);
             file.caret_index = Some(a);
+            file.caret_rev = file.rev;
             ctx.memory_mut(|m| m.request_focus(text_id));
         }
 
@@ -377,7 +378,7 @@ impl App {
         if let Some(f) = find.as_mut() {
             // Esc closes the bar only while the keyboard is in the editor (a terminal needs Esc).
             let find_id = egui::Id::new(("editor-find", project));
-            let ours = ctx.memory(|m| m.has_focus(text_id) || m.has_focus(find_id));
+            let ours = ctx.memory(|m| m.has_focus(text_id) || m.has_focus(find_id) || m.had_focus_last_frame(find_id));
             let mut close = ours && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
             let mut go: Option<bool> = None;
             let mut enter = false;
@@ -399,6 +400,9 @@ impl App {
                             f.focus = false;
                         }
                         find_focused = r.has_focus();
+                        if find_focused {
+                            ui.memory_mut(|m| m.set_focus_lock_filter(find_id, egui::EventFilter { escape: true, horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
+                        }
                         if r.changed() {
                             // Typing searches from the caret on, for the query just typed (the
                             // matches above were found for the one before).
@@ -556,8 +560,30 @@ impl App {
             let area = ui.available_rect_before_wrap();
             let half = (area.width() / 2.0).floor();
             let mono = egui::FontId::monospace(font_size - 1.0);
-            let left: Vec<(char, &str)> = diff.lines().filter(|l| !l.starts_with("+ ")).map(|l| (l.chars().next().unwrap_or(' '), l.get(2..).unwrap_or(""))).collect();
-            let right: Vec<(char, &str)> = diff.lines().filter(|l| !l.starts_with("- ")).map(|l| (l.chars().next().unwrap_or(' '), l.get(2..).unwrap_or(""))).collect();
+            type CompareRow<'a> = (Option<(char, &'a str)>, Option<(char, &'a str)>);
+            let mut rows: Vec<CompareRow<'_>> = Vec::new();
+            let mut minus: Vec<&str> = Vec::new();
+            let mut plus: Vec<&str> = Vec::new();
+            fn flush<'a>(rows: &mut Vec<CompareRow<'a>>, minus: &mut Vec<&'a str>, plus: &mut Vec<&'a str>) {
+                let n = minus.len().max(plus.len());
+                for i in 0..n {
+                    rows.push((minus.get(i).map(|s| ('-', *s)), plus.get(i).map(|s| ('+', *s))));
+                }
+                minus.clear();
+                plus.clear();
+            }
+            for line in diff.lines() {
+                if let Some(rest) = line.strip_prefix("- ") {
+                    minus.push(rest);
+                } else if let Some(rest) = line.strip_prefix("+ ") {
+                    plus.push(rest);
+                } else {
+                    flush(&mut rows, &mut minus, &mut plus);
+                    let rest = line.strip_prefix("  ").unwrap_or(line);
+                    rows.push((Some((' ', rest)), Some((' ', rest))));
+                }
+            }
+            flush(&mut rows, &mut minus, &mut plus);
             egui::ScrollArea::vertical().id_salt(("compare", project)).auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let (head, _) = ui.allocate_exact_size(vec2(area.width(), 24.0), Sense::hover());
@@ -565,18 +591,22 @@ impl App {
                 ui.painter().vline(head.left() + half, head.y_range(), Stroke::new(1.0, p.border));
                 ui.painter().text(pos2(head.left() + 10.0, head.center().y), Align2::LEFT_CENTER, disk_label, egui::FontId::proportional(style::SMALL), p.text_faint);
                 ui.painter().text(pos2(head.left() + half + 10.0, head.center().y), Align2::LEFT_CENTER, t("Yours — not saved"), egui::FontId::proportional(style::SMALL), p.text_faint);
-                for i in 0..left.len().max(right.len()) {
+                for (left, right) in &rows {
                     let (row, _) = ui.allocate_exact_size(vec2(area.width(), 19.0), Sense::hover());
                     if !ui.is_rect_visible(row) {
                         continue;
                     }
-                    for (side, x0, sign_c, bg_c) in [(left.get(i), row.left(), p.ok, p.ok), (right.get(i), row.left() + half, p.err, p.err)] {
+                    for (side, x0) in [(left.as_ref(), row.left()), (right.as_ref(), row.left() + half)] {
                         let Some((mark, text)) = side else { continue };
                         let changed = *mark == '-' || *mark == '+';
                         let cell = Rect::from_min_size(pos2(x0, row.top()), vec2(half, row.height()));
-                        let (sc, bg) = if changed { (if *mark == '-' { sign_c } else { bg_c }, style::soft(if *mark == '-' { p.ok } else { p.err }, 0.10)) } else { (p.text_faint, egui::Color32::TRANSPARENT) };
+                        let (sc, bg) = match mark {
+                            '-' => (p.err, style::soft(p.err, 0.10)),
+                            '+' => (p.ok, style::soft(p.ok, 0.10)),
+                            _ => (p.text_faint, egui::Color32::TRANSPARENT),
+                        };
                         ui.painter().rect_filled(cell, CornerRadius::ZERO, bg);
-                        let sign = match mark { '-' => "+", '+' => "−", _ => "" };
+                        let sign = match mark { '-' => "−", '+' => "+", _ => "" };
                         ui.painter().text(pos2(cell.left() + 10.0, row.center().y), Align2::CENTER_CENTER, sign, mono.clone(), sc);
                         let painter = ui.painter().with_clip_rect(cell);
                         painter.text(pos2(cell.left() + 20.0, row.center().y), Align2::LEFT_CENTER, *text, mono.clone(), if changed { p.text } else { p.text_muted });
@@ -612,6 +642,11 @@ impl App {
             .unwrap_or_default();
         let diags = self.lsp.diagnostics.get(&path);
         let ide = &mut self.lsp.ide;
+        let want_escape = find.is_some()
+            || ide.completion.as_ref().is_some_and(|c| c.path == path && !c.shown.is_empty())
+            || ide.actions.as_ref().is_some_and(|a| a.path == path)
+            || ide.signature.as_ref().is_some_and(|s| s.path == path)
+            || ide.hover.as_ref().is_some_and(|h| h.path == path);
         let mut geom = None;
         area.show(ui, |ui| {
             // The caret line's band goes under the text: reserve its place before the text.
@@ -653,6 +688,9 @@ impl App {
             let resp = &output.response.response;
             if resp.has_focus() {
                 editor_seen = true;
+                if want_escape {
+                    ui.memory_mut(|m| m.set_focus_lock_filter(text_id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true }));
+                }
             }
             #[cfg(debug_assertions)]
             crate::devtest::record("editor-text", resp.rect);
@@ -661,13 +699,14 @@ impl App {
                 file.lines = crate::editor::count_lines(&file.text);
                 file.compare_diff = None;
             }
-            // Caret position (worked out only when it moved).
+            // Caret position (worked out only when it moved or the text changed).
             let caret_row = output.cursor_range.map(|c| {
                 let index = c.primary.index.0;
-                if file.caret_index != Some(index) {
+                if file.caret_index != Some(index) || file.caret_rev != file.rev {
                     let lc = output.galley.layout_from_cursor(c.primary);
                     file.caret = (lc.row + 1, lc.column.0 + 1);
                     file.caret_index = Some(index);
+                    file.caret_rev = file.rev;
                 }
                 file.caret.0 - 1
             });

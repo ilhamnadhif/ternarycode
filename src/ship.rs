@@ -285,7 +285,7 @@ pub fn label(p: &Plan) -> String {
 /// characters, starting with a capital.
 pub fn title_from_task(task: &str) -> String {
     let mut s = task.trim().trim_start_matches(['-', '*', '>', '#', ' ']).to_string();
-    let lower = s.to_lowercase();
+    let lower = s.to_ascii_lowercase();
     let mut end = s.len();
     for sep in [", then ", " then ", ", and then ", "; ", ". ", "? ", "! ", ": "] {
         if let Some(i) = lower.find(sep)
@@ -361,7 +361,9 @@ pub fn write_message(agent: AgentKind, root: &Path, diff: &str, path: Option<&Os
     for var in [tc_agent::ENV_SOCK, tc_agent::ENV_PANE, tc_agent::ENV_TOKEN] {
         cmd.env_remove(var);
     }
-    let out_file = std::env::temp_dir().join(format!("tc-message-{}.txt", std::process::id()));
+    let out_dir = crate::paths::data_dir();
+    let _ = crate::paths::ensure_private_dir(out_dir);
+    let out_file = out_dir.join(format!("tc-message-{}-{}.txt", std::process::id(), next_work()));
     match agent {
         AgentKind::Claude => {
             cmd.args(["-p", "--output-format", "text", "--no-session-persistence", "--tools", "", "--strict-mcp-config", WRITE_PROMPT]);
@@ -458,7 +460,8 @@ pub fn last_lines(text: &str, n: usize) -> String {
 
 /// Words a shell takes as one argument.
 pub fn quote(s: &str) -> String {
-    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:@+=,%".contains(c)) {
+    let safe = if cfg!(windows) { "-_./:+=" } else { "-_./:@+=,%" };
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || safe.contains(c)) {
         return s.to_string();
     }
     if cfg!(windows) {
@@ -466,6 +469,9 @@ pub fn quote(s: &str) -> String {
     }
     if !s.contains('\'') {
         return format!("'{s}'");
+    }
+    if s.contains('!') {
+        return format!("'{}'", s.replace('\'', "'\\''"));
     }
     let mut out = String::from("\"");
     for c in s.chars() {
@@ -513,7 +519,17 @@ pub struct RunReq {
 
 impl RunReq {
     /// The same steps as shell commands, for a terminal (from `from`: the steps not done yet).
+    /// Writes the commit message and PR body files into the git directory.
     pub fn commands(&self, from: usize) -> Vec<String> {
+        self.build_commands(from, true)
+    }
+
+    /// Preview of the shell commands for rendering (no git subprocesses or disk writes).
+    pub fn preview_commands(&self, from: usize) -> Vec<String> {
+        self.build_commands(from, false)
+    }
+
+    fn build_commands(&self, from: usize, write: bool) -> Vec<String> {
         let mut out = Vec::new();
         let paths: Vec<String> = self.paths.iter().map(|p| quote(p)).collect();
         for step in self.steps.iter().skip(from) {
@@ -521,7 +537,11 @@ impl RunReq {
                 StepKind::Branch(name) => out.push(format!("git switch -c {}", quote(name))),
                 StepKind::Commit => {
                     out.push(format!("git add -A -- {}", paths.join(" ")));
-                    let file = message_file(&self.root, &self.message).map(|p| p.display().to_string()).unwrap_or_default();
+                    let file = if write {
+                        message_file(&self.root, &self.message).map(|p| p.display().to_string()).unwrap_or_default()
+                    } else {
+                        ".git/TC_COMMIT_MSG".to_string()
+                    };
                     out.push(format!("git commit -F {} -- {}", quote(&file), paths.join(" ")));
                 }
                 StepKind::Push => {
@@ -531,6 +551,11 @@ impl RunReq {
                 StepKind::PullRequest { gh: true } => {
                     let (title, _) = tc_git::ship::split_message(&self.message);
                     let repo = self.web.as_ref().map(|w| w.gh_repo()).unwrap_or_default();
+                    let body = if write {
+                        body_file(&self.root, &self.message).map(|p| p.display().to_string()).unwrap_or_default()
+                    } else {
+                        ".git/TC_PR_BODY".to_string()
+                    };
                     out.push(format!(
                         "gh pr create -R {} --base {} --head {} --title {}{} --body-file {}",
                         quote(&repo),
@@ -538,7 +563,7 @@ impl RunReq {
                         quote(&self.branch),
                         quote(&title),
                         if self.draft { " --draft" } else { "" },
-                        quote(&body_file(&self.root, &self.message).map(|p| p.display().to_string()).unwrap_or_default())
+                        quote(&body)
                     ));
                 }
                 StepKind::PullRequest { gh: false } => {}
@@ -1106,6 +1131,8 @@ mod tests {
         // A question is not a summary.
         assert_eq!(message_from(Some("Fix it"), Some("Should I also update the tests?")), "Fix it");
         assert_eq!(message_from(None, None), "");
+        // Non-ASCII uppercase characters whose Unicode lowercase changes byte length (e.g. 'İ').
+        assert_eq!(title_from_task("İzmir, İstanbul, İzmit: öö"), "İzmir, İstanbul, İzmit");
     }
 
     #[test]
@@ -1121,7 +1148,11 @@ mod tests {
         if !cfg!(windows) {
             assert_eq!(quote("my file.ts"), "'my file.ts'");
             assert_eq!(quote("it's"), "\"it's\"");
+            assert_eq!(quote("don't!"), "'don'\\''t!'");
             assert_eq!(chain(&["a".into(), "b".into()]), "a && b");
+        } else {
+            assert_eq!(quote("a,b"), "'a,b'");
+            assert_eq!(quote("@args"), "'@args'");
         }
     }
 
