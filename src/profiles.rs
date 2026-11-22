@@ -479,7 +479,7 @@ mod tests {
             ..Default::default()
         };
         let env = profile_env(&p, home, data);
-        assert_eq!(env.get("CLAUDE_CONFIG_DIR").map(String::as_str), Some("/Users/dev/.ternarycode/profiles/claude2"));
+        assert_eq!(env.get("CLAUDE_CONFIG_DIR").map(PathBuf::from), Some(data.join("profiles").join("claude2")));
         assert_eq!(env.get("ANTHROPIC_API_KEY").map(String::as_str), Some("sk-ant-test"));
 
         let codex = AgentProfile {
@@ -490,7 +490,7 @@ mod tests {
             ..Default::default()
         };
         let cenv = profile_env(&codex, home, data);
-        assert_eq!(cenv.get("CODEX_HOME").map(String::as_str), Some("/Users/dev/.ternarycode/profiles/chatgpt2"));
+        assert_eq!(cenv.get("CODEX_HOME").map(PathBuf::from), Some(data.join("profiles").join("chatgpt2")));
         assert_eq!(cenv.get("OPENAI_API_KEY").map(String::as_str), Some("sk-openai"));
     }
 
