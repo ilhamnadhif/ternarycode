@@ -335,12 +335,7 @@ impl App {
                     }
                     let cy = row.center().y;
                     let bx = egui::Rect::from_center_size(egui::pos2(row.left() + 14.0 + 8.0, cy), egui::vec2(16.0, 16.0));
-                    if on {
-                        painter.rect_filled(bx, egui::CornerRadius::same(5), p.accent);
-                        painter.text(bx.center(), egui::Align2::CENTER_CENTER, icons::CHECK, style::icon_font(11.0), egui::Color32::WHITE);
-                    } else {
-                        painter.rect_stroke(bx, egui::CornerRadius::same(5), egui::Stroke::new(1.0, p.border_heavy), egui::StrokeKind::Inside);
-                    }
+                    kit::paint_checkbox(&painter, bx, on, resp.hovered(), &p);
                     let letters = repo.kind.letters().map(str::to_string).unwrap_or_else(|| crate::project::initials(&repo.name));
                     let (cr, cg, cb) = crate::project::COLORS[i % crate::project::COLORS.len()];
                     let tile = egui::Rect::from_min_size(egui::pos2(bx.right() + 12.0, cy - 12.0), egui::vec2(24.0, 24.0));

@@ -13,7 +13,7 @@ use crate::actions::Action;
 use crate::ade::ProfileDraft;
 use crate::app::App;
 use crate::i18n::{t, tf};
-use crate::profiles::{self, ConnectionTest, ProfileState};
+use crate::profiles::{self, AuthStatus, ConnectionTest, ProfileState};
 
 pub fn profile_state_color(state: ProfileState, p: &style::Palette) -> Color32 {
     match state {
@@ -32,6 +32,92 @@ pub fn profile_state_label(state: ProfileState) -> &'static str {
         ProfileState::RateLimited => t("Rate-Limited"),
         ProfileState::Cooldown => t("Cooldown"),
         ProfileState::Error => t("Error"),
+    }
+}
+
+pub fn usage_pct_color(used_pct: f32, p: &style::Palette) -> Color32 {
+    if used_pct >= 90.0 {
+        p.rate_limited
+    } else if used_pct >= 70.0 {
+        p.warn
+    } else {
+        p.ok
+    }
+}
+
+/// Renders one compact, disciplined usage-limit meter (`5h` or `Weekly` / `30d`) with progress bar,
+/// percentage or token count, and reset countdown.
+pub fn paint_window_meter(
+    ui: &mut Ui,
+    label: &str,
+    used_pct: Option<f32>,
+    tokens: u64,
+    reset_secs: Option<u64>,
+    bar_w: f32,
+    p: &style::Palette,
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(RichText::new(label).font(style::mono_semibold(10.5)).color(p.text_muted));
+        if let Some(pct) = used_pct {
+            let bc = usage_pct_color(pct, p);
+            let (bar_r, _) = ui.allocate_exact_size(vec2(bar_w, 5.0), Sense::hover());
+            kit::paint_quota_bar(ui.painter(), bar_r, pct, bc, p);
+            ui.label(RichText::new(format!("{pct:.0}%")).font(style::mono_semibold(10.5)).color(bc));
+            if tokens > 0 {
+                ui.label(RichText::new(profiles::format_tokens(tokens)).font(style::mono(10.0)).color(p.text_faint));
+            }
+        } else {
+            let (bar_r, _) = ui.allocate_exact_size(vec2(bar_w, 5.0), Sense::hover());
+            kit::paint_quota_bar(ui.painter(), bar_r, 0.0, p.idle, p);
+            let tok_str = if tokens > 0 {
+                tf("{} tok", &[&profiles::format_tokens(tokens)])
+            } else {
+                "0".into()
+            };
+            ui.label(RichText::new(tok_str).font(style::mono(10.5)).color(p.text_faint));
+        }
+        if let Some(secs) = reset_secs {
+            let rc = if used_pct.is_some_and(|v| v >= 90.0) { p.rate_limited } else { p.text_ghost };
+            ui.label(RichText::new(icons::CLOCK_COUNTER_CLOCKWISE).font(style::icon_font(10.5)).color(rc));
+            ui.label(RichText::new(profiles::format_countdown(secs)).font(style::mono(10.0)).color(rc));
+        }
+    });
+}
+
+fn compact_window_summary(
+    prof: &AgentProfile,
+    rt: Option<&profiles::ProfileRuntime>,
+    now_unix: i64,
+    now: Instant,
+) -> String {
+    let Some(rt) = rt else {
+        return t("Idle").into();
+    };
+    if let Some(secs) = rt.reset_remaining_secs(now) {
+        return profiles::format_countdown(secs);
+    }
+    let mut parts = Vec::new();
+    let l5 = rt.window_5h_label();
+    if let Some(p5) = rt.quota_5h_used_pct(prof) {
+        parts.push(format!("{l5} {p5:.0}%"));
+    } else if rt.usage.window_5h.tokens.total() > 0 {
+        parts.push(format!("{l5} {}", profiles::format_tokens(rt.usage.window_5h.tokens.total())));
+    }
+    let lw = if rt.window_weekly_label() == "Weekly" { "Wk".to_string() } else { rt.window_weekly_label() };
+    if let Some(pw) = rt.quota_weekly_used_pct(prof) {
+        parts.push(format!("{lw} {pw:.0}%"));
+    } else if rt.usage.window_weekly.tokens.total() > 0 && parts.is_empty() {
+        parts.push(format!("{lw} {}", profiles::format_tokens(rt.usage.window_weekly.tokens.total())));
+    }
+    if parts.is_empty() {
+        if let Some(secs) = rt.window_5h_reset_secs(now_unix, now) {
+            profiles::format_countdown(secs)
+        } else {
+            profile_state_label(rt.state).into()
+        }
+    } else {
+        parts.join(" · ")
     }
 }
 
@@ -177,17 +263,6 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(12.0, 8.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(t("Profile ID")).size(11.5).color(p.text_muted));
-                        kit::field(ui, egui::Id::new("prof-id"), &mut draft.id, None, "claude2", 150.0, false);
-                        if id_dup {
-                            ui.label(RichText::new(t("Profile ID already exists.")).size(11.0).color(p.err));
-                        }
-                    });
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(t("Display Name")).size(11.5).color(p.text_muted));
-                        kit::field(ui, egui::Id::new("prof-name"), &mut draft.name, None, "Claude Work", 180.0, false);
-                    });
-                    ui.vertical(|ui| {
                         ui.label(RichText::new(t("Provider")).size(11.5).color(p.text_muted));
                         let providers = [
                             (AgentKind::Claude, "Claude Code"),
@@ -200,12 +275,58 @@ impl App {
                         let names: Vec<&str> = providers.iter().map(|(_, n)| *n).collect();
                         let cur = providers.iter().find(|(k, _)| *k == draft.agent).map(|(_, n)| *n).unwrap_or("Claude Code");
                         if let Some(i) = kit::select(ui, "prof-agent", cur, &names, 165.0) {
-                            draft.agent = providers[i].0;
+                            let new_agent = providers[i].0;
+                            if new_agent != draft.agent {
+                                // Auto-update sequential ID/name (`chatgpt2`, `claude2`) if still creating a new profile.
+                                if draft.editing_id.is_none() {
+                                    let (old_id, old_name) = ProfileDraft::suggest_id_and_name(draft.agent, &existing);
+                                    let (nid, nname) = ProfileDraft::suggest_id_and_name(new_agent, &existing);
+                                    if draft.id == old_id || draft.id.trim().is_empty() {
+                                        draft.id = nid;
+                                    }
+                                    if draft.name == old_name || draft.name.trim().is_empty() {
+                                        draft.name = nname;
+                                    }
+                                }
+                                draft.agent = new_agent;
+                            }
                         }
                     });
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(t("Daily Token Budget (optional)")).size(11.5).color(p.text_muted));
-                        kit::field(ui, egui::Id::new("prof-budget"), &mut draft.budget_text, None, "1000000", 140.0, false);
+                        ui.label(RichText::new(t("Profile ID")).size(11.5).color(p.text_muted));
+                        kit::field(ui, egui::Id::new("prof-id"), &mut draft.id, None, "chatgpt2", 130.0, false);
+                        if id_dup {
+                            ui.label(RichText::new(t("Profile ID already exists.")).size(11.0).color(p.err));
+                        }
+                    });
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(t("Display Name")).size(11.5).color(p.text_muted));
+                        kit::field(ui, egui::Id::new("prof-name"), &mut draft.name, None, "ChatGPT Plus #2", 170.0, false);
+                    });
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(t("Account Note / Email (optional)")).size(11.5).color(p.text_muted));
+                        kit::field(ui, egui::Id::new("prof-hint"), &mut draft.account_hint, None, "work@gmail.com", 180.0, false);
+                    });
+                });
+
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(12.0, 8.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(t("5-Hour Token Limit (optional)")).size(11.5).color(p.text_muted));
+                        kit::field(ui, egui::Id::new("prof-lim-5h"), &mut draft.limit_5h_text, None, "500k / 2M", 150.0, false);
+                    });
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(t("Weekly Token Limit (optional)")).size(11.5).color(p.text_muted));
+                        kit::field(ui, egui::Id::new("prof-lim-wk"), &mut draft.limit_weekly_text, None, "5M / 20M", 150.0, false);
+                    });
+                    ui.vertical(|ui| {
+                        ui.add_space(19.0);
+                        ui.label(
+                            RichText::new(t("ChatGPT / Codex reports 5h & weekly % automatically; set token limits for Claude or Gemini."))
+                                .size(11.0)
+                                .color(p.text_faint),
+                        );
                     });
                 });
 
@@ -356,13 +477,30 @@ impl App {
         let mut delete_id: Option<String> = None;
         let mut edit_prof: Option<AgentProfile> = None;
 
-        ui.horizontal(|ui| {
+        let now_unix = profiles::now_unix_secs();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
             ui.label(RichText::new(t("Fallback Priority Chain")).font(style::semibold(13.0)).color(p.text));
             ui.label(
                 RichText::new(tf("{} configured", &[&profiles.len().to_string()]))
                     .font(style::mono(11.0))
                     .color(p.text_faint),
             );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::PLUS), t("Gemini"), true).clicked() {
+                    self.profile_draft = Some(ProfileDraft::new_for(AgentKind::Gemini, &profiles));
+                }
+                if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::PLUS), t("Claude"), true).clicked() {
+                    self.profile_draft = Some(ProfileDraft::new_for(AgentKind::Claude, &profiles));
+                }
+                if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::PLUS), t("ChatGPT"), true)
+                    .on_hover_text(t("Pre-register another ChatGPT Plus / Codex account with its own isolated login"))
+                    .clicked()
+                {
+                    self.profile_draft = Some(ProfileDraft::new_for(AgentKind::Codex, &profiles));
+                }
+            });
         });
         ui.add_space(8.0);
 
@@ -383,16 +521,24 @@ impl App {
                     let state_c = profile_state_color(rt.state, &p);
                     let dir = profiles::resolved_config_dir(prof, &home, data);
                     let dir_str = crate::paths::contract_tilde(&dir);
-                    let quota = rt.quota_remaining_pct(prof.daily_token_budget);
-                    let reset_secs = rt.reset_remaining_secs(now);
+                    let auth = rt.auth_status(prof);
+                    let used_5h = rt.quota_5h_used_pct(prof);
+                    let used_wk = rt.quota_weekly_used_pct(prof);
+                    let reset_5h = rt.window_5h_reset_secs(now_unix, now);
+                    let reset_wk = rt.window_weekly_reset_secs(now_unix);
+                    let l5 = rt.window_5h_label();
+                    let lw = rt.window_weekly_label();
+                    let can_delete = profiles.len() > 1;
+                    let needs_login = auth == AuthStatus::NotSignedIn;
 
                     egui::Frame::NONE
-                        .inner_margin(egui::Margin::symmetric(14, 11))
+                        .inner_margin(egui::Margin::symmetric(14, 12))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
+                            ui.spacing_mut().item_spacing.y = 5.0;
+                            // Row 1: priority, logo, identity & status badges (left) + actions (right).
                             ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 10.0;
-                                // Priority index + reorder arrows.
+                                ui.spacing_mut().item_spacing.x = 8.0;
                                 ui.label(RichText::new(format!("#{}", idx + 1)).font(style::mono_semibold(11.0)).color(p.text_faint));
                                 if ui.add_enabled_ui(idx > 0, |ui| kit::icon_button_ex(ui, icons::ARROW_UP, t("Move Up"), false, 20.0)).inner.clicked() {
                                     move_dir = Some((idx, -1));
@@ -400,66 +546,29 @@ impl App {
                                 if ui.add_enabled_ui(idx + 1 < profiles.len(), |ui| kit::icon_button_ex(ui, icons::ARROW_DOWN, t("Move Down"), false, 20.0)).inner.clicked() {
                                     move_dir = Some((idx, 1));
                                 }
-
-                                // Provider mark.
-                                let (mr, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                                let (mr, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
                                 if !agent_logo::paint(ui.painter(), mr, prof.agent, p.text, false) {
-                                    ui.painter().text(mr.center(), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(14.0), p.text_muted);
+                                    ui.painter().text(mr.center(), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(13.0), p.text_muted);
+                                }
+                                ui.label(RichText::new(&prof.id).font(style::mono_semibold(12.5)).color(if prof.enabled { p.text } else { p.text_faint }));
+                                ui.label(RichText::new(&prof.name).size(12.0).color(p.text_muted));
+                                if let Some(plan) = &rt.usage.plan_type {
+                                    kit::status_badge(ui, &plan.to_uppercase(), p.accent_text, true);
+                                }
+                                kit::status_badge(ui, profile_state_label(rt.state), state_c, false);
+                                match auth {
+                                    AuthStatus::SignedIn => {
+                                        kit::status_badge(ui, t("Signed in"), p.ok, false);
+                                    }
+                                    AuthStatus::ApiKey => {
+                                        kit::status_badge(ui, t("API Key"), p.info, false);
+                                    }
+                                    AuthStatus::NotSignedIn => {
+                                        kit::status_badge(ui, t("Not signed in"), p.warn, false);
+                                    }
+                                    AuthStatus::Unknown => {}
                                 }
 
-                                // Identity & isolated path.
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 2.0;
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(&prof.id).font(style::mono_semibold(12.5)).color(if prof.enabled { p.text } else { p.text_faint }));
-                                        ui.label(RichText::new(&prof.name).size(12.0).color(p.text_muted));
-                                        kit::status_badge(ui, profile_state_label(rt.state), state_c, false);
-                                        if let Some(secs) = reset_secs {
-                                            ui.label(
-                                                RichText::new(tf("resets in {}", &[&profiles::format_countdown(secs)]))
-                                                    .font(style::mono(10.5))
-                                                    .color(p.rate_limited),
-                                            );
-                                        }
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 10.0;
-                                        let auth_note = if prof.api_key.is_some() {
-                                            format!("{dir_str} · API key")
-                                        } else {
-                                            dir_str
-                                        };
-                                        ui.label(RichText::new(auth_note).font(style::mono(10.5)).color(p.text_faint));
-                                        let tok = format!(
-                                            "In {} · Out {}",
-                                            profiles::format_tokens(rt.tokens_in),
-                                            profiles::format_tokens(rt.tokens_out),
-                                        );
-                                        ui.label(RichText::new(tok).font(style::mono(10.5)).color(p.text_muted));
-                                        if let Some(pct) = quota {
-                                            let (bar_r, _) = ui.allocate_exact_size(vec2(64.0, 5.0), Sense::hover());
-                                            let bc = if pct <= 15.0 { p.err } else if pct <= 35.0 { p.warn } else { p.ok };
-                                            kit::paint_quota_bar(ui.painter(), bar_r, pct, bc, &p);
-                                            ui.label(RichText::new(format!("{:.0}%", pct)).font(style::mono(10.5)).color(bc));
-                                        }
-                                    });
-                                    if let Some(conn) = &rt.connection {
-                                        match conn {
-                                            ConnectionTest::Testing => {
-                                                ui.label(RichText::new(t("Testing connection…")).size(11.0).color(p.info));
-                                            }
-                                            ConnectionTest::Ok(msg) => {
-                                                ui.label(RichText::new(msg).font(style::mono(10.5)).color(p.ok));
-                                            }
-                                            ConnectionTest::Err(err) => {
-                                                ui.label(RichText::new(err).font(style::mono(10.5)).color(p.err));
-                                            }
-                                        }
-                                    }
-                                });
-
-                                // Right-aligned row actions.
-                                let can_delete = profiles.len() > 1;
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     ui.spacing_mut().item_spacing.x = 6.0;
                                     let del_tip = if can_delete { t("Delete Profile") } else { t("At least one profile is required") };
@@ -469,7 +578,8 @@ impl App {
                                     if kit::icon_button_ex(ui, icons::PENCIL_SIMPLE, t("Edit Profile"), false, 24.0).clicked() {
                                         edit_prof = Some(prof.clone());
                                     }
-                                    if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::KEY), t("Auth Login"), true)
+                                    let login_kind = if needs_login { kit::Kind::Primary } else { kit::Kind::Secondary };
+                                    if kit::button_ex(ui, login_kind, Some(icons::KEY), t("Auth Login"), true)
                                         .on_hover_text(t("Sign in interactively inside this profile's isolated auth folder"))
                                         .clicked()
                                     {
@@ -490,6 +600,43 @@ impl App {
                                     }
                                 });
                             });
+
+                            // Row 2 (full width, overlap-proof): 5-Hour & Weekly usage limit meters.
+                            ui.horizontal(|ui| {
+                                ui.add_space(76.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing = vec2(20.0, 4.0);
+                                    paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 96.0, &p);
+                                    paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 96.0, &p);
+                                });
+                            });
+
+                            // Row 3 (quiet truncated metadata): account hint + isolated config folder.
+                            ui.horizontal(|ui| {
+                                ui.add_space(76.0);
+                                let meta = match &prof.account_hint {
+                                    Some(hint) => format!("{hint}  ·  {dir_str}"),
+                                    None => dir_str.clone(),
+                                };
+                                ui.add(egui::Label::new(RichText::new(meta).font(style::mono(10.0)).color(p.text_ghost)).truncate());
+                            });
+
+                            if let Some(conn) = &rt.connection {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(76.0);
+                                    match conn {
+                                        ConnectionTest::Testing => {
+                                            ui.label(RichText::new(t("Testing connection…")).size(11.0).color(p.info));
+                                        }
+                                        ConnectionTest::Ok(msg) => {
+                                            ui.label(RichText::new(msg).font(style::mono(10.5)).color(p.ok));
+                                        }
+                                        ConnectionTest::Err(err) => {
+                                            ui.label(RichText::new(err).font(style::mono(10.5)).color(p.err));
+                                        }
+                                    }
+                                });
+                            }
                         });
                 }
             });
@@ -546,60 +693,105 @@ impl App {
         }
     }
 
-    /// Compact interactive Active Profile Switcher rendered inside a pane's header / composer bar.
+    /// Compact interactive Active Profile Switcher + 1-Click Switch Account button rendered inside
+    /// a pane's header bar (right-to-left layout).
     pub fn pane_profile_switcher(&mut self, ui: &mut Ui, pane_id: PaneId) {
         let p = style::pal(ui);
         let now = Instant::now();
+        let now_unix = profiles::now_unix_secs();
         let profiles = self.effective_profiles();
-        let Some((active_id, agent)) = self.panes.get(&pane_id).map(|pane| {
+        let Some((active_id, agent, has_live_agent)) = self.panes.get(&pane_id).map(|pane| {
             let agent = pane.tracker.agent.or(pane.last_agent);
             let id = pane.active_profile.clone().or_else(|| {
                 agent.and_then(|a| profiles.iter().find(|x| x.agent == a && x.enabled).map(|x| x.id.clone()))
             });
-            (id, agent)
+            let live = pane.alive()
+                && pane.tracker.agent.is_some()
+                && !matches!(pane.tracker.fg, tc_core::status::Foreground::Shell | tc_core::status::Foreground::Gone);
+            (id, agent, live)
         }) else {
             return;
         };
         let label = active_id.as_deref().unwrap_or("default");
         let rt = active_id.as_deref().and_then(|id| self.profiles_rt.get(id));
         let prof_cfg = active_id.as_deref().and_then(|id| profiles.iter().find(|x| x.id == id));
-        let dot = rt.map(|r| profile_state_color(r.state, &p)).unwrap_or(p.idle);
-        let detail = rt.and_then(|r| {
+        let dot = if let Some((r, c)) = rt.zip(prof_cfg) {
+            if r.state == ProfileState::RateLimited {
+                p.rate_limited
+            } else if let Some(used) = r.quota_5h_used_pct(c) {
+                if used >= 90.0 { p.rate_limited } else if used >= 70.0 { p.warn } else { profile_state_color(r.state, &p) }
+            } else {
+                profile_state_color(r.state, &p)
+            }
+        } else {
+            p.idle
+        };
+        let detail = rt.zip(prof_cfg).and_then(|(r, c)| {
             if let Some(secs) = r.reset_remaining_secs(now) {
                 Some(profiles::format_countdown(secs))
             } else {
-                r.quota_remaining_pct(prof_cfg.and_then(|c| c.daily_token_budget))
-                    .map(|pct| format!("{pct:.0}%"))
+                r.quota_5h_used_pct(c).map(|used| format!("{} {:.0}%", r.window_5h_label(), used))
             }
         });
         let resp = kit::profile_chip(ui, label, detail.as_deref(), dot, false);
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("pane-profile:{pane_id}"), resp.rect);
+
+        // One-click Switch Account button right beside the active profile chip when another
+        // pre-registered account is ready (no logout / re-login required).
+        if has_live_agent && let Some(next_prof) = self.next_switch_profile(pane_id) {
+            let next_rt = self.profiles_rt.get(&next_prof.id);
+            let next_sum = compact_window_summary(&next_prof, next_rt, now_unix, now);
+            let tip = tf("Switch immediately to {} ({}) and resume session without logout", &[&next_prof.id, &next_sum]);
+            let urgent = rt.zip(prof_cfg).is_some_and(|(r, c)| {
+                r.state == ProfileState::RateLimited || r.quota_5h_used_pct(c).is_some_and(|u| u >= 85.0)
+            });
+            let sw = kit::button_ex(
+                ui,
+                if urgent { kit::Kind::Primary } else { kit::Kind::Ghost },
+                Some(icons::ARROWS_CLOCKWISE),
+                &next_prof.id,
+                true,
+            )
+            .on_hover_text(tip);
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("pane-switch:{pane_id}"), sw.rect);
+            if sw.clicked() {
+                self.actions.push(Action::ResumeWithProfile {
+                    pane: pane_id,
+                    profile_id: next_prof.id.clone(),
+                });
+            }
+        }
+
         egui::Popup::menu(&resp).align(egui::RectAlign::BOTTOM_END).show(|ui| {
             kit::menu_body(ui);
-            ui.set_min_width(248.0);
+            ui.set_min_width(300.0);
             kit::menu_header(ui, t("Switch Account Profile"));
             let mut ordered: Vec<&AgentProfile> = profiles.iter().filter(|p| p.enabled).collect();
             ordered.sort_by_key(|p| (agent.is_some_and(|a| p.agent != a), p.fallback_order, p.id.as_str()));
             for prof in ordered {
-                // Show same-provider profiles first; still allow cross-provider selection.
                 let prt = self.profiles_rt.get(&prof.id);
                 let state = prt.map(|r| r.state).unwrap_or(ProfileState::Idle);
-                let right = if let Some(secs) = prt.and_then(|r| r.reset_remaining_secs(now)) {
-                    profiles::format_countdown(secs)
-                } else if let Some(pct) = prt.and_then(|r| r.quota_remaining_pct(prof.daily_token_budget)) {
-                    format!("{pct:.0}%")
+                let auth = prt.map(|r| r.auth_status(prof)).unwrap_or(AuthStatus::Unknown);
+                let right = if auth == AuthStatus::NotSignedIn {
+                    t("Not signed in").to_string()
                 } else {
-                    profile_state_label(state).to_string()
+                    compact_window_summary(prof, prt, now_unix, now)
                 };
                 let is_cur = active_id.as_deref() == Some(prof.id.as_str());
-                let row_label = if agent.is_some_and(|a| a != prof.agent) {
-                    format!("{} ({})", prof.id, prof.agent.label())
-                } else {
-                    prof.id.clone()
-                };
-                if kit::menu_item(ui, is_cur.then_some(icons::CHECK), &row_label, Some(&right), state == ProfileState::RateLimited).clicked() {
+                let mut row_label = prof.id.clone();
+                if let Some(hint) = &prof.account_hint {
+                    row_label.push_str(&format!(" · {hint}"));
+                } else if agent.is_some_and(|a| a != prof.agent) {
+                    row_label.push_str(&format!(" ({})", prof.agent.label()));
+                }
+                let warn_row = state == ProfileState::RateLimited || auth == AuthStatus::NotSignedIn;
+                if kit::menu_item(ui, is_cur.then_some(icons::CHECK), &row_label, Some(&right), warn_row).clicked() {
                     if is_cur {
+                        ui.close();
+                    } else if auth == AuthStatus::NotSignedIn {
+                        self.actions.push(Action::LoginProfile(prof.id.clone()));
                         ui.close();
                     } else {
                         self.actions.push(Action::SetPaneProfile(pane_id, prof.id.clone()));
@@ -621,7 +813,7 @@ impl App {
                 self.push_companion_now();
                 ui.close();
             }
-            if kit::menu_item(ui, Some(icons::USER_PLUS), t("Manage Profiles…"), None, false).clicked() {
+            if kit::menu_item(ui, Some(icons::USER_PLUS), t("Add / Manage Accounts…"), None, false).clicked() {
                 self.actions.push(Action::OpenProfiles);
                 ui.close();
             }

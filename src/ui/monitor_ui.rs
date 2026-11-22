@@ -8,12 +8,12 @@ use std::time::Instant;
 use eframe::egui::{self, Align2, CornerRadius, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use tc_core::status::Status;
 
-use super::profiles_ui::{profile_state_color, profile_state_label};
+use super::profiles_ui::{paint_window_meter, profile_state_color, profile_state_label};
 use super::{agent_logo, icons, kit, status, style};
 use crate::actions::Action;
 use crate::app::App;
 use crate::i18n::{t, tf};
-use crate::profiles::{self, LogLevel};
+use crate::profiles::{self, AuthStatus, LogLevel};
 
 impl App {
     /// Compact top-bar telemetry pill showing live aggregate agent/profile health & real token usage.
@@ -91,9 +91,16 @@ impl App {
         let screen = ctx.content_rect();
         let w = 390.0_f32.min(screen.width() - 24.0);
         let pos = pos2((anchor.right() - w).clamp(12.0, (screen.right() - w - 12.0).max(12.0)), anchor.bottom() + 6.0);
-        let max_scroll_h = (screen.bottom() - pos.y - 120.0).clamp(120.0, 380.0);
+        let max_scroll_h = (screen.bottom() - pos.y - 48.0).clamp(180.0, 460.0);
         let now = Instant::now();
+        let now_unix = profiles::now_unix_secs();
         let profiles = self.effective_profiles();
+        let cur_agent_pane = self.current_pane().filter(|pid| {
+            self.panes.get(pid).is_some_and(|x| x.alive() && x.tracker.agent.is_some())
+        });
+        let cur_pane_profile = cur_agent_pane
+            .and_then(|pid| self.panes.get(&pid))
+            .and_then(|x| x.active_profile.clone());
 
         let area_resp = egui::Area::new(egui::Id::new("monitor-popover"))
             .order(egui::Order::Foreground)
@@ -128,78 +135,88 @@ impl App {
                         ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, p.border));
                         ui.add_space(6.0);
 
-                        egui::ScrollArea::vertical()
-                            .id_salt("monitor-popover-scroll")
-                            .max_height(max_scroll_h)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                for prof in &profiles {
-                                    let rt = self.profiles_rt.get(&prof.id).cloned().unwrap_or_default();
-                                    let sc = if prof.enabled { profile_state_color(rt.state, &p) } else { p.idle };
-                                    let badge_label = if prof.enabled { profile_state_label(rt.state) } else { t("Disabled") };
-                                    let quota = rt.quota_remaining_pct(prof.daily_token_budget);
-                                    let reset_secs = rt.reset_remaining_secs(now);
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 8.0;
-                                        let (mr, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                                        if !agent_logo::paint(ui.painter(), mr, prof.agent, if prof.enabled { p.text } else { p.text_faint }, false) {
-                                            ui.painter().text(mr.center(), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(12.0), p.text_muted);
-                                        }
-                                        ui.label(RichText::new(&prof.id).font(style::mono_semibold(11.5)).color(if prof.enabled { p.text } else { p.text_faint }));
-                                        kit::status_badge(ui, badge_label, sc, false);
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if let Some(secs) = reset_secs {
-                                                ui.label(RichText::new(profiles::format_countdown(secs)).font(style::mono(10.5)).color(p.rate_limited));
-                                            } else {
-                                                let tok = format!(
-                                                    "{} / {}",
-                                                    profiles::format_tokens(rt.tokens_in),
-                                                    profiles::format_tokens(rt.tokens_out),
-                                                );
-                                                ui.label(RichText::new(tok).font(style::mono(10.5)).color(p.text_faint));
-                                            }
-                                        });
-                                    });
-                                    if let Some(pct) = quota {
-                                        let (bar_r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
-                                        let bc = if pct <= 15.0 { p.err } else if pct <= 35.0 { p.warn } else { p.ok };
-                                        kit::paint_quota_bar(ui.painter(), bar_r, pct, bc, &p);
-                                    }
-                                    if let Some((pane_id, proj_id)) = rt.active_panes.first().copied() {
-                                        let pname = self.project_label(proj_id);
-                                        ui.horizontal(|ui| {
-                                            ui.add_space(22.0);
-                                            let link = ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(tf("Active in {}", &[&pname]))
-                                                        .size(11.0)
-                                                        .color(p.accent_text),
-                                                )
-                                                .sense(Sense::click()),
-                                            );
-                                            if link.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                                                self.actions.push(Action::FocusPane(pane_id));
-                                                self.monitor_popover = false;
-                                            }
-                                        });
-                                    }
+                        let render_rows = |this: &mut Self, ui: &mut Ui| {
+                            for (i, prof) in profiles.iter().enumerate() {
+                                if i > 0 {
+                                    ui.add_space(2.0);
+                                    let (sep_r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+                                    ui.painter().hline(sep_r.x_range(), sep_r.center().y, Stroke::new(1.0, p.border));
                                     ui.add_space(6.0);
                                 }
-                            });
+                                let rt = this.profiles_rt.get(&prof.id).cloned().unwrap_or_default();
+                                let sc = if prof.enabled { profile_state_color(rt.state, &p) } else { p.idle };
+                                let badge_label = if prof.enabled { profile_state_label(rt.state) } else { t("Disabled") };
+                                let auth = rt.auth_status(prof);
+                                let used_5h = rt.quota_5h_used_pct(prof);
+                                let used_wk = rt.quota_weekly_used_pct(prof);
+                                let reset_5h = rt.window_5h_reset_secs(now_unix, now);
+                                let reset_wk = rt.window_weekly_reset_secs(now_unix);
+                                let l5 = rt.window_5h_label();
+                                let lw = if rt.window_weekly_label() == "Weekly" { "Wk".to_string() } else { rt.window_weekly_label() };
 
-                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-                        ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, p.border));
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::USER_PLUS), t("Manage Profiles"), true).clicked() {
-                                self.actions.push(Action::OpenProfiles);
-                                self.monitor_popover = false;
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 7.0;
+                                    let (mr, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                                    if !agent_logo::paint(ui.painter(), mr, prof.agent, if prof.enabled { p.text } else { p.text_faint }, false) {
+                                        ui.painter().text(mr.center(), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(12.0), p.text_muted);
+                                    }
+                                    ui.label(RichText::new(&prof.id).font(style::mono_semibold(11.5)).color(if prof.enabled { p.text } else { p.text_faint }));
+                                    kit::status_badge(ui, badge_label, sc, false);
+                                    if auth == AuthStatus::NotSignedIn {
+                                        ui.label(RichText::new(t("Not signed in")).size(10.0).color(p.warn));
+                                    }
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if let Some(pane_id) = cur_agent_pane
+                                            && prof.enabled
+                                            && cur_pane_profile.as_deref() != Some(prof.id.as_str())
+                                            && auth != AuthStatus::NotSignedIn
+                                            && rt.is_healthy(now)
+                                            && kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROWS_CLOCKWISE), t("Switch"), true).clicked()
+                                        {
+                                            this.actions.push(Action::ResumeWithProfile { pane: pane_id, profile_id: prof.id.clone() });
+                                            this.monitor_popover = false;
+                                        }
+                                    });
+                                });
+                                ui.add_space(2.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(20.0);
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 2.0;
+                                        paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 68.0, &p);
+                                        paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 68.0, &p);
+                                    });
+                                });
+                                if let Some((pane_id, proj_id)) = rt.active_panes.first().copied() {
+                                    let pname = this.project_label(proj_id);
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(20.0);
+                                        let link = ui.add(
+                                            egui::Label::new(
+                                                RichText::new(tf("Active in {}", &[&pname]))
+                                                    .size(11.0)
+                                                    .color(p.accent_text),
+                                            )
+                                            .sense(Sense::click()),
+                                        );
+                                        if link.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                            this.actions.push(Action::FocusPane(pane_id));
+                                            this.monitor_popover = false;
+                                        }
+                                    });
+                                }
+                                ui.add_space(4.0);
                             }
-                            if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::DEVICE_MOBILE), t("Phone Pairing"), true).clicked() {
-                                self.actions.push(Action::OpenPhonePairing);
-                                self.monitor_popover = false;
-                            }
-                        });
+                        };
+                        if profiles.len() > 4 {
+                            egui::ScrollArea::vertical()
+                                .id_salt("monitor-popover-scroll")
+                                .max_height(max_scroll_h)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| render_rows(self, ui));
+                        } else {
+                            render_rows(self, ui);
+                        }
                     });
             });
 
@@ -244,9 +261,10 @@ impl App {
         super::focus::paint_sheet(ui.painter(), area, &p, super::focus::SheetLook::Plain);
 
         let now = Instant::now();
+        let now_unix = profiles::now_unix_secs();
         let profiles = self.effective_profiles();
         let (running, limited, _errors, _) = self.telemetry_summary();
-        let (total_in, total_out) = self.deduped_token_totals();
+        let (total_5h, total_weekly) = self.deduped_window_totals();
         let enabled_count = profiles.iter().filter(|pr| pr.enabled).count();
         let healthy = profiles
             .iter()
@@ -279,12 +297,9 @@ impl App {
                                         metric_cell(ui, t("Running Agents"), &running.to_string(), if running > 0 { p.info } else { p.text });
                                         metric_cell(ui, t("Healthy Profiles"), &format!("{healthy} / {enabled_count}"), p.ok);
                                         metric_cell(ui, t("Rate-Limited"), &limited.to_string(), if limited > 0 { p.rate_limited } else { p.text_muted });
-                                        metric_cell(ui, t("24h Input Tokens"), &profiles::format_tokens(total_in), p.text);
-                                        metric_cell(ui, t("24h Output Tokens"), &profiles::format_tokens(total_out), p.text);
+                                        metric_cell(ui, t("5-Hour Tokens"), &profiles::format_tokens(total_5h), p.text);
+                                        metric_cell(ui, t("Weekly Tokens"), &profiles::format_tokens(total_weekly), p.text);
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::USER_PLUS), t("Configure Profiles"), true).clicked() {
-                                                self.actions.push(Action::OpenProfiles);
-                                            }
                                             if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_CLOCKWISE), t("Refresh"), true).clicked() {
                                                 self.usage_scan_at = None;
                                             }
@@ -310,7 +325,13 @@ impl App {
                                         }
                                         let rt = self.profiles_rt.get(&prof.id).cloned().unwrap_or_default();
                                         let sc = profile_state_color(rt.state, &p);
-                                        let quota = rt.quota_remaining_pct(prof.daily_token_budget);
+                                        let auth = rt.auth_status(prof);
+                                        let used_5h = rt.quota_5h_used_pct(prof);
+                                        let used_wk = rt.quota_weekly_used_pct(prof);
+                                        let reset_5h = rt.window_5h_reset_secs(now_unix, now);
+                                        let reset_wk = rt.window_weekly_reset_secs(now_unix);
+                                        let l5 = rt.window_5h_label();
+                                        let lw = rt.window_weekly_label();
                                         let reset = rt.reset_remaining_secs(now);
                                         egui::Frame::NONE
                                             .inner_margin(egui::Margin::symmetric(14, 10))
@@ -319,36 +340,45 @@ impl App {
                                                 ui.horizontal(|ui| {
                                                     ui.spacing_mut().item_spacing.x = 12.0;
                                                     ui.label(RichText::new(format!("#{}", i + 1)).font(style::mono(11.0)).color(p.text_faint));
-                                                    ui.label(RichText::new(&prof.id).font(style::mono_semibold(12.5)).color(p.text));
-                                                    ui.label(RichText::new(prof.agent.label()).size(11.5).color(p.text_muted));
-                                                    kit::status_badge(ui, profile_state_label(rt.state), sc, false);
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "In {} · Out {}",
-                                                            profiles::format_tokens(rt.tokens_in),
-                                                            profiles::format_tokens(rt.tokens_out),
-                                                        ))
-                                                        .font(style::mono(11.0))
-                                                        .color(p.text_muted),
-                                                    );
-                                                    if let Some(pct) = quota {
-                                                        let (bar_r, _) = ui.allocate_exact_size(vec2(72.0, 5.0), Sense::hover());
-                                                        let bc = if pct <= 15.0 { p.err } else if pct <= 35.0 { p.warn } else { p.ok };
-                                                        kit::paint_quota_bar(ui.painter(), bar_r, pct, bc, &p);
-                                                        ui.label(RichText::new(format!("{pct:.0}%")).font(style::mono(10.5)).color(bc));
-                                                    }
-                                                    if let Some(secs) = reset {
-                                                        ui.label(
-                                                            RichText::new(tf("resets in {}", &[&profiles::format_countdown(secs)]))
-                                                                .font(style::mono(11.0))
-                                                                .color(p.rate_limited),
-                                                        );
-                                                    }
+                                                    ui.vertical(|ui| {
+                                                        ui.spacing_mut().item_spacing.y = 4.0;
+                                                        ui.horizontal_wrapped(|ui| {
+                                                            ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
+                                                            ui.label(RichText::new(&prof.id).font(style::mono_semibold(12.5)).color(p.text));
+                                                            ui.label(RichText::new(prof.agent.label()).size(11.5).color(p.text_muted));
+                                                            if let Some(hint) = &prof.account_hint {
+                                                                ui.label(RichText::new(hint).font(style::mono(10.5)).color(p.text_faint));
+                                                            }
+                                                            if let Some(plan) = &rt.usage.plan_type {
+                                                                kit::status_badge(ui, &plan.to_uppercase(), p.accent_text, true);
+                                                            }
+                                                            kit::status_badge(ui, profile_state_label(rt.state), sc, false);
+                                                            if auth == AuthStatus::NotSignedIn {
+                                                                kit::status_badge(ui, t("Not signed in"), p.warn, false);
+                                                            }
+                                                            if let Some(secs) = reset {
+                                                                ui.label(
+                                                                    RichText::new(tf("resets in {}", &[&profiles::format_countdown(secs)]))
+                                                                        .font(style::mono(11.0))
+                                                                        .color(p.rate_limited),
+                                                                );
+                                                            }
+                                                        });
+                                                        ui.horizontal_wrapped(|ui| {
+                                                            ui.spacing_mut().item_spacing = vec2(18.0, 4.0);
+                                                            paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 88.0, &p);
+                                                            paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 88.0, &p);
+                                                        });
+                                                    });
                                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                         if let Some((pane_id, proj_id)) = rt.active_panes.first().copied() {
                                                             let pname = self.project_label(proj_id);
                                                             if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_UP_RIGHT), &pname, true).clicked() {
                                                                 self.actions.push(Action::FocusPane(pane_id));
+                                                            }
+                                                        } else if auth == AuthStatus::NotSignedIn {
+                                                            if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::KEY), t("Auth Login"), true).clicked() {
+                                                                self.actions.push(Action::LoginProfile(prof.id.clone()));
                                                             }
                                                         } else {
                                                             ui.label(RichText::new(t("Unassigned")).size(11.0).color(p.text_ghost));

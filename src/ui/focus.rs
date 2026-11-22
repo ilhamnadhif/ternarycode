@@ -174,13 +174,7 @@ impl App {
         let editor_on = !self.drawer_maximized && (review_here || self.active.and_then(|id| self.editors.get(&id)).is_some_and(|e| e.visible));
         let drawer_on = !editor_on || self.settings.drawer_open;
         let drawer_icon = if self.is_dock_right() { icons::COLUMNS } else { icons::ROWS };
-        // Added right to left: Zen Mode, Terminal Panel, Code Editor, Browser, Telemetry Pill, Run Agent.
-        let zen = kit::icon_button_ex(ui, icons::ARROWS_OUT, &kit::tip(t("Focus / Zen Mode"), Action::ToggleZenMode), self.zen_mode, 28.0);
-        #[cfg(debug_assertions)]
-        crate::devtest::record("toggle-zen", zen.rect);
-        if zen.clicked() {
-            self.actions.push(Action::ToggleZenMode);
-        }
+        // Added right to left: Terminal Panel, Code Editor, Browser, Telemetry Pill, Run Agent.
         let dr = kit::icon_button_ex(ui, drawer_icon, &kit::tip(t("Show/Hide Terminal Panel"), Action::ToggleDrawer), drawer_on, 28.0);
         #[cfg(debug_assertions)]
         crate::devtest::record("toggle-drawer", dr.rect);
@@ -1122,10 +1116,10 @@ impl App {
         crate::devtest::record(format!("pane-menu:{pane_id}"), menu_rect);
         egui::Popup::menu(&menu).align(egui::RectAlign::BOTTOM_END).show(|ui| self.pane_menu(ui, pane_id));
 
-        // Inline Active Profile Switcher pill inside agent panes (or panes bound to a profile).
+        // Inline Active Profile Switcher + 1-click Switch Account button inside agent panes.
         let show_profile = has_agent || self.panes.get(&pane_id).is_some_and(|x| x.active_profile.is_some());
         if show_profile && rect.width() > 300.0 {
-            let left = (right - 160.0).max(rect.left() + 140.0).min(right);
+            let left = (right - 270.0).max(rect.left() + 130.0).min(right);
             let switcher_area = Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom()));
             let used_left = ui
                 .scope_builder(

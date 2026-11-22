@@ -888,9 +888,6 @@ impl App {
                             {
                                 self.actions.push(Action::Review);
                             }
-                            if kit::button_keys(ui, kit::Kind::Ghost, Some(icons::ARROWS_OUT), t("Zen Mode"), kit::keys(&Action::ToggleZenMode), false).clicked() {
-                                self.actions.push(Action::ToggleZenMode);
-                            }
                         });
 
                         if !changed.is_empty() {

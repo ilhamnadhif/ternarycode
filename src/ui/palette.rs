@@ -293,7 +293,6 @@ impl App {
             add(icons::FILE, t("Open File…"), Action::QuickOpen);
             add(icons::CODE, t("Show/Hide Code"), Action::ToggleEditor);
             add(icons::ROWS, t("Show/Hide Terminal Panel"), Action::ToggleDrawer);
-            add(icons::ARROWS_OUT, t("Focus / Zen Mode"), Action::ToggleZenMode);
             add(icons::ROWS, t("Dock Panel Bottom"), Action::SetDrawerDock(tc_core::model::DrawerDock::Bottom));
             add(icons::COLUMNS, t("Dock Panel Right"), Action::SetDrawerDock(tc_core::model::DrawerDock::Right));
             add(icons::USER, t("Agent Profiles…"), Action::OpenProfiles);

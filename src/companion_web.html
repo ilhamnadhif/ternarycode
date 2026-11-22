@@ -311,9 +311,12 @@ function renderLive(){
 
   if(healthy.length && !pane.rate_limit){
     html += `<div class="row" style="border-top:1px solid var(--border)">
-      <span class="sub">Switch account profile</span>
+      <span class="sub">Switch account</span>
       <div style="display:flex;gap:5px;flex-wrap:wrap">` +
-      healthy.slice(0,4).map(pr=>`<button class="btn" style="padding:4px 8px;min-height:26px;font-size:11px" data-act="switch" data-pane="${pane.id}" data-profile="${esc(pr.id)}">${esc(pr.id)}</button>`).join("")
+      healthy.slice(0,4).map(pr=>{
+        const u5 = pr.window_5h && pr.window_5h.used_pct != null ? ` · ${Math.round(pr.window_5h.used_pct)}%` : "";
+        return `<button class="btn" style="padding:4px 8px;min-height:26px;font-size:11px" data-act="switch" data-pane="${pane.id}" data-profile="${esc(pr.id)}">⇄ ${esc(pr.id)}${u5}</button>`;
+      }).join("")
       + `</div></div>`;
   }
   html += `</div>`;
@@ -337,21 +340,43 @@ function renderProjects(){
   }).join("");
 }
 
+function fmtReset(s){
+  if(!s) return "";
+  if(s >= 86400) return `${Math.floor(s/86400)}d ${Math.floor((s%86400)/3600)}h`;
+  return fmtSec(s);
+}
+
+function renderWinBar(w){
+  if(!w) return "";
+  const pct = w.used_pct != null ? Math.round(w.used_pct) : null;
+  const col = pct==null ? "var(--faint)" : pct>=90 ? "var(--err)" : pct>=70 ? "var(--warn)" : "var(--ok)";
+  const val = pct!=null ? `${pct}%${w.tokens?` · ${fmtTok(w.tokens)}`:""}` : `${fmtTok(w.tokens||0)} tok`;
+  const rst = w.reset_secs ? ` · ↻ ${fmtReset(w.reset_secs)}` : "";
+  return `<div style="display:flex;flex-direction:column;gap:3px;margin-top:3px">
+    <div style="display:flex;justify-content:space-between;font-size:11px" class="mono">
+      <span class="sub">${esc(w.label)}</span>
+      <span style="color:${pct!=null&&pct>=70?col:"var(--muted)"}">${esc(val)}${esc(rst)}</span>
+    </div>
+    <div class="bar"><div style="width:${pct!=null?pct:0}%;background:${col}"></div></div>
+  </div>`;
+}
+
 function renderProfiles(){
   const profiles = state.profiles || [];
   return `<div class="section-label">Failover Policy · ${esc(state.failover_mode||"auto").toUpperCase()}</div>
   <div class="panel">` + profiles.map(p=>{
-    const pct = p.quota_pct != null ? Math.round(p.quota_pct) : null;
-    const barColor = p.state==="rate_limited"?"var(--warn)":pct!=null&&pct<20?"var(--err)":"var(--accent)";
     const badgeCls = p.enabled ? p.state : "disabled";
     const badgeText = p.enabled ? p.state.replace("_"," ") : "disabled";
+    const planTag = p.plan_type ? ` <span class="badge idle">${esc(p.plan_type.toUpperCase())}</span>` : "";
+    const authTag = p.signed_in === false ? ` <span class="badge rate_limited">not signed in</span>` : "";
     return `<div class="row${p.enabled?"":" dim"}" style="flex-direction:column;align-items:stretch;gap:4px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-        <div><span class="title mono">${esc(p.id)}</span> <span class="sub">(${esc(p.provider)})</span></div>
+        <div><span class="title mono">${esc(p.id)}</span> <span class="sub">(${esc(p.provider)}${p.account_hint?` · ${esc(p.account_hint)}`:""})</span>${planTag}${authTag}</div>
         <span class="badge ${esc(badgeCls)}">${esc(badgeText)}</span>
       </div>
-      <div class="sub mono">In ${fmtTok(p.tokens_in)} · Out ${fmtTok(p.tokens_out)}${p.reset_secs?` · resets ${fmtSec(p.reset_secs)}`:""}${p.active_session?` · ${esc(p.active_session)}`:""}</div>
-      ${pct!=null?`<div class="bar"><div style="width:${pct}%;background:${barColor}"></div></div>`:""}
+      ${renderWinBar(p.window_5h)}
+      ${renderWinBar(p.window_weekly)}
+      ${p.active_session?`<div class="sub mono" style="margin-top:2px">Active in ${esc(p.active_session)}</div>`:""}
     </div>`;
   }).join("") + `</div>`;
 }

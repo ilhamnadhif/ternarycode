@@ -61,7 +61,7 @@ pub fn paint_glyph(painter: &egui::Painter, center: egui::Pos2, s: Status, p: &P
         Status::Running => super::kit::paint_lattice(painter, center, 10.0, p.info, true),
         Status::Idle | Status::Ended => super::kit::paint_lattice(painter, center, 10.0, p.idle, false),
         Status::Unknown => {
-            painter.text(center, egui::Align2::CENTER_CENTER, icons::CIRCLE_HALF, super::style::icon_font(size.max(12.0)), p.idle);
+            painter.circle_stroke(center, 3.8, egui::Stroke::new(1.5, p.idle));
         }
         _ => {
             let icon = match s {

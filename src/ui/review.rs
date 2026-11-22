@@ -959,15 +959,10 @@ impl App {
                     let mut left = rect.left() + 6.0 + indent;
                     if cb_col {
                         if r.uncommitted.contains(&f.path) {
-                            let cb = Rect::from_center_size(pos2(left + 7.0, rect.center().y), vec2(14.0, 14.0));
+                            let cb = Rect::from_center_size(pos2(left + 7.5, rect.center().y), vec2(15.0, 15.0));
                             let cb_resp = ui.interact(cb.expand(3.0), egui::Id::new(("review-in", &f.path)), Sense::click());
                             let painter = ui.painter();
-                            if ship_out.contains(&f.path) {
-                                painter.rect(cb, CornerRadius::same(4), Color32::TRANSPARENT, Stroke::new(1.0, if cb_resp.hovered() { p.text_faint } else { p.border_heavy }), egui::StrokeKind::Inside);
-                            } else {
-                                painter.rect_filled(cb, CornerRadius::same(4), p.accent);
-                                painter.text(cb.center(), Align2::CENTER_CENTER, icons::CHECK, style::icon_font(10.0), p.on_accent);
-                            }
+                            kit::paint_checkbox(painter, cb, !ship_out.contains(&f.path), cb_resp.hovered(), &p);
                             #[cfg(debug_assertions)]
                             crate::devtest::record(format!("review-in:{}", f.path), cb);
                             let in_commit = !ship_out.contains(&f.path);

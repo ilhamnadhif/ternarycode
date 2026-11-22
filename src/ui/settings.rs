@@ -1596,7 +1596,7 @@ fn scheme_tile(ui: &mut Ui, s: &tc_term::scheme::Scheme, on: bool) -> egui::Resp
     if on {
         let c = pos2(top.right() - 11.0, top.top() + 11.0);
         painter.circle_filled(c, 7.0, p.accent);
-        painter.text(c, Align2::CENTER_CENTER, icons::CHECK, style::icon_font(9.0), Color32::WHITE);
+        kit::paint_check_mark(painter, c, 9.5, Color32::WHITE);
     }
     // Its name without " Dark" / " Light" (the row says which).
     let name = s.name.trim_end_matches(" Dark").trim_end_matches(" Light");

@@ -83,9 +83,18 @@ pub struct AgentProfile {
     /// Whether this profile is active in the switcher and fallback chain.
     #[serde(default = "yes")]
     pub enabled: bool,
-    /// Optional token budget used to compute remaining quota percentage.
+    /// Optional token budget used to compute remaining quota percentage (legacy 24h fallback).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daily_token_budget: Option<u64>,
+    /// Optional 5-hour rolling window token limit (used when provider doesn't report server % quota).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_5h_tokens: Option<u64>,
+    /// Optional 7-day weekly rolling token limit (used when provider doesn't report server % quota).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_weekly_tokens: Option<u64>,
+    /// Optional human account label / email hint (e.g. `work@gmail.com` or `Plus #2`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_hint: Option<String>,
     /// Uses the system default auth folder (`~/.claude`, `~/.codex`, `~/.gemini`) rather than an
     /// isolated subfolder.
     #[serde(default)]
@@ -104,6 +113,9 @@ impl Default for AgentProfile {
             fallback_order: 0,
             enabled: true,
             daily_token_budget: None,
+            limit_5h_tokens: None,
+            limit_weekly_tokens: None,
+            account_hint: None,
             use_default_auth: false,
         }
     }
@@ -712,6 +724,20 @@ impl Settings {
             if pr.daily_token_budget == Some(0) {
                 pr.daily_token_budget = None;
             }
+            if pr.limit_5h_tokens == Some(0) {
+                pr.limit_5h_tokens = None;
+            }
+            if pr.limit_weekly_tokens == Some(0) {
+                pr.limit_weekly_tokens = None;
+            }
+            if let Some(hint) = pr.account_hint.as_ref() {
+                let t = hint.trim();
+                if t.is_empty() {
+                    pr.account_hint = None;
+                } else if t.len() != hint.len() {
+                    pr.account_hint = Some(t.to_string());
+                }
+            }
             pr.extra_env.retain(|k, _| {
                 k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
                     && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -960,6 +986,9 @@ mod tests {
             enabled: true,
             fallback_order: 2,
             daily_token_budget: Some(2_000_000),
+            limit_5h_tokens: Some(500_000),
+            limit_weekly_tokens: Some(10_000_000),
+            account_hint: Some("work@example.com".into()),
             use_default_auth: false,
         });
         s.failover.mode = FailoverMode::Manual;

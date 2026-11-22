@@ -129,7 +129,6 @@ impl AppMenu {
         let switch = item(t("Switch Project…"), Action::SwitchProject);
         let editor = item(t("Show/Hide Code"), Action::ToggleEditor);
         let drawer = item(t("Show/Hide Terminal Panel"), Action::ToggleDrawer);
-        let zen = item(t("Focus / Zen Mode"), Action::ToggleZenMode);
         let browser = item(t("Browser"), Action::ShowBrowser);
         let address = item(t("Open Address"), Action::BrowserAddress);
         let reload = item(t("Reload Page"), Action::BrowserReload);
@@ -159,7 +158,6 @@ impl AppMenu {
                 &editor,
                 &drawer,
                 &files,
-                &zen,
                 &PredefinedMenuItem::separator(),
                 &browser,
                 &address,

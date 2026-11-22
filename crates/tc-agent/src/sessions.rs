@@ -41,6 +41,7 @@ pub struct Roots {
     pub claude: PathBuf,
     pub codex: PathBuf,
     pub gemini: PathBuf,
+    pub antigravity: PathBuf,
 }
 
 impl Roots {
@@ -50,10 +51,13 @@ impl Roots {
         let gemini = var("GEMINI_CONFIG_DIR")
             .or_else(|| var("GEMINI_CLI_HOME").map(|h| h.join(".gemini")))
             .unwrap_or_else(|| home.join(".gemini"));
+        let antigravity = var("AGY_DATA_DIR")
+            .unwrap_or_else(|| home.join(".gemini").join("antigravity-cli"));
         Self {
             claude: var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
             codex: var("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
             gemini,
+            antigravity,
         }
     }
 
@@ -63,13 +67,14 @@ impl Roots {
             claude: home.join(".claude"),
             codex: home.join(".codex"),
             gemini: home.join(".gemini"),
+            antigravity: home.join(".gemini").join("antigravity-cli"),
         }
     }
 }
 
 /// Whether the agent's sessions can be listed (and resumed by id).
 pub fn listable(agent: AgentKind) -> bool {
-    matches!(agent, AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini)
+    matches!(agent, AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini | AgentKind::Antigravity)
 }
 
 pub fn valid_session_id(id: &str) -> bool {
@@ -89,6 +94,7 @@ pub fn resume_command(agent: AgentKind, command: &str, id: &str) -> Option<Strin
     match agent {
         AgentKind::Claude | AgentKind::Gemini => Some(format!("{command} --resume {id}")),
         AgentKind::Codex => Some(format!("{command} resume {id}")),
+        AgentKind::Antigravity => Some(format!("{command} --conversation {id}")),
         _ => None,
     }
 }
@@ -112,6 +118,7 @@ pub fn list(agent: AgentKind, project: &Path, roots: &Roots, limit: usize) -> Ve
         AgentKind::Claude => claude(project, &roots.claude, limit),
         AgentKind::Codex => codex(project, &roots.codex, limit),
         AgentKind::Gemini => gemini(project, &roots.gemini, limit),
+        AgentKind::Antigravity => antigravity(project, &roots.antigravity, limit),
         _ => Vec::new(),
     };
     out.sort_by_key(|s| std::cmp::Reverse(s.updated));
@@ -405,6 +412,68 @@ fn gemini(project: &Path, root: &Path, limit: usize) -> Vec<Session> {
         .collect()
 }
 
+// ----- Antigravity CLI ------------------------------------------------------------------------
+
+/// Resolves the Antigravity CLI history file (`~/.gemini/antigravity-cli/history.jsonl`).
+fn antigravity_history(root: &Path) -> Option<PathBuf> {
+    let direct = root.join("history.jsonl");
+    if direct.is_file() {
+        return Some(direct);
+    }
+    let nested = root.join("antigravity-cli").join("history.jsonl");
+    if nested.is_file() {
+        return Some(nested);
+    }
+    let dot = root.join(".gemini").join("antigravity-cli").join("history.jsonl");
+    dot.is_file().then_some(dot)
+}
+
+fn antigravity(project: &Path, root: &Path, limit: usize) -> Vec<Session> {
+    let Some(hist) = antigravity_history(root) else {
+        return Vec::new();
+    };
+    let (head, tail) = edges(&hist, 256 * 1024, 2 * 1024 * 1024);
+    let mut by_id: HashMap<String, (SystemTime, String, bool)> = HashMap::new();
+    for line in head.iter().chain(tail.iter()) {
+        if !line.contains("conversationId") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Some(ws_raw) = v["workspace"].as_str() else { continue };
+        let ws = ws_raw.strip_prefix("file://").unwrap_or(ws_raw);
+        if !same_folder(Path::new(ws), project) {
+            continue;
+        }
+        let Some(id) = text(&v["conversationId"]).filter(|s| valid_session_id(s)) else { continue };
+        let ts_ms = v["timestamp"].as_u64().unwrap_or(0);
+        let updated = if ts_ms > 10_000_000_000 {
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ts_ms)
+        } else if ts_ms > 0 {
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(ts_ms)
+        } else {
+            modified(&hist)
+        };
+        let display = v["display"].as_str().map(one_line).unwrap_or_default();
+        let good_title = typed_prompt(&display) && display.chars().count() >= 3;
+        let entry = by_id.entry(id).or_insert_with(|| (updated, String::new(), false));
+        if updated > entry.0 {
+            entry.0 = updated;
+        }
+        if (!entry.2 && good_title) || (entry.1.is_empty() && !display.is_empty()) {
+            entry.1 = display;
+            entry.2 = good_title;
+        }
+    }
+    let mut out: Vec<Session> = by_id
+        .into_iter()
+        .filter(|(_, (_, title, _))| !title.is_empty())
+        .map(|(id, (updated, title, _))| Session { id, title, updated, branch: None })
+        .collect();
+    out.sort_by_key(|s| std::cmp::Reverse(s.updated));
+    out.truncate(limit);
+    out
+}
+
 /// Token consumption summed from real agent session logs under a profile's config folder.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TokenUsage {
@@ -416,6 +485,42 @@ impl TokenUsage {
     pub fn total(self) -> u64 {
         self.input.saturating_add(self.output)
     }
+
+    pub fn add_assign(&mut self, other: Self) {
+        self.input = self.input.saturating_add(other.input);
+        self.output = self.output.saturating_add(other.output);
+    }
+}
+
+/// Real usage & provider quota telemetry for one rolling window (e.g. 5-hour or 7-day weekly).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WindowQuota {
+    /// Percentage of the window quota already USED (`0.0..=100.0`) when reported directly by the
+    /// provider CLI (e.g. Codex `rate_limits.primary` / `secondary`).
+    pub used_percent: Option<f32>,
+    /// Window length in minutes (`300` = 5 hours, `10080` = 7 days / weekly, `43200` = 30 days).
+    pub window_minutes: Option<u32>,
+    /// Unix epoch seconds when this quota window resets (server-reported or rolling oldest + span).
+    pub resets_at_unix: Option<i64>,
+    /// Real input/output tokens counted inside this window from local session logs.
+    pub tokens: TokenUsage,
+    /// Number of assistant turns / sessions counted inside this window.
+    pub turns: u32,
+}
+
+/// Multi-window usage, provider rate-limit telemetry, and local auth status for one account profile.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProfileUsageReport {
+    /// 5-hour rolling window (e.g. ChatGPT Plus / Codex primary window, Claude 5h rolling window).
+    pub window_5h: WindowQuota,
+    /// Weekly (7-day) rolling window (or 30-day window on plans that report a monthly window).
+    pub window_weekly: WindowQuota,
+    /// Last 24-hour token totals (for aggregate telemetry).
+    pub recent_24h: TokenUsage,
+    /// Plan tier when reported by the provider (e.g. `"plus"`, `"pro"`, `"team"`, `"free"`).
+    pub plan_type: Option<String>,
+    /// Whether local auth credentials exist in this profile's config folder (`None` if indeterminate).
+    pub signed_in: Option<bool>,
 }
 
 /// Atomically copies `src` to `dst` if `dst` is missing or older/different than `src`.
@@ -556,13 +661,111 @@ pub fn copy_session_between_roots(agent: AgentKind, project: &Path, from_root: &
     }
 }
 
-/// Aggregates real token usage reported in recent session files (last 24 hours) under `root` for
-/// `agent`. Reads non-overlapping slices of at most 24 newest files so it stays fast off the UI thread.
-pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
-    let cutoff = SystemTime::now().checked_sub(std::time::Duration::from_secs(86_400)).unwrap_or(SystemTime::UNIX_EPOCH);
-    let mut usage = TokenUsage::default();
+fn unix_secs(t: SystemTime) -> i64 {
+    t.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Parses an ISO-8601 / RFC3339 timestamp (`YYYY-MM-DDTHH:MM:SS(.fff)(Z|+HH:MM|-HH:MM)`) into Unix
+/// epoch seconds without external crate dependencies.
+fn parse_iso_unix(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || (b[10] != b'T' && b[10] != b' ') || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let y: i64 = s.get(0..4)?.parse().ok()?;
+    let m: i64 = s.get(5..7)?.parse().ok()?;
+    let d: i64 = s.get(8..10)?.parse().ok()?;
+    let hh: i64 = s.get(11..13)?.parse().ok()?;
+    let mm: i64 = s.get(14..16)?.parse().ok()?;
+    let ss: i64 = s.get(17..19)?.parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 60 {
+        return None;
+    }
+    // Howard Hinnant's civil-from-days inverse: days since 1970-01-01.
+    let y_adj = y - i64::from(m <= 2);
+    let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+    let yoe = y_adj - era * 400;
+    let mp = m + if m > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let mut secs = days * 86_400 + hh * 3_600 + mm * 60 + ss;
+    let rest = &s[19..];
+    let tz = rest.find(['Z', 'z', '+', '-']).map(|i| &rest[i..]).unwrap_or("");
+    if tz.len() >= 6 && (tz.starts_with('+') || tz.starts_with('-')) && tz.as_bytes()[3] == b':' {
+        let sign = if tz.starts_with('+') { 1 } else { -1 };
+        let th: i64 = tz.get(1..3)?.parse().ok()?;
+        let tm: i64 = tz.get(4..6)?.parse().ok()?;
+        secs -= sign * (th * 3_600 + tm * 60);
+    }
+    Some(secs)
+}
+
+fn non_empty_file(p: &Path) -> bool {
+    fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() > 2)
+}
+
+fn apply_codex_window(report: &mut ProfileUsageReport, obj: &Value) {
+    if !obj.is_object() {
+        return;
+    }
+    let used = obj["used_percent"].as_f64().map(|v| (v as f32).clamp(0.0, 100.0));
+    let mins = obj["window_minutes"].as_u64().and_then(|v| u32::try_from(v).ok());
+    let resets = obj["resets_at"].as_i64();
+    if used.is_none() && resets.is_none() {
+        return;
+    }
+    let target = if mins.is_some_and(|m| m <= 720) {
+        &mut report.window_5h
+    } else {
+        &mut report.window_weekly
+    };
+    if target.used_percent.is_none() {
+        target.used_percent = used;
+    }
+    if target.window_minutes.is_none() {
+        target.window_minutes = mins;
+    }
+    if target.resets_at_unix.is_none() {
+        target.resets_at_unix = resets;
+    }
+}
+
+/// Scans real multi-window usage (5-hour rolling, 24-hour, and 7-day weekly), provider-reported
+/// server rate-limit quotas (Codex `rate_limits.primary`/`secondary`), and local sign-in status
+/// under `root` for `agent`.
+pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
+    const WIN_5H: i64 = 5 * 3_600;
+    const WIN_24H: i64 = 24 * 3_600;
+    const WIN_7D: i64 = 7 * 86_400;
+
+    let now_unix = unix_secs(SystemTime::now());
+    let cut_5h = now_unix - WIN_5H;
+    let cut_24h = now_unix - WIN_24H;
+    let cut_7d = now_unix - WIN_7D;
+    let cutoff_7d_st = SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(WIN_7D as u64))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
+    let mut report = ProfileUsageReport::default();
+    report.window_5h.window_minutes = Some(300);
+    report.window_weekly.window_minutes = Some(10_080);
+
     match agent {
         AgentKind::Claude => {
+            let parent_claude_json = root
+                .file_name()
+                .is_some_and(|n| n == ".claude")
+                .then(|| root.parent().map(|p| p.join(".claude.json")))
+                .flatten();
+            let has_auth = non_empty_file(&root.join(".credentials.json"))
+                || non_empty_file(&root.join("credentials.json"))
+                || non_empty_file(&root.join(".claude.json"))
+                || non_empty_file(&root.join("daemon-auth-status.json"))
+                || non_empty_file(&root.join("stats-cache.json"))
+                || parent_claude_json.as_deref().is_some_and(non_empty_file);
+            report.signed_in = Some(has_auth);
+
             let mut files: Vec<(SystemTime, PathBuf)> = fs::read_dir(root.join("projects"))
                 .ok()
                 .into_iter()
@@ -575,15 +778,19 @@ pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
                 .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
                 .filter_map(|p| {
                     let m = modified(&p);
-                    (m >= cutoff).then_some((m, p))
+                    (m >= cutoff_7d_st).then_some((m, p))
                 })
                 .collect();
             files.sort_by_key(|f| std::cmp::Reverse(f.0));
-            for (_, path) in files.into_iter().take(24) {
+
+            let mut oldest_5h: Option<i64> = None;
+            let mut oldest_7d: Option<i64> = None;
+
+            for (mtime, path) in files.into_iter().take(48) {
+                let fallback_ts = unix_secs(mtime);
                 let (head, tail) = edges(&path, 64 * 1024, 256 * 1024);
-                // Keep the final (largest/complete) usage chunk per message.id instead of the first partial chunk.
-                let mut by_id: std::collections::HashMap<String, TokenUsage> = std::collections::HashMap::new();
-                let mut anon = TokenUsage::default();
+                let mut by_id: std::collections::HashMap<String, (TokenUsage, i64)> = std::collections::HashMap::new();
+                let mut anons: Vec<(TokenUsage, i64)> = Vec::new();
                 for line in head.iter().chain(tail.iter()) {
                     if !line.contains("\"usage\"") {
                         continue;
@@ -594,6 +801,7 @@ pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
                     if !u.is_object() {
                         continue;
                     }
+                    let ts = v["timestamp"].as_str().and_then(parse_iso_unix).unwrap_or(fallback_ts);
                     let entry = TokenUsage {
                         input: u["input_tokens"]
                             .as_u64()
@@ -603,23 +811,39 @@ pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
                         output: u["output_tokens"].as_u64().unwrap_or(0),
                     };
                     if let Some(id) = msg["id"].as_str() {
-                        let slot = by_id.entry(id.to_string()).or_default();
-                        slot.input = slot.input.max(entry.input);
-                        slot.output = slot.output.max(entry.output);
+                        let slot = by_id.entry(id.to_string()).or_insert((TokenUsage::default(), ts));
+                        slot.0.input = slot.0.input.max(entry.input);
+                        slot.0.output = slot.0.output.max(entry.output);
+                        slot.1 = slot.1.max(ts);
                     } else {
-                        anon.input = anon.input.saturating_add(entry.input);
-                        anon.output = anon.output.saturating_add(entry.output);
+                        anons.push((entry, ts));
                     }
                 }
-                for u in by_id.into_values() {
-                    usage.input = usage.input.saturating_add(u.input);
-                    usage.output = usage.output.saturating_add(u.output);
+                for (u, ts) in by_id.into_values().chain(anons) {
+                    if ts >= cut_7d {
+                        report.window_weekly.tokens.add_assign(u);
+                        report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
+                        oldest_7d = Some(oldest_7d.map_or(ts, |o| o.min(ts)));
+                    }
+                    if ts >= cut_24h {
+                        report.recent_24h.add_assign(u);
+                    }
+                    if ts >= cut_5h {
+                        report.window_5h.tokens.add_assign(u);
+                        report.window_5h.turns = report.window_5h.turns.saturating_add(1);
+                        oldest_5h = Some(oldest_5h.map_or(ts, |o| o.min(ts)));
+                    }
                 }
-                usage.input = usage.input.saturating_add(anon.input);
-                usage.output = usage.output.saturating_add(anon.output);
+            }
+            if let Some(o) = oldest_5h {
+                report.window_5h.resets_at_unix = Some(o + WIN_5H);
+            }
+            if let Some(o) = oldest_7d {
+                report.window_weekly.resets_at_unix = Some(o + WIN_7D);
             }
         }
         AgentKind::Codex => {
+            report.signed_in = Some(non_empty_file(&root.join("auth.json")));
             let mut files: Vec<(SystemTime, PathBuf)> = Vec::new();
             let mut scanned = 0usize;
             'days: for year in names_desc(&root.join("sessions")) {
@@ -630,12 +854,11 @@ pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
                                 continue;
                             }
                             scanned += 1;
-                            if scanned > 300 {
+                            if scanned > 400 {
                                 break 'days;
                             }
                             let m = modified(&file);
-                            if m < cutoff {
-                                // Do not break: resumed older sessions can have newer mtimes in earlier date dirs.
+                            if m < cutoff_7d_st {
                                 continue;
                             }
                             files.push((m, file));
@@ -644,25 +867,87 @@ pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
                 }
             }
             files.sort_by_key(|f| std::cmp::Reverse(f.0));
-            for (_, path) in files.into_iter().take(24) {
+
+            let mut got_rate_limits = false;
+            let mut oldest_5h: Option<i64> = None;
+            let mut oldest_7d: Option<i64> = None;
+            let mut server_5h = WindowQuota::default();
+            let mut server_weekly = WindowQuota::default();
+
+            for (mtime, path) in files.into_iter().take(48) {
+                let ts = unix_secs(mtime);
                 let (_, tail) = edges(&path, 0, 128 * 1024);
-                // Codex emits cumulative `total_token_usage` snapshots: take the last one in the file.
+                let mut got_tokens = false;
                 for line in tail.iter().rev() {
-                    if !line.contains("token_usage") && !line.contains("input_tokens") {
+                    if !line.contains("token_usage") && !line.contains("rate_limits") {
                         continue;
                     }
                     let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-                    let tu = &v["payload"]["info"]["total_token_usage"];
-                    if tu.is_object() {
-                        usage.input = usage.input.saturating_add(tu["input_tokens"].as_u64().unwrap_or(0));
-                        usage.output = usage.output.saturating_add(tu["output_tokens"].as_u64().unwrap_or(0));
+                    let payload = &v["payload"];
+                    if !got_rate_limits && payload["rate_limits"].is_object() {
+                        let rl = &payload["rate_limits"];
+                        if let Some(pt) = rl["plan_type"].as_str().filter(|s| !s.is_empty()) {
+                            report.plan_type = Some(pt.to_string());
+                        }
+                        let mut tmp = ProfileUsageReport::default();
+                        apply_codex_window(&mut tmp, &rl["primary"]);
+                        apply_codex_window(&mut tmp, &rl["secondary"]);
+                        if tmp.window_5h.used_percent.is_some() || tmp.window_weekly.used_percent.is_some() {
+                            server_5h = tmp.window_5h;
+                            server_weekly = tmp.window_weekly;
+                            got_rate_limits = true;
+                        }
+                    }
+                    if !got_tokens {
+                        let tu = &payload["info"]["total_token_usage"];
+                        if tu.is_object() {
+                            let u = TokenUsage {
+                                input: tu["input_tokens"].as_u64().unwrap_or(0),
+                                output: tu["output_tokens"].as_u64().unwrap_or(0),
+                            };
+                            if ts >= cut_7d {
+                                report.window_weekly.tokens.add_assign(u);
+                                report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
+                                oldest_7d = Some(oldest_7d.map_or(ts, |o| o.min(ts)));
+                            }
+                            if ts >= cut_24h {
+                                report.recent_24h.add_assign(u);
+                            }
+                            if ts >= cut_5h {
+                                report.window_5h.tokens.add_assign(u);
+                                report.window_5h.turns = report.window_5h.turns.saturating_add(1);
+                                oldest_5h = Some(oldest_5h.map_or(ts, |o| o.min(ts)));
+                            }
+                            got_tokens = true;
+                        }
+                    }
+                    if got_tokens && got_rate_limits {
                         break;
                     }
                 }
             }
+            if server_5h.used_percent.is_some() || server_5h.resets_at_unix.is_some() {
+                report.window_5h.used_percent = server_5h.used_percent;
+                report.window_5h.window_minutes = server_5h.window_minutes.or(Some(300));
+                report.window_5h.resets_at_unix = server_5h.resets_at_unix;
+            } else if let Some(o) = oldest_5h {
+                report.window_5h.resets_at_unix = Some(o + WIN_5H);
+            }
+            if server_weekly.used_percent.is_some() || server_weekly.resets_at_unix.is_some() {
+                report.window_weekly.used_percent = server_weekly.used_percent;
+                report.window_weekly.window_minutes = server_weekly.window_minutes.or(Some(10_080));
+                report.window_weekly.resets_at_unix = server_weekly.resets_at_unix;
+            } else if let Some(o) = oldest_7d {
+                report.window_weekly.resets_at_unix = Some(o + WIN_7D);
+            }
         }
         AgentKind::Gemini => {
             let state_root = gemini_state_root(root);
+            let has_auth = non_empty_file(&state_root.join("oauth_creds.json"))
+                || non_empty_file(&state_root.join("gemini-credentials.json"))
+                || non_empty_file(&state_root.join("google_accounts.json"));
+            report.signed_in = Some(has_auth);
+
             let mut files: Vec<(SystemTime, PathBuf)> = fs::read_dir(state_root.join("tmp"))
                 .ok()
                 .into_iter()
@@ -675,11 +960,15 @@ pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
                 .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
                 .filter_map(|p| {
                     let m = modified(&p);
-                    (m >= cutoff).then_some((m, p))
+                    (m >= cutoff_7d_st).then_some((m, p))
                 })
                 .collect();
             files.sort_by_key(|f| std::cmp::Reverse(f.0));
-            for (_, path) in files.into_iter().take(24) {
+
+            let mut oldest_5h: Option<i64> = None;
+            let mut oldest_7d: Option<i64> = None;
+            for (mtime, path) in files.into_iter().take(48) {
+                let fallback_ts = unix_secs(mtime);
                 let (head, tail) = edges(&path, 64 * 1024, 128 * 1024);
                 for line in head.iter().chain(tail.iter()) {
                     if !line.contains("\"tokens\"") && !line.contains("\"usageMetadata\"") {
@@ -688,17 +977,54 @@ pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
                     let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
                     let t = if v["tokens"].is_object() { &v["tokens"] } else { &v["usageMetadata"] };
                     if t.is_object() {
-                        usage.input = usage.input
-                            .saturating_add(t["input"].as_u64().or_else(|| t["promptTokenCount"].as_u64()).unwrap_or(0));
-                        usage.output = usage.output
-                            .saturating_add(t["output"].as_u64().or_else(|| t["candidatesTokenCount"].as_u64()).unwrap_or(0));
+                        let ts = v["timestamp"].as_str().and_then(parse_iso_unix).unwrap_or(fallback_ts);
+                        let u = TokenUsage {
+                            input: t["input"].as_u64().or_else(|| t["promptTokenCount"].as_u64()).unwrap_or(0),
+                            output: t["output"].as_u64().or_else(|| t["candidatesTokenCount"].as_u64()).unwrap_or(0),
+                        };
+                        if ts >= cut_7d {
+                            report.window_weekly.tokens.add_assign(u);
+                            report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
+                            oldest_7d = Some(oldest_7d.map_or(ts, |o| o.min(ts)));
+                        }
+                        if ts >= cut_24h {
+                            report.recent_24h.add_assign(u);
+                        }
+                        if ts >= cut_5h {
+                            report.window_5h.tokens.add_assign(u);
+                            report.window_5h.turns = report.window_5h.turns.saturating_add(1);
+                            oldest_5h = Some(oldest_5h.map_or(ts, |o| o.min(ts)));
+                        }
                     }
                 }
             }
+            if let Some(o) = oldest_5h {
+                report.window_5h.resets_at_unix = Some(o + WIN_5H);
+            }
+            if let Some(o) = oldest_7d {
+                report.window_weekly.resets_at_unix = Some(o + WIN_7D);
+            }
+        }
+        AgentKind::Antigravity => {
+            let has_auth = non_empty_file(&root.join("settings.json"))
+                || non_empty_file(&root.join("history.jsonl"))
+                || antigravity_history(root).is_some();
+            report.signed_in = Some(has_auth);
+        }
+        AgentKind::OpenCode => {
+            let has_auth = non_empty_file(&root.join("data/opencode/auth.json"))
+                || non_empty_file(&root.join("auth.json"));
+            report.signed_in = Some(has_auth);
         }
         _ => {}
     }
-    usage
+    report
+}
+
+/// Aggregates real token usage reported in recent session files (last 24 hours) under `root` for
+/// `agent`.
+pub fn recent_usage(agent: AgentKind, root: &Path) -> TokenUsage {
+    profile_usage(agent, root).recent_24h
 }
 
 #[cfg(test)]
@@ -878,5 +1204,67 @@ mod tests {
         );
         assert!(copy_session_between_roots(AgentKind::Gemini, proj, &gfrom, &gto, "g123-abcd"));
         assert!(gto.join(".gemini/tmp/app/chats/session-2026-11-23-g123.jsonl").is_file());
+    }
+
+    #[test]
+    fn profile_usage_parses_5h_and_weekly_windows_and_codex_rate_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = unix_secs(SystemTime::now());
+        // Codex: auth.json + server-reported 5h primary & 7d weekly secondary rate_limits.
+        let codex_root = dir.path().join("codex-plus");
+        write(&codex_root.join("auth.json"), "{\"access_token\":\"ok\"}");
+        write(
+            &codex_root.join("sessions/2026/11/23/rollout-2026-11-23-test.jsonl"),
+            &format!(
+                concat!(
+                    "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":5000,\"output_tokens\":1200}}}},",
+                    "\"rate_limits\":{{\"plan_type\":\"plus\",\"primary\":{{\"used_percent\":64.0,\"window_minutes\":300,\"resets_at\":{}}},\"secondary\":{{\"used_percent\":28.5,\"window_minutes\":10080,\"resets_at\":{}}}}}}}}}\n"
+                ),
+                now + 7200,
+                now + 3 * 86_400
+            ),
+        );
+        let rep = profile_usage(AgentKind::Codex, &codex_root);
+        assert_eq!(rep.signed_in, Some(true));
+        assert_eq!(rep.plan_type.as_deref(), Some("plus"));
+        assert_eq!(rep.window_5h.used_percent, Some(64.0));
+        assert_eq!(rep.window_5h.window_minutes, Some(300));
+        assert_eq!(rep.window_5h.resets_at_unix, Some(now + 7200));
+        assert_eq!(rep.window_weekly.used_percent, Some(28.5));
+        assert_eq!(rep.window_weekly.window_minutes, Some(10080));
+        assert_eq!(rep.window_weekly.resets_at_unix, Some(now + 3 * 86_400));
+        assert_eq!(rep.window_5h.tokens.total(), 6200);
+        assert_eq!(rep.window_weekly.tokens.total(), 6200);
+
+        // Unsigned isolated Codex profile reports signed_in = Some(false).
+        let empty_codex = dir.path().join("codex-empty");
+        fs::create_dir_all(&empty_codex).unwrap();
+        assert_eq!(profile_usage(AgentKind::Codex, &empty_codex).signed_in, Some(false));
+
+        // ISO timestamp parser sanity check.
+        assert_eq!(parse_iso_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert!(parse_iso_unix("2026-11-20T04:44:38.403Z").is_some());
+        let t_utc = parse_iso_unix("2026-11-20T04:00:00Z").unwrap();
+        let t_off = parse_iso_unix("2026-11-20T11:00:00+07:00").unwrap();
+        assert_eq!(t_utc, t_off);
+
+        // Antigravity CLI session listing & resume from history.jsonl.
+        let agy_home = dir.path().join("agy-home");
+        write(
+            &agy_home.join(".gemini/antigravity-cli/history.jsonl"),
+            concat!(
+                "{\"display\":\"fix sidebar scroll\",\"timestamp\":1795378000000,\"workspace\":\"/work/app\",\"conversationId\":\"4a5903a6-3a74-4a07-873a-9905821e63e8\"}\n",
+                "{\"display\":\"p\",\"timestamp\":1795378500000,\"workspace\":\"/work/app\",\"conversationId\":\"4a5903a6-3a74-4a07-873a-9905821e63e8\"}\n",
+                "{\"display\":\"other repo\",\"timestamp\":1795379000000,\"workspace\":\"/work/other\",\"conversationId\":\"99999999-1111-2222-3333-444444444444\"}\n",
+            ),
+        );
+        let agy_sessions = list(AgentKind::Antigravity, Path::new("/work/app"), &Roots::under(&agy_home), 10);
+        assert_eq!(agy_sessions.len(), 1);
+        assert_eq!(agy_sessions[0].id, "4a5903a6-3a74-4a07-873a-9905821e63e8");
+        assert_eq!(agy_sessions[0].title, "fix sidebar scroll");
+        assert_eq!(
+            resume_command(AgentKind::Antigravity, "agy", "4a5903a6-3a74-4a07-873a-9905821e63e8").as_deref(),
+            Some("agy --conversation 4a5903a6-3a74-4a07-873a-9905821e63e8")
+        );
     }
 }

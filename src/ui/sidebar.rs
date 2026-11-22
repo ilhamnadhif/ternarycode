@@ -488,7 +488,7 @@ impl App {
         let label = t("Settings");
         let g = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(12.5), p.text_muted);
         let full_w = 8.0 + 15.0 + 8.0 + g.size().x + 8.0;
-        let nav_w = 3.0 * 28.0 + 8.0;
+        let nav_w = 2.0 * 28.0 + 8.0;
         let narrow = rect.width() - 2.0 * PAD - nav_w < full_w;
         if narrow {
             let b = Rect::from_min_size(pos2(rect.left() + PAD, rect.center().y - 13.0), vec2(26.0, 26.0));
@@ -520,7 +520,8 @@ impl App {
             }
         }
 
-        // Compact ADE navigation icons at the right of the footer: Profiles, Monitor, Phone Pairing.
+        // Compact ADE navigation icons at the right of the footer: Profiles and Phone Pairing.
+        // (Usage & Status Monitor lives exclusively in the top-right telemetry pill — zero duplicates.)
         let mut rx = rect.right() - PAD - 2.0;
         let mut nav_btn = |ui: &mut Ui, icon: &str, tip: &str, active: bool, dev_id: &str, dot: Option<egui::Color32>| -> bool {
             let r = Rect::from_center_size(pos2(rx - 13.0, rect.center().y), vec2(26.0, 26.0));
@@ -540,11 +541,8 @@ impl App {
             self.actions.push(Action::OpenPhonePairing);
         }
         let (_, limited, _, _) = self.telemetry_summary();
-        let mon_dot = (limited > 0).then_some(p.rate_limited);
-        if nav_btn(ui, icons::TIMER, t("Usage & Status Monitor"), self.view == View::Monitor, "sidebar-monitor", mon_dot) {
-            self.actions.push(Action::OpenMonitor);
-        }
-        if nav_btn(ui, icons::USER, t("Agent Profiles"), self.view == View::Profiles, "sidebar-profiles", None) {
+        let prof_dot = (limited > 0).then_some(p.rate_limited);
+        if nav_btn(ui, icons::USER, t("Agent Profiles"), self.view == View::Profiles, "sidebar-profiles", prof_dot) {
             self.actions.push(Action::OpenProfiles);
         }
     }
@@ -780,9 +778,16 @@ impl App {
                     for line in lines.iter() {
                         let (i, marks, dim, more) = match line {
                             Line::Group(is_active) => {
-                                // Space before the second group's line.
+                                // Subtle hairline + breathing space before the second group (`Idle`).
                                 if groups_seen > 0 {
-                                    ui.add_space(4.0);
+                                    let (sep_r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
+                                    if ui.is_rect_visible(sep_r) {
+                                        ui.painter().hline(
+                                            (sep_r.left() + 8.0)..=(sep_r.right() - 8.0),
+                                            sep_r.center().y,
+                                            Stroke::new(1.0, p.border),
+                                        );
+                                    }
                                 }
                                 groups_seen += 1;
                                 let key = if *is_active { "active" } else { "idle" };
@@ -838,7 +843,7 @@ impl App {
                                     None if !worktree && !filtering => self.project_sessions_count(&self.projects[*i]),
                                     None => 0,
                                 };
-                                let hovered = response.hovered() || chosen;
+                                let hovered = response.hovered() || ui.rect_contains_pointer(rect) || chosen;
                                 let mut sub_clicked = false;
                                 if worktree {
                                     let keys = chosen.then_some("↵");
@@ -1329,6 +1334,9 @@ fn paint_row_fill(painter: &egui::Painter, rect: Rect, active: bool, hovered: bo
     if active {
         painter.rect(rect, CornerRadius::same(8), p.surface, Stroke::new(1.0, if dark { p.border } else { p.border_strong }), StrokeKind::Inside);
         kit::paint_highlight(painter, rect, 8, p);
+        // Subtle Linear/Zed-style left accent indicator for the active workspace.
+        let bar = Rect::from_center_size(pos2(rect.left() + 2.0, rect.center().y), vec2(2.5, (rect.height() - 18.0).max(12.0)));
+        painter.rect_filled(bar, CornerRadius::same(2), p.accent);
     } else if hovered {
         painter.rect_filled(rect, CornerRadius::same(8), p.hover);
     }
@@ -1383,37 +1391,47 @@ fn paint_project_row(
     let l1 = rect.top() + 14.5;
     let l2 = rect.top() + 34.5;
 
-    // Right of the first line: what was not seen (a count in the status colour), else the
-    // shortcut while hovered.
+    // Right of the first line: pin the sessions disclosure chevron at the fixed right edge FIRST
+    // so hovering the row never shifts it horizontally out from under the cursor!
     let attention = row.waiting > 0;
     let mut right = right_edge;
+    let mut sess_toggle = None;
+    if allow_sessions_toggle {
+        let caret = painter.layout_no_wrap(if sessions_expanded { icons::CARET_DOWN } else { icons::CARET_RIGHT }.to_string(), style::icon_font(9.5), p.text_faint);
+        let cnt = (sessions_count > 0).then(|| painter.layout_no_wrap(sessions_count.to_string(), style::mono(10.0), p.text_ghost));
+        let sw = (caret.size().x + cnt.as_ref().map_or(0.0, |c| 3.0 + c.size().x) + 10.0).max(20.0);
+        if right - sw > x + 56.0 {
+            let sr = Rect::from_min_max(pos2(right - sw, l1 - 11.0), pos2(right, l1 + 11.0));
+            let hot = ui.rect_contains_pointer(sr);
+            if hot {
+                painter.rect_filled(sr, CornerRadius::same(5), if dark { p.subtle } else { p.inset });
+            }
+            let caret_color = if hot {
+                p.text
+            } else if sessions_expanded || hovered || active || sessions_count > 0 {
+                p.text_faint
+            } else {
+                p.text_ghost
+            };
+            let cx = sr.left() + 5.0;
+            painter.galley(pos2(cx, l1 - caret.size().y / 2.0 + 0.5), caret.clone(), caret_color);
+            if let Some(cnt) = cnt {
+                painter.galley(pos2(cx + caret.size().x + 3.0, l1 - cnt.size().y / 2.0), cnt, if hot { p.text_muted } else { p.text_ghost });
+            }
+            sess_toggle = Some(sr);
+            right = sr.left() - 4.0;
+        }
+    }
     if attention {
         let c = row.status.map_or(p.warn, |s| status::color(s, p));
         let b = kit::paint_badge(&painter, pos2(right, l1), &row.waiting.to_string(), c, kit::badge_text(c, p, dark), 16.0);
         right = b.left() - 6.0;
-    } else if hovered && let Some(k) = keys {
+    } else if hovered && sess_toggle.is_none_or(|sr| !ui.rect_contains_pointer(sr)) && let Some(k) = keys {
         let g = kit::keys_galley(&painter, k, p.text_faint);
-        right -= g.size().x;
-        painter.galley(pos2(right, l1 - g.size().y / 2.0), g, p.text_faint);
-        right -= 6.0;
-    }
-    // Inline sessions disclosure chevron (always clickable on non-worktree rows so collapsed
-    // projects can be expanded cleanly; displays the session count when known).
-    let mut sess_toggle = None;
-    if allow_sessions_toggle {
-        let caret_color = if sessions_expanded || hovered || active || sessions_count > 0 { p.text_faint } else { p.text_ghost };
-        let caret = painter.layout_no_wrap(if sessions_expanded { icons::CARET_DOWN } else { icons::CARET_RIGHT }.to_string(), style::icon_font(9.5), caret_color);
-        let cnt = (sessions_count > 0).then(|| painter.layout_no_wrap(sessions_count.to_string(), style::mono(10.0), p.text_ghost));
-        let sw = caret.size().x + cnt.as_ref().map_or(0.0, |c| 2.0 + c.size().x) + 8.0;
-        if right - sw > x + 56.0 {
-            let sr = Rect::from_min_max(pos2(right - sw, l1 - 9.0), pos2(right, l1 + 9.0));
-            let cx = sr.left() + 4.0;
-            painter.galley(pos2(cx, l1 - caret.size().y / 2.0 + 0.5), caret.clone(), caret_color);
-            if let Some(cnt) = cnt {
-                painter.galley(pos2(cx + caret.size().x + 2.0, l1 - cnt.size().y / 2.0), cnt, p.text_ghost);
-            }
-            sess_toggle = Some(sr);
-            right = sr.left() - 4.0;
+        if right - g.size().x > x + 64.0 {
+            right -= g.size().x;
+            painter.galley(pos2(right, l1 - g.size().y / 2.0), g, p.text_faint);
+            right -= 6.0;
         }
     }
     // Reserve width for pane dots, browser globe, and worktrees fold button so long names truncate cleanly.
@@ -1590,8 +1608,8 @@ impl App {
                     _ => x.label(),
                 };
                 let mark = match x.tracker.agent {
-                    Some(_) if s == Status::Unknown => RowMark::Status(Status::Unknown),
                     Some(a) if super::agent_logo::has(a) => RowMark::Agent(a),
+                    Some(_) if s == Status::Unknown => RowMark::Status(Status::Unknown),
                     _ if s == Status::Running => RowMark::Icon(icons::TERMINAL_WINDOW),
                     _ => RowMark::Status(s),
                 };
@@ -1662,12 +1680,23 @@ impl App {
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
             if ui.is_rect_visible(rect) {
                 let painter = ui.painter_at(rect);
-                painter.vline(rect.left() + 19.5, rect.y_range(), Stroke::new(1.0, p.border_strong));
+                painter.vline(rect.left() + 19.5, rect.top()..=rect.center().y, Stroke::new(1.0, p.border));
                 painter.text(pos2(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, t("Loading sessions…"), egui::FontId::proportional(11.0), p.text_faint);
             }
+            return;
+        }
+        if shown == 0 {
+            return;
+        }
+        let rail_stroke = Stroke::new(1.0, p.border);
+        // Subtle 3px top breathing room so the first session never collides with the active project row.
+        let (gap_r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 3.0), Sense::hover());
+        if ui.is_rect_visible(gap_r) {
+            ui.painter_at(gap_r).vline(gap_r.left() + 19.5, gap_r.y_range(), rail_stroke);
         }
         for (idx, item) in sessions.iter().take(shown).enumerate() {
-            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+            let is_last = idx + 1 == shown && hidden == 0;
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
             if !ui.is_rect_visible(rect) {
                 continue;
             }
@@ -1676,11 +1705,16 @@ impl App {
             let is_current = item.live_pane.is_some() && item.live_pane == current_pane && self.view == View::Focus;
             let painter = ui.painter_at(rect);
             let guide_x = rect.left() + 19.5;
-            painter.vline(guide_x, rect.y_range(), Stroke::new(1.0, p.border_strong));
+            let cy = rect.center().y;
+            let guide_end = if is_last { cy } else { rect.bottom() };
+            painter.vline(guide_x, rect.top()..=guide_end, rail_stroke);
+            painter.hline(guide_x..=(guide_x + 4.5), cy, rail_stroke);
 
-            let row_r = Rect::from_min_max(pos2(rect.left() + 26.0, rect.top() + 1.0), pos2(rect.right(), rect.bottom() - 1.0));
+            let row_r = Rect::from_min_max(pos2(rect.left() + 25.0, rect.top() + 1.0), pos2(rect.right(), rect.bottom() - 1.0));
             if is_current {
-                painter.rect(row_r, CornerRadius::same(6), p.surface, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
+                painter.rect_filled(row_r, CornerRadius::same(6), p.accent_tint);
+                let bar = Rect::from_center_size(pos2(row_r.left() + 1.5, cy), vec2(2.0, 12.0));
+                painter.rect_filled(bar, CornerRadius::same(1), p.accent);
             } else if resp.hovered() {
                 painter.rect_filled(row_r, CornerRadius::same(6), p.hover);
             }
@@ -1688,52 +1722,58 @@ impl App {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
 
-            let cy = row_r.center().y;
-            let mut x = row_r.left() + 6.0;
-            // Live status indicator or historical session dot.
-            if item.live_pane.is_some() {
-                status::paint_glyph(&painter, pos2(x + 5.0, cy), item.status, p, 11.0);
-            } else {
-                let mark = Rect::from_center_size(pos2(x + 5.0, cy), vec2(10.0, 10.0));
-                if !super::agent_logo::paint(&painter, mark, item.agent, p.text_faint, false) {
-                    painter.circle_filled(pos2(x + 5.0, cy), 2.5, p.idle);
+            let mut x = row_r.left() + 7.0;
+            // Always show the agent's real brand logo crisply (Antigravity, Claude, Codex, Gemini, OpenCode).
+            let mark = Rect::from_center_size(pos2(x + 6.0, cy), vec2(12.0, 12.0));
+            let ink = if item.live_pane.is_some() || resp.hovered() { p.text } else { p.text_muted };
+            if !super::agent_logo::paint(&painter, mark, item.agent, ink, false) {
+                if item.live_pane.is_some() {
+                    status::paint_glyph(&painter, pos2(x + 6.0, cy), item.status, p, 11.0);
+                } else {
+                    painter.circle_filled(pos2(x + 6.0, cy), 2.5, p.idle);
                 }
             }
-            x += 16.0;
+            x += 18.0;
 
-            // Right edge: relative timestamp + compact active profile badge.
+            // Right edge: sleek live pill or quiet relative age + subtle borderless account tag.
             let mut right = row_r.right() - 6.0;
-            let age_text = if item.live_pane.is_some() {
-                t("live").to_string()
+            if item.live_pane.is_some() {
+                let live_c = match item.status {
+                    Status::NeedsInput => p.warn,
+                    Status::Failed(_) => p.err,
+                    Status::Done => p.ok,
+                    _ => p.info,
+                };
+                let ag = painter.layout_no_wrap(t("live").to_string(), style::mono_medium(9.5), live_c);
+                let pill_w = 6.0 + 4.5 + 4.0 + ag.size().x + 6.0;
+                let pill = Rect::from_center_size(pos2(right - pill_w / 2.0, cy), vec2(pill_w, 16.0));
+                painter.rect_filled(pill, CornerRadius::same(4), style::tint(live_c, dark));
+                painter.circle_filled(pos2(pill.left() + 7.5, cy), 2.2, live_c);
+                painter.galley(pos2(pill.left() + 13.5, cy - ag.size().y / 2.0), ag, live_c);
+                right = pill.left() - 6.0;
             } else {
-                super::dialogs::ago(item.updated)
-            };
-            let age_c = if item.live_pane.is_some() { p.info } else { p.text_ghost };
-            let ag = painter.layout_no_wrap(age_text, style::mono(9.5), age_c);
-            right -= ag.size().x;
-            painter.galley(pos2(right, cy - ag.size().y / 2.0), ag, age_c);
-            right -= 5.0;
+                let ag = painter.layout_no_wrap(super::dialogs::ago(item.updated), style::mono(9.5), p.text_ghost);
+                right -= ag.size().x;
+                painter.galley(pos2(right, cy - ag.size().y / 2.0), ag, p.text_ghost);
+                right -= 6.0;
+            }
 
+            // Quiet borderless monospace profile label (eliminates repetitive heavy pill walls).
             if let Some(prof) = &item.profile_id {
-                let pg = painter.layout_no_wrap(prof.clone(), style::mono(9.5), p.text_muted);
-                let pw = pg.size().x + 8.0;
-                if right - pw > x + 48.0 {
-                    let pill = Rect::from_center_size(pos2(right - pw / 2.0, cy), vec2(pw, 15.0));
-                    painter.rect(
-                        pill,
-                        CornerRadius::same(4),
-                        if dark { p.subtle } else { p.inset },
-                        Stroke::new(1.0, p.border),
-                        StrokeKind::Inside,
-                    );
-                    painter.galley(pos2(pill.left() + 4.0, cy - pg.size().y / 2.0), pg, p.text_muted);
-                    right = pill.left() - 5.0;
+                let prof_c = if is_current || resp.hovered() { p.text_muted } else { p.text_ghost };
+                let pg = painter.layout_no_wrap(prof.clone(), style::mono(9.5), prof_c);
+                let pw = pg.size().x;
+                if right - pw > x + 56.0 {
+                    right -= pw;
+                    painter.galley(pos2(right, cy - pg.size().y / 2.0), pg, prof_c);
+                    right -= 6.0;
                 }
             }
 
             let room = (right - x).max(16.0);
-            let title_c = if is_current || item.live_pane.is_some() { p.text } else { p.text_muted };
-            let mut job = egui::text::LayoutJob::simple_singleline(item.title.clone(), egui::FontId::proportional(11.5), title_c);
+            let title_c = if is_current || item.live_pane.is_some() || resp.hovered() { p.text } else { p.text_muted };
+            let title_font = if is_current { style::medium(11.5) } else { egui::FontId::proportional(11.5) };
+            let mut job = egui::text::LayoutJob::simple_singleline(item.title.clone(), title_font, title_c);
             job.wrap = egui::text::TextWrapping::truncate_at_width(room);
             let g = painter.layout_job(job);
             painter.galley(pos2(x, cy - g.size().y / 2.0), g, title_c);
@@ -1762,8 +1802,10 @@ impl App {
             let (more_r, more_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
             if ui.is_rect_visible(more_r) {
                 let painter = ui.painter_at(more_r);
-                painter.vline(more_r.left() + 19.5, more_r.y_range(), Stroke::new(1.0, p.border_strong));
-                let row_r = Rect::from_min_max(pos2(more_r.left() + 26.0, more_r.top() + 1.0), pos2(more_r.right(), more_r.bottom() - 1.0));
+                let guide_x = more_r.left() + 19.5;
+                painter.vline(guide_x, more_r.top()..=more_r.center().y, rail_stroke);
+                painter.hline(guide_x..=(guide_x + 4.5), more_r.center().y, rail_stroke);
+                let row_r = Rect::from_min_max(pos2(more_r.left() + 25.0, more_r.top() + 1.0), pos2(more_r.right(), more_r.bottom() - 1.0));
                 if more_resp.hovered() {
                     painter.rect_filled(row_r, CornerRadius::same(6), p.hover);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1775,24 +1817,8 @@ impl App {
                 }
             }
         }
-        // Subtle inline "+ New session" action under the project's nested sessions.
-        let (add_r, add_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
-        if ui.is_rect_visible(add_r) {
-            let painter = ui.painter_at(add_r);
-            let guide_x = add_r.left() + 19.5;
-            painter.vline(guide_x, add_r.top()..=add_r.center().y, Stroke::new(1.0, p.border_strong));
-            let row_r = Rect::from_min_max(pos2(add_r.left() + 26.0, add_r.top() + 1.0), pos2(add_r.right(), add_r.bottom() - 1.0));
-            if add_resp.hovered() {
-                painter.rect_filled(row_r, CornerRadius::same(6), p.hover);
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            let c = if add_resp.hovered() { p.text_muted } else { p.text_faint };
-            painter.text(pos2(row_r.left() + 11.0, row_r.center().y), Align2::CENTER_CENTER, icons::PLUS, style::icon_font(10.5), c);
-            painter.text(pos2(row_r.left() + 22.0, row_r.center().y), Align2::LEFT_CENTER, t("New session"), egui::FontId::proportional(11.0), c);
-            if add_resp.clicked() {
-                self.actions.push(Action::NewProjectSession { project: project_id, profile_id: None });
-            }
-        }
+        // Clean 4px breathing space between an expanded session tree and the next project.
+        let _ = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
     }
 }
 

@@ -76,8 +76,8 @@ pub enum AppMsg {
     Ship(crate::ship::ShipMsg),
     /// Async CLI / auth readiness check for a multi-account agent profile.
     ProfileTest(String, Result<String, String>),
-    /// Real 24h token usage parsed from a profile's isolated session logs.
-    ProfileUsage(String, tc_agent::sessions::TokenUsage),
+    /// Multi-window (5h + weekly + 24h) token usage & server quota telemetry parsed from a profile.
+    ProfileUsage(String, tc_agent::sessions::ProfileUsageReport),
     /// Aggregated historical sessions for a project across all configured profiles.
     ProjectSessions(ProjectId, Vec<crate::profiles::ProjectSessionItem>),
     /// Remote command received from a paired smartphone via the Mobile Companion server.
@@ -1808,11 +1808,12 @@ impl App {
                         });
                     }
                 }
-                AppMsg::ProfileUsage(id, usage) => {
+                AppMsg::ProfileUsage(id, report) => {
                     if self.effective_profiles().iter().any(|p| p.id == id) {
                         let rt = self.profiles_rt.entry(id).or_default();
-                        rt.tokens_in = usage.input;
-                        rt.tokens_out = usage.output;
+                        rt.tokens_in = report.recent_24h.input;
+                        rt.tokens_out = report.recent_24h.output;
+                        rt.usage = report;
                         rt.usage_updated = Some(now);
                     }
                 }
@@ -3989,11 +3990,16 @@ impl App {
                 self.new_project_session(ctx, project, profile_id);
             }
             Action::SetPaneProfile(pane, profile_id) => {
-                let is_limited = self
-                    .panes
-                    .get(&pane)
-                    .is_some_and(|p| p.rate_limit.as_ref().is_some_and(|b| b.auto_switched_to.is_none()));
-                if is_limited {
+                // If an agent is actively running OR paused on a rate limit in this pane, perform a
+                // real live account switch + seamless session resume (zero logout/re-login dance!).
+                let should_live_switch = self.panes.get(&pane).is_some_and(|p| {
+                    let is_limited = p.rate_limit.as_ref().is_some_and(|b| b.auto_switched_to.is_none());
+                    let is_running_agent = p.alive()
+                        && p.tracker.agent.is_some()
+                        && !matches!(p.tracker.fg, tc_core::status::Foreground::Shell | tc_core::status::Foreground::Gone);
+                    is_limited || is_running_agent
+                });
+                if should_live_switch {
                     self.switch_pane_profile_and_resume(ctx, pane, &profile_id, false);
                 } else {
                     let mut proj = None;

@@ -1272,6 +1272,36 @@ pub fn status_badge(ui: &mut Ui, label: &str, color: Color32, mono: bool) -> Res
     resp
 }
 
+/// Crisp, optically centered vector checkmark (replaces fuzzy/off-center font glyph in checkboxes).
+pub fn paint_check_mark(painter: &egui::Painter, center: egui::Pos2, size: f32, color: Color32) {
+    let p1 = egui::pos2(center.x - size * 0.31, center.y + size * 0.03);
+    let p2 = egui::pos2(center.x - size * 0.07, center.y + size * 0.27);
+    let p3 = egui::pos2(center.x + size * 0.34, center.y - size * 0.24);
+    let stroke = Stroke::new((size * 0.145).clamp(1.4, 2.0), color);
+    painter.line_segment([p1, p2], stroke);
+    painter.line_segment([p2, p3], stroke);
+    painter.circle_filled(p2, stroke.width * 0.45, color);
+}
+
+/// Crisp Linear/macOS-grade checkbox (`15×15` or `16×16`) with optically centered vector checkmark.
+pub fn paint_checkbox(painter: &egui::Painter, rect: Rect, checked: bool, hovered: bool, p: &style::Palette) {
+    let radius = CornerRadius::same(4);
+    if checked {
+        painter.rect_filled(rect, radius, p.accent);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, style::soft(Color32::WHITE, 0.16)),
+            StrokeKind::Inside,
+        );
+        paint_check_mark(painter, rect.center(), rect.width() * 0.72, p.on_accent);
+    } else {
+        let fill = if hovered { p.hover } else { p.inset };
+        let border = if hovered { p.text_faint } else { p.border_heavy };
+        painter.rect(rect, radius, fill, Stroke::new(1.0, border), StrokeKind::Inside);
+    }
+}
+
 /// Hairline quota / usage progress meter (`pct` in `0.0..=100.0`).
 pub fn paint_quota_bar(painter: &egui::Painter, rect: Rect, pct: f32, color: Color32, p: &style::Palette) {
     let clamped = (pct / 100.0).clamp(0.0, 1.0);

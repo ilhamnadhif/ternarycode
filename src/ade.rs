@@ -43,18 +43,21 @@ pub struct ProfileDraft {
     pub editing_id: Option<String>,
     pub id: String,
     pub name: String,
+    pub account_hint: String,
     pub agent: AgentKind,
     pub config_dir: String,
     pub api_key: String,
     pub reveal_key: bool,
     pub extra_env_text: String,
+    pub limit_5h_text: String,
+    pub limit_weekly_text: String,
     pub budget_text: String,
     pub use_default_auth: bool,
     pub enabled: bool,
 }
 
 impl ProfileDraft {
-    pub fn new_for(agent: AgentKind, existing: &[AgentProfile]) -> Self {
+    pub fn suggest_id_and_name(agent: AgentKind, existing: &[AgentProfile]) -> (String, String) {
         let prefix = match agent {
             AgentKind::Claude => "claude",
             AgentKind::Codex => "chatgpt",
@@ -63,20 +66,31 @@ impl ProfileDraft {
             AgentKind::Antigravity => "agy",
             AgentKind::Custom => "agent",
         };
+        let label = match agent {
+            AgentKind::Codex => "ChatGPT / Codex",
+            _ => agent.label(),
+        };
         let mut idx = 1u32;
         while existing.iter().any(|p| p.id.eq_ignore_ascii_case(&format!("{prefix}{idx}"))) {
             idx += 1;
         }
-        let id = format!("{prefix}{idx}");
+        (format!("{prefix}{idx}"), format!("{label} {idx}"))
+    }
+
+    pub fn new_for(agent: AgentKind, existing: &[AgentProfile]) -> Self {
+        let (id, name) = Self::suggest_id_and_name(agent, existing);
         Self {
             editing_id: None,
-            name: format!("{} {idx}", agent.label()),
+            name,
             id,
+            account_hint: String::new(),
             agent,
             config_dir: String::new(),
             api_key: String::new(),
             reveal_key: false,
             extra_env_text: String::new(),
+            limit_5h_text: String::new(),
+            limit_weekly_text: String::new(),
             budget_text: String::new(),
             use_default_auth: false,
             enabled: true,
@@ -94,11 +108,14 @@ impl ProfileDraft {
             editing_id: Some(p.id.clone()),
             id: p.id.clone(),
             name: p.name.clone(),
+            account_hint: p.account_hint.clone().unwrap_or_default(),
             agent: p.agent,
             config_dir: p.config_dir.as_ref().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(),
             api_key: p.api_key.clone().unwrap_or_default(),
             reveal_key: false,
             extra_env_text,
+            limit_5h_text: p.limit_5h_tokens.map(|b| b.to_string()).unwrap_or_default(),
+            limit_weekly_text: p.limit_weekly_tokens.map(|b| b.to_string()).unwrap_or_default(),
             budget_text: p.daily_token_budget.map(|b| b.to_string()).unwrap_or_default(),
             use_default_auth: p.use_default_auth,
             enabled: p.enabled,
@@ -108,6 +125,10 @@ impl ProfileDraft {
     pub fn into_profile(self, fallback_order: u32) -> AgentProfile {
         let id = profiles::sanitize_id(self.id.trim());
         let name = if self.name.trim().is_empty() { id.clone() } else { self.name.trim().to_string() };
+        let account_hint = {
+            let trimmed = self.account_hint.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        };
         let mut extra_env = BTreeMap::new();
         for line in self.extra_env_text.lines() {
             if let Some((k, v)) = line.split_once('=') {
@@ -125,7 +146,19 @@ impl ProfileDraft {
             let trimmed = self.api_key.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         };
-        let daily_token_budget = self.budget_text.trim().replace([',', '_', ' '], "").parse::<u64>().ok().filter(|&v| v > 0);
+        let parse_cap = |s: &str| {
+            let clean = s.trim().to_ascii_lowercase().replace([',', '_', ' '], "");
+            if let Some(m) = clean.strip_suffix('m') {
+                m.parse::<f64>().ok().map(|v| (v * 1_000_000.0).round() as u64).filter(|&v| v > 0)
+            } else if let Some(k) = clean.strip_suffix('k') {
+                k.parse::<f64>().ok().map(|v| (v * 1_000.0).round() as u64).filter(|&v| v > 0)
+            } else {
+                clean.parse::<u64>().ok().filter(|&v| v > 0)
+            }
+        };
+        let limit_5h_tokens = parse_cap(&self.limit_5h_text);
+        let limit_weekly_tokens = parse_cap(&self.limit_weekly_text);
+        let daily_token_budget = parse_cap(&self.budget_text);
         AgentProfile {
             id,
             name,
@@ -136,6 +169,9 @@ impl ProfileDraft {
             fallback_order,
             enabled: self.enabled,
             daily_token_budget,
+            limit_5h_tokens,
+            limit_weekly_tokens,
+            account_hint,
             use_default_auth: self.use_default_auth,
         }
     }
@@ -435,7 +471,7 @@ impl App {
                 .collect();
             self.rt.spawn_blocking(move || {
                 for (id, agent, root) in scan_list {
-                    let usage = tc_agent::sessions::recent_usage(agent, &root);
+                    let usage = tc_agent::sessions::profile_usage(agent, &root);
                     let _ = tx.send(AppMsg::ProfileUsage(id, usage));
                 }
                 ctx.request_repaint();
@@ -500,7 +536,7 @@ impl App {
                 Some(h) => tc_agent::sessions::Roots::under(Path::new(h)),
                 None => tc_agent::sessions::Roots::from_env(&home),
             };
-            for agent in [AgentKind::Claude, AgentKind::Codex, AgentKind::Gemini] {
+            for agent in [AgentKind::Claude, AgentKind::Codex, AgentKind::Gemini, AgentKind::Antigravity] {
                 let default_prof = profiles
                     .iter()
                     .find(|p| p.agent == agent && p.use_default_auth && !profiles::has_custom_config_dir(p))
@@ -533,7 +569,8 @@ impl App {
                 let roots = tc_agent::sessions::Roots {
                     claude: dir.clone(),
                     codex: dir.clone(),
-                    gemini: dir,
+                    gemini: dir.clone(),
+                    antigravity: dir,
                 };
                 for s in tc_agent::sessions::list(prof.agent, &project_path, &roots, 8) {
                     if seen.insert((prof.agent, s.id.clone())) {
@@ -1158,6 +1195,7 @@ impl App {
             .collect();
         panes.sort_by_key(|p| (p.rate_limit.is_none(), p.status != "needs_input", p.status != "running", p.id));
 
+        let now_unix = profiles::now_unix_secs();
         let profiles: Vec<CompanionProfile> = profiles_cfg
             .iter()
             .map(|prof| {
@@ -1167,12 +1205,27 @@ impl App {
                     id: prof.id.clone(),
                     name: prof.name.clone(),
                     provider: prof.agent.label().into(),
+                    account_hint: prof.account_hint.clone(),
+                    plan_type: rt.usage.plan_type.clone(),
+                    signed_in: if prof.api_key.is_some() { Some(true) } else { rt.usage.signed_in },
                     state: rt.state.slug().into(),
                     enabled: prof.enabled,
                     tokens_in: rt.tokens_in,
                     tokens_out: rt.tokens_out,
-                    quota_pct: rt.quota_remaining_pct(prof.daily_token_budget),
+                    quota_pct: rt.quota_remaining_pct(prof.limit_5h_tokens.or(prof.daily_token_budget)),
                     reset_secs: rt.reset_remaining_secs(now).unwrap_or(0),
+                    window_5h: crate::companion::CompanionWindowQuota {
+                        label: rt.window_5h_label(),
+                        used_pct: rt.quota_5h_used_pct(prof),
+                        tokens: rt.usage.window_5h.tokens.total(),
+                        reset_secs: rt.window_5h_reset_secs(now_unix, now).unwrap_or(0),
+                    },
+                    window_weekly: crate::companion::CompanionWindowQuota {
+                        label: rt.window_weekly_label(),
+                        used_pct: rt.quota_weekly_used_pct(prof),
+                        tokens: rt.usage.window_weekly.tokens.total(),
+                        reset_secs: rt.window_weekly_reset_secs(now_unix).unwrap_or(0),
+                    },
                     active_session,
                 }
             })
@@ -1235,6 +1288,55 @@ impl App {
             }
         }
         (total_in, total_out)
+    }
+
+    /// Deduplicated total (5-hour, weekly) token consumption across enabled profiles.
+    pub fn deduped_window_totals(&self) -> (u64, u64) {
+        let home = paths::home_dir();
+        let data = paths::data_dir();
+        let mut seen_roots: HashSet<(AgentKind, std::path::PathBuf)> = HashSet::new();
+        let mut total_5h = 0u64;
+        let mut total_weekly = 0u64;
+        for p in self.effective_profiles() {
+            if !p.enabled {
+                continue;
+            }
+            let dir = profiles::resolved_config_dir(&p, &home, data);
+            let canon = paths::canonical(&dir);
+            if !seen_roots.insert((p.agent, canon)) {
+                continue;
+            }
+            if let Some(rt) = self.profiles_rt.get(&p.id) {
+                total_5h = total_5h.saturating_add(rt.usage.window_5h.tokens.total());
+                total_weekly = total_weekly.saturating_add(rt.usage.window_weekly.tokens.total());
+            }
+        }
+        (total_5h, total_weekly)
+    }
+
+    /// Picks the best next healthy pre-registered account to one-click switch to from `pane_id`
+    /// (prefers signed-in accounts of the same provider first, e.g. `chatgpt1` -> `chatgpt2`).
+    pub fn next_switch_profile(&self, pane_id: PaneId) -> Option<AgentProfile> {
+        let now = Instant::now();
+        let pane = self.panes.get(&pane_id)?;
+        let agent = pane.tracker.agent.or(pane.last_agent)?;
+        let profiles = self.effective_profiles();
+        let active_id = pane.active_profile.clone().or_else(|| {
+            profiles.iter().find(|p| p.agent == agent && p.enabled).map(|p| p.id.clone())
+        })?;
+        let mut candidates: Vec<&AgentProfile> = profiles
+            .iter()
+            .filter(|p| p.enabled && p.id != active_id)
+            .filter(|p| self.settings.failover.cross_provider || p.agent == agent)
+            .filter(|p| self.profiles_rt.get(&p.id).is_none_or(|rt| rt.is_healthy(now)))
+            .collect();
+        candidates.sort_by_key(|p| {
+            let rt = self.profiles_rt.get(&p.id);
+            let not_signed_in = rt.is_some_and(|r| r.auth_status(p) == profiles::AuthStatus::NotSignedIn);
+            let used_5h = rt.and_then(|r| r.quota_5h_used_pct(p)).unwrap_or(0.0).round() as u32;
+            (p.agent != agent, not_signed_in, used_5h >= 95, p.fallback_order, p.id.as_str())
+        });
+        candidates.into_iter().next().cloned()
     }
 
     /// Convenience summary metrics for the top-bar Usage & Status telemetry pill.

@@ -96,16 +96,29 @@ pub struct CompanionRateLimit {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct CompanionWindowQuota {
+    pub label: String,
+    pub used_pct: Option<f32>,
+    pub tokens: u64,
+    pub reset_secs: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct CompanionProfile {
     pub id: String,
     pub name: String,
     pub provider: String,
+    pub account_hint: Option<String>,
+    pub plan_type: Option<String>,
+    pub signed_in: Option<bool>,
     pub state: String,
     pub enabled: bool,
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub quota_pct: Option<f32>,
     pub reset_secs: u64,
+    pub window_5h: CompanionWindowQuota,
+    pub window_weekly: CompanionWindowQuota,
     pub active_session: Option<String>,
 }
 

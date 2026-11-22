@@ -33,7 +33,7 @@
   const NAME = { mac: 'macOS', win: 'Windows', linux: 'Linux' };
 
   /* ---------------------------------------------------------- release: version, files, sizes */
-  const FALLBACK = '0.2.1';
+  const FALLBACK = '0.2.2';
   const FILE = {
     'dmg': v => `TernaryCode-${v}.dmg`,
     'win-setup': v => `TernaryCode-${v}-windows-x64-setup.exe`,
@@ -144,7 +144,8 @@
     ['project', 'Switch project', ['⌘P'], ['Ctrl+Shift+P']],
     ['run', 'Run an agent', ['⇧⌘A'], ['Ctrl+Shift+A']],
     ['grid', 'Grid', ['⌘0'], ['Ctrl+Shift+0']],
-    ['code', 'Code drawer', ['⌘E'], ['Ctrl+Shift+Y']],
+    ['code', 'Code Editor', ['⌘E'], ['Ctrl+Shift+Y']],
+    ['drawer', 'Terminal Panel', ['⇧⌘L'], ['Ctrl+Shift+L']],
     ['review', 'Review changes', ['⇧⌘R'], ['Ctrl+Shift+R']],
     ['commit', 'Commit, push &amp; PR', ['⇧⌘C'], ['Ctrl+Shift+Alt+C']],
     ['browser', 'Browser panel', ['⇧⌘B'], ['Ctrl+Shift+Alt+B']],

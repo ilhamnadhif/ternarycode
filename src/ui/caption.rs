@@ -125,7 +125,6 @@ impl App {
                 Some((t("Show/Hide Code"), A::ToggleEditor)),
                 Some((t("Show/Hide Terminal Panel"), A::ToggleDrawer)),
                 Some((t("Show/Hide Files"), A::ToggleFiles)),
-                Some((t("Focus / Zen Mode"), A::ToggleZenMode)),
                 None,
                 Some((t("Browser"), A::ShowBrowser)),
                 Some((t("Open Address"), A::BrowserAddress)),

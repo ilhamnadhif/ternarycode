@@ -5,13 +5,13 @@
 <h1 align="center">TernaryCode</h1>
 
 <p align="center">
-  <b>One window for all your projects and the AI coding agents working in them.</b><br>
-  A native, terminal-first workspace for macOS, Windows and Linux, written in Rust.
+  <b>One native Agent Development Environment (ADE) for all your projects and AI coding agents.</b><br>
+  Wide code editor, project-nested sessions, multi-account failover with 5-hour &amp; weekly limits, live usage monitor, and mobile companion — written in Rust for macOS, Windows, and Linux.
 </p>
 
 <p align="center">
   <a href="https://github.com/ilhamnadhif/ternarycode/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ilhamnadhif/ternarycode?label=release&color=1f5fbf"></a>
-  <a href="https://github.com/ilhamnadhif/ternarycode/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ilhamnadhif/ternarycode/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/ilhamnadhif/ternarycode/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/ilhamnadhif/ternarycode/ci.yml?label=CI"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-native-555">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-555"></a>
 </p>
@@ -26,27 +26,21 @@
   <a href="README.id.md">Bahasa Indonesia</a>
 </p>
 
-![An agent checks its change in the Browser panel beside its terminal; the sidebar lists the agents waiting in other projects](docs/screenshots/focus.png)
+![Wide Code Editor commanding the workspace with project-nested agent sessions (Claude Code, Codex, Antigravity CLI) in the sidebar and collapsible Terminal Panel below](docs/screenshots/focus.png)
 
-Running Claude Code, Codex, Antigravity CLI or OpenCode in several projects at once usually means
-several windows and no idea which agent is waiting for you. TernaryCode puts every project in one
-window, with its own terminals, tabs and splits, and answers one question at a glance: **which
-agent needs me now?**
+Running **Claude Code**, **ChatGPT / Codex**, **Gemini CLI**, **Antigravity CLI**, or **OpenCode** across multiple projects usually means scattered terminal windows, manual logout/re-login dances when an account hits its usage limit, and guessing which agent is waiting for you. TernaryCode brings every project, session, account, and editor into one fast native Rust workspace.
 
-It is one small native app (no Electron): it opens in about 0.2 s, idles at 0 % CPU, and ten panes
-take around 70 MB.
+No Electron, no cloud middleman: it launches in ~0.2 s, idles at 0% CPU, and keeps all credentials strictly local on your machine.
 
 ## Highlights
 
-- **Know which agent needs you.** *Needs input*, *Running*, *Done* and *Failed* come from the
-  agents' own hooks, never a guess. `⌘J` jumps to the most urgent one.
-- **Every project in one window**, and a **Grid** that shows them all live.
-- **A browser your agents can use.** An agent opens your dev server beside its terminal, clicks
-  through it and reads the console; you watch, and take over at any time.
-- **Code beside the agent**: files it changed, lines it touched, your language servers.
-- **Review** what an agent changed, then **commit, push and open the pull request** with one
-  button; give each agent **a git worktree** of its own.
-- **Documents in place**: PDF, Word, PowerPoint, Excel, CSV and images.
+- **Wide Code Editor & Collapsible Terminal Panel**: the Code Editor & Diff Viewer commands the primary viewport (≥60% by default), while Terminals, Agent Logs, and LSP Problems live in a dockable bottom or right panel (`⇧⌘L`).
+- **Project-Nested Agent Sessions**: expand any project in the sidebar to see live and past sessions for **Claude Code, Codex, Gemini CLI, and Antigravity CLI** with brand logos, live status pills, and 1-click resume.
+- **Multi-Account Profiles & 5-Hour / Weekly Usage Limits**: pre-register multiple accounts (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `gemini1`) with isolated file-backed auth folders. Switch accounts in **one click without logging out**, or let Auto/Manual Failover resume your session automatically when an account hits its limit.
+- **Unified All-Agent Usage & Status Monitor**: live top-bar telemetry pill, quick-switch popover, and full monitor tracking **5-hour** & **weekly** quotas, reset countdowns, active sessions, and failover events.
+- **Phone Pairing & Mobile Companion**: pair your smartphone via QR code over local Wi-Fi or a secure tunnel to stream live agent output, approve pending tools, send follow-ups, and trigger profile failovers remotely.
+- **Know Which Agent Needs You**: hook-backed *Needs input*, *Running*, *Done*, and *Failed* states, `⌘J` jump queue, and a live **Grid** (`⌘0`) of every project.
+- **Agent Browser, Review, Worktrees & Documents**: built-in web view agents can drive, side-by-side diffs with 1-button commit/push/PR, isolated git worktrees, and in-place viewers for PDF, Word, PowerPoint, Excel, CSV, and images.
 
 ## Install
 
@@ -73,99 +67,65 @@ It checks the download's SHA-256 and signature and installs into `/Applications`
 > blocked: use the installer above, or **System Settings → Privacy & Security → Open Anyway**. On
 > Windows, SmartScreen asks once: **More info → Run anyway**.
 
-On Linux, TernaryCode needs OpenGL (a software renderer is fine) and glibc 2.28+; the Browser panel
-needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`).
+On Linux, TernaryCode needs OpenGL (a software renderer is fine) and glibc 2.28+; the Browser panel needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`).
 
-TernaryCode updates itself (the `.deb`, `.rpm` and portable `.zip` through a new package).
+TernaryCode updates itself (the `.deb`, `.rpm`, and portable `.zip` through a new package).
 
 ## Quick start
 
-1. **Add a project**: click **+** in the sidebar, drop a folder on the window, or run
-   `ternarycode .` in any terminal. On first start it offers the git repositories it finds in your
-   usual folders.
-2. **Run Agent** (`⇧⌘A`): pick Claude Code, Codex, Antigravity CLI or OpenCode. It starts in the
-   terminal you are in and reports its status for that run.
-3. Work on something else. When an agent waits, its project says **Needs input** and the status
-   bar names it: `⌘J` takes you there, `⇧⌘J` back.
-
-The agents are installed on their own (`claude`, `codex`, `agy`, `opencode`); when one is missing,
-Run Agent shows how to install it.
+1. **Add a project**: click **+** in the sidebar, drop a folder on the window, or run `ternarycode .` in any terminal.
+2. **Pre-register your accounts** (optional): open **Profiles** (bottom-left 👤), click **+ ChatGPT / + Claude / + Gemini**, and click **Auth Login** once per account. Each account stays signed in inside its own private `0o700` folder.
+3. **Run Agent** (`⇧⌘A`): launch Claude Code, Codex, Gemini CLI, Antigravity CLI, or OpenCode. Expand the project in the sidebar anytime to resume past sessions in one click.
+4. **Switch accounts or jump to waiting agents**: click `⇄ <next_account>` right in the pane header to switch accounts mid-session without logout, or press `⌘J` to jump to any waiting agent.
 
 ## Features
 
-### Projects, terminals and agents
+### Wide Code Editor & Project-Nested Sessions
 
-- **A project is a folder**: its terminals, files and git changes. The sidebar shows its kind,
-  branch, changes and what its agent is doing; `⌥⌘B` narrows it to a column of project tiles.
-- **Tabs and splits per project**, restored at the next start. Restored shells start only when
-  you look at them, so twenty projects open as fast as one.
-- **Run Agent** starts a preset (or your own command) in the terminal you are in, a new tab or a
-  split, optionally in **a new git worktree**, so agents never write over each other's files.
-  Agents that can continue a conversation offer **Resume** after a restart.
-- **A real terminal**: 24-bit colour, mouse, IME, links (`⌘`-click), search (`⌘F`, `⇧⌘F` in all
-  panes), shell integration for zsh, bash, fish and PowerShell. Local servers a pane starts show
-  as a chip; a click opens them in the Browser panel.
+- **Code-first workspace**: the Code Editor (`⌘E`) opens wide by default with smooth resizable splits, language servers (rust-analyzer, gopls, TypeScript, pyright, clangd…), and git gutter change markers.
+- **Collapsible Terminal Panel** (`⇧⌘L`): dock Terminals, Agent Logs, and LSP Problems at the bottom or right, maximize to full height, or hide when reading code.
+- **Project-nested session tree**: expand any project row in the left sidebar (`›`) to view live sessions (`● live`) and past history for **Claude Code**, **Codex**, **Gemini CLI**, and **Antigravity CLI** (`agy --conversation <id>`) — click any session to focus or resume directly.
 
-### Knowing which agent needs you
+### Multi-Account Profiles, 5-Hour & Weekly Limits, & 1-Click Switch
 
-![The Grid: six projects side by side, two agents waiting for permission and one done](docs/screenshots/grid.png)
+![Agent Profiles & Failover showing 6 pre-registered accounts across Claude Max, ChatGPT Plus, and Gemini with 5-hour & weekly usage meters and isolated auth folders](docs/screenshots/profiles.png)
 
-- Status comes from the agent's **hooks**, then terminal notifications, shell integration and the
-  running program. Without a reliable signal it says *Active*, never a guess.
-- **Waiting for you** at the top of the sidebar lists the agents that wait, failed or finished, in
-  the order `⌘J` visits them. Notifications and the Dock badge appear only when you are not looking.
-- **The Grid** (`⌘0`) shows every project live; a finished agent's tile says how many files it
-  changed, with **Review** at hand.
+- **Zero logout/re-login dance**: register multiple accounts (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `gemini1`) upfront. Each isolated profile gets its own `CLAUDE_CONFIG_DIR`, file-backed `CODEX_HOME` (`auth.json`), or `GEMINI_CLI_HOME`, plus automatic env cleanup across switches.
+- **Dual Usage Limit Meters**: tracks both **5-Hour rolling limits** and **Weekly (7-day) limits** — reading real server-reported percentages & reset timestamps directly from Codex session telemetry (`rate_limits.primary` / `secondary`, `plan_type`), and rolling 5h/7d log windows + optional token caps for Claude and Gemini.
+- **1-Click Live Account Switch & Rate-Limit Failover**: click the `⇄` quick-switch button in any running agent pane header — or let **Auto-Resume** / **Manual Resume** kick in when a limit hits. Same-provider switches atomically copy the session file across isolated roots and natively `--resume` your exact conversation; cross-provider switches write a secret-redacted handoff note so work continues seamlessly.
 
-Hooks are added **per launch** for Claude Code and Codex (nothing in your config changes), or
-**installed once** (Settings → Agents) so agents you start by hand report too. Installing shows
-the exact change and keeps a backup; **Uninstall** restores the file byte for byte. Antigravity
-CLI has no hooks yet: its status shows *Active*.
+![Inline Rate-Limit Recovery Banner inside the workspace with one-click Resume on claude2, chatgpt1, or chatgpt2](docs/screenshots/editor.png)
 
-### A browser for you and your agents
+### Unified All-Agent Usage & Status Monitor
 
-Each project has a **Browser panel** beside its terminals (`⇧⌘B`), on the system's own web view
-(WebKit, WebView2, WebKitGTK).
+![Usage & Status Monitor showing 5-hour and weekly token totals, per-account dual quota bars, active sessions, and live failover events](docs/screenshots/monitor.png)
 
-- **Agents check their own work in it**: open a page, click, type, scroll, read the page and the
-  console, answer dialogs, upload files. Their clicks and keys are real events. You see what the
-  agent does; click or type in the page to **Take Over**, **Hand Back** to let it go on.
-- **It works as a browser does**: sign-in pop-ups, downloads, find in page, zoom, the web
-  inspector, one login profile for every project.
-- Each agent gets a page of its own; busy pages never sleep; agents never type your passwords.
+- Click the top-bar telemetry pill to inspect every account's live state (`Running`, `Idle`, `Rate-Limited`, `Cooldown`, `Error`), **5h** & **Weekly** usage bars, reset countdowns, and trigger a 1-click **Switch** without leaving your code.
+- Open **Full View** for aggregate **5-Hour Tokens**, **Weekly Tokens**, healthy account counts, active session jump links, and the live failover & agent event log.
 
-### Code, Review and documents
+### Phone Pairing & Mobile Companion
 
-![The Code drawer: the file Claude Code changed, its changed lines marked, beside the agent](docs/screenshots/editor.png)
+![Phone Pairing view with generated QR code, pairing code, local network / secure tunnel configuration, and paired iPhone management](docs/screenshots/pairing.png)
 
-- **The Code drawer** (`⌘E`) opens beside the terminals: the files an agent changed carry its logo,
-  and lines added, changed or removed since it started are marked by the line numbers. With your
-  language servers (rust-analyzer, gopls, TypeScript, pyright, clangd…): definitions, references,
-  rename, code actions, completion, hover and problems. Servers start only when needed.
-- **Review** (`⇧⌘R`) shows what changed since the agent started or since the last commit, with the
-  words that changed highlighted, unified or side by side. A worktree's review lists its commits
-  and ends with **Merge** and **Remove**.
-- **Commit, push and pull request in one button** (`⇧⌘C`), under Review's file list. It commits the
-  files you checked with a message made from the task you gave the agent and its last words (✦
-  asks Claude Code or Codex to write it from the diff), pushes the branch and opens the pull
-  request with the GitHub CLI, or its form in the Browser panel. On `main` it pushes to `main`. Each
-  step shows as it runs; when git needs a password or the push is rejected, a terminal takes over.
-- **Documents** open in place: PDF, Word, PowerPoint, Excel and CSV (as a table), and images, read
-  in Rust off the UI thread.
+- Enable the built-in **Mobile Companion Server** (local Wi-Fi or optional Cloudflare / Tailscale / ngrok tunnel) and scan the QR code with your phone camera.
+- Every paired device gets its own revocable bearer token (with brute-force rate limiting and secret-redacted output streaming). Monitor live terminal output over SSE, approve or reject pending tool requests, send follow-up prompts, and switch accounts remotely from your smartphone.
 
-![A CSV report open as a table beside Codex](docs/screenshots/docs.png)
+### Review, Worktrees, Grid, Browser & Documents
 
-### Platforms
+![Review diff with crisp checkboxes and 1-button Commit beside the active agent](docs/screenshots/review.png)
 
-macOS, Windows and Linux get the same app. On Windows TernaryCode draws its own title bar with
-menus, panes run PowerShell 7 (or Windows PowerShell), and hooks use a named pipe. On Linux the
-Browser panel needs WebKitGTK; without it, pages open in your default browser. End-to-end tests of
-the real app run on macOS.
+- **Review & 1-button Commit/Push/PR** (`⇧⌘R`, `⇧⌘C`): inspect unified or split diffs since an agent started or since the last commit, start agents in isolated **git worktrees**, and commit, push, or open a GitHub PR in one step.
+- **The Grid** (`⌘0`): monitor every project side by side in live terminals, with changed-file badges and 1-click Review.
+- **Agent Browser** (`⇧⌘B`): native system web view (WebKit, WebView2, WebKitGTK) that agents can navigate, click, and inspect while you watch or Take Over anytime.
+- **In-Place Documents**: open PDF, Word, PowerPoint, Excel, CSV (as an interactive table), and images directly beside your agent.
+
+![Live Grid view of all projects side by side](docs/screenshots/grid.png)
+
+![A CSV report open as an interactive table inside the workspace](docs/screenshots/docs.png)
 
 ## Keyboard shortcuts
 
-On Windows and Linux, `⌘` is `Ctrl+Shift` (`⌥` stays `Alt`), so `Ctrl+C` still reaches the
-terminal. The command palette (`⌘K`) lists everything.
+On Windows and Linux, `⌘` is `Ctrl+Shift` (`⌥` stays `Alt`), so `Ctrl+C` still reaches the terminal. The command palette (`⌘K`) lists everything.
 
 | macOS | Windows, Linux | |
 | --- | --- | --- |
@@ -173,11 +133,11 @@ terminal. The command palette (`⌘K`) lists everything.
 | `⌘K` · `⌘P` | `Ctrl+Shift+K` · `Ctrl+Shift+P` | command palette · switch project |
 | `⇧⌘A` | `Ctrl+Shift+A` | run an agent |
 | `⌘0` | `Ctrl+Shift+0` | Grid |
+| `⌘E` · `⇧⌘L` | `Ctrl+Shift+Y` · `Ctrl+Shift+L` | Code Editor · Terminal Panel |
+| `⌘O` · `⌘S` | `Ctrl+Shift+O` · `Ctrl+Shift+S` | open file · save |
 | `⌘T` · `⌘W` | `Ctrl+Shift+T` · `Ctrl+Shift+W` | new tab · close pane |
 | `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | split right · down |
-| `⌘E` · `⌘O` · `⌘S` | `Ctrl+Shift+Y` · `Ctrl+Shift+O` · `Ctrl+Shift+S` | Code drawer · open file · save |
-| `⇧⌘R` | `Ctrl+Shift+R` | review changes |
-| `⇧⌘C` | `Ctrl+Shift+Alt+C` | commit, push & pull request |
+| `⇧⌘R` · `⇧⌘C` | `Ctrl+Shift+R` · `Ctrl+Shift+Alt+C` | review changes · commit, push & PR |
 | `⇧⌘B` | `Ctrl+Shift+Alt+B` | Browser panel |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | find · in all panes |
 | `⌘B` · `⌥⌘B` | `Ctrl+Shift+B` · `Ctrl+Alt+B` | sidebar · narrow sidebar |
@@ -185,22 +145,14 @@ terminal. The command palette (`⌘K`) lists everything.
 
 ## Troubleshooting
 
-- **An agent shows only *Active*.** It was started by hand without hooks: use **Run Agent**, or
-  install the hooks in **Settings → Agents**.
-- **Windows: "running scripts is disabled".** Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
-  once, or install PowerShell 7 (`winget install Microsoft.PowerShell`).
-- **Linux: the window stays blank.** Check that OpenGL works; `LIBGL_ALWAYS_SOFTWARE=1 ternarycode`
-  uses Mesa's software renderer.
-- Anything else: [open an issue](https://github.com/ilhamnadhif/ternarycode/issues) with your
-  version, system and the steps.
+- **An agent shows only *Active*.** It was started by hand without hooks: use **Run Agent**, or install hooks in **Settings → Agents**.
+- **Windows: "running scripts is disabled".** Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or install PowerShell 7 (`winget install Microsoft.PowerShell`).
+- **Linux: the window stays blank.** Check OpenGL; `LIBGL_ALWAYS_SOFTWARE=1 ternarycode` uses Mesa's software renderer.
+- Anything else: [open an issue](https://github.com/ilhamnadhif/ternarycode/issues) with your version, system, and steps.
 
 ## Privacy
 
-No account, no telemetry. TernaryCode connects only to GitHub, to check for updates (you can turn
-it off); pull requests go through your own GitHub CLI. Hooks and browser tools talk to the app
-over a local socket with a token per pane.
-Settings live in `~/Library/Application Support/ternarycode` (macOS), `%APPDATA%\ternarycode`
-(Windows) or `~/.local/share/ternarycode` (Linux).
+No cloud account, no telemetry. TernaryCode only checks GitHub for app updates (optional); pull requests go through your own GitHub CLI; Mobile Companion stays on your LAN (or your own tunnel) with revocable per-device tokens and automatic secret redaction. Settings and isolated profiles live in `~/Library/Application Support/ternarycode` (macOS), `%APPDATA%\ternarycode` (Windows), or `~/.local/share/ternarycode` (Linux).
 
 ## Build from source
 
@@ -209,17 +161,11 @@ cargo build --release       # ternarycode and ternarycode-hook, side by side
 ./target/release/ternarycode
 ```
 
-Before a pull request, run what CI runs: `cargo clippy --workspace --all-targets -- -D warnings`
-and `cargo test --workspace` (and `scripts/e2e.sh` on macOS, which drives the real app). The code
-is formatted by hand: please don't run `cargo fmt` over whole files.
+Before a pull request, run: `cargo clippy --locked --workspace --all-targets -- -D warnings` and `cargo test --locked --workspace` (plus `scripts/e2e.sh` on macOS). The code is formatted by hand: please don't run `cargo fmt` over whole files.
 
-Built with [egui](https://github.com/emilk/egui), [alacritty_terminal](https://github.com/alacritty/alacritty)
-and [wry](https://github.com/tauri-apps/wry). Fonts: Inter and JetBrains Mono (SIL OFL 1.1),
-Phosphor icons (MIT).
+Built with [egui](https://github.com/emilk/egui), [alacritty_terminal](https://github.com/alacritty/alacritty), and [wry](https://github.com/tauri-apps/wry). Fonts: Inter and JetBrains Mono (SIL OFL 1.1), Phosphor icons (MIT).
 
-TernaryCode is one of the Ternary apps, with [TernaryGrid](https://github.com/ilhamnadhif/ternarygrid)
-(SQL), [TernaryWire](https://github.com/ilhamnadhif/ternarywire) (API) and
-[TernaryShell](https://github.com/ilhamnadhif/ternaryshell) (SSH).
+TernaryCode is part of the Ternary family alongside [TernaryGrid](https://github.com/ilhamnadhif/ternarygrid) (SQL), [TernaryWire](https://github.com/ilhamnadhif/ternarywire) (API), and [TernaryShell](https://github.com/ilhamnadhif/ternaryshell) (SSH).
 
 ## License
 

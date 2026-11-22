@@ -41,12 +41,23 @@ pub enum ConnectionTest {
     Err(String),
 }
 
+/// Local authentication readiness for an account profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthStatus {
+    ApiKey,
+    SignedIn,
+    NotSignedIn,
+    Unknown,
+}
+
 /// Live runtime telemetry for one profile (not persisted; rebuilt from panes & session files).
 #[derive(Clone, Debug, Default)]
 pub struct ProfileRuntime {
     pub state: ProfileState,
     pub tokens_in: u64,
     pub tokens_out: u64,
+    /// Multi-window usage, server-reported 5h / weekly quotas, plan tier, and sign-in status.
+    pub usage: tc_agent::sessions::ProfileUsageReport,
     pub reset_at: Option<Instant>,
     pub reset_reason: Option<String>,
     pub last_error: Option<String>,
@@ -56,10 +67,88 @@ pub struct ProfileRuntime {
 }
 
 impl ProfileRuntime {
-    /// Remaining quota percentage if a budget is configured (or `Some(0.0)` while rate-limited).
+    /// Percentage of the 5-hour rolling window already USED (`0.0..=100.0`).
+    /// Prefers server-reported quota (e.g. Codex `rate_limits.primary`), else computes from
+    /// `limit_5h_tokens` (or legacy `daily_token_budget`).
+    pub fn quota_5h_used_pct(&self, prof: &AgentProfile) -> Option<f32> {
+        if self.state == ProfileState::RateLimited {
+            return Some(100.0);
+        }
+        if let Some(used) = self.usage.window_5h.used_percent {
+            return Some(used.clamp(0.0, 100.0));
+        }
+        let budget = prof.limit_5h_tokens.or(prof.daily_token_budget).filter(|&b| b > 0)?;
+        let used = self.usage.window_5h.tokens.total();
+        Some(((used as f64 / budget as f64) * 100.0).clamp(0.0, 100.0) as f32)
+    }
+
+    /// Percentage of the weekly (7-day) window already USED (`0.0..=100.0`).
+    /// Prefers server-reported quota (e.g. Codex `rate_limits.secondary`), else computes from
+    /// `limit_weekly_tokens`.
+    pub fn quota_weekly_used_pct(&self, prof: &AgentProfile) -> Option<f32> {
+        if let Some(used) = self.usage.window_weekly.used_percent {
+            return Some(used.clamp(0.0, 100.0));
+        }
+        let budget = prof.limit_weekly_tokens.filter(|&b| b > 0)?;
+        let used = self.usage.window_weekly.tokens.total();
+        Some(((used as f64 / budget as f64) * 100.0).clamp(0.0, 100.0) as f32)
+    }
+
+    /// Seconds remaining until the 5-hour window resets (active cooldown wins, else rolling reset).
+    pub fn window_5h_reset_secs(&self, now_unix: i64, now: Instant) -> Option<u64> {
+        if let Some(s) = self.reset_remaining_secs(now) {
+            return Some(s);
+        }
+        let target = self.usage.window_5h.resets_at_unix?;
+        let rem = target.saturating_sub(now_unix);
+        (rem > 0).then_some(rem as u64)
+    }
+
+    /// Seconds remaining until the weekly (or monthly) window resets.
+    pub fn window_weekly_reset_secs(&self, now_unix: i64) -> Option<u64> {
+        let target = self.usage.window_weekly.resets_at_unix?;
+        let rem = target.saturating_sub(now_unix);
+        (rem > 0).then_some(rem as u64)
+    }
+
+    /// Short label for the primary short window (`"5h"` by default, or provider-reported hours).
+    pub fn window_5h_label(&self) -> String {
+        match self.usage.window_5h.window_minutes {
+            Some(m) if m > 0 && m != 300 => {
+                if m % 60 == 0 { format!("{}h", m / 60) } else { format!("{m}m") }
+            }
+            _ => "5h".into(),
+        }
+    }
+
+    /// Short label for the secondary long window (`"Weekly"` by default, or `"30d"` if monthly).
+    pub fn window_weekly_label(&self) -> String {
+        match self.usage.window_weekly.window_minutes {
+            Some(m) if m >= 40_000 => "30d".into(),
+            Some(m) if m > 0 && m != 10_080 && m % 1440 == 0 => format!("{}d", m / 1440),
+            _ => "Weekly".into(),
+        }
+    }
+
+    /// Whether credentials are ready for this profile (API key or isolated OAuth sign-in).
+    pub fn auth_status(&self, prof: &AgentProfile) -> AuthStatus {
+        if prof.api_key.as_deref().is_some_and(|k| !k.trim().is_empty()) {
+            return AuthStatus::ApiKey;
+        }
+        match self.usage.signed_in {
+            Some(true) => AuthStatus::SignedIn,
+            Some(false) => AuthStatus::NotSignedIn,
+            None => AuthStatus::Unknown,
+        }
+    }
+
+    /// Remaining quota percentage if a budget or server quota is known (or `Some(0.0)` while rate-limited).
     pub fn quota_remaining_pct(&self, budget: Option<u64>) -> Option<f32> {
         if self.state == ProfileState::RateLimited {
             return Some(0.0);
+        }
+        if let Some(used) = self.usage.window_5h.used_percent {
+            return Some((100.0 - used).clamp(0.0, 100.0));
         }
         let budget = budget.filter(|&b| b > 0)?;
         let used = self.tokens_in.saturating_add(self.tokens_out);
@@ -140,37 +229,28 @@ pub fn default_profiles() -> Vec<AgentProfile> {
             id: "claude1".into(),
             name: "Claude 1".into(),
             agent: AgentKind::Claude,
-            config_dir: None,
-            api_key: None,
-            extra_env: BTreeMap::new(),
             fallback_order: 1,
             enabled: true,
-            daily_token_budget: None,
             use_default_auth: true,
+            ..Default::default()
         },
         AgentProfile {
             id: "chatgpt1".into(),
             name: "ChatGPT / Codex 1".into(),
             agent: AgentKind::Codex,
-            config_dir: None,
-            api_key: None,
-            extra_env: BTreeMap::new(),
             fallback_order: 2,
             enabled: true,
-            daily_token_budget: None,
             use_default_auth: true,
+            ..Default::default()
         },
         AgentProfile {
             id: "gemini1".into(),
             name: "Gemini 1".into(),
             agent: AgentKind::Gemini,
-            config_dir: None,
-            api_key: None,
-            extra_env: BTreeMap::new(),
             fallback_order: 3,
             enabled: true,
-            daily_token_budget: None,
             use_default_auth: true,
+            ..Default::default()
         },
     ]
 }
@@ -198,7 +278,7 @@ pub fn resolved_config_dir(profile: &AgentProfile, home: &Path, data_dir: &Path)
                 .or_else(|| env_path("GEMINI_CLI_HOME").map(|h| h.join(".gemini")))
                 .unwrap_or_else(|| home.join(".gemini")),
             AgentKind::OpenCode => home.join(".config").join("opencode"),
-            AgentKind::Antigravity => home.join(".gemini").join("antigravity"),
+            AgentKind::Antigravity => home.join(".gemini").join("antigravity-cli"),
             AgentKind::Custom => data_dir.join("profiles").join(sanitize_id(&profile.id)),
         };
     }
@@ -228,6 +308,12 @@ pub fn profile_env(profile: &AgentProfile, home: &Path, data_dir: &Path) -> BTre
                 env.insert("CLAUDE_CONFIG_DIR".into(), dir_s);
             }
             AgentKind::Codex => {
+                // Force file-backed auth inside isolated CODEX_HOME so multiple ChatGPT Plus/Pro
+                // accounts (`chatgpt1`, `chatgpt2`, `chatgpt3`) never collide in the OS keychain.
+                let cfg_path = dir.join("config.toml");
+                if !cfg_path.exists() {
+                    let _ = std::fs::write(&cfg_path, "cli_auth_credentials_store = \"file\"\n");
+                }
                 env.insert("CODEX_HOME".into(), dir_s);
             }
             AgentKind::Gemini | AgentKind::Antigravity => {
@@ -669,9 +755,19 @@ pub fn format_tokens(n: u64) -> String {
     }
 }
 
-/// Formats a reset countdown (`42m 10s`, `1h 12m`, `18s`).
+/// Current Unix epoch seconds (monotonic-safe helper for comparing `resets_at_unix`).
+pub fn now_unix_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Formats a reset countdown (`3d 14h`, `4h 12m`, `42m 10s`, `18s`).
 pub fn format_countdown(secs: u64) -> String {
-    if secs >= 3600 {
+    if secs >= 86_400 {
+        format!("{}d {}h", secs / 86_400, (secs % 86_400) / 3600)
+    } else if secs >= 3600 {
         format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
     } else if secs >= 60 {
         format!("{}m {:02}s", secs / 60, secs % 60)
