@@ -41,8 +41,8 @@ use windows_sys::Win32::System::Threading::{
     EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, GetProcessTimes, INFINITE,
     InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess,
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject,
+    PROCESS_SYNCHRONIZE, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use crate::core::{Fed, Feeder, GridSize};
@@ -260,8 +260,24 @@ fn start_time(handle: HANDLE) -> Option<u64> {
 
 /// Whether the process behind `handle` still runs.
 fn running(handle: HANDLE) -> bool {
-    // SAFETY: a handle with synchronize/query rights; 0 ms poll never blocks.
-    unsafe { WaitForSingleObject(handle, 0) == WAIT_TIMEOUT }
+    // SAFETY: a process handle; 0 ms poll never blocks. If opened without SYNCHRONIZE
+    // (WAIT_FAILED), fall back to checking whether GetProcessTimes reports an exit time.
+    match unsafe { WaitForSingleObject(handle, 0) } {
+        WAIT_TIMEOUT => true,
+        WAIT_OBJECT_0 => false,
+        _ => {
+            let zero = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+            // SAFETY: four valid out-pointers; a handle with query rights.
+            unsafe {
+                GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0
+                    && filetime(exited) == 0
+            }
+        }
+    }
 }
 
 impl LocalPty {
@@ -529,7 +545,10 @@ fn newest_child(parent: u32, parent_started: u64) -> Option<(u32, u64, String)> 
             return;
         }
         // SAFETY: OpenProcess returns null on failure; the handle is closed below.
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        let handle = unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid);
+            if h.is_null() { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) } else { h }
+        };
         if handle.is_null() {
             return;
         }
