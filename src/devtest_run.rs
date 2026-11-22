@@ -634,6 +634,17 @@ impl App {
                     "reload" => Some(Action::ReloadFile),
                     "editor" => Some(Action::ToggleEditor),
                     "files" => Some(Action::ToggleFiles),
+                    "zen" => Some(Action::ToggleZenMode),
+                    "drawer" => Some(Action::ToggleDrawer),
+                    "dock-right" => Some(Action::SetDrawerDock(tc_core::model::DrawerDock::Right)),
+                    "dock-bottom" => Some(Action::SetDrawerDock(tc_core::model::DrawerDock::Bottom)),
+                    "drawer-terminals" => Some(Action::SetDrawerTab(tc_core::model::DrawerTab::Terminals)),
+                    "drawer-logs" => Some(Action::SetDrawerTab(tc_core::model::DrawerTab::Logs)),
+                    "drawer-problems" => Some(Action::SetDrawerTab(tc_core::model::DrawerTab::Problems)),
+                    "profiles" => Some(Action::OpenProfiles),
+                    "monitor" => Some(Action::OpenMonitor),
+                    "pairing" => Some(Action::OpenPhonePairing),
+                    "toggle-companion" => Some(Action::ToggleCompanionServer),
                     "sidebar" => Some(Action::ToggleSidebar),
                     "compact-sidebar" => Some(Action::ToggleCompactSidebar),
                     "attention" => Some(Action::ToggleAttention),
@@ -915,6 +926,64 @@ impl App {
             "expect-rect" => {
                 let found = devtest::rect_of(arg.trim()).is_some();
                 self.devtest.check(found, &format!("expect-rect {arg}"));
+            }
+            // `expect-editor-min-pct 60`: the Code Editor stage covers at least N% of workspace width.
+            "expect-editor-min-pct" => {
+                let min_pct: f32 = arg.trim().parse().unwrap_or(60.0);
+                let stage_w = devtest::rect_of("editor-stage").map(|r| r.width());
+                let body_w = self.last_full_body.map(|r| r.width());
+                let pct = stage_w.zip(body_w).filter(|(_, b)| *b > 1.0).map(|(s, b)| (s / b) * 100.0);
+                self.devtest.check(
+                    pct.is_some_and(|p| p >= min_pct),
+                    &format!("expect-editor-min-pct {min_pct}% (got {pct:?})"),
+                );
+            }
+            // `expect-view focus|grid|profiles|monitor|pairing`
+            "expect-view" => {
+                let got = match self.view {
+                    tc_core::model::View::Focus => "focus",
+                    tc_core::model::View::Grid => "grid",
+                    tc_core::model::View::Profiles => "profiles",
+                    tc_core::model::View::Monitor => "monitor",
+                    tc_core::model::View::Pairing => "pairing",
+                };
+                self.devtest.check(got == arg.trim(), &format!("expect-view {arg} (got {got})"));
+            }
+            // `set-failover auto|manual`: switch failover mode for E2E verification.
+            "set-failover" => {
+                self.settings.failover.mode = if arg.trim() == "auto" {
+                    tc_core::model::FailoverMode::Auto
+                } else {
+                    tc_core::model::FailoverMode::Manual
+                };
+                self.settings_changed();
+            }
+            // `trigger-limit <profile_id>`: simulate rate-limit output on the current pane.
+            "trigger-limit" => {
+                if let Some(pid) = self.current_pane() {
+                    let prof = arg.trim();
+                    if let Some(p) = self.panes.get_mut(&pid) {
+                        p.active_profile = Some(if prof.is_empty() { "claude1".into() } else { prof.into() });
+                        p.tracker.agent = Some(AgentKind::Claude);
+                    }
+                    if let Some(hit) = crate::profiles::detect_rate_limit("Error 429: usage limit reached. Please retry after 15 minutes.") {
+                        self.handle_rate_limit(ctx, pid, hit);
+                    }
+                }
+            }
+            // `expect-companion-url <file>`: writes the active pairing URL & token JSON to `<file>`.
+            "expect-companion-url" => {
+                let ok = if let Some(srv) = &self.companion {
+                    let payload = serde_json::json!({
+                        "port": srv.port,
+                        "token": srv.pair_token(),
+                        "url": srv.pairing_url(&self.settings.companion.tunnel_url),
+                    });
+                    std::fs::write(arg.trim(), payload.to_string()).is_ok()
+                } else {
+                    false
+                };
+                self.devtest.check(ok, &format!("expect-companion-url {arg}"));
             }
             // `expect-typing g1`: the Grid tile taking the keyboard belongs to this project.
             "expect-typing" => {

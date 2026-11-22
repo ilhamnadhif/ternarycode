@@ -1476,7 +1476,7 @@ fn initials(name: &str) -> String {
 }
 
 /// How long ago, short: "just now", "5 min", "3 h", "2 d" (shown as "… ago").
-pub(super) fn ago(at: std::time::SystemTime) -> String {
+pub(crate) fn ago(at: std::time::SystemTime) -> String {
     let s = std::time::SystemTime::now().duration_since(at).map(|d| d.as_secs()).unwrap_or(0);
     match s {
         0..60 => t("a moment").to_string(),

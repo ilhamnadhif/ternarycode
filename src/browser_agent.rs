@@ -630,6 +630,11 @@ impl App {
         if let Some(panel) = self.panel_mut(project) {
             panel.open = true;
         }
+        // Only leave the Code Editor in front if the user actually has an open file in it;
+        // an empty editor overview yields automatically to the agent's Browser panel.
+        if !self.editors.get(&project).is_some_and(|e| e.visible && !e.files.is_empty()) {
+            self.hide_drawer(project);
+        }
         self.mark_dirty();
     }
 

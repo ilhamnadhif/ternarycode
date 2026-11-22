@@ -473,7 +473,7 @@ run review-follow 60 "sleep 1000;; action add-project $FA;; sleep 1000;; action 
 T="$WORK/tree"; mkdir -p "$T/src"
 (cd "$T" && git init -q -b main && printf 'line 1\n' > edit.txt && printf 'fn main() {}\n' > src/main.rs \
     && git add -A && git -c user.name=t -c user.email=t@t commit -qm init)
-run explorer 60 "sleep 1000;; action add-project $T;; sleep 1500;; action files;; sleep 800;; wait-tree edit.txt;; click tree:edit.txt;; wait-open edit.txt;; expect-rect editor-text;; write-file $T/edit.txt line 1 changed by agent\\n;; wait-git edit.txt M;; write-file $T/added.txt new\\n;; wait-tree added.txt;; wait-git added.txt U;; click editor-close;; sleep 400;; click toggle-editor;; wait-open edit.txt;; shot e2e-explorer;; quit"
+run explorer 60 "sleep 1000;; action add-project $T;; sleep 1500;; wait-tree edit.txt;; expect-shown tree:edit.txt;; action files;; sleep 400;; expect-hidden tree:edit.txt;; action files;; sleep 400;; expect-shown tree:edit.txt;; click tree:edit.txt;; wait-open edit.txt;; expect-rect editor-text;; write-file $T/edit.txt line 1 changed by agent\\n;; wait-git edit.txt M;; write-file $T/added.txt new\\n;; wait-tree added.txt;; wait-git added.txt U;; click editor-close;; sleep 400;; click toggle-editor;; wait-open edit.txt;; shot e2e-explorer;; quit"
 
 
 # Terminal tabs (v1.1): drag a tab along the strip to reorder; drop it on a pane's right half to
@@ -496,8 +496,8 @@ run pane-drag 50 "sleep 1000;; action add-project $P2;; sleep 1200;; action spli
 # open file follows), and a nested folder.
 F="$WORK/files"; mkdir -p "$F"; printf 'x\n' > "$F/a.txt"
 # Esc in the files filter empties it (the whole tree is back).
-run explorer-filter-esc 40 "sleep 1000;; action add-project $T;; sleep 1500;; action files;; sleep 800;; wait-tree edit.txt;; click files-filter;; sleep 300;; keys zzz;; sleep 500;; expect-hidden tree:edit.txt;; key esc;; sleep 500;; expect-shown tree:edit.txt;; quit"
-run files-actions 50 "sleep 1000;; action add-project $F;; sleep 1500;; action files;; sleep 800;; wait-tree a.txt;; sleep 300;; click files-button:0;; sleep 400;; keys hello.txt\\r;; wait-open hello.txt;; wait-tree hello.txt;; action rename hello.txt;; sleep 400;; keys renamed\\r;; wait-tree renamed.txt;; wait-open renamed.txt;; click files-button:1;; sleep 400;; keys docs/api\\r;; wait-tree docs;; shot e2e-files;; quit"
+run explorer-filter-esc 40 "sleep 1000;; action add-project $T;; sleep 1500;; wait-tree edit.txt;; click files-filter;; sleep 300;; keys zzz;; sleep 500;; expect-hidden tree:edit.txt;; key esc;; sleep 500;; expect-shown tree:edit.txt;; quit"
+run files-actions 50 "sleep 1000;; action add-project $F;; sleep 1500;; wait-tree a.txt;; sleep 300;; click files-button:0;; sleep 400;; keys hello.txt\\r;; wait-open hello.txt;; wait-tree hello.txt;; action rename hello.txt;; sleep 400;; keys renamed\\r;; wait-tree renamed.txt;; wait-open renamed.txt;; click files-button:1;; sleep 400;; keys docs/api\\r;; wait-tree docs;; shot e2e-files;; quit"
 run ctrl-d 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 2600;; wait-tabs 0:2,3;; key ctrl+d;; wait-tabs 0:2;; sleep 300;; key ctrl+d;; wait-tabs 0:4;; sleep 600;; key ctrl+d;; wait-tabs 0:5;; quit"
 # Review opened from "N changed" shows those N, since the last commit, in the Code drawer (not a
 # page of its own). A new folder made before the agent started: the agent's own run has nothing,
@@ -538,6 +538,58 @@ run ship 60 "sleep 1000;; action add-project $SH;; sleep 1500;; hook 2 claude Us
 # the agent asking brings its tab; a tab picked from the strip holds until something new waits;
 # the tile typed into never changes by itself; ↗ opens Focus on the tab shown.
 run grid-tabs 60 "sleep 1000;; action add-project $P1;; sleep 1200;; action new-tab;; sleep 800;; wait-tabs 0:2 1:3;; action add-project $P2;; sleep 1200;; action grid;; sleep 1200;; expect-tile-tab alpha 1;; hook 2 claude PermissionRequest;; sleep 800;; expect-tile-tab alpha 0;; expect-shown tile-tab:alpha:1;; shot e2e-grid-tabs;; click tile-tab:alpha:1;; sleep 600;; expect-tile-tab alpha 1;; sleep 1200;; expect-tile-tab alpha 1;; hook 2 claude Stop;; sleep 800;; expect-tile-tab alpha 0;; click tile-tab:alpha:1;; sleep 600;; expect-tile-tab alpha 1;; click tile-pane:3;; sleep 500;; hook 2 claude PermissionRequest;; sleep 800;; expect-tile-tab alpha 1;; click tile-open:alpha;; sleep 800;; expect-project alpha;; expect-tab 1;; quit"
+
+# Ground-up ADE redesign E2E checks:
+# 1. Wide Code Editor (>= 60% width in Bottom & Right dock), collapsible drawer tabs, Focus / Zen Mode.
+run ade-workspace 60 "sleep 1000;; action add-project $P1;; sleep 1500;; open-file $P1/src/main.rs;; sleep 600;; expect-shown editor-stage;; expect-shown secondary-drawer;; expect-editor-min-pct 60;; shot e2e-ade-workspace;; action dock-right;; sleep 500;; expect-editor-min-pct 60;; shot e2e-ade-dock-right;; action drawer-logs;; sleep 400;; action drawer-problems;; sleep 400;; action drawer-terminals;; sleep 400;; action dock-bottom;; sleep 400;; action drawer;; sleep 400;; expect-hidden secondary-drawer;; expect-editor-min-pct 95;; action drawer;; sleep 400;; expect-shown secondary-drawer;; action zen;; sleep 500;; expect-hidden sidebar;; expect-hidden secondary-drawer;; expect-editor-min-pct 95;; shot e2e-ade-zen;; action zen;; sleep 500;; expect-shown sidebar;; expect-shown secondary-drawer;; quit"
+
+# 2. Project-nested agent session history inside the left workspace sidebar tree + inline fold/unfold.
+run ade-sessions 50 "sleep 1000;; action add-project $P1;; sleep 1800;; expect-shown project-session:1:0;; expect-shown sessions-toggle:alpha;; shot e2e-ade-sessions;; click sessions-toggle:alpha;; sleep 400;; expect-hidden project-session:1:0;; click sessions-toggle:alpha;; sleep 400;; expect-shown project-session:1:0;; quit"
+
+# 3. Multi-account Profiles view, Rate-Limit Manual & Auto Failover, and All-Agent Usage Monitor.
+run ade-profiles-monitor 60 "sleep 1000;; action add-project $P1;; sleep 1200;; set-failover manual;; trigger-limit claude1;; sleep 500;; expect-shown rate-limit-banner:2;; shot e2e-ade-failover;; set-failover auto;; trigger-limit claude1;; sleep 500;; wait-toast auto-resumed|otomatis dilanjutkan;; action profiles;; sleep 500;; expect-view profiles;; shot e2e-ade-profiles;; action monitor;; sleep 500;; expect-view monitor;; shot e2e-ade-monitor;; click view:focus;; sleep 400;; expect-view focus;; click telemetry-pill;; sleep 400;; expect-shown monitor-popover;; shot e2e-ade-popover;; click telemetry-pill;; sleep 300;; expect-hidden monitor-popover;; quit"
+
+# 4. Phone Pairing view, QR code rendering, and real Mobile Companion HTTP API handshake.
+PAIR_INFO="$WORK/pair-info.json"
+PAIR_CHECK="$WORK/pair-check.py"
+cat > "$PAIR_CHECK" <<'PY'
+import json, sys, time, urllib.request, urllib.error
+info_path = sys.argv[1]
+for _ in range(40):
+    try:
+        with open(info_path) as f:
+            info = json.load(f)
+        break
+    except Exception:
+        time.sleep(0.25)
+else:
+    sys.exit("pair info missing")
+base = f"http://127.0.0.1:{info['port']}"
+html = urllib.request.urlopen(base + "/").read().decode()
+assert "TernaryCode Companion" in html, "companion HTML missing"
+# Unauthorized state request must fail with 401.
+try:
+    urllib.request.urlopen(base + "/api/state")
+    sys.exit("expected 401")
+except urllib.error.HTTPError as e:
+    assert e.code == 401, f"got {e.code}"
+# Pair with real pairing token.
+req = urllib.request.Request(
+    base + "/api/pair",
+    data=json.dumps({"token": info["token"], "device_name": "E2E iPhone"}).encode(),
+    headers={"Content-Type": "application/json"},
+)
+paired = json.loads(urllib.request.urlopen(req).read().decode())
+bearer = paired["device_token"]
+assert bearer and paired["device_id"], "missing device_token"
+# Authorized state request returns projects + profiles.
+req = urllib.request.Request(base + "/api/state", headers={"Authorization": f"Bearer {bearer}"})
+state = json.loads(urllib.request.urlopen(req).read().decode())
+assert len(state["profiles"]) >= 3, f"expected profiles, got {state}"
+assert any(p["name"] == "alpha" for p in state["projects"]), f"expected alpha project, got {state}"
+open(info_path + ".ok", "w").write("PASS\n")
+PY
+run ade-pairing 60 "sleep 1000;; action add-project $P1;; sleep 1000;; action pairing;; sleep 500;; expect-view pairing;; action toggle-companion;; sleep 1000;; expect-shown pairing-qr;; expect-companion-url $PAIR_INFO;; spawn python3 $PAIR_CHECK $PAIR_INFO;; sleep 2500;; expect-file $PAIR_INFO.ok PASS;; shot e2e-ade-pairing;; action toggle-companion;; sleep 500;; quit"
 
 echo "---- $PASS passed, $FAIL failed (logs: $WORK)"
 [ "$FAIL" -eq 0 ]

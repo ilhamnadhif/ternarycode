@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0c0e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>TernaryCode Companion</title>
+<style>
+:root{
+  --bg:#0b0c0e;--canvas:#111215;--surface:#181a1f;--inset:#090a0c;
+  --border:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.14);
+  --text:#ececef;--muted:#9b9da6;--faint:#686a73;
+  --accent:#3b82f6;--ok:#34d399;--warn:#f59e0b;--err:#ef4444;--info:#60a5fa;
+  --sans:-apple-system,BlinkMacSystemFont,"Inter","SF Pro Text",system-ui,sans-serif;
+  --mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.45;height:100%;overflow:hidden}
+.app{display:flex;flex-direction:column;height:100dvh;max-width:720px;margin:0 auto;background:var(--bg)}
+header{display:flex;align-items:center;justify-content:space-between;padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;border-bottom:1px solid var(--border);background:var(--bg);gap:10px;flex-shrink:0}
+.brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;letter-spacing:-.01em}
+.dot{width:8px;height:8px;border-radius:99px;background:var(--faint);flex-shrink:0}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.err{background:var(--err)}.dot.info{background:var(--info)}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);font-family:var(--mono);font-size:11px;color:var(--muted)}
+main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 14px 18px}
+nav{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--border);background:var(--canvas);padding:6px 6px calc(env(safe-area-inset-bottom) + 6px);flex-shrink:0}
+nav button{background:none;border:0;color:var(--faint);font-family:var(--sans);font-size:11px;font-weight:500;padding:7px 4px;border-radius:7px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
+nav button.active{color:var(--text);background:var(--surface)}
+.badge{display:inline-block;padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:10px;font-weight:600;border:1px solid var(--border)}
+.badge.running{color:var(--info);border-color:rgba(96,165,250,.35);background:rgba(96,165,250,.1)}
+.badge.needs_input,.badge.rate_limited{color:var(--warn);border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.1)}
+.badge.done,.badge.ok{color:var(--ok);border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.1)}
+.badge.failed,.badge.error{color:var(--err);border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.1)}
+.badge.idle,.badge.cooldown{color:var(--muted);background:rgba(255,255,255,.04)}
+.section-label{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);margin:14px 0 8px}
+.section-label:first-child{margin-top:2px}
+.panel{background:var(--canvas);border:1px solid var(--border);border-radius:9px;overflow:hidden;margin-bottom:10px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border)}
+.row:last-child{border-bottom:0}
+.row.click{cursor:pointer}
+.row.click:active{background:var(--surface)}
+.title{font-weight:500;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sub{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mono{font-family:var(--mono)}
+.term{background:var(--inset);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:10px 12px;font-family:var(--mono);font-size:11.5px;line-height:1.45;color:#d8dae0;white-space:pre-wrap;word-break:break-word;max-height:42vh;overflow-y:auto}
+.banner{padding:10px 12px;background:rgba(245,158,11,.09);border-bottom:1px solid rgba(245,158,11,.28)}
+.banner-title{font-weight:600;font-size:12.5px;color:var(--warn);margin-bottom:4px}
+.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.btn{border:1px solid var(--border-strong);background:var(--surface);color:var(--text);font-family:var(--sans);font-size:12px;font-weight:500;padding:7px 11px;border-radius:7px;cursor:pointer;min-height:34px}
+.btn.primary{background:var(--accent);border-color:transparent;color:#fff}
+.btn.ok{background:rgba(52,211,153,.14);border-color:rgba(52,211,153,.4);color:var(--ok)}
+.btn.danger{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.38);color:var(--err)}
+.btn:active{opacity:.8}
+.composer{display:flex;gap:6px;padding:10px 12px;background:var(--canvas)}
+.composer input,.pair-box input{flex:1;background:var(--inset);border:1px solid var(--border-strong);color:var(--text);border-radius:7px;padding:8px 10px;font-family:var(--sans);font-size:13px;outline:none}
+.composer input:focus,.pair-box input:focus{border-color:var(--accent)}
+.bar{height:4px;background:rgba(255,255,255,.08);border-radius:99px;overflow:hidden;margin-top:5px}
+.bar>div{height:100%;background:var(--accent)}
+.pair-wrap{display:flex;align-items:center;justify-content:center;height:100dvh;padding:20px}
+.pair-box{width:100%;max-width:380px;background:var(--canvas);border:1px solid var(--border-strong);border-radius:12px;padding:20px}
+.pair-box h1{margin:0 0 6px;font-size:17px;font-weight:600}
+.pair-box p{margin:0 0 14px;color:var(--muted);font-size:12.5px}
+.pair-box label{display:block;font-size:11.5px;color:var(--muted);margin:10px 0 4px}
+.pair-err{color:var(--err);font-size:12px;margin-top:8px}
+.empty{padding:26px 14px;text-align:center;color:var(--faint);font-size:12.5px}
+.chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:4px}
+.chip{flex-shrink:0;padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--canvas);color:var(--muted);font-size:12px;cursor:pointer}
+.chip.active{border-color:var(--border-strong);background:var(--surface);color:var(--text);font-weight:500}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const KEY = "tc_companion_token_v1";
+let token = localStorage.getItem(KEY) || "";
+let state = null;
+let tab = "live";
+let selectedPane = null;
+let es = null;
+let connected = false;
+let pairError = "";
+
+const params = new URLSearchParams(location.search);
+const urlPair = params.get("pair") || "";
+
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function fmtTok(n){n=Number(n||0);if(n>=1e6)return(n/1e6).toFixed(1)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
+function fmtSec(s){if(!s||s<=0)return"";const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),r=s%60;return h?`${h}h ${String(m).padStart(2,"0")}m`:m?`${m}m ${String(r).padStart(2,"0")}s`:`${r}s`}
+
+async function api(path, opts={}){
+  const headers = Object.assign({"Content-Type":"application/json"}, opts.headers||{});
+  if(token) headers["Authorization"] = "Bearer " + token;
+  const res = await fetch(path, Object.assign({}, opts, {headers}));
+  if(res.status === 401){
+    localStorage.removeItem(KEY);
+    token = "";
+    if(es){es.close();es=null;}
+    render();
+    throw new Error("Unauthorized");
+  }
+  return res.json();
+}
+
+async function doPair(code, deviceName){
+  pairError = "";
+  try{
+    const res = await fetch("/api/pair", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({token:code.trim(), device_name:deviceName.trim()||navigator.platform||"Mobile"})
+    });
+    const data = await res.json();
+    if(!res.ok || !data.device_token){ pairError = data.error || "Invalid pairing code"; render(); return; }
+    token = data.device_token;
+    localStorage.setItem(KEY, token);
+    if(urlPair){ history.replaceState({}, "", "/"); }
+    startLive();
+  }catch(e){
+    pairError = "Connection failed";
+    render();
+  }
+}
+
+async function startLive(){
+  try{
+    state = await api("/api/state");
+    connected = true;
+    ensureSelection();
+    render();
+    connectSse();
+  }catch(_){}
+}
+
+function connectSse(){
+  if(es) es.close();
+  if(!token) return;
+  es = new EventSource("/api/events?token=" + encodeURIComponent(token));
+  es.onopen = ()=>{ connected = true; renderHeaderOnly(); };
+  es.onerror = ()=>{ connected = false; renderHeaderOnly(); };
+  es.onmessage = (ev)=>{
+    try{
+      state = JSON.parse(ev.data);
+      connected = true;
+      ensureSelection();
+      render();
+    }catch(_){}
+  };
+}
+
+function ensureSelection(){
+  if(!state || !state.panes || !state.panes.length) return;
+  if(!selectedPane || !state.panes.some(p=>p.id===selectedPane)){
+    const urgent = state.panes.find(p=>p.rate_limit || p.status==="needs_input") || state.panes[0];
+    selectedPane = urgent ? urgent.id : null;
+  }
+}
+
+async function sendAction(paneId, action){
+  await api(`/api/pane/${paneId}/input`, {method:"POST", body:JSON.stringify({action})});
+}
+
+async function sendPrompt(paneId){
+  const el = document.getElementById("prompt-input");
+  if(!el || !el.value.trim()) return;
+  const text = el.value;
+  el.value = "";
+  await api(`/api/pane/${paneId}/input`, {method:"POST", body:JSON.stringify({text, enter:true})});
+}
+
+async function switchProfile(paneId, profileId){
+  await api(`/api/pane/${paneId}/switch-profile`, {method:"POST", body:JSON.stringify({profile_id:profileId})});
+}
+
+async function resumeSession(projectId, agent, sessionId, profileId){
+  await api("/api/session/resume", {method:"POST", body:JSON.stringify({project_id:projectId, agent, session_id:sessionId, profile_id:profileId})});
+  tab = "live";
+  render();
+}
+
+function renderHeaderOnly(){
+  const dot = document.getElementById("conn-dot");
+  if(dot) dot.className = "dot " + (connected ? "ok" : "warn");
+}
+
+function renderPair(){
+  const root = document.getElementById("root");
+  root.innerHTML = `<div class="pair-wrap"><div class="pair-box">
+    <h1>Pair with TernaryCode</h1>
+    <p>Scan the QR code from Desktop Settings → Phone Pairing or enter the pairing token below.</p>
+    <label>Pairing Token / Code</label>
+    <input id="p-code" value="${esc(urlPair)}" placeholder="Paste token or code">
+    <label>Device Name</label>
+    <input id="p-name" value="${esc(/iPhone/.test(navigator.userAgent)?"iPhone":/Android/.test(navigator.userAgent)?"Android Phone":"Mobile Browser")}">
+    ${pairError?`<div class="pair-err">${esc(pairError)}</div>`:""}
+    <div class="actions" style="margin-top:14px">
+      <button class="btn primary" style="width:100%" id="p-go">Connect Device</button>
+    </div>
+  </div></div>`;
+  document.getElementById("p-go").onclick = ()=>{
+    doPair(document.getElementById("p-code").value, document.getElementById("p-name").value);
+  };
+}
+
+function renderLive(){
+  const panes = state.panes || [];
+  if(!panes.length) return `<div class="empty">No active panes in desktop workspace.</div>`;
+  const pane = panes.find(p=>p.id===selectedPane) || panes[0];
+  const healthy = (state.profiles||[]).filter(p=>p.enabled && p.state!=="rate_limited" && p.state!=="cooldown" && p.id!==pane.profile);
+  let html = `<div class="chips">` + panes.map(p=>{
+    const cls = p.id===pane.id ? "chip active" : "chip";
+    const mark = p.rate_limit ? " !" : p.status==="needs_input" ? " ?" : p.status==="running" ? " ●" : "";
+    return `<button class="${cls}" onclick="selectedPane=${p.id};render()">${esc(p.project_name)} · ${esc(p.label)}${mark}</button>`;
+  }).join("") + `</div>`;
+
+  html += `<div class="panel">
+    <div class="row">
+      <div style="min-width:0">
+        <div class="title">${esc(pane.project_name)} / ${esc(pane.label)}</div>
+        <div class="sub mono">${esc(pane.profile||"default")} · ${esc(pane.branch||"")}</div>
+      </div>
+      <span class="badge ${esc(pane.rate_limit?"rate_limited":pane.status)}">${esc(pane.rate_limit?"Rate-Limited":pane.status_label)}</span>
+    </div>`;
+
+  if(pane.rate_limit){
+    html += `<div class="banner">
+      <div class="banner-title">${esc(pane.rate_limit.from_profile)} hit usage limit${pane.rate_limit.reset_secs?` · resets in ${fmtSec(pane.rate_limit.reset_secs)}`:""}</div>
+      <div class="sub">${esc(pane.rate_limit.reason)}</div>
+      <div class="actions">` +
+      (healthy.length ? healthy.map(pr=>`<button class="btn primary" onclick="switchProfile(${pane.id},'${esc(pr.id)}')">Resume on ${esc(pr.id)}</button>`).join("") : `<span class="sub">No healthy fallback profile available</span>`)
+      + `</div></div>`;
+  } else if(pane.status === "needs_input"){
+    html += `<div class="banner">
+      <div class="banner-title">Approval / Input Required</div>
+      <div class="sub">${esc(pane.message || "Agent is waiting for your confirmation")}</div>
+      <div class="actions">
+        <button class="btn ok" onclick="sendAction(${pane.id},'approve')">Approve (↵)</button>
+        <button class="btn danger" onclick="sendAction(${pane.id},'reject')">Reject (Esc)</button>
+        <button class="btn" onclick="sendAction(${pane.id},'interrupt')">Interrupt (^C)</button>
+      </div>
+    </div>`;
+  }
+
+  html += `<div class="term" id="term-box">${esc(pane.output || "(no output yet)")}</div>`;
+  html += `<div class="composer">
+    <input id="prompt-input" placeholder="Send instruction to ${esc(pane.label)}…" onkeydown="if(event.key==='Enter')sendPrompt(${pane.id})">
+    <button class="btn primary" onclick="sendPrompt(${pane.id})">Send</button>
+  </div>`;
+
+  if(healthy.length && !pane.rate_limit){
+    html += `<div class="row" style="border-top:1px solid var(--border)">
+      <span class="sub">Switch account profile</span>
+      <div style="display:flex;gap:5px;flex-wrap:wrap">` +
+      healthy.slice(0,4).map(pr=>`<button class="btn" style="padding:4px 8px;min-height:26px;font-size:11px" onclick="switchProfile(${pane.id},'${esc(pr.id)}')">${esc(pr.id)}</button>`).join("")
+      + `</div></div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function renderProjects(){
+  const projects = state.projects || [];
+  if(!projects.length) return `<div class="empty">No projects open on desktop.</div>`;
+  return projects.map(pr=>{
+    const sessions = pr.sessions || [];
+    return `<div class="section-label">${esc(pr.name)} ${pr.branch?`<span class="mono" style="text-transform:none;font-weight:400">· ${esc(pr.branch)}</span>`:""}</div>
+    <div class="panel">` + (sessions.length ? sessions.map(s=>`
+      <div class="row click" onclick="${s.live_pane?`selectedPane=${s.live_pane};tab='live';render()`:`resumeSession(${pr.id},'${esc(s.agent)}','${esc(s.id)}',${s.profile?`'${esc(s.profile)}'`:'null'})`}">
+        <div style="min-width:0">
+          <div class="title">${esc(s.title)}</div>
+          <div class="sub mono">${esc(s.profile||s.agent)} · ${esc(s.age)}</div>
+        </div>
+        <span class="badge ${esc(s.status)}">${s.live_pane?"Live":"Resume"}</span>
+      </div>`).join("") : `<div class="row"><span class="sub">No agent sessions yet</span></div>`) + `</div>`;
+  }).join("");
+}
+
+function renderProfiles(){
+  const profiles = state.profiles || [];
+  return `<div class="section-label">Failover Policy · ${esc(state.failover_mode||"auto").toUpperCase()}</div>
+  <div class="panel">` + profiles.map(p=>{
+    const pct = p.quota_pct != null ? Math.round(p.quota_pct) : null;
+    const barColor = p.state==="rate_limited"?"var(--warn)":pct!=null&&pct<20?"var(--err)":"var(--accent)";
+    return `<div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <div><span class="title mono">${esc(p.id)}</span> <span class="sub">(${esc(p.provider)})</span></div>
+        <span class="badge ${esc(p.state)}">${esc(p.state.replace("_"," "))}</span>
+      </div>
+      <div class="sub mono">In ${fmtTok(p.tokens_in)} · Out ${fmtTok(p.tokens_out)}${p.reset_secs?` · resets ${fmtSec(p.reset_secs)}`:""}${p.active_session?` · ${esc(p.active_session)}`:""}</div>
+      ${pct!=null?`<div class="bar"><div style="width:${pct}%;background:${barColor}"></div></div>`:""}
+    </div>`;
+  }).join("") + `</div>`;
+}
+
+function renderAlerts(){
+  const alerts = state.alerts || [];
+  if(!alerts.length) return `<div class="empty">No alerts yet. Rate limits, approvals, and finished turns appear here.</div>`;
+  return `<div class="panel">` + alerts.slice().reverse().map(a=>`
+    <div class="row">
+      <div style="min-width:0">
+        <div class="title">${esc(a.message)}</div>
+        <div class="sub mono">${esc(a.time)}${a.profile?` · ${esc(a.profile)}`:""}</div>
+      </div>
+      <span class="badge ${esc(a.level)}">${esc(a.level)}</span>
+    </div>`).join("") + `</div>`;
+}
+
+function render(){
+  if(!token){ renderPair(); return; }
+  if(!state){ document.getElementById("root").innerHTML = `<div class="empty">Connecting to desktop ADE…</div>`; return; }
+  const activeCount = (state.panes||[]).filter(p=>p.status==="running").length;
+  const alertCount = (state.panes||[]).filter(p=>p.rate_limit||p.status==="needs_input").length;
+  const body = tab==="live"?renderLive():tab==="projects"?renderProjects():tab==="profiles"?renderProfiles():renderAlerts();
+  document.getElementById("root").innerHTML = `<div class="app">
+    <header>
+      <div class="brand"><span id="conn-dot" class="dot ${connected?"ok":"warn"}"></span>TernaryCode</div>
+      <div class="pill">${activeCount} active${alertCount?` · ${alertCount} alert`:""}</div>
+    </header>
+    <main>${body}</main>
+    <nav>
+      <button class="${tab==="live"?"active":""}" onclick="tab='live';render()"><span>●</span>Live</button>
+      <button class="${tab==="projects"?"active":""}" onclick="tab='projects';render()"><span>☰</span>Projects</button>
+      <button class="${tab==="profiles"?"active":""}" onclick="tab='profiles';render()"><span>◈</span>Profiles</button>
+      <button class="${tab==="alerts"?"active":""}" onclick="tab='alerts';render()"><span>!</span>Alerts${alertCount?` (${alertCount})`:""}</button>
+    </nav>
+  </div>`;
+  const t = document.getElementById("term-box");
+  if(t) t.scrollTop = t.scrollHeight;
+}
+
+if(!token && urlPair){
+  doPair(urlPair, /iPhone/.test(navigator.userAgent)?"iPhone":/Android/.test(navigator.userAgent)?"Android":"Mobile");
+}else if(token){
+  startLive();
+}else{
+  render();
+}
+</script>
+</body>
+</html>

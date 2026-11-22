@@ -14,7 +14,10 @@ pub mod icons;
 pub mod kit;
 #[cfg(target_os = "macos")]
 pub mod menu;
+pub mod monitor_ui;
+pub mod pairing_ui;
 pub mod palette;
+pub mod profiles_ui;
 pub mod browser_ui;
 pub mod browser_panel;
 pub mod review;

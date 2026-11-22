@@ -31,6 +31,8 @@ pub fn key_labels(action: &crate::actions::Action) -> Option<(&'static str, &'st
         A::ToggleSidebar => ("⌘B", "Ctrl+Shift+B"),
         A::ToggleCompactSidebar => ("⌥⌘B", "Ctrl+Alt+B"),
         A::ToggleEditor => ("⌘E", "Ctrl+Shift+Y"),
+        A::ToggleZenMode => ("⇧⌘Z", "Ctrl+Shift+Z"),
+        A::ToggleDrawer => ("⇧⌘L", "Ctrl+Shift+L"),
         A::QuickOpen => ("⌘O", "Ctrl+Shift+O"),
         A::AddProject => ("⇧⌘O", "Ctrl+Shift+N"),
         A::PickPreset => ("⇧⌘A", "Ctrl+Shift+A"),
@@ -1244,4 +1246,108 @@ pub fn submenu_item(ui: &mut Ui, icon: Option<&str>, label: &str) -> Response {
     let c = if r.hovered() { p.on_accent } else { p.text_faint };
     ui.painter().text(egui::pos2(r.rect.right() - 10.0, r.rect.center().y), Align2::CENTER_CENTER, super::icons::CARET_RIGHT, style::icon_font(11.0), c);
     r
+}
+
+// ---------------------------------------------------------------------------------------------
+// ADE Design System Primitives (Linear / Zed / Raycast / Warp restraint)
+// ---------------------------------------------------------------------------------------------
+
+/// Compact semantic status badge (`Running`, `Rate-Limited`, `Cooldown`, `Idle`, `Error`).
+pub fn status_badge(ui: &mut Ui, label: &str, color: Color32, mono: bool) -> Response {
+    let dark = ui.visuals().dark_mode;
+    let font = if mono { style::mono_medium(10.5) } else { style::medium(11.0) };
+    let g = ui.painter().layout_no_wrap(label.to_string(), font, color);
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 18.0, 20.0), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let bg = style::tint(color, dark);
+        let stroke = Stroke::new(1.0, style::soft(color, if dark { 0.32 } else { 0.28 }));
+        ui.painter().rect(rect, CornerRadius::same(5), bg, stroke, StrokeKind::Inside);
+        ui.painter().circle_filled(egui::pos2(rect.left() + 7.5, rect.center().y), 2.5, color);
+        ui.painter().galley(egui::pos2(rect.left() + 13.0, rect.center().y - g.size().y / 2.0), g, color);
+    }
+    resp
+}
+
+/// Hairline quota / usage progress meter (`pct` in `0.0..=100.0`).
+pub fn paint_quota_bar(painter: &egui::Painter, rect: Rect, pct: f32, color: Color32, p: &style::Palette) {
+    let clamped = (pct / 100.0).clamp(0.0, 1.0);
+    let r = CornerRadius::same((rect.height() / 2.0).round() as u8);
+    painter.rect_filled(rect, r, p.subtle);
+    if clamped > 0.0 {
+        let fill = Rect::from_min_size(rect.min, vec2((rect.width() * clamped).max(3.0), rect.height()));
+        painter.rect_filled(fill, r, color);
+    }
+}
+
+/// Interactive account profile chip (`claude1 · 82%`) with crisp 1 px border and status dot.
+pub fn profile_chip(
+    ui: &mut Ui,
+    name: &str,
+    detail: Option<&str>,
+    dot_color: Color32,
+    active: bool,
+) -> Response {
+    let p = style::pal(ui);
+    let name_g = ui.painter().layout_no_wrap(name.to_string(), style::mono_medium(11.0), p.text);
+    let detail_g = detail.map(|d| ui.painter().layout_no_wrap(d.to_string(), style::mono(10.5), p.text_faint));
+    let dw = detail_g.as_ref().map_or(0.0, |g| 6.0 + g.size().x);
+    let w = 8.0 + 6.0 + 6.0 + name_g.size().x + dw + 5.0 + 9.0 + 7.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if active { p.surface } else if resp.hovered() { p.hover } else { Color32::TRANSPARENT };
+        let stroke = Stroke::new(1.0, if active || resp.hovered() { p.border_strong } else { p.border });
+        ui.painter().rect(rect, CornerRadius::same(6), fill, stroke, StrokeKind::Inside);
+        let cy = rect.center().y;
+        let mut x = rect.left() + 8.0;
+        ui.painter().circle_filled(egui::pos2(x + 3.0, cy), 3.0, dot_color);
+        x += 6.0 + 6.0;
+        let nw = name_g.size().x;
+        ui.painter().galley(egui::pos2(x, cy - name_g.size().y / 2.0), name_g, p.text);
+        x += nw;
+        if let Some(dg) = detail_g {
+            x += 6.0;
+            let dgw = dg.size().x;
+            ui.painter().galley(egui::pos2(x, cy - dg.size().y / 2.0), dg, p.text_faint);
+            x += dgw;
+        }
+        ui.painter().text(egui::pos2(x + 5.0 + 4.5, cy), Align2::CENTER_CENTER, super::icons::CARET_DOWN, style::icon_font(9.0), p.text_faint);
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// Tab button inside the secondary drawer header (`Terminals`, `Agent Logs`, `Problems`).
+pub fn drawer_tab(ui: &mut Ui, icon: &str, label: &str, count: Option<(usize, Color32)>, active: bool) -> Response {
+    let p = style::pal(ui);
+    let text_c = if active { p.text } else { p.text_muted };
+    let label_g = ui.painter().layout_no_wrap(label.to_string(), style::medium(12.0), text_c);
+    let badge_g = count.filter(|(n, _)| *n > 0).map(|(n, c)| (ui.painter().layout_no_wrap(n.to_string(), style::mono(10.0), c), c));
+    let bw = badge_g.as_ref().map_or(0.0, |(g, _)| 6.0 + g.size().x + 8.0);
+    let w = 8.0 + 13.0 + 6.0 + label_g.size().x + bw + 8.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        if active {
+            ui.painter().rect(rect, CornerRadius::same(6), p.surface, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(rect, CornerRadius::same(6), p.hover);
+        }
+        let cy = rect.center().y;
+        let mut x = rect.left() + 8.0;
+        ui.painter().text(egui::pos2(x + 6.5, cy), Align2::CENTER_CENTER, icon, style::icon_font(12.5), if active { p.text } else { p.text_faint });
+        x += 13.0 + 6.0;
+        let lw = label_g.size().x;
+        ui.painter().galley(egui::pos2(x, cy - label_g.size().y / 2.0), label_g, if active || resp.hovered() { p.text } else { p.text_muted });
+        if let Some((bg, bc)) = badge_g {
+            x += lw + 6.0;
+            let pill = Rect::from_center_size(egui::pos2(x + (bg.size().x + 8.0) / 2.0, cy), vec2(bg.size().x + 8.0, 16.0));
+            ui.painter().rect_filled(pill, CornerRadius::same(4), style::tint(bc, ui.visuals().dark_mode));
+            ui.painter().galley(egui::pos2(pill.center().x - bg.size().x / 2.0, cy - bg.size().y / 2.0), bg, bc);
+        }
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
 }

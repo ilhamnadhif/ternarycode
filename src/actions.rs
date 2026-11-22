@@ -214,4 +214,53 @@ pub enum Action {
     /// Quits and installs the downloaded update (after asking when programs run).
     RestartToUpdate,
     RestartToUpdateNow,
+    /// One-keystroke Focus / Zen Mode: hides peripheral panels so the Code Editor fills the window.
+    ToggleZenMode,
+    /// Shows or collapses the secondary drawer (Terminals, Agent Logs, Problems).
+    ToggleDrawer,
+    /// Docks the secondary drawer at the Bottom (editor 100% width) or Right (editor >=60% width).
+    SetDrawerDock(tc_core::model::DrawerDock),
+    /// Switches the active tab inside the secondary drawer.
+    SetDrawerTab(tc_core::model::DrawerTab),
+    /// Opens the dedicated Multi-Account Profiles & Failover view.
+    OpenProfiles,
+    /// Opens the unified All-Agent Usage & Status Monitor view.
+    OpenMonitor,
+    /// Opens the Phone Pairing & Mobile Companion view.
+    OpenPhonePairing,
+    /// Expands or collapses nested agent session history under a project in the sidebar tree.
+    ToggleProjectSessions(ProjectId),
+    /// Resumes a historical or focuses a live agent session directly from the project tree.
+    ResumeProjectSession {
+        project: ProjectId,
+        agent: AgentKind,
+        session_id: String,
+        profile_id: Option<String>,
+    },
+    /// Starts a fresh agent session inside a project using the selected profile.
+    NewProjectSession {
+        project: ProjectId,
+        profile_id: Option<String>,
+    },
+    /// Switches the active account profile bound to a pane (without forcing a restart unless paused).
+    SetPaneProfile(PaneId, String),
+    /// Switches a rate-limited or running pane to another profile and seamlessly resumes its task.
+    ResumeWithProfile {
+        pane: PaneId,
+        profile_id: String,
+    },
+    /// Dismisses a pane's inline rate-limit recovery banner.
+    DismissRateLimit(PaneId),
+    /// Tests CLI & auth readiness for a configured profile.
+    TestProfile(String),
+    /// Opens an interactive login pane using a profile's isolated auth/config directory.
+    LoginProfile(String),
+    /// Clears a profile's rate-limit / cooldown timer manually.
+    ClearProfileCooldown(String),
+    /// Starts or stops the embedded Mobile Companion HTTP/SSE server.
+    ToggleCompanionServer,
+    /// Generates a fresh pairing QR token (existing paired devices remain authorised).
+    RegeneratePairingToken,
+    /// Immediately revokes a paired phone/device token.
+    RevokeDevice(String),
 }

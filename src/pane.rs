@@ -301,6 +301,16 @@ pub struct Pane {
     pub progress: Option<(u8, Option<u8>)>,
     /// Why the shell could not start (shown over the pane, with Try Again).
     pub start_error: Option<String>,
+    /// Multi-account profile id bound to this pane (e.g. `claude1`, `chatgpt2`).
+    pub active_profile: Option<String>,
+    /// Active inline rate-limit / failover recovery banner for this pane.
+    pub rate_limit: Option<crate::profiles::RateLimitBanner>,
+    /// Last time this pane's screen tail was scanned for rate-limit output.
+    pub last_limit_check: Instant,
+    /// Dedup key of the last rate-limit line handled in this pane.
+    pub last_limit_sig: Option<String>,
+    /// Quick composer draft text for sending follow-up instructions directly to an agent pane.
+    pub composer_text: String,
 }
 
 impl Pane {
@@ -363,11 +373,43 @@ impl Pane {
             pty_grid: None,
             progress: None,
             start_error: None,
+            active_profile: None,
+            rate_limit: None,
+            last_limit_check: Instant::now(),
+            last_limit_sig: None,
+            composer_text: String::new(),
         };
         if start {
             pane.start_shell(spawn);
         }
         pane
+    }
+
+    /// Plain-text snapshot of the last `max_lines` visible lines of this terminal (trimmed), used
+    /// for rate-limit detection, failover handoff context, and Mobile Companion live streaming.
+    pub fn screen_tail(&self, max_lines: usize) -> String {
+        use tc_term::alacritty_terminal::grid::Dimensions;
+        use tc_term::alacritty_terminal::index::{Column, Line};
+        let term = self.shared.term.lock();
+        let rows = term.screen_lines();
+        let cols = term.columns();
+        let mut lines: Vec<String> = (0..rows as i32)
+            .map(|l| {
+                let row = &term.grid()[Line(l)];
+                (0..cols)
+                    .map(|c| row[Column(c)].c)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        if lines.len() > max_lines {
+            lines.drain(..lines.len() - max_lines);
+        }
+        lines.join("\n")
     }
 
     /// No shell has been started in this pane yet (restored, not shown since).

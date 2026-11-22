@@ -693,7 +693,7 @@ impl App {
                 }
             }
             #[cfg(debug_assertions)]
-            crate::devtest::record("editor-text", resp.rect);
+            crate::devtest::record("editor-text", resp.rect.intersect(ui.clip_rect()));
             if resp.changed() && !read_only {
                 file.rev += 1;
                 file.lines = crate::editor::count_lines(&file.text);
@@ -811,57 +811,123 @@ impl App {
         }
     }
 
-    /// No file open: how to open one, and the files closed lately.
+    /// No file open: high-craft wide-editor overview with Quick Open, changed git files, and
+    /// recently closed files (Linear / Zed restraint — no decorative vanity cards).
     fn editor_empty(&mut self, ui: &mut Ui, project: ProjectId, root: &Path) {
         let p = style::pal(ui);
+        let dark = ui.visuals().dark_mode;
         let recent: Vec<PathBuf> = self
             .editors
             .get(&project)
-            .map(|e| e.recent_closed().take(5).cloned().collect())
+            .map(|e| e.recent_closed().take(6).cloned().collect())
             .unwrap_or_default();
-        ui.add_space((ui.available_height() * 0.22).min(140.0));
-        ui.vertical_centered(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let (r, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
-            ui.painter().circle_filled(r.center(), 26.0, p.subtle);
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, icons::CODE, style::icon_font(24.0), p.text_muted);
-            ui.add_space(10.0);
-            ui.label(RichText::new(t("No file open")).font(style::semibold(15.0)).color(p.text));
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(tf(
-                    "Pick a file in Files, press {}, or {}-click a path in a terminal.",
-                    &[kit::keys(&Action::QuickOpen).unwrap_or(""), if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" }],
-                ))
-                .size(style::SMALL)
-                .color(p.text_muted),
-            );
-            ui.add_space(12.0);
-            if kit::button_keys(ui, kit::Kind::Secondary, None, t("Open File…"), kit::keys(&Action::QuickOpen), true).clicked() {
-                self.actions.push(Action::QuickOpen);
-            }
-            if !recent.is_empty() {
-                ui.add_space(18.0);
-                let g = kit::section_galley(ui.painter(), t("Recently closed"), p.text_faint);
-                let (r, _) = ui.allocate_exact_size(vec2(260.0, g.size().y + 6.0), Sense::hover());
-                ui.painter().galley(r.min, g, p.text_faint);
-                for path in recent {
-                    let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    let (icon, color) = icons::file_icon(&name, false, false, &p);
-                    let (row, resp) = ui.allocate_exact_size(vec2(260.0, 24.0), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(row, CornerRadius::same(4), p.faint_row());
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    ui.painter().text(pos2(row.left() + 4.0 + 7.0, row.center().y), Align2::CENTER_CENTER, icon, style::icon_font(14.0), color);
-                    ui.painter().text(pos2(row.left() + 4.0 + 14.0 + 6.0, row.center().y), Align2::LEFT_CENTER, rel, egui::FontId::proportional(12.0), p.text_muted);
-                    if resp.clicked() {
-                        self.actions.push(Action::OpenFile(path, None));
-                    }
-                }
-            }
-        });
+        let mut changed: Vec<(PathBuf, crate::project::Change)> = self
+            .project(project)
+            .and_then(|pr| pr.git.as_ref())
+            .map(|g| g.changes.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .unwrap_or_default();
+        changed.sort_by(|a, b| a.0.cmp(&b.0));
+        changed.truncate(8);
+
+        let area = ui.max_rect();
+        let col_w = (area.width() - 64.0).clamp(280.0, 680.0);
+        let top_pad = (area.height() * 0.10).clamp(20.0, 72.0);
+
+        egui::ScrollArea::vertical()
+            .id_salt(("editor-empty", project))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(top_pad);
+                ui.horizontal(|ui| {
+                    let side = ((ui.available_width() - col_w) / 2.0).max(16.0);
+                    ui.add_space(side);
+                    ui.vertical(|ui| {
+                        ui.set_width(col_w);
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.label(RichText::new(t("Code Editor")).font(style::semibold(15.0)).color(p.text));
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(tf(
+                                "Pick a file in Files, press {}, or {}-click a path in a terminal.",
+                                &[kit::keys(&Action::QuickOpen).unwrap_or(""), if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" }],
+                            ))
+                            .size(style::SMALL)
+                            .color(p.text_muted),
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            if kit::button_keys(ui, kit::Kind::Primary, Some(icons::MAGNIFYING_GLASS), t("Open File…"), kit::keys(&Action::QuickOpen), false).clicked() {
+                                self.actions.push(Action::QuickOpen);
+                            }
+                            if !changed.is_empty()
+                                && kit::button_keys(ui, kit::Kind::Secondary, Some(icons::GIT_DIFF), t("Review Changes…"), kit::keys(&Action::Review), false).clicked()
+                            {
+                                self.actions.push(Action::Review);
+                            }
+                            if kit::button_keys(ui, kit::Kind::Ghost, Some(icons::ARROWS_OUT), t("Zen Mode"), kit::keys(&Action::ToggleZenMode), false).clicked() {
+                                self.actions.push(Action::ToggleZenMode);
+                            }
+                        });
+
+                        if !changed.is_empty() {
+                            ui.add_space(20.0);
+                            let g = kit::section_galley(ui.painter(), t("Working Tree Changes"), p.text_faint);
+                            let (r, _) = ui.allocate_exact_size(vec2(col_w, g.size().y + 6.0), Sense::hover());
+                            ui.painter().galley(r.min, g, p.text_faint);
+                            egui::Frame::NONE
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0, if dark { p.border } else { p.border_strong }))
+                                .corner_radius(CornerRadius::same(8))
+                                .show(ui, |ui| {
+                                    ui.set_width(col_w);
+                                    for (i, (path, ch)) in changed.iter().enumerate() {
+                                        if i > 0 {
+                                            let y = ui.cursor().top();
+                                            ui.painter().hline(ui.max_rect().x_range(), y + 0.5, Stroke::new(1.0, p.border));
+                                        }
+                                        let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().into_owned();
+                                        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                        let (icon, color) = icons::file_icon(&name, false, false, &p);
+                                        let (row, resp) = ui.allocate_exact_size(vec2(col_w, 28.0), Sense::click());
+                                        if resp.hovered() {
+                                            ui.painter().rect_filled(row, CornerRadius::same(6), p.hover);
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                        }
+                                        ui.painter().text(pos2(row.left() + 14.0, row.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.5), color);
+                                        ui.painter().text(pos2(row.left() + 28.0, row.center().y), Align2::LEFT_CENTER, rel, style::mono(11.5), p.text);
+                                        ui.painter().text(pos2(row.right() - 14.0, row.center().y), Align2::RIGHT_CENTER, ch.letter(), style::mono_semibold(10.5), super::explorer_ui::change_color(*ch, &p));
+                                        if resp.clicked() {
+                                            self.actions.push(Action::OpenFile(path.clone(), None));
+                                        }
+                                    }
+                                });
+                        }
+
+                        if !recent.is_empty() {
+                            ui.add_space(18.0);
+                            let g = kit::section_galley(ui.painter(), t("Recently closed"), p.text_faint);
+                            let (r, _) = ui.allocate_exact_size(vec2(col_w, g.size().y + 6.0), Sense::hover());
+                            ui.painter().galley(r.min, g, p.text_faint);
+                            for path in recent {
+                                let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+                                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                let (icon, color) = icons::file_icon(&name, false, false, &p);
+                                let (row, resp) = ui.allocate_exact_size(vec2(col_w, 26.0), Sense::click());
+                                if resp.hovered() {
+                                    ui.painter().rect_filled(row, CornerRadius::same(5), p.faint_row());
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                ui.painter().text(pos2(row.left() + 8.0 + 7.0, row.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.5), color);
+                                ui.painter().text(pos2(row.left() + 8.0 + 14.0 + 8.0, row.center().y), Align2::LEFT_CENTER, rel, style::mono(11.5), p.text_muted);
+                                if resp.clicked() {
+                                    self.actions.push(Action::OpenFile(path, None));
+                                }
+                            }
+                        }
+                    });
+                });
+            });
     }
 }
 

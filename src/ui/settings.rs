@@ -22,6 +22,8 @@ pub enum SettingsPage {
     Browser,
     /// Presets and how each agent reports to TernaryCode (its hooks).
     Agents,
+    /// Phone pairing and embedded mobile companion server.
+    Pairing,
     Editor,
     Notifications,
     Updates,
@@ -35,7 +37,7 @@ const H: f32 = 768.0;
 const NAV_W: f32 = 236.0;
 
 /// The pages, their icons, and the rows on each (for the search).
-fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 9] {
+fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 10] {
     [
         (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically", "Group active projects at the top", "Worktrees"]),
         (SettingsPage::Appearance, icons::PAINT_BRUSH, "Appearance", &["Theme", "Language", "With the dark theme", "With the light theme", "Font", "Size", "Cursor", "Blinking cursor"]),
@@ -50,7 +52,8 @@ fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str
             },
         ),
         (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "When an agent opens a page", "Put browsers to sleep after", "Pages in Grid tiles", "Logins & cookies", "Agents can use the browser", "Ask before agents open a site", "Sites agents may open without asking", "Agents may run JavaScript in pages"]),
-        (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks"]),
+        (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks", "Agent Profiles"]),
+        (SettingsPage::Pairing, icons::DEVICE_MOBILE, "Phone Pairing", &["Mobile Companion Server", "Local Port", "Paired Devices"]),
         (SettingsPage::Editor, icons::CODE, "Editor", &["Language features", "Start servers only when needed", "Completion while typing", "Format on save"]),
         (
             SettingsPage::Notifications,
@@ -294,7 +297,7 @@ impl App {
         }
         let mut y = search_rect.bottom() + 14.0;
         for (i, (pg, icon, name, rows)) in pages().into_iter().enumerate() {
-            if i == 7 {
+            if i == 8 {
                 ui.painter().hline((nav.left() + 18.0)..=(nav.right() - 18.0), y + 7.0, Stroke::new(1.0, p.border));
                 y += 15.0;
             }
@@ -371,6 +374,10 @@ impl App {
                         SettingsPage::Terminal => self.terminal_page(ui, &search),
                         SettingsPage::Browser => self.browser_page(ui, &search),
                         SettingsPage::Agents | SettingsPage::Integrations => self.agents_page(ui, &search),
+                        SettingsPage::Pairing => {
+                            page_head(ui, t("Phone Pairing"), t("Pair your smartphone with this desktop ADE via QR code."));
+                            self.pairing_content(ui);
+                        }
                         SettingsPage::Editor => self.editor_page(ui, &search),
                         SettingsPage::Notifications => self.notifications_page(ui, &search),
                         SettingsPage::Updates => self.updates_page(ui, &search),

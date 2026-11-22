@@ -128,6 +128,8 @@ impl AppMenu {
         let palette = item(t("Command Palette…"), Action::Palette);
         let switch = item(t("Switch Project…"), Action::SwitchProject);
         let editor = item(t("Show/Hide Code"), Action::ToggleEditor);
+        let drawer = item(t("Show/Hide Drawer"), Action::ToggleDrawer);
+        let zen = item(t("Focus / Zen Mode"), Action::ToggleZenMode);
         let browser = item(t("Browser"), Action::ShowBrowser);
         let address = item(t("Open Address"), Action::BrowserAddress);
         let reload = item(t("Reload Page"), Action::BrowserReload);
@@ -136,6 +138,9 @@ impl AppMenu {
         let compact = item(t("Narrow Sidebar"), Action::ToggleCompactSidebar);
         let focus = item(t("Focus View"), Action::SetView(View::Focus));
         let grid = item(t("Grid of All Projects"), Action::ToggleGrid);
+        let profiles = item(t("Agent Profiles…"), Action::OpenProfiles);
+        let monitor = item(t("Usage & Status Monitor"), Action::OpenMonitor);
+        let pairing = item(t("Phone Pairing…"), Action::OpenPhonePairing);
         let split_right = item(t("Split Right"), Action::SplitRight);
         let split_down = item(t("Split Down"), Action::SplitDown);
         let next_pane = item(t("Next Pane"), Action::NextPane);
@@ -152,7 +157,9 @@ impl AppMenu {
                 &sidebar,
                 &compact,
                 &editor,
+                &drawer,
                 &files,
+                &zen,
                 &PredefinedMenuItem::separator(),
                 &browser,
                 &address,
@@ -160,6 +167,9 @@ impl AppMenu {
                 &PredefinedMenuItem::separator(),
                 &focus,
                 &grid,
+                &profiles,
+                &monitor,
+                &pairing,
                 &PredefinedMenuItem::separator(),
                 &split_right,
                 &split_down,

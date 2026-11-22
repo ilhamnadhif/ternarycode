@@ -38,17 +38,19 @@ impl App {
         self.editor_seen = false;
         let spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        egui::Panel::bottom("status-bar")
-            .frame(
-                egui::Frame::NONE
-                    .fill(p.chrome)
-                    .inner_margin(egui::Margin { left: 14, right: 12, top: 0, bottom: 0 }),
-            )
-            .exact_size(STATUS_H)
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = spacing;
-                self.status_bar(ui)
-            });
+        if !self.zen_mode {
+            egui::Panel::bottom("status-bar")
+                .frame(
+                    egui::Frame::NONE
+                        .fill(p.chrome)
+                        .inner_margin(egui::Margin { left: 14, right: 12, top: 0, bottom: 0 }),
+                )
+                .exact_size(STATUS_H)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = spacing;
+                    self.status_bar(ui)
+                });
+        }
         // Windows: the title bar the app draws (the system's is off), across the window.
         if crate::platform::custom_caption() {
             egui::Panel::top("title-bar")
@@ -113,6 +115,7 @@ impl App {
 
         self.editor_keyboard = self.editor_seen;
         let ctx = ui.ctx().clone();
+        self.monitor_popover_ui(&ctx);
         self.attention_panel(&ctx);
         self.palette_ui(&ctx);
         self.dialogs(&ctx);
@@ -121,13 +124,34 @@ impl App {
     }
 
     /// Terminals take keys only while nothing floating over them does: a dialog, the palette,
-    /// the Review or the attention list. The panes are drawn first, so they would read an Esc
-    /// meant for those (and send it to the agent) before it closes them.
+    /// the Review, a management view, or the attention list.
     pub fn terminals_take_keys(&self) -> bool {
-        self.dialog.is_none() && self.palette.is_none() && !self.review_full() && !self.attention_open && !self.updater.dialog_open
+        self.dialog.is_none()
+            && self.palette.is_none()
+            && !self.review_full()
+            && !self.attention_open
+            && !self.monitor_popover
+            && !self.updater.dialog_open
+            && !crate::ade::is_management_view(self.view)
     }
 
     fn central(&mut self, ui: &mut Ui) {
+        // Management views work even before the first project is added.
+        match self.view {
+            tc_core::model::View::Profiles => {
+                self.profiles_view(ui);
+                return;
+            }
+            tc_core::model::View::Monitor => {
+                self.monitor_view(ui);
+                return;
+            }
+            tc_core::model::View::Pairing => {
+                self.pairing_view(ui);
+                return;
+            }
+            _ => {}
+        }
         if self.projects.is_empty() {
             let full = ui.max_rect();
             let body = self.top_bar(
@@ -151,7 +175,7 @@ impl App {
             return;
         }
         // Review full screen takes the place of the panes (the sidebar stays); else it is in the
-        // Code drawer.
+        // Code editor stage.
         if self.review_full() {
             self.review_view(ui);
             return;
@@ -162,6 +186,7 @@ impl App {
                 let body = self.overview_bar(ui);
                 ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| self.grid_view(ui));
             }
+            tc_core::model::View::Profiles | tc_core::model::View::Monitor | tc_core::model::View::Pairing => {}
         }
     }
 

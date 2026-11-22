@@ -45,6 +45,10 @@ pub struct Project {
     pub panel: Panel,
     /// What its commit button does (saved when not the default).
     pub ship: tc_core::model::ShipPrefs,
+    /// Whether nested agent session history is expanded under this project in the sidebar tree.
+    pub sessions_expanded: bool,
+    /// Preferred account profile id for this project.
+    pub active_profile: Option<String>,
 }
 
 /// A project's Browser panel: at the right of the terminals in Focus, like the Code drawer
@@ -375,6 +379,8 @@ impl Project {
             missing: false,
             merge_offered: false,
             ship: saved.ship.unwrap_or_default(),
+            sessions_expanded: saved.sessions_expanded.unwrap_or(true),
+            active_profile: saved.active_profile.clone(),
             panel: saved.browser_panel.as_ref().map_or_else(Panel::default, |b| Panel {
                 open: b.open,
                 width: b.width,
@@ -451,6 +457,8 @@ impl Project {
             new_worktree: self.new_worktree,
             browser_sites: self.sites.clone(),
             ship: (self.ship != tc_core::model::ShipPrefs::default()).then_some(self.ship),
+            sessions_expanded: Some(self.sessions_expanded),
+            active_profile: self.active_profile.clone(),
             browser_panel: (!self.panel.pages.is_empty() || self.panel.width > 0.0).then_some(tc_core::model::PanelSave {
                 open: self.panel.open && !self.panel.pages.is_empty(),
                 width: self.panel.width,

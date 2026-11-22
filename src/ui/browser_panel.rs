@@ -79,7 +79,7 @@ impl App {
     }
 
     /// The Code drawer of `project` closes (the panel takes its place).
-    fn hide_drawer(&mut self, project: ProjectId) {
+    pub(crate) fn hide_drawer(&mut self, project: ProjectId) {
         if let Some(e) = self.editors.get_mut(&project) {
             e.visible = false;
         }

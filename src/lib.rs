@@ -2,6 +2,7 @@
 //! one window.
 
 pub mod actions;
+pub mod ade;
 pub mod app;
 pub mod browser;
 pub mod browser_agent;
@@ -31,6 +32,7 @@ pub use browser_linux as browser_input;
 #[cfg(target_os = "linux")]
 pub use browser_linux as browser_popup;
 pub mod cli;
+pub mod companion;
 #[cfg(debug_assertions)]
 pub mod devtest;
 #[cfg(debug_assertions)]
@@ -49,7 +51,9 @@ pub mod onboarding;
 pub mod pane;
 pub mod paths;
 pub mod platform;
+pub mod profiles;
 pub mod project;
+pub mod qr;
 pub mod ship;
 pub mod ui;
 pub mod update;

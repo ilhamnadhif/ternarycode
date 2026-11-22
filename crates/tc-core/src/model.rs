@@ -15,13 +15,158 @@ pub const WORKSPACE_VERSION: u32 = 1;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum View {
-    /// One project, its split panes.
+    /// One project: wide code editor + collapsible terminal/agent drawer.
     #[default]
     Focus,
     /// All projects at once. (Spotlight, one project large and the others as a strip, was
     /// removed: workspaces saved in it open in the Grid.)
     #[serde(alias = "spotlight")]
     Grid,
+    /// Multi-account agent profiles and rate-limit failover configuration.
+    Profiles,
+    /// Unified real-time usage and status monitor across all agents and profiles.
+    Monitor,
+    /// Phone pairing and mobile companion server management.
+    Pairing,
+}
+
+/// Where the secondary drawer (terminals, raw agent logs, inspectors) docks in Focus view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DrawerDock {
+    #[default]
+    Bottom,
+    Right,
+}
+
+/// Which tab is active in the secondary workspace drawer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DrawerTab {
+    #[default]
+    Terminals,
+    Logs,
+    Problems,
+}
+
+/// What happens when an active agent account hits its usage/rate limit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailoverMode {
+    /// Automatically switch to the next healthy profile in the fallback chain and resume.
+    #[default]
+    Auto,
+    /// Pause with an inline recovery banner for one-click profile selection and resume.
+    Manual,
+}
+
+/// An independent agent account profile (e.g. `claude1`, `claude2`, `chatgpt1`, `gemini1`),
+/// isolated via its own auth/config directory and optional API key / environment overrides.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentProfile {
+    pub id: String,
+    pub name: String,
+    pub agent: AgentKind,
+    /// Isolated config/auth folder (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, …).
+    /// `None` uses the provider's default folder for the first profile or `<data>/profiles/<id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<PathBuf>,
+    /// Optional API key injected for this profile only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Extra environment variables injected for launches using this profile.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra_env: BTreeMap<String, String>,
+    /// Priority in the fallback chain (lower runs first).
+    pub fallback_order: u32,
+    /// Whether this profile is active in the switcher and fallback chain.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Optional token budget used to compute remaining quota percentage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_token_budget: Option<u64>,
+    /// Uses the system default auth folder (`~/.claude`, `~/.codex`, `~/.gemini`) rather than an
+    /// isolated subfolder.
+    #[serde(default)]
+    pub use_default_auth: bool,
+}
+
+impl Default for AgentProfile {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            agent: AgentKind::Claude,
+            config_dir: None,
+            api_key: None,
+            extra_env: BTreeMap::new(),
+            fallback_order: 0,
+            enabled: true,
+            daily_token_budget: None,
+            use_default_auth: false,
+        }
+    }
+}
+
+/// Multi-account rate-limit failover settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FailoverSettings {
+    pub mode: FailoverMode,
+    /// When every profile of the current provider is rate-limited, fail over to the next healthy
+    /// profile from another provider.
+    pub cross_provider: bool,
+    /// Fallback cooldown duration (minutes) when the agent output does not specify a reset time.
+    pub default_cooldown_mins: u32,
+}
+
+impl Default for FailoverSettings {
+    fn default() -> Self {
+        Self {
+            mode: FailoverMode::Auto,
+            cross_provider: true,
+            default_cooldown_mins: 30,
+        }
+    }
+}
+
+/// A paired smartphone/tablet authorised to control this desktop ADE via the Mobile Companion.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PairedDevice {
+    pub id: String,
+    pub name: String,
+    /// SHA-256 hex digest of the device's bearer token (the raw token is never stored in plain text).
+    pub token_hash: String,
+    pub ip: String,
+    pub paired_at: i64,
+    pub last_seen: i64,
+}
+
+/// Embedded local HTTP/SSE companion server settings for Phone Pairing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompanionSettings {
+    pub enabled: bool,
+    pub port: u16,
+    /// Optional external tunnel URL (e.g. Cloudflare Tunnel / Tailscale Funnel / ngrok) used in
+    /// the QR code instead of the LAN IP.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tunnel_url: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<PairedDevice>,
+}
+
+impl Default for CompanionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 7890,
+            tunnel_url: String::new(),
+            devices: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -108,6 +253,12 @@ pub struct ProjectSave {
     /// What its commit button does, when not the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ship: Option<ShipPrefs>,
+    /// Whether nested agent session history is expanded under this project in the sidebar tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions_expanded: Option<bool>,
+    /// Preferred agent profile id for this project (e.g. `claude1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_profile: Option<String>,
 }
 
 /// What a project's commit button does (its ▾ menu), and whether its pull requests start as
@@ -219,6 +370,9 @@ pub struct PaneSave {
     /// The agent pane a page belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_owner: Option<PaneId>,
+    /// Active multi-account profile id bound to this pane (e.g. `claude1`, `chatgpt2`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -377,6 +531,28 @@ pub struct Settings {
     /// Agents may run their own JavaScript in pages (`browser_evaluate`).
     #[serde(default)]
     pub browser_agent_js: bool,
+    /// Multi-account agent profiles (e.g. `claude1`, `claude2`, `chatgpt1`, `gemini1`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<AgentProfile>,
+    /// Rate-limit failover policy (auto-resume vs manual recovery banner).
+    #[serde(default)]
+    pub failover: FailoverSettings,
+    /// Where the secondary terminal/logs drawer docks (`bottom` or `right`).
+    #[serde(default)]
+    pub drawer_dock: DrawerDock,
+    /// Whether the secondary drawer is open.
+    #[serde(default = "yes")]
+    pub drawer_open: bool,
+    /// Fraction of the workspace allocated to the secondary drawer (`0.18..=0.70`, default `0.36`
+    /// so the Code Editor keeps >= 60% of the primary viewport by default).
+    #[serde(default = "default_drawer_size")]
+    pub drawer_size: f32,
+    /// Code editor & diff viewer commands the primary viewport by default.
+    #[serde(default = "yes")]
+    pub editor_first: bool,
+    /// Phone pairing and mobile companion server settings.
+    #[serde(default)]
+    pub companion: CompanionSettings,
 }
 
 /// The sites agents open without asking unless the user changes the list: this machine's.
@@ -413,6 +589,10 @@ impl Default for WorktreeSettings {
 
 fn ten() -> u32 {
     10
+}
+
+fn default_drawer_size() -> f32 {
+    0.36
 }
 
 fn yes() -> bool {
@@ -466,6 +646,13 @@ impl Default for Settings {
             format_on_save: false,
             cursor_shape: CursorShape::Block,
             worktrees: WorktreeSettings::default(),
+            profiles: Vec::new(),
+            failover: FailoverSettings::default(),
+            drawer_dock: DrawerDock::Bottom,
+            drawer_open: true,
+            drawer_size: default_drawer_size(),
+            editor_first: true,
+            companion: CompanionSettings::default(),
         }
     }
 }
@@ -480,9 +667,12 @@ impl Settings {
         self.font_size = fix(self.font_size, 6.0, 72.0, d.font_size);
         self.sidebar_width = fix(self.sidebar_width, 180.0, 420.0, d.sidebar_width);
         self.files_height = fix(self.files_height, 0.0, 4000.0, d.files_height);
+        self.drawer_size = fix(self.drawer_size, 0.18, 0.70, d.drawer_size);
         self.scrollback = self.scrollback.clamp(100, 1_000_000);
         self.scrollback_budget_mb = self.scrollback_budget_mb.clamp(16, 16_384);
         self.long_command_secs = self.long_command_secs.clamp(1, 86_400);
+        self.failover.default_cooldown_mins = self.failover.default_cooldown_mins.clamp(1, 1440);
+        self.companion.port = self.companion.port.clamp(1024, 65535);
         *self != before
     }
 
@@ -703,5 +893,51 @@ mod tests {
         assert_eq!(all.len(), 6);
         assert!(all.iter().any(|p| p.id == "antigravity" && p.command == "agy" && p.builtin));
         assert!(all.iter().any(|p| p.id == "gemini" && !p.builtin));
+    }
+
+    #[test]
+    fn ade_redesign_settings_and_profiles_round_trip() {
+        let mut s = Settings::default();
+        assert!(s.editor_first);
+        assert!(s.drawer_open);
+        assert_eq!(s.drawer_dock, DrawerDock::Bottom);
+        assert_eq!(s.failover.mode, FailoverMode::Auto);
+        s.drawer_dock = DrawerDock::Right;
+        s.drawer_size = 0.99;
+        s.companion.port = 80;
+        s.profiles.push(AgentProfile {
+            id: "claude2".into(),
+            name: "Claude Secondary".into(),
+            agent: AgentKind::Claude,
+            config_dir: Some("/tmp/tc-claude2".into()),
+            api_key: Some("sk-ant-test".into()),
+            extra_env: Default::default(),
+            enabled: true,
+            fallback_order: 2,
+            daily_token_budget: Some(2_000_000),
+            use_default_auth: false,
+        });
+        s.failover.mode = FailoverMode::Manual;
+        s.companion.enabled = true;
+        s.companion.devices.push(PairedDevice {
+            id: "dev-1".into(),
+            name: "iPhone 16 Pro".into(),
+            token_hash: "deadbeef".into(),
+            ip: "192.168.1.42".into(),
+            paired_at: 1_700_000_000,
+            last_seen: 1_700_000_120,
+        });
+        s.sanitize();
+        assert!(s.drawer_size <= 0.70);
+        assert!(s.companion.port >= 1024);
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+        // Views serialize cleanly and fall back gracefully on unknown strings.
+        for v in [View::Focus, View::Grid, View::Profiles, View::Monitor, View::Pairing] {
+            let enc = serde_json::to_string(&v).unwrap();
+            let dec: View = serde_json::from_str(&enc).unwrap();
+            assert_eq!(dec, v);
+        }
     }
 }

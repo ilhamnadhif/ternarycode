@@ -16,11 +16,17 @@ use crate::app::App;
 use crate::i18n::{t, tf};
 
 pub const HEADER_H: f32 = super::sidebar::TOP_H;
-/// A pane's header, inside its sheet: what runs there, its status and since when.
+/// A pane's header, inside its sheet: what runs there, its status, active profile, since when.
 pub const PANE_HEADER_H: f32 = 34.0;
-/// The Code drawer's head (Files | Changes).
-const DRAWER_HEAD_H: f32 = 40.0;
-/// How far either side of a divider (or the Code drawer's edge) a drag takes it.
+/// The Code editor stage's head (`Files | Changes`, Quick Open, close).
+const DRAWER_HEAD_H: f32 = 38.0;
+/// The secondary drawer's tab bar (`Terminals | Agent Logs | Problems`, dock controls).
+pub const DRAWER_BAR_H: f32 = 32.0;
+/// Inline rate-limit failover & recovery banner inside a paused pane.
+const RATE_LIMIT_H: f32 = 36.0;
+/// Inline tool approval quick-action bar when an agent waits for confirmation.
+const APPROVAL_H: f32 = 32.0;
+/// How far either side of a divider (or the Code editor's edge) a drag takes it.
 pub(crate) const DIVIDER_GRAB: f32 = 5.0;
 /// Space between a sheet's edge and where the terminal's own padding starts (16 px to the text
 /// at the sides, as the design has it).
@@ -117,27 +123,67 @@ impl App {
         let focus_tip = kit::tip(t("Focus View"), Action::ToggleGrid);
         let grid_tip = kit::tip(t("Grid of All Projects"), Action::ToggleGrid);
         let options = [kit::Seg::new(t("Focus"), &focus_tip), kit::Seg::new(t("Grid"), &grid_tip)];
-        if let Some(i) = kit::segmented(ui, &options, (self.view == View::Grid) as usize) {
+        let on = match self.view {
+            View::Focus => 0,
+            View::Grid => 1,
+            _ => usize::MAX,
+        };
+        if let Some(i) = kit::segmented(ui, &options, on) {
             self.actions.push(Action::SetView(if i == 1 { View::Grid } else { View::Focus }));
         }
     }
 
     /// Right side of the top bar (added right to left): what acts on the active project.
     fn toolbar(&mut self, ui: &mut Ui) {
+        if self.zen_mode {
+            let exit = kit::button_keys(ui, kit::Kind::Secondary, Some(icons::ARROWS_IN), t("Exit Zen"), kit::keys(&Action::ToggleZenMode), true);
+            #[cfg(debug_assertions)]
+            crate::devtest::record("toggle-zen", exit.rect);
+            if exit.clicked() {
+                self.actions.push(Action::ToggleZenMode);
+            }
+            return;
+        }
+        if crate::ade::is_management_view(self.view) {
+            if !self.projects.is_empty()
+                && kit::button_ex(ui, kit::Kind::Secondary, Some(icons::CODE), t("Back to Workspace"), true).clicked()
+            {
+                self.actions.push(Action::SetView(View::Focus));
+            }
+            kit::vsep(ui);
+            self.telemetry_pill(ui);
+            return;
+        }
         if self.review_full() {
             self.review_toolbar(ui);
             return;
         }
         if self.view == View::Grid && !self.projects.is_empty() {
             self.grid_toolbar(ui);
+            kit::vsep(ui);
+            self.telemetry_pill(ui);
             return;
         }
         if self.view != View::Focus || self.active.is_none() {
+            self.telemetry_pill(ui);
             return;
         }
         let editor_on = self.active.and_then(|id| self.editors.get(&id)).is_some_and(|e| e.visible);
-        // Added right to left: Code and Browser (what shows beside the terminals), the splits,
-        // then Run Agent.
+        let drawer_on = self.settings.drawer_open;
+        let drawer_icon = if self.is_dock_right() { icons::COLUMNS } else { icons::ROWS };
+        // Added right to left: Zen Mode, Secondary Drawer, Code Editor, Browser, Telemetry Pill, Run Agent.
+        let zen = kit::icon_button_ex(ui, icons::ARROWS_OUT, &kit::tip(t("Focus / Zen Mode"), Action::ToggleZenMode), self.zen_mode, 28.0);
+        #[cfg(debug_assertions)]
+        crate::devtest::record("toggle-zen", zen.rect);
+        if zen.clicked() {
+            self.actions.push(Action::ToggleZenMode);
+        }
+        let dr = kit::icon_button_ex(ui, drawer_icon, &kit::tip(t("Drawer"), Action::ToggleDrawer), drawer_on, 28.0);
+        #[cfg(debug_assertions)]
+        crate::devtest::record("toggle-drawer", dr.rect);
+        if dr.clicked() {
+            self.actions.push(Action::ToggleDrawer);
+        }
         let e = kit::icon_button_ex(ui, icons::CODE, &kit::tip(t("Code"), Action::ToggleEditor), editor_on, 28.0);
         #[cfg(debug_assertions)]
         crate::devtest::record("toggle-editor", e.rect);
@@ -146,12 +192,7 @@ impl App {
         }
         self.browser_button(ui);
         kit::vsep(ui);
-        if kit::icon_button_ex(ui, icons::SQUARE_SPLIT_VERTICAL, &kit::tip(t("Split Down"), Action::SplitDown), false, 28.0).clicked() {
-            self.actions.push(Action::SplitDown);
-        }
-        if kit::icon_button_ex(ui, icons::SQUARE_SPLIT_HORIZONTAL, &kit::tip(t("Split Right"), Action::SplitRight), false, 28.0).clicked() {
-            self.actions.push(Action::SplitRight);
-        }
+        self.telemetry_pill(ui);
         kit::vsep(ui);
         let run = kit::button_keys(ui, kit::Kind::Primary, Some(icons::PLAY), t("Run Agent"), kit::keys(&Action::PickPreset), false);
         #[cfg(debug_assertions)]
@@ -419,19 +460,21 @@ impl App {
         // at the left too when the sidebar is hidden).
         let body = sheets_area(body, self.settings.sidebar_hidden);
 
-        // ----- editor beside the panes ------------------------------------------------------------
+        // ----- Wide Code Editor primary stage + collapsible Bottom / Right secondary drawer -----
         self.last_full_body = Some(body);
-        let mut drawer_edge = None;
-        let body = if let Some(split_x) = self.editor_split(pid, body) {
-            let drawer_rect = Rect::from_min_max(pos2(split_x + style::GAP / 2.0, body.top()), body.max);
-            paint_sheet(ui.painter(), drawer_rect, &p, SheetLook::Plain);
+        let (editor_stage, drawer_stage) = self.workspace_split(pid, body);
+        let dock_right = self.is_dock_right();
+        let has_editor = editor_stage.is_some();
+
+        if let Some(stage) = editor_stage {
+            #[cfg(debug_assertions)]
+            crate::devtest::record("editor-stage", stage);
+            paint_sheet(ui.painter(), stage, &p, SheetLook::Plain);
             let root = self.project(pid).map(|x| x.path.clone()).unwrap_or_default();
-            // Review of this project, unless full screen, takes the drawer.
             let review_here = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
-            // The drawer's head: Files | Changes, search, full screen (Review), close.
-            let head = Rect::from_min_size(drawer_rect.min, vec2(drawer_rect.width(), DRAWER_HEAD_H));
+            let head = Rect::from_min_size(stage.min, vec2(stage.width(), DRAWER_HEAD_H));
             self.drawer_head(ui, head, pid, review_here);
-            let editor_rect = Rect::from_min_max(pos2(drawer_rect.left() + 1.0, head.bottom()), pos2(drawer_rect.right() - 1.0, drawer_rect.bottom() - 1.0));
+            let editor_rect = Rect::from_min_max(pos2(stage.left() + 1.0, head.bottom()), pos2(stage.right() - 1.0, stage.bottom() - 1.0));
             ui.painter().hline(editor_rect.x_range(), editor_rect.top() + 0.5, Stroke::new(1.0, p.border));
             let editor_rect = Rect::from_min_max(pos2(editor_rect.left(), editor_rect.top() + 1.0), editor_rect.max);
             ui.scope_builder(egui::UiBuilder::new().max_rect(editor_rect), |ui| {
@@ -442,21 +485,59 @@ impl App {
                     self.code_drawer(ui, pid, root);
                 }
             });
-            // Its edge is dragged to size it (after the panes are drawn, below).
-            drawer_edge = Some((split_x, body));
-            Rect::from_min_max(body.min, pos2(split_x - style::GAP / 2.0, body.bottom()))
-        } else {
-            body
+        }
+
+        // Track splitter handle between Code Editor stage and Secondary Drawer.
+        let split_handle = match (editor_stage, drawer_stage) {
+            (Some(ed), Some(dr)) => Some((ed, dr, dock_right)),
+            _ => None,
         };
 
-        // ----- the Browser panel beside the panes (the Code drawer closed) --------------------
-        // Terminals side by side that would get too narrow show stacked while it is open; with no
-        // room even so, it floats over them.
+        // If the secondary drawer is collapsed (e.g. Zen Mode or user closed it), finish cleanly.
+        let Some(drawer_rect) = drawer_stage else {
+            self.tab_drop(ui, &tab_rects, strip_shown, &[], active_tab);
+            return;
+        };
+
+        // Secondary Drawer chrome: when Code Editor is visible (or when viewing Logs/Problems),
+        // render the crisp drawer tab strip (Terminals | Agent Logs | Problems) + dock controls.
+        let show_drawer_bar = has_editor || self.drawer_tab != tc_core::model::DrawerTab::Terminals;
+        let drawer_content = if show_drawer_bar {
+            #[cfg(debug_assertions)]
+            crate::devtest::record("secondary-drawer", drawer_rect);
+            let bar = Rect::from_min_size(drawer_rect.min, vec2(drawer_rect.width(), DRAWER_BAR_H));
+            self.secondary_drawer_bar(ui, bar, pid, has_editor);
+            Rect::from_min_max(pos2(drawer_rect.left(), bar.bottom() + 2.0), drawer_rect.max)
+        } else {
+            drawer_rect
+        };
+
+        // Non-terminal drawer tabs (`Agent Logs`, `Problems`).
+        if self.drawer_tab != tc_core::model::DrawerTab::Terminals {
+            paint_sheet(ui.painter(), drawer_content, &p, SheetLook::Plain);
+            let inner = drawer_content.shrink(1.0);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+                ui.set_clip_rect(inner);
+                match self.drawer_tab {
+                    tc_core::model::DrawerTab::Logs => self.agent_logs_drawer(ui, pid),
+                    tc_core::model::DrawerTab::Problems => self.problems_panel(ui, pid, inner),
+                    tc_core::model::DrawerTab::Terminals => {}
+                }
+            });
+            if let Some((ed, dr, right)) = split_handle {
+                self.paint_workspace_splitter(ui, pid, body, ed, dr, right);
+            }
+            self.tab_drop(ui, &tab_rects, strip_shown, &[], active_tab);
+            return;
+        }
+
+        // ----- the Browser panel beside the panes (when Code editor is hidden) ----------------
+        let body_panes = drawer_content;
         self.panel_follow(pid);
         let cell = widget::cell_size(ui.ctx(), self.settings.font_size);
         let place = match self.project(pid).and_then(|p| p.tab()) {
-            Some(tab) if drawer_edge.is_none() => self.focus_place(pid, &tab.layout, body, cell),
-            _ => crate::project::PanelPlace::without(body),
+            Some(tab) if !has_editor => self.focus_place(pid, &tab.layout, body_panes, cell),
+            _ => crate::project::PanelPlace::without(body_panes),
         };
         let told = self.panel_of(pid).is_some_and(|x| x.told_stacked);
         if let Some(panel) = self.panel_mut(pid) {
@@ -471,7 +552,7 @@ impl App {
                 Some((t("Keep Side by Side").to_string(), Action::PanelSideBySide(pid))),
             );
         }
-        let panel_full = body;
+        let panel_full = body_panes;
         let body = place.panes;
 
         // ----- panes -------------------------------------------------------------------------
@@ -522,10 +603,13 @@ impl App {
             let header = Rect::from_min_size(rect.min, vec2(rect.width(), PANE_HEADER_H));
             let mut term_rect = term_rect(rect, single);
             self.pane_header(ui, pane_id, header, is_focused);
-            // A restored agent that can be resumed: a banner under the header; a shell that
-            // ended: a bar at the bottom. The terminal takes what is left.
-            if self.panes.get(&pane_id).is_some_and(|x| x.resume.is_some()) {
-                let banner = Rect::from_min_size(pos2(rect.left() + 8.0, header.bottom()), vec2(rect.width() - 16.0, BANNER_H));
+            // Rate-limit failover & recovery banner, restored-session resume banner, or tool approval bar.
+            if self.panes.get(&pane_id).is_some_and(|x| x.rate_limit.is_some()) {
+                let banner = Rect::from_min_size(pos2(rect.left() + 8.0, header.bottom()), vec2((rect.width() - 16.0).max(40.0), RATE_LIMIT_H));
+                self.rate_limit_banner(ui, pane_id, banner);
+                term_rect.min.y = banner.bottom() + 2.0;
+            } else if self.panes.get(&pane_id).is_some_and(|x| x.resume.is_some()) {
+                let banner = Rect::from_min_size(pos2(rect.left() + 8.0, header.bottom()), vec2((rect.width() - 16.0).max(40.0), BANNER_H));
                 self.resume_banner(ui, pane_id, banner, false);
                 term_rect.min.y = banner.bottom() + 2.0;
             }
@@ -533,6 +617,10 @@ impl App {
                 let foot = Rect::from_min_max(pos2(rect.left() + 6.0, rect.bottom() - 6.0 - FOOT_H), pos2(rect.right() - 6.0, rect.bottom() - 6.0));
                 self.exit_bar(ui, pane_id, foot);
                 term_rect.max.y = foot.top() - 2.0;
+            } else if self.panes.get(&pane_id).is_some_and(|x| x.tracker.status == Status::NeedsInput && x.tracker.agent.is_some() && x.rate_limit.is_none()) && term_rect.height() > 110.0 {
+                let bar = Rect::from_min_max(pos2(rect.left() + 8.0, rect.bottom() - 6.0 - APPROVAL_H), pos2(rect.right() - 8.0, rect.bottom() - 6.0));
+                self.approval_bar(ui, pane_id, bar);
+                term_rect.max.y = bar.top() - 2.0;
             }
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("pane:{pane_id}"), term_rect);
@@ -630,28 +718,10 @@ impl App {
                 self.mark_dirty();
             }
         }
-        // The Code drawer's edge, dragged to size it: after the panes and the drawer, so that
-        // neither takes the strip along it.
-        if let Some((split_x, full)) = drawer_edge {
-            let divider = Rect::from_min_max(pos2(split_x - DIVIDER_GRAB, full.top()), pos2(split_x + DIVIDER_GRAB, full.bottom()));
-            let dr = ui.interact(divider, egui::Id::new(("editor-divider", pid)), Sense::drag());
-            #[cfg(debug_assertions)]
-            crate::devtest::record("editor-divider", divider);
-            if dr.hovered() || dr.dragged() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-            }
-            if dr.dragged()
-                && let Some(pos) = dr.interact_pointer_pos()
-                && let Some(e) = self.editors.get_mut(&pid)
-            {
-                e.width = ((full.right() - pos.x) / full.width()).clamp(0.2, 0.8);
-            }
-            if dr.drag_stopped() {
-                self.mark_dirty();
-            }
-            if dr.hovered() || dr.dragged() {
-                ui.painter().rect_filled(Rect::from_center_size(pos2(split_x, full.center().y), vec2(2.0, full.height() - 16.0)), CornerRadius::same(1), p.accent);
-            }
+        // Resizable splitter between the Wide Code Editor stage and the Secondary Drawer.
+        if let Some((ed, dr, right)) = split_handle {
+            let full = self.last_full_body.unwrap_or(body);
+            self.paint_workspace_splitter(ui, pid, full, ed, dr, right);
         }
         // The Browser panel, after the panes: a floating one is drawn over them, and its edge
         // takes the drag along it.
@@ -1031,16 +1101,34 @@ impl App {
         let unconnected = self.unconnected(pane).map(|a| (pane_id, a));
         let quiet = matches!(s, Status::Idle | Status::Unknown | Status::Ended);
 
-        // From the right: the menu, how long, hooks (or "not connected"), where it runs.
+        // From the right: the menu, inline active profile switcher, how long, hooks (or "not connected"), where it runs.
         let mut right = rect.right() - 8.0;
         let menu_rect = Rect::from_center_size(pos2(right - 9.0, cy), vec2(18.0, 18.0));
-        right -= 18.0 + 8.0;
+        right -= 18.0 + 6.0;
         let menu = ui
             .scope_builder(egui::UiBuilder::new().max_rect(menu_rect), |ui| kit::icon_button_ex(ui, icons::DOTS_THREE, t("Pane"), false, 18.0))
             .inner;
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("pane-menu:{pane_id}"), menu_rect);
         egui::Popup::menu(&menu).align(egui::RectAlign::BOTTOM_END).show(|ui| self.pane_menu(ui, pane_id));
+
+        // Inline Active Profile Switcher pill inside agent panes (or panes bound to a profile).
+        let show_profile = has_agent || self.panes.get(&pane_id).is_some_and(|x| x.active_profile.is_some());
+        if show_profile && rect.width() > 300.0 {
+            let switcher_area = Rect::from_min_max(pos2((right - 160.0).max(rect.left() + 140.0), rect.top()), pos2(right, rect.bottom()));
+            let used_left = ui
+                .scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(switcher_area)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                    |ui| {
+                        self.pane_profile_switcher(ui, pane_id);
+                        ui.min_rect().left()
+                    },
+                )
+                .inner;
+            right = used_left - 8.0;
+        }
         let painter = ui.painter_at(rect);
         // How long it has been running, or waiting: "1:42".
         if matches!(s, Status::Running | Status::NeedsInput) {
@@ -1260,6 +1348,263 @@ impl App {
         if close.is_some_and(|c| c.clicked()) {
             self.actions.push(Action::ClosePaneId(pane_id));
         }
+    }
+
+    /// Inline approval / quick-action strip rendered at the bottom of an agent pane waiting for
+    /// permission or input (`Status::NeedsInput`).
+    fn approval_bar(&mut self, ui: &mut Ui, pane_id: PaneId, rect: Rect) {
+        let p = style::pal(ui);
+        let msg = self
+            .panes
+            .get(&pane_id)
+            .and_then(|x| x.tracker.message.clone())
+            .unwrap_or_else(|| t("Agent needs your confirmation").into());
+        let painter = ui.painter_at(rect.expand(1.0));
+        painter.rect(
+            rect,
+            CornerRadius::same(7),
+            style::soft(p.warn, 0.10),
+            Stroke::new(1.0, style::soft(p.warn, 0.32)),
+            egui::StrokeKind::Inside,
+        );
+        let cy = rect.center().y;
+        painter.text(pos2(rect.left() + 12.0 + 6.0, cy), Align2::CENTER_CENTER, icons::BELL_RINGING, style::icon_fill(12.5), p.warn);
+
+        let inner = Rect::from_min_max(pos2(rect.left() + 28.0, rect.top()), pos2(rect.right() - 6.0, rect.bottom()));
+        let right_edge = ui
+            .scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(inner)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    if kit::button_ex(ui, kit::Kind::Danger, Some(icons::X), t("Reject"), true).clicked()
+                        && let Some(pane) = self.panes.get_mut(&pane_id)
+                    {
+                        pane.input(vec![0x1b]);
+                    }
+                    if kit::button_keys(ui, kit::Kind::Primary, Some(icons::CHECK), t("Approve"), Some("↵"), true).clicked()
+                        && let Some(pane) = self.panes.get_mut(&pane_id)
+                    {
+                        pane.entered(Instant::now());
+                        pane.input(b"\r".to_vec());
+                    }
+                    ui.min_rect().left()
+                },
+            )
+            .inner;
+
+        let tx = rect.left() + 28.0;
+        let room = (right_edge - 8.0 - tx).max(20.0);
+        let mut job = egui::text::LayoutJob::simple_singleline(msg, egui::FontId::proportional(12.0), p.text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let g = painter.layout_job(job);
+        painter.galley(pos2(tx, cy - g.size().y / 2.0), g, p.text);
+    }
+
+    /// Crisp 32 px header bar for the collapsible Secondary Drawer (`Terminals | Agent Logs | Problems`,
+    /// pane split controls, Bottom/Right dock toggle, Maximize, Collapse).
+    fn secondary_drawer_bar(&mut self, ui: &mut Ui, rect: Rect, pid: tc_core::ProjectId, has_editor: bool) {
+        let p = style::pal(ui);
+        let tab = self.drawer_tab;
+        let logs_count = self.agent_logs.iter().filter(|e| e.project == Some(pid)).count();
+        let (diag_errs, diag_warns) = self.project_diagnostic_counts(pid);
+        let diag_total = diag_errs + diag_warns;
+
+        // Lay out right-side controls first so the left tab strip never overlaps them in narrow right-docked drawers.
+        let right_used = ui
+            .scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    if has_editor
+                        && kit::icon_button_ex(ui, icons::X, &kit::tip(t("Hide Drawer"), Action::ToggleDrawer), false, 22.0).clicked()
+                    {
+                        self.actions.push(Action::ToggleDrawer);
+                    }
+                    if has_editor {
+                        let max_icon = if self.drawer_maximized { icons::ARROWS_IN } else { icons::ARROWS_OUT };
+                        let max_tip = if self.drawer_maximized { t("Restore Drawer") } else { t("Maximize Drawer") };
+                        if kit::icon_button_ex(ui, max_icon, max_tip, self.drawer_maximized, 22.0).clicked() {
+                            self.drawer_maximized = !self.drawer_maximized;
+                        }
+                        let is_right = self.is_dock_right();
+                        let dock_icon = if is_right { icons::ROWS } else { icons::COLUMNS };
+                        let dock_tip = if is_right { t("Dock Drawer Bottom") } else { t("Dock Drawer Right") };
+                        if kit::icon_button_ex(ui, dock_icon, dock_tip, false, 22.0).clicked() {
+                            self.actions.push(Action::SetDrawerDock(if is_right {
+                                tc_core::model::DrawerDock::Bottom
+                            } else {
+                                tc_core::model::DrawerDock::Right
+                            }));
+                        }
+                    }
+                    if tab == tc_core::model::DrawerTab::Terminals && rect.width() >= 280.0 {
+                        kit::vsep(ui);
+                        if kit::icon_button_ex(ui, icons::SQUARE_SPLIT_VERTICAL, &kit::tip(t("Split Down"), Action::SplitDown), false, 22.0).clicked() {
+                            self.actions.push(Action::SplitDown);
+                        }
+                        if kit::icon_button_ex(ui, icons::SQUARE_SPLIT_HORIZONTAL, &kit::tip(t("Split Right"), Action::SplitRight), false, 22.0).clicked() {
+                            self.actions.push(Action::SplitRight);
+                        }
+                    }
+                    ui.min_rect()
+                },
+            )
+            .inner;
+
+        let left_max = (right_used.left() - 6.0).max(rect.left() + 60.0);
+        let left_rect = Rect::from_min_max(rect.min, pos2(left_max, rect.bottom()));
+        let compact = left_rect.width() < 260.0;
+        let diag_c = if diag_errs > 0 { p.err } else { p.warn };
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(left_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.set_clip_rect(left_rect.intersect(ui.clip_rect()));
+                ui.spacing_mut().item_spacing.x = 3.0;
+                if compact {
+                    if kit::icon_button_ex(ui, icons::TERMINAL_WINDOW, t("Terminals"), tab == tc_core::model::DrawerTab::Terminals, 24.0).clicked() {
+                        self.actions.push(Action::SetDrawerTab(tc_core::model::DrawerTab::Terminals));
+                    }
+                    if kit::icon_button_ex(ui, icons::LIST, t("Agent Logs"), tab == tc_core::model::DrawerTab::Logs, 24.0).clicked() {
+                        self.actions.push(Action::SetDrawerTab(tc_core::model::DrawerTab::Logs));
+                    }
+                    if kit::icon_button_ex(ui, icons::WARNING_CIRCLE, t("Problems"), tab == tc_core::model::DrawerTab::Problems, 24.0).clicked() {
+                        self.actions.push(Action::SetDrawerTab(tc_core::model::DrawerTab::Problems));
+                    }
+                } else {
+                    if kit::drawer_tab(ui, icons::TERMINAL_WINDOW, t("Terminals"), None, tab == tc_core::model::DrawerTab::Terminals).clicked() {
+                        self.actions.push(Action::SetDrawerTab(tc_core::model::DrawerTab::Terminals));
+                    }
+                    if kit::drawer_tab(ui, icons::LIST, t("Agent Logs"), (logs_count > 0).then_some((logs_count, p.info)), tab == tc_core::model::DrawerTab::Logs).clicked() {
+                        self.actions.push(Action::SetDrawerTab(tc_core::model::DrawerTab::Logs));
+                    }
+                    if kit::drawer_tab(ui, icons::WARNING_CIRCLE, t("Problems"), (diag_total > 0).then_some((diag_total, diag_c)), tab == tc_core::model::DrawerTab::Problems).clicked() {
+                        self.actions.push(Action::SetDrawerTab(tc_core::model::DrawerTab::Problems));
+                    }
+                }
+            },
+        );
+    }
+
+    /// Resizable 1 px splitter between the primary Code Editor stage and the Secondary Drawer.
+    fn paint_workspace_splitter(&mut self, ui: &mut Ui, pid: tc_core::ProjectId, full: Rect, ed: Rect, dr: Rect, dock_right: bool) {
+        let p = style::pal(ui);
+        if dock_right {
+            let split_x = (ed.right() + dr.left()) / 2.0;
+            let divider = Rect::from_min_max(pos2(split_x - DIVIDER_GRAB, full.top()), pos2(split_x + DIVIDER_GRAB, full.bottom()));
+            let resp = ui.interact(divider, egui::Id::new(("editor-divider", pid)), Sense::drag());
+            #[cfg(debug_assertions)]
+            crate::devtest::record("editor-divider", divider);
+            if resp.hovered() || resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                ui.painter().rect_filled(Rect::from_center_size(pos2(split_x, full.center().y), vec2(2.0, full.height() - 16.0)), CornerRadius::same(1), p.accent);
+            }
+            if resp.dragged()
+                && let Some(pos) = resp.interact_pointer_pos()
+                && let Some(e) = self.editors.get_mut(&pid)
+            {
+                e.width = ((pos.x - full.left()) / full.width()).clamp(0.40, 0.85);
+            }
+            if resp.drag_stopped() {
+                self.mark_dirty();
+            }
+        } else {
+            let split_y = (ed.bottom() + dr.top()) / 2.0;
+            let divider = Rect::from_min_max(pos2(full.left(), split_y - DIVIDER_GRAB), pos2(full.right(), split_y + DIVIDER_GRAB));
+            let resp = ui.interact(divider, egui::Id::new(("drawer-divider", pid)), Sense::drag());
+            #[cfg(debug_assertions)]
+            crate::devtest::record("drawer-divider", divider);
+            if resp.hovered() || resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                ui.painter().rect_filled(Rect::from_center_size(pos2(full.center().x, split_y), vec2(full.width() - 16.0, 2.0)), CornerRadius::same(1), p.accent);
+            }
+            if resp.dragged()
+                && let Some(pos) = resp.interact_pointer_pos()
+            {
+                self.settings.drawer_size = ((full.bottom() - pos.y) / full.height()).clamp(0.18, 0.70);
+            }
+            if resp.drag_stopped() {
+                self.settings_changed();
+            }
+        }
+    }
+
+    /// Raw & structured Agent Logs drawer tab (hooks, tool executions, rate limits, failover events).
+    fn agent_logs_drawer(&mut self, ui: &mut Ui, pid: tc_core::ProjectId) {
+        let p = style::pal(ui);
+        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let mut filter = self.logs_filter.clone();
+                kit::field(ui, egui::Id::new("logs-filter"), &mut filter, Some(icons::MAGNIFYING_GLASS), t("Filter agent logs…"), 240.0, true);
+                self.logs_filter = filter;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::BROOM), t("Clear"), true).clicked() {
+                        self.agent_logs.clear();
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            let q = self.logs_filter.trim().to_ascii_lowercase();
+            let rows: Vec<_> = self
+                .agent_logs
+                .iter()
+                .rev()
+                .filter(|e| e.project.is_none() || e.project == Some(pid))
+                .filter(|e| q.is_empty() || e.message.to_ascii_lowercase().contains(&q) || e.profile.as_deref().is_some_and(|pr| pr.to_ascii_lowercase().contains(&q)))
+                .cloned()
+                .collect();
+            egui::ScrollArea::vertical()
+                .id_salt(("agent-logs-scroll", pid))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if rows.is_empty() {
+                        ui.label(RichText::new(t("No agent log events yet.")).size(12.0).color(p.text_faint));
+                    } else {
+                        for entry in rows {
+                            let c = match entry.level {
+                                crate::profiles::LogLevel::Failover => p.ok,
+                                crate::profiles::LogLevel::Warn => p.warn,
+                                crate::profiles::LogLevel::Err => p.err,
+                                crate::profiles::LogLevel::Tool => p.info,
+                                crate::profiles::LogLevel::Info => p.text_muted,
+                            };
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.label(RichText::new(entry.at.format("%H:%M:%S").to_string()).font(style::mono(10.5)).color(p.text_ghost));
+                                if let Some(pr) = &entry.profile {
+                                    ui.label(RichText::new(pr).font(style::mono_medium(10.5)).color(p.accent_text));
+                                }
+                                ui.label(RichText::new(&entry.message).font(style::mono(11.5)).color(c));
+                            });
+                        }
+                    }
+                });
+        });
+    }
+
+    fn project_diagnostic_counts(&self, pid: tc_core::ProjectId) -> (usize, usize) {
+        let Some(root) = self.project(pid).map(|x| &x.path) else {
+            return (0, 0);
+        };
+        let mut errs = 0usize;
+        let mut warns = 0usize;
+        for (path, (_, diags)) in &self.lsp.diagnostics {
+            if path.starts_with(root) {
+                for d in diags {
+                    match d.severity {
+                        Some(tc_lsp::types::DiagnosticSeverity::ERROR) => errs += 1,
+                        Some(tc_lsp::types::DiagnosticSeverity::WARNING) => warns += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        (errs, warns)
     }
 
     /// The Code drawer's head: Files | Changes (Changes is the Review, with how many files

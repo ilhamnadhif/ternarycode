@@ -74,6 +74,14 @@ pub enum AppMsg {
     UpdateInstalled(Result<PathBuf, crate::update::Outcome>),
     /// The commit box: a branch's facts, a run's steps, a message written by an agent.
     Ship(crate::ship::ShipMsg),
+    /// Async CLI / auth readiness check for a multi-account agent profile.
+    ProfileTest(String, Result<String, String>),
+    /// Real 24h token usage parsed from a profile's isolated session logs.
+    ProfileUsage(String, tc_agent::sessions::TokenUsage),
+    /// Aggregated historical sessions for a project across all configured profiles.
+    ProjectSessions(ProjectId, Vec<crate::profiles::ProjectSessionItem>),
+    /// Remote command received from a paired smartphone via the Mobile Companion server.
+    Companion(crate::companion::CompanionCmd),
 }
 
 /// A line of a confirmation's list: a program that would be stopped, or a file whose changes
@@ -244,7 +252,7 @@ pub struct App {
     /// The user's Codex config has a `notify` of its own (kept for runs TernaryCode starts).
     pub codex_own_notify: bool,
     /// The per-launch settings file was written (its variables are in `base_env`).
-    per_launch: bool,
+    pub(crate) per_launch: bool,
     pub settings: Settings,
     pub projects: Vec<Project>,
     pub active: Option<ProjectId>,
@@ -467,6 +475,31 @@ pub struct App {
     updating: bool,
     /// The new version's program, to restart as once this frame's messages are handled.
     pub(crate) restart_to: Option<PathBuf>,
+    /// Live runtime health, tokens, and reset timers per multi-account profile ID.
+    pub profiles_rt: HashMap<String, crate::profiles::ProfileRuntime>,
+    /// Historical disk sessions per project across default + isolated profile roots.
+    pub project_sessions: HashMap<ProjectId, Vec<crate::profiles::ProjectSessionItem>>,
+    pub sessions_scan_at: HashMap<ProjectId, Instant>,
+    pub usage_scan_at: Option<Instant>,
+    /// Structured chronological event log (hooks, tools, rate limits, failovers) for the Logs drawer.
+    pub agent_logs: std::collections::VecDeque<crate::profiles::AgentLogEntry>,
+    /// Active tab in the secondary workspace drawer (`Terminals` | `Logs` | `Problems`).
+    pub drawer_tab: tc_core::model::DrawerTab,
+    /// Whether the secondary drawer temporarily fills the workspace stage.
+    pub drawer_maximized: bool,
+    /// Focus / Zen Mode: peripheral panels hidden so the Code Editor fills the window.
+    pub zen_mode: bool,
+    pub zen_saved: Option<crate::ade::ZenSaved>,
+    /// Expandable top-bar Usage & Status telemetry popover.
+    pub monitor_popover: bool,
+    pub monitor_pill_rect: Option<egui::Rect>,
+    /// Running embedded Mobile Companion HTTP/SSE server (when Phone Pairing is enabled).
+    pub companion: Option<crate::companion::CompanionHandle>,
+    pub companion_last_push: Instant,
+    /// Active add/edit form draft in the Profiles & Accounts view.
+    pub profile_draft: Option<crate::ade::ProfileDraft>,
+    /// Search/filter query in the Agent Logs drawer tab.
+    pub logs_filter: String,
     #[cfg(debug_assertions)]
     pub devtest: crate::devtest::Script,
 }
@@ -739,6 +772,21 @@ impl App {
             clicked_rx: None,
             updating: false,
             restart_to: None,
+            profiles_rt: HashMap::new(),
+            project_sessions: HashMap::new(),
+            sessions_scan_at: HashMap::new(),
+            usage_scan_at: None,
+            agent_logs: std::collections::VecDeque::with_capacity(64),
+            drawer_tab: tc_core::model::DrawerTab::Terminals,
+            drawer_maximized: false,
+            zen_mode: false,
+            zen_saved: None,
+            monitor_popover: false,
+            monitor_pill_rect: None,
+            companion: None,
+            companion_last_push: Instant::now(),
+            profile_draft: None,
+            logs_filter: String::new(),
             #[cfg(debug_assertions)]
             devtest: crate::devtest::Script::from_env(),
         };
@@ -750,6 +798,7 @@ impl App {
             }
         }
         app.restore(ctx);
+        app.sync_companion_server();
         #[cfg(unix)]
         if let Some(handoff) = handoff {
             app.adopt_panes(ctx, handoff.panes);
@@ -832,8 +881,40 @@ impl App {
     /// Where the editor panel starts in the Focus view's `body`, when the project shows it.
     pub fn editor_split(&self, project: ProjectId, body: egui::Rect) -> Option<f32> {
         let e = self.editors.get(&project).filter(|e| e.visible)?;
-        let ratio = if e.width > 0.0 { e.width } else { 0.54 }.clamp(0.2, 0.8);
-        Some((body.right() - body.width() * ratio).round())
+        let ratio = if e.width > 0.0 { e.width } else { 0.64 }.clamp(0.40, 0.85);
+        Some((body.left() + body.width() * ratio).round())
+    }
+
+    /// Computes the primary Code Editor rect and the secondary Drawer rect inside `body`
+    /// according to the current dock mode (`Bottom` or `Right`), collapse state, and Zen Mode.
+    pub fn workspace_split(&self, project: ProjectId, body: egui::Rect) -> (Option<egui::Rect>, Option<egui::Rect>) {
+        use tc_core::model::DrawerDock;
+        let review_here = self.review.as_ref().is_some_and(|r| r.project == project && !r.expanded);
+        let editor_on = self.zen_mode || review_here || self.editors.get(&project).is_some_and(|e| e.visible);
+        let drawer_on = !self.zen_mode && (self.settings.drawer_open || !editor_on);
+        if editor_on && self.drawer_maximized && drawer_on {
+            return (None, Some(body));
+        }
+        match (editor_on, drawer_on) {
+            (true, false) => (Some(body), None),
+            (false, _) => (None, Some(body)),
+            (true, true) => match self.settings.drawer_dock {
+                DrawerDock::Bottom => {
+                    let frac = self.settings.drawer_size.clamp(0.18, 0.70);
+                    let split_y = (body.bottom() - body.height() * frac).round();
+                    let top = egui::Rect::from_min_max(body.min, egui::pos2(body.right(), (split_y - ui::style::GAP / 2.0).max(body.top() + 80.0)));
+                    let bot = egui::Rect::from_min_max(egui::pos2(body.left(), (split_y + ui::style::GAP / 2.0).min(body.bottom() - 80.0)), body.max);
+                    (Some(top), Some(bot))
+                }
+                DrawerDock::Right => {
+                    let ratio = self.editors.get(&project).map(|e| if e.width > 0.0 { e.width } else { 0.64 }).unwrap_or(0.64).clamp(0.40, 0.85);
+                    let split_x = (body.left() + body.width() * ratio).round();
+                    let left = egui::Rect::from_min_max(body.min, egui::pos2((split_x - ui::style::GAP / 2.0).max(body.left() + 120.0), body.bottom()));
+                    let right = egui::Rect::from_min_max(egui::pos2((split_x + ui::style::GAP / 2.0).min(body.right() - 120.0), body.top()), body.max);
+                    (Some(left), Some(right))
+                }
+            },
+        }
     }
 
     /// Gives panes of a project the grid they have in the Focus view (that of its tab in view,
@@ -848,8 +929,12 @@ impl App {
         }
         // Not shown in the Focus view since the app started: nothing to measure against.
         let Some(full) = self.last_full_body else { return };
-        let body = match self.editor_split(project, full) {
-            Some(x) => egui::Rect::from_min_max(full.min, egui::pos2(x - ui::style::GAP / 2.0, full.bottom())),
+        let (editor_stage, drawer_stage) = self.workspace_split(project, full);
+        let body = match drawer_stage {
+            Some(drawer) if editor_stage.is_some() || self.drawer_tab != tc_core::model::DrawerTab::Terminals => {
+                egui::Rect::from_min_max(egui::pos2(drawer.left(), drawer.top() + ui::focus::DRAWER_BAR_H + 2.0), drawer.max)
+            }
+            Some(drawer) => drawer,
             None => full,
         };
         let cell = tc_term::widget::cell_size(ctx, self.settings.font_size);
@@ -991,6 +1076,7 @@ impl App {
                     let mut pane = Pane::new(id, saved.id, cwd, size, &self.spawn_ctx(ctx, None), false);
                     pane.title = info.title.clone();
                     pane.preset = info.preset.clone();
+                    pane.active_profile = info.profile.clone();
                     if let Some(agent) = info.agent {
                         let preset = info
                             .preset
@@ -1047,14 +1133,16 @@ impl App {
             project.panel.open |= restored.page_in_view;
             project.panel.pages = pages;
             project.panel.open &= !project.panel.pages.is_empty();
-            if saved.editor_width > 0.0 {
-                self.editors.insert(
-                    project.id,
-                    crate::editor::Editor {
-                        width: saved.editor_width.clamp(0.2, 0.8),
+            if project.panel.open {
+                if saved.editor_width > 0.0 {
+                    let ed = crate::editor::Editor {
+                        width: saved.editor_width.clamp(0.40, 0.85),
                         ..Default::default()
-                    },
-                );
+                    };
+                    self.editors.insert(project.id, ed);
+                }
+            } else {
+                self.ensure_editor_for_project(project.id, saved.editor_width);
             }
             // Watched once the window is up (starting a watcher waits for it to run).
             self.watch_later.push((project.id, project.path.clone()));
@@ -1092,6 +1180,7 @@ impl App {
                             title: pane.title.clone(),
                             agent: pane.last_agent,
                             preset: pane.preset.clone(),
+                            profile: pane.active_profile.clone(),
                             ..Default::default()
                         })
                         .collect();
@@ -1107,7 +1196,7 @@ impl App {
                 })
                 .collect(),
             active: self.active,
-            view: self.view,
+            view: if crate::ade::is_management_view(self.view) { View::Focus } else { self.view },
             grid_columns: self.grid_columns,
             grid_active_only: self.grid_filter == tc_core::model::GridFilter::Active,
             grid_filter: Some(self.grid_filter),
@@ -1248,6 +1337,7 @@ impl App {
         match self.view {
             View::Grid => self.grid_focus,
             View::Focus => self.current_pane(),
+            View::Profiles | View::Monitor | View::Pairing => None,
         }
     }
 
@@ -1298,6 +1388,7 @@ impl App {
         match self.view {
             View::Focus => self.current_pane(),
             View::Grid => self.grid_focus,
+            View::Profiles | View::Monitor | View::Pairing => None,
         }
     }
 
@@ -1524,6 +1615,7 @@ impl App {
                 }
                 UiMsg::Call(call, reply) => self.browser_call(call, reply),
                 UiMsg::Hook(msg) => {
+                    let mut log_info: Option<(ProjectId, Option<String>, crate::profiles::LogLevel, String)> = None;
                     if let Some(pane) = self.panes.get_mut(&msg.pane) {
                         let turn_done = matches!(msg.event.as_str(), "Stop" | "AfterAgent" | "session.idle")
                             || msg.kind.as_deref() == Some("agent-turn-complete");
@@ -1531,8 +1623,35 @@ impl App {
                         pane.on_hook(&msg, now);
                         if turn_done {
                             git_refresh.push(pane.project);
+                            log_info = Some((
+                                pane.project,
+                                pane.active_profile.clone(),
+                                crate::profiles::LogLevel::Info,
+                                format!("{} finished turn", pane.label()),
+                            ));
+                        } else if msg.event == "PermissionRequest" || msg.event == "Notification" {
+                            let detail = pane.tracker.message.clone().unwrap_or_else(|| msg.event.clone());
+                            log_info = Some((
+                                pane.project,
+                                pane.active_profile.clone(),
+                                crate::profiles::LogLevel::Warn,
+                                format!("{} asks: {detail}", pane.label()),
+                            ));
+                        } else if msg.event == "PreToolUse"
+                            && let Some(detail) = msg.message.as_deref().or(msg.kind.as_deref())
+                        {
+                            log_info = Some((
+                                pane.project,
+                                pane.active_profile.clone(),
+                                crate::profiles::LogLevel::Tool,
+                                format!("{} · {detail}", pane.label()),
+                            ));
                         }
                         resume_changed |= pane.last_agent != agent;
+                    }
+                    if let Some((proj, prof, lvl, text)) = log_info {
+                        self.push_agent_log(lvl, Some(proj), Some(msg.pane), prof, text);
+                        self.push_companion_now();
                     }
                 }
             }
@@ -1638,6 +1757,26 @@ impl App {
                         }
                     }
                 }
+                AppMsg::ProfileTest(id, res) => {
+                    let rt = self.profiles_rt.entry(id.clone()).or_default();
+                    rt.connection = Some(match res {
+                        Ok(msg) => crate::profiles::ConnectionTest::Ok(msg),
+                        Err(err) => {
+                            rt.last_error = Some(err.clone());
+                            crate::profiles::ConnectionTest::Err(err)
+                        }
+                    });
+                }
+                AppMsg::ProfileUsage(id, usage) => {
+                    let rt = self.profiles_rt.entry(id).or_default();
+                    rt.tokens_in = usage.input;
+                    rt.tokens_out = usage.output;
+                    rt.usage_updated = Some(now);
+                }
+                AppMsg::ProjectSessions(pid, list) => {
+                    self.project_sessions.insert(pid, list);
+                }
+                AppMsg::Companion(cmd) => self.handle_companion_cmd(ctx, cmd),
             }
         }
         for (id, mut paths) in files_changed {
@@ -1775,7 +1914,7 @@ impl App {
         }
     }
 
-    fn editor_mut(&mut self) -> Option<&mut crate::editor::Editor> {
+    pub(crate) fn editor_mut(&mut self) -> Option<&mut crate::editor::Editor> {
         let id = self.active?;
         Some(self.editors.entry(id).or_insert_with(|| crate::editor::Editor {
             width: 0.54,
@@ -2012,9 +2151,12 @@ impl App {
         }];
         self.watchers
             .watch(project.id, project.path.clone(), self.app_tx.clone(), ctx.clone());
+        let project_path = project.path.clone();
         self.projects.push(project);
         self.sort_projects();
+        self.ensure_editor_for_project(id, 0.0);
         self.refresh_git(id);
+        self.refresh_project_sessions(id, project_path);
         self.active = Some(id);
         self.show_focus();
         self.focus_request = Some(pane);
@@ -2156,7 +2298,7 @@ impl App {
         Some(new)
     }
 
-    fn new_tab(&mut self, ctx: &egui::Context) -> Option<PaneId> {
+    pub(crate) fn new_tab(&mut self, ctx: &egui::Context) -> Option<PaneId> {
         self.new_tab_in(ctx, None)
     }
 
@@ -2233,6 +2375,19 @@ impl App {
     /// none: beside the pane in view, or a new tab when its tab is crowded). `resume` runs its
     /// command that continues the last session.
     fn run_preset(&mut self, ctx: &egui::Context, preset_id: &str, launch: crate::actions::Launch, place: Option<usize>) {
+        self.run_preset_with_profile(ctx, preset_id, launch, place, None);
+    }
+
+    /// Starts `preset_id` optionally bound to an explicit multi-account `profile_id` (falling back
+    /// to the project's or provider's preferred healthy profile).
+    pub(crate) fn run_preset_with_profile(
+        &mut self,
+        ctx: &egui::Context,
+        preset_id: &str,
+        launch: crate::actions::Launch,
+        place: Option<usize>,
+        explicit_profile: Option<String>,
+    ) {
         let check = !std::mem::take(&mut self.skip_agent_check);
         let Some(preset) = self.presets().into_iter().find(|p| p.id == preset_id) else {
             return;
@@ -2255,6 +2410,8 @@ impl App {
         if let crate::actions::Launch::Session(id) = &launch
             && let Some(pane) = self.panes.values().find(|p| p.agent_session.as_deref() == Some(id.as_str())).map(|p| p.id)
         {
+            self.settings.drawer_open = true;
+            self.drawer_tab = tc_core::model::DrawerTab::Terminals;
             self.focus_pane(pane);
             return;
         }
@@ -2263,15 +2420,10 @@ impl App {
             .and_then(|id| self.project(id))
             .and_then(Project::tab)
             .is_some_and(|tab| tab.layout.panes().len() >= 3);
-        // A shell nobody has used yet (a project just opened), or, from Run Agent, one waiting
-        // at its prompt with nothing typed: the agent starts in it, not in a tab beside it. A
-        // split asked for is still a split.
         let here = match place {
             Some(0) => self.idle_command_pane(),
             _ => self.fresh_command_pane(),
         };
-        // A shell started before the agent was installed doesn't find it (its PATH is from
-        // then): the agent starts in a new one, which reads the PATH again.
         let here = here.filter(|id| self.pane_finds(*id, &preset));
         let pane = match (place, here) {
             (Some(0) | None, Some(id)) => {
@@ -2287,6 +2439,8 @@ impl App {
             (None, None) => self.split(ctx, SplitDir::Horizontal),
         };
         let Some(pane) = pane else { return };
+        self.settings.drawer_open = true;
+        self.drawer_tab = tc_core::model::DrawerTab::Terminals;
         let base = match &launch {
             crate::actions::Launch::Last => preset.resume.clone().filter(|r| !r.trim().is_empty()),
             crate::actions::Launch::Session(id) => {
@@ -2298,14 +2452,29 @@ impl App {
         if place.is_some() {
             self.last_agent_place = place.unwrap_or(0);
         }
-        let command = self.launch_command(&preset, &base);
+        let proj_id = self.panes.get(&pane).map(|p| p.project);
+        let profile = explicit_profile
+            .as_deref()
+            .and_then(|id| self.profile_by_id(id))
+            .or_else(|| preset.agent.and_then(|a| self.preferred_profile_for(a, proj_id)));
+        let command = self.launch_command_for_profile(&preset, &base, profile.as_ref());
         let mut project = None;
         if let Some(p) = self.panes.get_mut(&pane) {
             p.preset = Some(preset.id.clone());
+            p.active_profile = profile.as_ref().map(|x| x.id.clone());
+            p.rate_limit = None;
+            p.last_limit_sig = None;
             p.type_command(command);
             project = Some(p.project);
         }
         if let Some(project) = project {
+            self.push_agent_log(
+                crate::profiles::LogLevel::Info,
+                Some(project),
+                Some(pane),
+                profile.as_ref().map(|x| x.id.clone()),
+                format!("Started {}", preset.name),
+            );
             self.actions
                 .push(Action::SetProjectPreset(project, Some(preset.id)));
         }
@@ -3265,10 +3434,12 @@ impl App {
                 }
             }
             Action::ToggleFiles => {
-                // The Files column of the Code drawer: shown with the drawer when it was closed,
-                // else shown or hidden. A drawer too narrow for it is widened.
-                let drawer_shown = self.editors.get(&self.active.unwrap_or_default()).is_some_and(|e| e.visible);
-                let full = self.last_full_body.map(|r| r.width()).unwrap_or(1000.0);
+                // The Files column of the Code Editor: shown with the editor when it was closed,
+                // else shown or hidden. A right-docked editor too narrow for it is widened.
+                let pid = self.active.unwrap_or_default();
+                let drawer_shown = self.editors.get(&pid).is_some_and(|e| e.visible);
+                let full_rect = self.last_full_body.unwrap_or(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0)));
+                let editor_w = self.workspace_split(pid, full_rect).0.map_or(full_rect.width(), |r| r.width());
                 if !drawer_shown {
                     if let Some(e) = self.editor_mut() {
                         e.visible = true;
@@ -3276,11 +3447,10 @@ impl App {
                     self.settings.files_hidden = false;
                 } else if self.settings.files_hidden {
                     self.settings.files_hidden = false;
-                } else if let Some(e) = self.editor_mut().filter(|e| {
-                    let ratio = if e.width > 0.0 { e.width } else { 0.54 };
-                    full * ratio < crate::ui::editor_ui::FILES_MIN_DRAWER
-                }) {
-                    e.width = ((crate::ui::editor_ui::FILES_MIN_DRAWER + 40.0) / full).clamp(0.2, 0.8);
+                } else if editor_w < crate::ui::editor_ui::FILES_MIN_DRAWER {
+                    if let Some(e) = self.editor_mut() {
+                        e.width = ((crate::ui::editor_ui::FILES_MIN_DRAWER + 40.0) / full_rect.width().max(1.0)).clamp(0.45, 0.85);
+                    }
                 } else {
                     self.settings.files_hidden = true;
                 }
@@ -3576,6 +3746,124 @@ impl App {
                 }
             }
             Action::RestartToUpdateNow => self.install_update(ctx),
+            Action::ToggleZenMode => self.toggle_zen_mode(),
+            Action::ToggleDrawer => {
+                if self.zen_mode {
+                    self.toggle_zen_mode();
+                    self.settings.drawer_open = true;
+                } else {
+                    self.settings.drawer_open = !self.settings.drawer_open;
+                    self.drawer_maximized = false;
+                }
+                self.settings_changed();
+                if self.settings.drawer_open {
+                    self.focus_request = self.current_pane();
+                }
+            }
+            Action::SetDrawerDock(dock) => {
+                self.settings.drawer_dock = dock;
+                self.settings.drawer_open = true;
+                self.drawer_maximized = false;
+                self.settings_changed();
+            }
+            Action::SetDrawerTab(tab) => {
+                self.drawer_tab = tab;
+                self.settings.drawer_open = true;
+                self.settings_changed();
+            }
+            Action::OpenProfiles => {
+                self.monitor_popover = false;
+                self.view = View::Profiles;
+                self.mark_dirty();
+            }
+            Action::OpenMonitor => {
+                self.monitor_popover = false;
+                self.view = View::Monitor;
+                self.mark_dirty();
+            }
+            Action::OpenPhonePairing => {
+                self.monitor_popover = false;
+                self.view = View::Pairing;
+                self.mark_dirty();
+            }
+            Action::ToggleProjectSessions(pid) => {
+                let mut scan_path = None;
+                if let Some(p) = self.project_mut(pid) {
+                    p.sessions_expanded = !p.sessions_expanded;
+                    if p.sessions_expanded {
+                        scan_path = Some(p.path.clone());
+                    }
+                }
+                if let Some(path) = scan_path {
+                    self.refresh_project_sessions(pid, path);
+                }
+                self.mark_dirty();
+            }
+            Action::ResumeProjectSession { project, agent, session_id, profile_id } => {
+                self.resume_project_session(ctx, project, agent, session_id, profile_id);
+            }
+            Action::NewProjectSession { project, profile_id } => {
+                self.new_project_session(ctx, project, profile_id);
+            }
+            Action::SetPaneProfile(pane, profile_id) => {
+                let is_limited = self.panes.get(&pane).is_some_and(|p| p.rate_limit.is_some());
+                if is_limited {
+                    self.switch_pane_profile_and_resume(ctx, pane, &profile_id, false);
+                } else {
+                    let mut proj = None;
+                    if let Some(p) = self.panes.get_mut(&pane) {
+                        p.active_profile = Some(profile_id.clone());
+                        proj = Some(p.project);
+                    }
+                    if let Some(pid) = proj
+                        && let Some(pr) = self.project_mut(pid)
+                    {
+                        pr.active_profile = Some(profile_id.clone());
+                    }
+                    self.toast(tf("Active profile set to {}.", &[&profile_id]));
+                    self.mark_dirty();
+                    self.push_companion_now();
+                }
+            }
+            Action::ResumeWithProfile { pane, profile_id } => {
+                self.switch_pane_profile_and_resume(ctx, pane, &profile_id, false);
+            }
+            Action::DismissRateLimit(pane) => {
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    p.rate_limit = None;
+                }
+                self.push_companion_now();
+            }
+            Action::TestProfile(id) => self.test_profile(id),
+            Action::LoginProfile(id) => self.login_profile(ctx, &id),
+            Action::ClearProfileCooldown(id) => {
+                if let Some(rt) = self.profiles_rt.get_mut(&id) {
+                    rt.reset_at = None;
+                    rt.reset_reason = None;
+                    rt.state = crate::profiles::ProfileState::Idle;
+                }
+                self.toast_ok(tf("Cleared cooldown for {}.", &[&id]));
+                self.push_companion_now();
+            }
+            Action::ToggleCompanionServer => {
+                self.settings.companion.enabled = !self.settings.companion.enabled;
+                self.sync_companion_server();
+                self.settings_changed();
+            }
+            Action::RegeneratePairingToken => {
+                if let Some(c) = &self.companion {
+                    c.regenerate_token();
+                    self.toast_ok(t("New pairing QR code generated.").into());
+                }
+            }
+            Action::RevokeDevice(id) => {
+                self.settings.companion.devices.retain(|d| d.id != id);
+                if let Some(c) = &self.companion {
+                    c.sync_devices(&self.settings.companion.devices);
+                }
+                self.settings_changed();
+                self.toast(t("Device access revoked.").into());
+            }
         }
     }
 
@@ -3853,6 +4141,7 @@ impl App {
         }
         self.review_follow();
         self.update_attention();
+        self.ade_tick(ctx);
         self.take_run_snapshots();
         self.lsp_tick(ctx);
         if let Some(d) = self.lsp_repaint_after.take() {
@@ -4126,6 +4415,8 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
         (Key::G, Action::FindAll),
         (Key::R, Action::Review),
         (Key::Y, Action::ToggleEditor),
+        (Key::Z, Action::ToggleZenMode),
+        (Key::L, Action::ToggleDrawer),
         // GNOME Terminal's tab keys, with Shift (Shift+PageUp alone still scrolls).
         (Key::PageDown, Action::NextTab),
         (Key::PageUp, Action::PrevTab),
