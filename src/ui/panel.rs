@@ -180,7 +180,7 @@ impl App {
         });
         if tab == PanelTab::Browser {
             // The page strip, its toolbar and the page, inside the panel (its own sheet is ours).
-            self.panel_view(ui, project, body.expand2(vec2(1.0, 0.0)), false);
+            self.browser_panel_body(ui, project, body);
         }
     }
 

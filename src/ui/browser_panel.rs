@@ -232,25 +232,6 @@ impl App {
         })
     }
 
-    /// The panel in Focus in `rect`: the strip of its pages, then the page in front (`float`:
-    /// over the terminals). Fill the Window and Hide sit at the strip's right until the panel
-    /// is hosted under a header of its own ([`App::browser_panel_body`]).
-    pub fn panel_view(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, float: bool) {
-        let p = style::pal(ui);
-        if float {
-            let shadow = egui::epaint::Shadow { offset: [0, 8], blur: 28, spread: 0, color: egui::Color32::from_black_alpha(if ui.visuals().dark_mode { 120 } else { 40 }) };
-            ui.painter().add(shadow.as_shape(rect, CornerRadius::same(style::RADIUS_LG)));
-        }
-        super::focus::paint_sheet(ui.painter(), rect, &p, super::focus::SheetLook::Plain);
-        // Clicks on its empty parts stay with it (not the terminal under a floating panel).
-        ui.interact(rect, egui::Id::new(("panel-back", project)), Sense::click());
-        #[cfg(debug_assertions)]
-        crate::devtest::record("panel", rect);
-        let strip = Rect::from_min_size(rect.min, vec2(rect.width(), TABS_H));
-        let reserve = self.panel_buttons(ui, project, strip);
-        self.panel_body(ui, project, rect, reserve);
-    }
-
     /// The Browser panel from its strip of page tabs down, in `rect` (no sheet, no header): the
     /// tabs and New Page, then the page in front with its toolbar, its notices, its frame and
     /// its console.
@@ -283,32 +264,6 @@ impl App {
         {
             panel.max = false;
         }
-    }
-
-    /// Fill the Window and Hide at the right of the strip (the panel's own buttons, while it has
-    /// no header); returns the room they take.
-    fn panel_buttons(&mut self, ui: &mut Ui, project: ProjectId, strip: Rect) -> f32 {
-        let Some(max_on) = self.panel_of(project).map(|x| x.max) else { return 0.0 };
-        let cy = strip.center().y;
-        let mut right = strip.right() - 8.0;
-        let mut button = |ui: &mut Ui, icon: &str, tip: &str, on: bool, name: &str| {
-            let r = Rect::from_center_size(pos2(right - 12.0, cy), vec2(24.0, 24.0));
-            right -= 24.0 + 4.0;
-            #[cfg(debug_assertions)]
-            crate::devtest::record(name, r);
-            let _ = name;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, on, 24.0)).inner.clicked()
-        };
-        let hide = button(ui, icons::X, &kit::tip(t("Hide Browser"), Action::ShowBrowser), false, "panel-hide");
-        let fill_tip = if max_on { t("Back beside the terminals") } else { t("Fill the window") };
-        let max = button(ui, if max_on { icons::ARROWS_IN } else { icons::ARROWS_OUT }, fill_tip, max_on, "panel-max");
-        if hide {
-            self.hide_panel(project);
-        }
-        if max && let Some(x) = self.panel_mut(project) {
-            x.max = !x.max;
-        }
-        strip.right() - 8.0 - right
     }
 
     /// The edge between the terminals and the panel, dragged to size it (after the panes, so
