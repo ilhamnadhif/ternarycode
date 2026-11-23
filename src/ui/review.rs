@@ -513,17 +513,18 @@ impl App {
         } else if r.files.is_empty() {
             match base {
                 Base::Run => {
-                    let title = tf("{} hasn’t changed any files since it started, {} ago.", &[who.as_deref().unwrap_or(""), run_age.as_deref().unwrap_or("")]);
+                    let title = tf("{} hasn’t changed any files yet", &[who.as_deref().unwrap_or("")]);
+                    let age = run_age.as_deref().unwrap_or("");
                     let sub = if head_count > 0 {
-                        tf("Its work so far is in the terminal. {} changed since the last commit.", &[&crate::i18n::count(head_count, t("1 file"), t("{} files"))])
+                        tf("It started {} ago; its work so far is in the terminal. {} changed since the last commit.", &[age, &crate::i18n::count(head_count, t("1 file"), t("{} files"))])
                     } else {
-                        t("Its work so far is in the terminal.").to_string()
+                        tf("It started {} ago; its work so far is in the terminal.", &[age])
                     };
-                    let button = (head_count > 0).then(|| crate::i18n::count(head_count, t("Show the Change"), t("Show the {} Changes")));
-                    show_head = empty_state(ui, diff_rect, icons::CHECK_CIRCLE, &title, &sub, button.as_deref(), &p);
+                    let button = (head_count > 0).then(|| crate::i18n::count(head_count, t("Show the change"), t("Show the {} changes")));
+                    show_head = empty_state(ui, diff_rect, icons::SPARKLE, &title, &sub, button.as_deref());
                 }
                 Base::Head => {
-                    empty_state(ui, diff_rect, icons::CHECK_CIRCLE, t("No changes since the last commit."), "", None, &p);
+                    empty_state(ui, diff_rect, icons::CHECK_CIRCLE, t("No changes since the last commit"), t("What agents change shows up here."), None);
                 }
                 Base::Branch => centered(ui, diff_rect, t("Nothing changed."), p.text_muted),
             }
@@ -1249,33 +1250,15 @@ fn centered(ui: &Ui, rect: Rect, text: &str, color: Color32) {
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), color);
 }
 
-/// Why there is nothing to show: an icon, a sentence, a line under it and maybe a button.
-/// Returns whether the button was clicked.
-fn empty_state(ui: &mut Ui, rect: Rect, icon: &str, title: &str, sub: &str, button: Option<&str>, p: &style::Palette) -> bool {
-    let w = (rect.width() - 48.0).clamp(160.0, 420.0);
-    let col = Rect::from_center_size(rect.center(), vec2(w, rect.height()));
-    let mut clicked = false;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(col).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
-        let title_g = ui.painter().layout(title.to_string(), style::semibold(14.0), p.text, w);
-        let sub_g = (!sub.is_empty()).then(|| ui.painter().layout(sub.to_string(), egui::FontId::proportional(12.5), p.text_muted, w));
-        let h = 28.0 + 10.0 + title_g.size().y + sub_g.as_ref().map_or(0.0, |g| g.size().y + 8.0) + if button.is_some() { 40.0 } else { 0.0 };
-        ui.add_space(((rect.height() - h) / 2.0).max(12.0));
-        ui.label(RichText::new(icon).font(style::icon_font(28.0)).color(p.text_faint));
-        ui.add_space(10.0);
-        ui.label(RichText::new(title).font(style::semibold(14.0)).color(p.text));
-        if !sub.is_empty() {
-            ui.add_space(8.0);
-            ui.label(RichText::new(sub).size(12.5).color(p.text_muted));
-        }
-        if let Some(b) = button {
-            ui.add_space(14.0);
-            let r = kit::button_keys(ui, kit::Kind::Primary, None, b, Some("⇥"), true);
-            #[cfg(debug_assertions)]
-            crate::devtest::record("review-show-head", r.rect);
-            clicked = r.clicked();
-        }
-    });
-    clicked
+/// Why there is nothing to show: the empty state (an icon tile, a sentence, a line under it and
+/// maybe a button with ⇥). Returns whether the button was clicked.
+fn empty_state(ui: &mut Ui, rect: Rect, icon: &str, title: &str, sub: &str, button: Option<&str>) -> bool {
+    let r = kit::empty_state_at(ui, rect, icon, title, sub, button.map(|b| (None, b, Some("⇥"))));
+    #[cfg(debug_assertions)]
+    if let Some(r) = &r {
+        crate::devtest::record("review-show-head", r.rect);
+    }
+    r.is_some_and(|r| r.clicked())
 }
 
 /// Files under folders new as a whole are listed under one line per folder, folded away except

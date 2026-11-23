@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Align2, CornerRadius, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 use tc_core::status::Status;
 
 use super::{icons, kit, status, style};
@@ -13,6 +13,8 @@ use crate::i18n::{t, tf};
 
 /// Width of the attention list.
 const LIST_W: f32 = 600.0;
+/// Width of a toast.
+const TOAST_W: f32 = 380.0;
 
 impl App {
     pub fn status_bar(&mut self, ui: &mut Ui) {
@@ -367,56 +369,104 @@ impl App {
         }
     }
 
+    /// The toasts: bottom-right over the status bar, stacked (three at most), newest on top.
+    /// Each goes after 4 s (6 s with an action; not while the pointer is on it); its X closes
+    /// it, its action does what it says.
     pub fn toast_ui(&mut self, ctx: &egui::Context) {
-        let Some(toast) = self.toast.clone() else { return };
-        let shown = toast.at.elapsed();
-        let life = if toast.action.is_some() { Duration::from_secs(6) } else { Duration::from_secs(4) };
-        if shown > life {
-            self.toast = None;
-            return;
-        }
-        ctx.request_repaint_after(life - shown);
+        let now = Instant::now();
+        let life = |t: &crate::app::Toast| if t.action.is_some() { Duration::from_secs(6) } else { Duration::from_secs(4) };
+        self.toasts.retain(|t| now.duration_since(t.at) < life(t));
+        let Some(next) = self.toasts.iter().map(|t| life(t).saturating_sub(now.duration_since(t.at))).min() else { return };
+        ctx.request_repaint_after(next);
         let screen = ctx.content_rect();
-        let mut act = None;
-        egui::Area::new(egui::Id::new("toast"))
-            .order(egui::Order::Tooltip)
-            .pivot(Align2::CENTER_BOTTOM)
-            .fixed_pos(screen.center_bottom() + vec2(0.0, -super::view::STATUS_H - 16.0))
-            .interactable(toast.action.is_some())
-            .show(ctx, |ui| {
-                let p = style::pal(ui);
-                let r = egui::Frame::popup(ui.style())
-                    .fill(p.menu)
-                    .stroke(Stroke::new(1.0, p.border_strong))
-                    .inner_margin(egui::Margin { left: 12, right: if toast.action.is_some() { 8 } else { 14 }, top: 8, bottom: 8 })
-                    .corner_radius(CornerRadius::same(11))
-                    .show(ui, |ui| {
-                        let max_w = (screen.width() - 48.0).clamp(180.0, 520.0);
-                        ui.set_max_width(max_w);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 10.0;
-                            let (icon, c, filled) = match toast.kind {
-                                ToastKind::Info => (icons::INFO, p.text_muted, true),
-                                ToastKind::Ok => (icons::CHECK_CIRCLE, p.ok, true),
-                                ToastKind::Warn => (icons::WARNING, p.warn, true),
-                                ToastKind::Err => (icons::X_CIRCLE, p.err, true),
-                                ToastKind::Worktree => (icons::GIT_MERGE, p.ok, true),
-                            };
-                            let font = if filled { style::icon_fill(15.0) } else { style::icon_font(15.0) };
-                            ui.label(RichText::new(icon).font(font).color(c));
-                            ui.add(egui::Label::new(RichText::new(&toast.text).size(12.5).color(p.text)).wrap());
-                            if let Some((label, action)) = &toast.action
-                                && kit::button_ex(ui, kit::Kind::Ghost, None, label, true).clicked()
-                            {
-                                act = Some(action.clone());
-                            }
-                        });
-                    });
-                kit::paint_highlight(ui.painter(), Rect::from_min_size(r.response.rect.min, vec2(r.response.rect.width(), 1.0)), 11, &p);
-            });
-        if let Some(a) = act {
+        let dark = ctx.global_style().visuals.dark_mode;
+        let w = TOAST_W.min(screen.width() - 32.0).max(200.0);
+        let right = screen.right() - 16.0;
+        let mut bottom = screen.bottom() - if self.zen_mode { 0.0 } else { super::view::STATUS_H } - 12.0;
+        let (mut act, mut closed, mut held) = (None, None, Vec::new());
+        // The oldest lowest, each newer one above it.
+        for (i, toast) in self.toasts.iter().enumerate() {
+            let shown = egui::Area::new(egui::Id::new(("toast", i)))
+                .order(egui::Order::Tooltip)
+                .pivot(Align2::RIGHT_BOTTOM)
+                .fixed_pos(pos2(right, bottom))
+                .show(ctx, |ui| {
+                    let p = style::palette(dark);
+                    let painter = ui.painter().clone();
+                    // Glyph 16, the text, the action (Ghost S), close (20): 10 · 10 · 10 apart, padded
+                    // 10 (12 at the left).
+                    let (glyph, color, filled) = match toast.kind {
+                        ToastKind::Info => (icons::INFO, p.info, true),
+                        ToastKind::Ok => (icons::CHECK_CIRCLE, p.ok, true),
+                        ToastKind::Warn => (icons::WARNING, p.warn, true),
+                        ToastKind::Err => (icons::X_CIRCLE, p.err, true),
+                        ToastKind::Worktree => (icons::GIT_FORK, p.ok, false),
+                    };
+                    let action_w = toast.action.as_ref().map_or(0.0, |(label, _)| kit::button_width(ui, None, label, None, true) + 10.0);
+                    let text_x = 12.0 + 16.0 + 10.0;
+                    let text_w = (w - text_x - action_w - 20.0 - 10.0 - 10.0).max(60.0);
+                    let title = painter.layout(toast.text.clone(), style::medium(style::BODY), p.text, text_w);
+                    let body = toast.body.as_ref().map(|b| painter.layout(b.clone(), egui::FontId::proportional(style::SMALL), p.text_muted, text_w));
+                    let text_h = title.size().y + body.as_ref().map_or(0.0, |g| 2.0 + g.size().y);
+                    let h = 10.0 + text_h.max(if toast.action.is_some() { 24.0 } else { 20.0 }) + 10.0;
+                    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record(format!("toast:{i}"), rect);
+                    let radius = CornerRadius::same(10);
+                    painter.add(egui::epaint::Shadow { offset: [0, 12], blur: 32, spread: 0, color: egui::Color32::from_black_alpha(0x66) }.as_shape(rect, radius));
+                    painter.rect(rect, radius, p.menu, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+                    let top = rect.top() + 10.0;
+                    let first_row = title.rows.first().map_or(18.0, |r| r.rect().height());
+                    let font = if filled { style::icon_fill(16.0) } else { style::icon_font(16.0) };
+                    painter.text(pos2(rect.left() + 12.0 + 8.0, top + first_row / 2.0), Align2::CENTER_CENTER, glyph, font, color);
+                    painter.galley(pos2(rect.left() + text_x, top), title.clone(), p.text);
+                    if let Some(g) = body {
+                        painter.galley(pos2(rect.left() + text_x, top + title.size().y + 2.0), g, p.text_muted);
+                    }
+                    // Close, at the top right.
+                    let close = Rect::from_min_size(pos2(rect.right() - 10.0 - 20.0, top), vec2(20.0, 20.0));
+                    let cr = ui.interact(close, egui::Id::new(("toast-close", i)), Sense::click());
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record(format!("toast-close:{i}"), close);
+                    if cr.hovered() {
+                        painter.rect_filled(close, CornerRadius::same(5), p.hover);
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    painter.text(close.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(12.0), if cr.hovered() { p.text } else { p.text_faint });
+                    if cr.clicked() {
+                        closed = Some(i);
+                    }
+                    if let Some((label, action)) = &toast.action {
+                        let bw = action_w - 10.0;
+                        let br = Rect::from_min_size(pos2(close.left() - 10.0 - bw, top), vec2(bw, 24.0));
+                        let r = ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| kit::button_ex(ui, kit::Kind::Ghost, None, label, true)).inner;
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record(format!("toast-action:{i}"), r.rect);
+                        if r.clicked() {
+                            act = Some((i, action.clone()));
+                        }
+                    }
+                    resp.contains_pointer() || cr.contains_pointer()
+                });
+            if shown.inner {
+                held.push(i);
+            }
+            bottom = shown.response.rect.top() - 10.0;
+        }
+        // Not gone while the pointer is on it.
+        for i in held {
+            if let Some(t) = self.toasts.get_mut(i) {
+                let keep = life(t).saturating_sub(Duration::from_millis(1500));
+                if now.duration_since(t.at) > keep {
+                    t.at = now - keep;
+                }
+            }
+        }
+        if let Some((i, a)) = act {
             self.actions.push(a);
-            self.toast = None;
+            self.toasts.remove(i);
+        } else if let Some(i) = closed {
+            self.toasts.remove(i);
         }
     }
 }

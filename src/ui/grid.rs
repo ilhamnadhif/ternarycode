@@ -385,27 +385,16 @@ impl App {
         }
     }
 
-    /// "Active" with nothing running or waiting.
+    /// "Active" or "Waiting" with nothing there: the empty state, and Show all projects.
     fn nothing_active(&mut self, ui: &mut Ui, area: Rect) {
-        let p = style::pal(ui);
-        let inner = Rect::from_center_size(area.center(), vec2(area.width().min(560.0), 90.0));
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(inner)
-                .layout(egui::Layout::top_down(egui::Align::Center)),
-            |ui| {
-                let hint = if self.grid_filter == GridFilter::Waiting {
-                    t("Nothing is waiting for you.").to_string()
-                } else {
-                    tf("Nothing is running. Open a project, or press {} to start an agent.", &[kit::keys(&Action::PickPreset).unwrap_or("")])
-                };
-                ui.label(egui::RichText::new(hint).size(style::BODY).color(p.text_muted));
-                ui.add_space(10.0);
-                if kit::secondary(ui, None, t("Show All Projects")).clicked() {
-                    self.actions.push(Action::GridFilter(GridFilter::All));
-                }
-            },
-        );
+        let (icon, title, body) = if self.grid_filter == GridFilter::Waiting {
+            (icons::CHECK_CIRCLE, t("Nothing is waiting"), t("Every agent is working or done.").to_string())
+        } else {
+            (icons::SQUARES_FOUR, t("Nothing is running"), tf("Open a project, or press {} to start an agent.", &[kit::keys(&Action::PickPreset).unwrap_or("")]))
+        };
+        if kit::empty_state_at(ui, area, icon, title, &body, Some((None, t("Show all projects"), None))).is_some_and(|r| r.clicked()) {
+            self.actions.push(Action::GridFilter(GridFilter::All));
+        }
     }
 
     /// One project: header (name, tabs, status, branch, open in Focus) over its tab's panes (one
