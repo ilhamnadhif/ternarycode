@@ -342,6 +342,13 @@ mod native {
             }
             _ => return,
         };
+        // Real arrow and navigation keys carry these flags (menu key equivalents match on them).
+        if (0xF700..=0xF8FF).contains(&chars.chars().next().map_or(0, |c| c as u32)) {
+            flags |= NSEventModifierFlags::Function;
+            if matches!(name, "up" | "down" | "left" | "right") {
+                flags |= NSEventModifierFlags::NumericPad;
+            }
+        }
         let unmod = chars.clone();
         let chars = if flags.contains(NSEventModifierFlags::Control)
             && chars.len() == 1

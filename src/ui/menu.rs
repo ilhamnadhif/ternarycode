@@ -28,6 +28,8 @@ fn acc(action: &Action) -> Option<Accelerator> {
             '⌥' => spec.push_str("Alt+"),
             '⇧' => spec.push_str("Shift+"),
             '⌘' => spec.push_str("Cmd+"),
+            '↑' => spec.push_str("ArrowUp"),
+            '↓' => spec.push_str("ArrowDown"),
             c => spec.push(c),
         }
     }
@@ -127,6 +129,8 @@ impl AppMenu {
 
         let palette = item(t("Command Palette…"), Action::Palette);
         let switch = item(t("Switch Project…"), Action::SwitchProject);
+        let move_up = item(t("Move Project Up"), Action::MoveActiveProject(true));
+        let move_down = item(t("Move Project Down"), Action::MoveActiveProject(false));
         let editor = item(t("Files"), Action::ToggleEditor);
         let drawer = item(t("Show/Hide Panel"), Action::ToggleDrawer);
         let expand = item(t("Expand Panel"), Action::TogglePanelExpanded);
@@ -154,6 +158,8 @@ impl AppMenu {
             &[
                 &palette,
                 &switch,
+                &move_up,
+                &move_down,
                 &sidebar,
                 &compact,
                 &zen,
@@ -275,6 +281,7 @@ mod tests {
             (Action::PrevPane, cmd, Code::BracketLeft),
             (Action::FontBigger, cmd, Code::Equal),
             (Action::FontSmaller, cmd, Code::Minus),
+            (Action::MoveActiveProject(true), cmd | Modifiers::ALT, Code::ArrowUp),
         ] {
             assert_eq!(acc(&action), Some(Accelerator::new(mods, code)), "{action:?}");
         }

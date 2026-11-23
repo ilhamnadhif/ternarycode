@@ -3008,6 +3008,11 @@ impl App {
                 }
             }
             Action::MoveProject(id, up) => self.move_project(id, up),
+            Action::MoveActiveProject(up) => {
+                if let Some(id) = self.active.and_then(|id| self.root_project(id)).map(|x| x.id) {
+                    self.move_project(id, up);
+                }
+            }
             Action::SelectProjectIndex(i) => {
                 if let Some(id) = self.top_order().get(i).copied() {
                     self.dispatch(ctx, Action::SelectProject(id));
@@ -4204,18 +4209,6 @@ impl App {
                 self.actions.push(Action::SelectProjectIndex(i));
             }
         }
-        // ⌥⌘↑ / ⌥⌘↓ (Ctrl+Alt elsewhere): the project in view moves up or down the sidebar.
-        let move_mods = if cfg!(target_os = "macos") { Modifiers::MAC_CMD | Modifiers::ALT } else { Modifiers::CTRL | Modifiers::ALT };
-        if !self.overlay_open()
-            && let Some(id) = self.active.and_then(|id| self.root_project(id)).map(|x| x.id)
-        {
-            if ctx.input_mut(|inp| inp.consume_shortcut(&KeyboardShortcut::new(move_mods, Key::ArrowUp))) {
-                self.actions.push(Action::MoveProject(id, true));
-            }
-            if ctx.input_mut(|inp| inp.consume_shortcut(&KeyboardShortcut::new(move_mods, Key::ArrowDown))) {
-                self.actions.push(Action::MoveProject(id, false));
-            }
-        }
         // Shift+1 reads as "!" where egui knows that key (the other digits fall back to the
         // physical key).
         if !cfg!(target_os = "macos")
@@ -4696,6 +4689,8 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::B, Action::ToggleCompactSidebar));
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::Z, Action::ToggleZenMode));
     keys.push((Modifiers::CTRL | Modifiers::SHIFT | Modifiers::ALT, Key::E, Action::TogglePanelExpanded));
+    keys.push((Modifiers::CTRL | Modifiers::ALT, Key::ArrowUp, Action::MoveActiveProject(true)));
+    keys.push((Modifiers::CTRL | Modifiers::ALT, Key::ArrowDown, Action::MoveActiveProject(false)));
     keys
 }
 

@@ -224,6 +224,8 @@ pub enum Action {
     TogglePanelExpanded,
     /// The project moves one place up (true) or down in the sidebar (⌘1–9 follow it).
     MoveProject(ProjectId, bool),
+    /// The project in view moves up (true) or down (⌥⌘↑ / ⌥⌘↓).
+    MoveActiveProject(bool),
     /// Docks the secondary drawer at the Bottom (editor 100% width) or Right (editor >=60% width).
     SetDrawerDock(tc_core::model::DrawerDock),
     /// Switches the active tab inside the secondary drawer.

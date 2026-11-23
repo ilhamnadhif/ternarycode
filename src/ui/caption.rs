@@ -120,6 +120,8 @@ impl App {
             chosen = menu_rows(ui, &[
                 Some((t("Command Palette…"), A::Palette)),
                 Some((t("Switch Project…"), A::SwitchProject)),
+                Some((t("Move Project Up"), A::MoveActiveProject(true))),
+                Some((t("Move Project Down"), A::MoveActiveProject(false))),
                 Some((t("Show/Hide Sidebar"), A::ToggleSidebar)),
                 Some((t("Narrow Sidebar"), A::ToggleCompactSidebar)),
                 Some((t("Zen Mode"), A::ToggleZenMode)),

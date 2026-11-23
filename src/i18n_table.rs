@@ -1304,6 +1304,8 @@ const ID: &[(&str, &str)] = &[
     ("The update task stopped unexpectedly.", "Tugas pembaruan berhenti secara tidak terduga."),
     ("Verify size and SHA-256", "Periksa ukuran dan SHA-256"),
     // Slate
+    ("Move Project Up", "Pindahkan Project ke Atas"),
+    ("Move Project Down", "Pindahkan Project ke Bawah"),
     ("Keep side by side", "Tetap berdampingan"),
     ("1 line below", "1 baris di bawah"),
     ("{} lines below", "{} baris di bawah"),

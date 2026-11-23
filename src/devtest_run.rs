@@ -593,6 +593,8 @@ impl App {
                     "files-scope" => Some(Action::QuickOpen),
                     "grid" => Some(Action::SetView(tc_core::model::View::Grid)),
                     "history" => Some(Action::History),
+                    "move-up" => Some(Action::MoveActiveProject(true)),
+                    "move-down" => Some(Action::MoveActiveProject(false)),
                     "expand-panel" => Some(Action::TogglePanelExpanded),
                     "grid-all" => Some(Action::GridFilter(tc_core::model::GridFilter::All)),
                     "grid-waiting" => Some(Action::GridFilter(tc_core::model::GridFilter::Waiting)),
