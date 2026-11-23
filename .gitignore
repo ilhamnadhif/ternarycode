@@ -6,3 +6,4 @@
 /PRD *.md
 /docs/gate-*.md
 /design/
+scripts/.e2e-run*.sh
