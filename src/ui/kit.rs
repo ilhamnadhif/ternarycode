@@ -1481,7 +1481,7 @@ pub fn notice(
     );
     child.spacing_mut().item_spacing.x = 6.0;
     if dismiss {
-        let r = icon_button_ex(&mut child, super::icons::X, &crate::i18n::t("Dismiss"), false, 24.0);
+        let r = icon_button_ex(&mut child, super::icons::X, crate::i18n::t("Dismiss"), false, 24.0);
         out.dismissed = r.clicked();
         right -= 24.0 + 6.0;
     }
@@ -1522,4 +1522,126 @@ pub fn notice(
         painter.galley(egui::pos2(tx, cy - tg.size().y / 2.0), tg, p.text);
     }
     out
+}
+
+// ---------------------------------------------------------------------------------------------
+// Code panel pieces (Slate): the filter field of lists, an agent's small tile, a notice with
+// any number of buttons
+// ---------------------------------------------------------------------------------------------
+
+/// The filter field over a list (Files, Changes, History): 28 high, radius 7, on the inset
+/// colour with a hairline, an optional 13 px icon and Small text; ringed in the accent while it
+/// has the keyboard.
+pub fn filter_field(ui: &mut Ui, id: egui::Id, text: &mut String, icon: Option<&str>, hint: &str, width: f32) -> Response {
+    let p = style::pal(ui);
+    let (rect, outer) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+    if outer.clicked() {
+        ui.ctx().memory_mut(|m| m.request_focus(id));
+    }
+    let focused = ui.ctx().memory(|m| m.has_focus(id));
+    let painter = ui.painter();
+    if focused {
+        painter.rect_stroke(rect.expand(3.0), CornerRadius::same(10), Stroke::new(3.0, style::soft(p.accent, 0.25)), StrokeKind::Inside);
+    }
+    painter.rect(rect, CornerRadius::same(7), p.inset, Stroke::new(1.0, if focused { p.accent } else { p.border }), StrokeKind::Inside);
+    let mut x = rect.left() + 10.0;
+    if let Some(i) = icon {
+        painter.text(egui::pos2(x + 6.5, rect.center().y), Align2::CENTER_CENTER, i, style::icon_font(13.0), p.text_faint);
+        x += 13.0 + 8.0;
+    }
+    let inner = Rect::from_min_max(egui::pos2(x, rect.top() + 1.0), egui::pos2(rect.right() - 10.0, rect.bottom() - 1.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.add_sized(
+        inner.size(),
+        egui::TextEdit::singleline(text)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .font(egui::FontId::proportional(style::SMALL))
+            .hint_text(RichText::new(hint).color(p.text_faint))
+            .vertical_align(egui::Align::Center),
+    )
+}
+
+/// An agent's small tile (the Agent avatar): its mark at 68 % on a quiet fill, `rect` square
+/// (16 S, 20 M, 28 L). Nothing is drawn for an agent without a mark.
+pub fn paint_agent_badge(painter: &egui::Painter, rect: Rect, agent: tc_core::agent::AgentKind, p: &style::Palette) {
+    if !super::agent_logo::has(agent) {
+        return;
+    }
+    let side = rect.width();
+    let radius = if side >= 26.0 { 7 } else if side >= 19.0 { 5 } else { 4 };
+    painter.rect_filled(rect, CornerRadius::same(radius), p.subtle);
+    let m = (side * 0.68).round();
+    super::agent_logo::paint(painter, Rect::from_center_size(rect.center(), Vec2::splat(m)), agent, p.text, false);
+}
+
+/// A button of [`notice_ex`]: its label, kind and key hint.
+pub struct NoticeButton<'a> {
+    pub label: &'a str,
+    pub kind: Kind,
+    pub keys: Option<&'a str>,
+}
+
+/// The Notice ([`notice`]) with any number of buttons at its right, in the order given (the
+/// last one rightmost); those that don't fit drop out from the left. Returns the button
+/// clicked and the notice's rectangle.
+pub fn notice_ex(ui: &mut Ui, width: f32, tone: Tone, glyph: Option<&str>, title: &str, body: Option<&str>, buttons: &[NoticeButton]) -> (Option<usize>, Rect) {
+    let p = style::pal(ui);
+    let dark = ui.visuals().dark_mode;
+    let h = if body.is_some() { NOTICE_H } else { NOTICE_H_SHORT };
+    let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return (None, rect);
+    }
+    let c = tone.color(&p);
+    let (fill, stroke) = if tone == Tone::Neutral {
+        (p.surface, p.border_strong)
+    } else {
+        let t = style::tint(if tone == Tone::Info { p.accent } else { c }, dark);
+        (t, t)
+    };
+    ui.painter().rect(rect, CornerRadius::same(9), fill, Stroke::new(1.0, stroke), StrokeKind::Inside);
+    let cy = rect.center().y;
+    let mut right = rect.right() - 8.0;
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(Rect::from_min_max(egui::pos2(rect.left() + 40.0, rect.top()), egui::pos2(right, rect.bottom())))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    child.spacing_mut().item_spacing.x = 6.0;
+    let mut clicked = None;
+    for (i, b) in buttons.iter().enumerate().rev() {
+        let w = button_width(&child, None, b.label, b.keys, true);
+        let need = if i + 1 == buttons.len() { 100.0 } else { 160.0 };
+        if right - w - (rect.left() + 40.0) < need {
+            break;
+        }
+        if button_keys(&mut child, b.kind, None, b.label, b.keys, true).clicked() {
+            clicked = Some(i);
+        }
+        right -= w + 6.0;
+    }
+    let painter = ui.painter();
+    let gfont = if tone.filled() { style::icon_fill(16.0) } else { style::icon_font(16.0) };
+    painter.text(egui::pos2(rect.left() + 12.0 + 8.0, cy), Align2::CENTER_CENTER, glyph.unwrap_or(tone.glyph()), gfont, c);
+    let tx = rect.left() + 38.0;
+    let max_w = (right - tx - 8.0).max(20.0);
+    let one_line = |text: &str, font: FontId, color: Color32| {
+        let mut job = egui::text::LayoutJob::single_section(text.to_string(), egui::TextFormat::simple(font, color));
+        job.wrap = egui::text::TextWrapping { max_width: max_w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+        painter.layout_job(job)
+    };
+    let tg = one_line(title, style::medium(style::SMALL), p.text);
+    if let Some(b) = body {
+        let bg = one_line(b, style::mono(style::DATA), p.text_muted);
+        let total = tg.size().y + 2.0 + bg.size().y;
+        let top = cy - total / 2.0;
+        let th = tg.size().y;
+        painter.galley(egui::pos2(tx, top), tg, p.text);
+        painter.galley(egui::pos2(tx, top + th + 2.0), bg, p.text_muted);
+    } else {
+        painter.galley(egui::pos2(tx, cy - tg.size().y / 2.0), tg, p.text);
+    }
+    (clicked, rect)
 }

@@ -12,11 +12,11 @@ use crate::actions::Action;
 use crate::app::App;
 use crate::i18n::{t, tf};
 
-pub const TAB_H: f32 = 38.0;
-const CRUMB_H: f32 = 32.0;
+pub const TAB_H: f32 = 40.0;
+const CRUMB_H: f32 = 30.0;
 const STATUS_H: f32 = 28.0;
-/// The Files column of the Code drawer, and the narrowest drawer that shows it.
-pub const FILES_W: f32 = 220.0;
+/// The Files column of the code panel, and the narrowest panel that shows it.
+pub const FILES_W: f32 = 230.0;
 pub const FILES_MIN_DRAWER: f32 = 520.0;
 
 impl App {
@@ -93,7 +93,6 @@ impl App {
     /// column is hidden, the button that brings it back.
     fn editor_tabs(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, files_toggle: bool) {
         let p = style::pal(ui);
-        let dark = ui.visuals().dark_mode;
         // The Files column hidden (or no room for it): a button at the left brings it back.
         let mut rect = rect;
         if files_toggle {
@@ -135,30 +134,32 @@ impl App {
                         ui.spacing_mut().item_spacing.x = 2.0;
                         for (i, (name, dirty, path, changed)) in files.iter().enumerate() {
                             let on = i == active;
-                            let font = style::medium(12.5);
+                            // The one in front raised: its icon, name (Small Strong), letter, ×.
+                            let font = if on { style::medium(style::SMALL) } else { egui::FontId::proportional(style::SMALL) };
                             let galley = ui.painter().layout_no_wrap(name.clone(), font, egui::Color32::PLACEHOLDER);
-                            let mark_w = if changed.is_some() { 6.0 + 8.0 } else { 0.0 };
-                            let w = 10.0 + 14.0 + 7.0 + galley.size().x + mark_w + 6.0 + 14.0 + 7.0;
+                            let letter = changed.map(|c| ui.painter().layout_no_wrap(c.letter().to_string(), style::mono_semibold(style::DATA), super::explorer_ui::change_color(c, &p)));
+                            let mark_w = letter.as_ref().map_or(0.0, |g| g.size().x + 6.0);
+                            let w = 9.0 + 13.0 + 6.0 + galley.size().x + mark_w + 6.0 + 12.0 + 9.0;
                             let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
                             if on && scroll_to_active {
                                 resp.scroll_to_me(None);
                             }
-                            let close_r = Rect::from_center_size(pos2(r.right() - 7.0 - 7.0, r.center().y), vec2(14.0, 14.0));
+                            let close_r = Rect::from_center_size(pos2(r.right() - 9.0 - 6.0, r.center().y), vec2(14.0, 14.0));
                             let close_resp = ui.interact(close_r, egui::Id::new(("tab-close", project, i)), Sense::click());
                             let painter = ui.painter();
                             if on {
-                                painter.rect(r, CornerRadius::same(8), p.surface, Stroke::new(1.0, if dark { p.border } else { p.border_strong }), egui::StrokeKind::Inside);
-                                kit::paint_highlight(painter, r, 8, &p);
+                                painter.rect(r, CornerRadius::same(style::RADIUS_ROW), p.surface, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
                             } else if resp.hovered() {
-                                painter.rect_filled(r, CornerRadius::same(8), p.hover);
+                                painter.rect_filled(r, CornerRadius::same(style::RADIUS_ROW), p.hover);
                             }
-                            let (icon, color) = icons::file_icon(name, false, false, &p);
-                            painter.text(pos2(r.left() + 10.0 + 7.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(14.0), if on { color } else { p.text_faint });
-                            let text_color = if on { p.text } else { p.text_faint };
+                            let (icon, _) = icons::file_icon(name, false, false, &p);
+                            painter.text(pos2(r.left() + 9.0 + 6.5, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), if on { p.text_muted } else { p.text_faint });
+                            let text_color = if on { p.text } else { p.text_muted };
                             let gw = galley.size().x;
-                            painter.galley(pos2(r.left() + 10.0 + 14.0 + 7.0, r.center().y - galley.size().y / 2.0), galley, text_color);
-                            if let Some(c) = changed {
-                                painter.text(pos2(r.left() + 10.0 + 14.0 + 7.0 + gw + 6.0 + 4.0, r.center().y), Align2::CENTER_CENTER, c.letter(), style::mono_semibold(10.0), super::explorer_ui::change_color(*c, &p));
+                            painter.galley(pos2(r.left() + 9.0 + 13.0 + 6.0, r.center().y - galley.size().y / 2.0), galley, text_color);
+                            if let Some(g) = letter {
+                                let c = changed.map(|c| super::explorer_ui::change_color(c, &p)).unwrap_or(p.text_faint);
+                                painter.galley(pos2(r.left() + 9.0 + 13.0 + 6.0 + gw + 6.0, r.center().y - g.size().y / 2.0), g, c);
                             }
                             // × when hovered or in front; ● for unsaved edits otherwise.
                             let show_x = close_resp.hovered() || resp.hovered() || (on && !dirty);
@@ -166,7 +167,7 @@ impl App {
                                 painter.rect_filled(close_r, CornerRadius::same(4), p.subtle);
                             }
                             if *dirty && !close_resp.hovered() {
-                                painter.circle_filled(close_r.center(), 3.5, p.text_muted);
+                                painter.circle_filled(close_r.center(), 3.0, p.text_muted);
                             } else if show_x {
                                 painter.text(close_r.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), if close_resp.hovered() { p.text } else { p.text_faint });
                             }
@@ -277,18 +278,19 @@ impl App {
         let painter = ui.painter();
         painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
         // Right-side badges first so breadcrumb + symbol clip cleanly before them.
-        let mut right = rect.right() - 14.0;
+        let mut right = rect.right() - 12.0;
         if let Some((agent, at)) = file.changed_by.as_ref().filter(|(_, at)| at.elapsed().as_secs() < 600) {
-            let text = crate::i18n::tf("Changed by {} · {}", &[agent, &super::status::age(*at)]);
+            // "Changed by Claude Code · 2m", on the accent's tint.
+            let text = crate::i18n::tf("Changed by {} · {}", &[agent, &super::status::short_age(*at)]);
             let kind = tc_core::agent::AgentKind::ALL.iter().copied().find(|k| k.label() == agent).filter(|k| super::agent_logo::has(*k));
-            let g = painter.layout_no_wrap(text, style::medium(11.5), p.accent_text);
-            let w = 8.0 + kind.map_or(0.0, |_| 11.0 + 6.0) + g.size().x + 8.0;
-            let r = Rect::from_min_size(pos2(right - w, rect.center().y - 10.0), vec2(w, 20.0));
-            painter.rect(r, CornerRadius::same(6), p.accent_tint, Stroke::new(1.0, style::soft(p.accent, 0.3)), egui::StrokeKind::Inside);
+            let g = painter.layout_no_wrap(text, egui::FontId::proportional(style::SMALL), p.accent_text);
+            let w = 8.0 + kind.map_or(0.0, |_| 16.0 + 6.0) + g.size().x + 8.0;
+            let r = Rect::from_min_size(pos2(right - w, rect.center().y - 11.0), vec2(w, 22.0));
+            painter.rect_filled(r, CornerRadius::same(style::RADIUS), p.accent_tint);
             let mut x = r.left() + 8.0;
             if let Some(k) = kind {
-                super::agent_logo::paint(painter, Rect::from_min_size(pos2(x, r.center().y - 5.5), vec2(11.0, 11.0)), k, p.text, false);
-                x += 11.0 + 6.0;
+                kit::paint_agent_badge(painter, Rect::from_min_size(pos2(x, r.center().y - 8.0), vec2(16.0, 16.0)), k, &p);
+                x += 16.0 + 6.0;
             }
             painter.galley(pos2(x, r.center().y - g.size().y / 2.0), g, p.accent_text);
             right -= w + 6.0;
@@ -314,11 +316,11 @@ impl App {
             if x + gw + 28.0 < crumb_clip.right() {
                 clip_painter.galley(pos2(x, rect.center().y - g.size().y / 2.0), g, p.text_ghost);
                 let x = x + gw + 6.0;
-                clip_painter.text(pos2(x + 6.5, rect.center().y), Align2::CENTER_CENTER, if func { icons::FUNCTION } else { icons::CODE }, style::icon_font(13.0), p.info);
-                let mut job = egui::text::LayoutJob::simple_singleline(name, style::mono(11.5), p.text);
+                clip_painter.text(pos2(x + 6.0, rect.center().y), Align2::CENTER_CENTER, if func { icons::FUNCTION } else { icons::CODE }, style::icon_font(12.0), p.info);
+                let mut job = egui::text::LayoutJob::simple_singleline(name, style::mono(style::DATA), p.text_muted);
                 job.wrap = egui::text::TextWrapping::truncate_at_width((crumb_clip.right() - (x + 18.0)).max(20.0));
                 let g = clip_painter.layout_job(job);
-                clip_painter.galley(pos2(x + 18.0, rect.center().y - g.size().y / 2.0), g, p.text);
+                clip_painter.galley(pos2(x + 18.0, rect.center().y - g.size().y / 2.0), g, p.text_muted);
             }
         }
     }
@@ -337,14 +339,14 @@ impl App {
             parts.push(if file.lossy { t("Not UTF-8").to_string() } else { "UTF-8".to_string() });
             parts.push(if file.crlf { "CRLF".into() } else { "LF".into() });
         }
-        let text = parts.join("  ·  ");
+        let text = parts.join(" · ");
         let left_painter = ui.painter_at(Rect::from_min_max(rect.min, pos2((rect.right() - 12.0).max(rect.left()), rect.max.y)));
-        let text_w = left_painter.layout_no_wrap(text.clone(), style::mono(10.5), p.text_faint).size().x;
+        let text_w = left_painter.layout_no_wrap(text.clone(), style::mono(style::DATA), p.text_faint).size().x;
         left_painter.text(
-            pos2(rect.left() + 14.0, rect.center().y),
+            pos2(rect.left() + 12.0, rect.center().y),
             Align2::LEFT_CENTER,
             text,
-            style::mono(10.5),
+            style::mono(style::DATA),
             p.text_faint,
         );
         let dirty = file.dirty() && !file.read_only;
@@ -355,7 +357,7 @@ impl App {
         if inner.width() > 40.0 {
             ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
                 ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                ui.spacing_mut().item_spacing.x = 10.0;
+                ui.spacing_mut().item_spacing.x = 14.0;
                 if dirty {
                     let save = kit::button_keys(ui, kit::Kind::Primary, Some(icons::FLOPPY_DISK), t("Save"), kit::keys(&Action::SaveFile), true);
                     if save.clicked() {
@@ -406,15 +408,30 @@ impl App {
             let mut go: Option<bool> = None;
             let mut enter = false;
             f.refresh(file);
-            egui::Frame::NONE
-                .fill(p.chrome)
-                .inner_margin(egui::Margin { left: 12, right: 8, top: 5, bottom: 5 })
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
+            // A card in the menus' colour over the text: the query, which match, Aa, ↑ ↓ ×.
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 8, right: 8, top: 8, bottom: 4 }).show(ui, |ui| {
+                let card = egui::Frame::NONE
+                    .fill(p.menu)
+                    .stroke(Stroke::new(1.0, p.border_strong))
+                    .corner_radius(CornerRadius::same(9))
+                    .shadow(ui.visuals().popup_shadow)
+                    .inner_margin(egui::Margin { left: 10, right: 4, top: 0, bottom: 0 });
+                card.show(ui, |ui| {
+                    ui.set_height(36.0);
+                    ui.horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        let field_w = (ui.available_width() - 180.0).clamp(90.0, 220.0);
-                        let r = kit::field(ui, find_id, &mut f.query, None, t("Find in file, or :line"), field_w, true);
+                        kit::icon(ui, icons::MAGNIFYING_GLASS, 14.0, p.text_faint);
+                        let field_w = (ui.available_width() - 190.0).clamp(80.0, 180.0);
+                        let r = ui.add_sized(
+                            vec2(field_w, 20.0),
+                            egui::TextEdit::singleline(&mut f.query)
+                                .id(find_id)
+                                .frame(egui::Frame::NONE)
+                                .margin(egui::Margin::ZERO)
+                                .font(egui::FontId::proportional(style::BODY))
+                                .hint_text(RichText::new(t("Find in file, or :line")).color(p.text_faint))
+                                .vertical_align(egui::Align::Center),
+                        );
                         #[cfg(debug_assertions)]
                         crate::devtest::record("editor-find", r.rect);
                         if f.focus {
@@ -440,20 +457,6 @@ impl App {
                             r.request_focus();
                             find_focused = true;
                         }
-                        // Aa: match case.
-                        let (ar, aresp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
-                        if f.case {
-                            ui.painter().rect_filled(ar, CornerRadius::same(style::RADIUS), p.accent_soft);
-                        } else if aresp.hovered() {
-                            ui.painter().rect_filled(ar, CornerRadius::same(style::RADIUS), p.hover);
-                        }
-                        ui.painter().text(ar.center(), Align2::CENTER_CENTER, "Aa", style::semibold(11.0), if f.case { p.accent_text } else { p.text_muted });
-                        if aresp.on_hover_text(t("Match Case")).clicked() {
-                            f.case = !f.case;
-                            f.refresh(file);
-                            go = Some(true);
-                            f.current = None;
-                        }
                         let info = if let Some(line) = f.goto_line() {
                             (tf("Enter: go to line {}", &[&(line + 1).to_string()]), p.text_muted)
                         } else if f.query.is_empty() {
@@ -468,24 +471,37 @@ impl App {
                                 None => (tf("{} results", &[&format!("{n}{more}")]), p.text_muted),
                             }
                         };
-                        ui.add_space(2.0);
-                        ui.label(RichText::new(info.0).size(style::SMALL).color(info.1));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            if kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0).clicked() {
-                                close = true;
-                            }
-                            if kit::icon_button_ex(ui, icons::ARROW_DOWN, t("Next"), false, 22.0).clicked() {
-                                go = Some(true);
-                            }
-                            if kit::icon_button_ex(ui, icons::ARROW_UP, t("Previous"), false, 22.0).clicked() {
-                                go = Some(false);
-                            }
-                        });
+                        if !info.0.is_empty() {
+                            ui.label(RichText::new(info.0).font(style::mono(style::DATA)).color(info.1));
+                        }
+                        // Aa: match case.
+                        let (ar, aresp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
+                        if f.case {
+                            ui.painter().rect_filled(ar, CornerRadius::same(5), p.accent_tint);
+                        } else if aresp.hovered() {
+                            ui.painter().rect_filled(ar, CornerRadius::same(5), p.hover);
+                        }
+                        ui.painter().text(ar.center(), Align2::CENTER_CENTER, "Aa", style::medium(style::SMALL), if f.case { p.accent_text } else { p.text_muted });
+                        if aresp.on_hover_text(t("Match Case")).clicked() {
+                            f.case = !f.case;
+                            f.refresh(file);
+                            go = Some(true);
+                            f.current = None;
+                        }
+                        kit::vdivider(ui, 16.0);
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        if kit::icon_button_ex(ui, icons::CARET_UP, t("Previous"), false, 24.0).clicked() {
+                            go = Some(false);
+                        }
+                        if kit::icon_button_ex(ui, icons::CARET_DOWN, t("Next"), false, 24.0).clicked() {
+                            go = Some(true);
+                        }
+                        if kit::icon_button_ex(ui, icons::X, t("Close"), false, 24.0).clicked() {
+                            close = true;
+                        }
                     });
                 });
-            let full = ui.min_rect();
-            ui.painter().hline(full.x_range(), full.bottom() - 0.5, Stroke::new(1.0, p.border));
+            });
             if let Some(line) = f.goto_line() {
                 // `:N` + Enter: the caret to line N, and back to the text.
                 if enter {
@@ -517,57 +533,31 @@ impl App {
         let Some(file) = files.get_mut(*active) else { return };
 
         if file.conflict {
-            let mut reload = false;
-            let mut force = false;
+            // A notice over the text: who changed it, and the ways on.
             let who = file.changed_by.as_ref().map(|(a, _)| a.clone());
             let title = match &who {
-                Some(agent) => tf("{} changed this file while you were editing it.", &[agent]),
-                None => t("This file changed on disk while you were editing it.").to_string(),
+                Some(agent) => tf("{} changed this file while you were editing it", &[agent]),
+                None => t("This file changed on disk while you were editing it").to_string(),
             };
-            egui::Frame::NONE
-                .fill(style::soft(p.warn, 0.12))
-                .inner_margin(egui::Margin::symmetric(14, 8))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        kit::icon(ui, icons::WARNING, 16.0, p.warn);
-                        let mut job = egui::text::LayoutJob::default();
-                        job.append(&title, 0.0, egui::TextFormat::simple(style::medium(12.5), p.warn));
-                        job.append(t("Nothing was overwritten."), 5.0, egui::TextFormat::simple(egui::FontId::proportional(12.5), p.text_muted));
-                        job.wrap.max_width = ui.available_width();
-                        ui.label(job);
-                    });
-                });
-            let line = ui.min_rect();
-            ui.painter().hline(line.x_range(), ui.cursor().top() - 0.5, Stroke::new(1.0, style::soft(p.warn, 0.3)));
-            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                    let label = if file.compare { t("Hide Differences") } else { t("Compare") };
-                    if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::COLUMNS), label, true).clicked() {
-                        file.compare = !file.compare;
-                    }
-                    let use_theirs = match &who {
-                        Some(agent) => tf("Use {}’s Version", &[agent]),
-                        None => t("Reload from Disk").to_string(),
-                    };
-                    if kit::button_ex(ui, kit::Kind::Secondary, None, &use_theirs, true).clicked() {
-                        reload = true;
-                    }
-                    if kit::button_ex(ui, kit::Kind::Danger, None, t("Keep Mine and Save"), true).clicked() {
-                        force = true;
-                    }
-                });
+            let theirs = match &who {
+                Some(agent) => tf("Use {}’s version", &[agent]),
+                None => t("Reload from disk").to_string(),
+            };
+            let buttons = [
+                kit::NoticeButton { label: t("Keep mine"), kind: kit::Kind::Ghost, keys: None },
+                kit::NoticeButton { label: if file.compare { t("Hide differences") } else { t("Compare") }, kind: kit::Kind::Secondary, keys: None },
+                kit::NoticeButton { label: &theirs, kind: kit::Kind::Primary, keys: None },
+            ];
+            let mut clicked = None;
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 8, right: 8, top: 8, bottom: 6 }).show(ui, |ui| {
+                let w = ui.available_width();
+                clicked = kit::notice_ex(ui, w, kit::Tone::Input, Some(icons::WARNING), &title, Some(t("Nothing was overwritten.")), &buttons).0;
             });
-            let line = ui.cursor().top();
-            ui.painter().hline(ui.max_rect().x_range(), line - 0.5, Stroke::new(1.0, p.border));
-            if reload {
-                self.actions.push(Action::ReloadFile);
-            }
-            if force {
-                self.actions.push(Action::ForceSave);
+            match clicked {
+                Some(0) => self.actions.push(Action::ForceSave),
+                Some(1) => file.compare = !file.compare,
+                Some(2) => self.actions.push(Action::ReloadFile),
+                _ => {}
             }
         }
 
@@ -644,15 +634,18 @@ impl App {
         let plain = p.text;
         let font = egui::FontId::monospace(font_size);
         let row_h = ui.fonts_mut(|f| f.row_height(&font));
+        // Lines 20 high at the usual size (the text centred in them).
+        let line_h = (font_size * 1.6).round().max(row_h.ceil());
         let char_w = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
         let digits = file.lines.max(1).to_string().len().max(3) as f32;
-        let gutter = (digits * char_w + 28.0).round().min(127.0);
+        // 8, the numbers, 10, the change mark (3), 10, the code.
+        let gutter = (digits * char_w + 8.0 + 10.0 + 3.0 + 10.0).round().min(127.0);
         let goto = file.goto_line.take();
         let mut area = egui::ScrollArea::both()
             .id_salt(("editor", project, file.path.clone()))
             .auto_shrink([false, false]);
         if let Some(line) = goto {
-            area = area.vertical_scroll_offset((line.saturating_sub(5) as f32) * row_h);
+            area = area.vertical_scroll_offset((line.saturating_sub(5) as f32) * line_h);
         }
         let read_only = file.read_only;
         let path = file.path.clone();
@@ -682,6 +675,10 @@ impl App {
                 let mut job = crate::editor::cached_layout(cache, buf.as_str(), &syntax, dark, font.clone(), plain);
                 // No wrapping: one row per line, so the line numbers line up.
                 job.wrap.max_width = f32::INFINITY;
+                for section in &mut job.sections {
+                    section.format.line_height = Some(line_h);
+                    section.format.valign = egui::Align::Center;
+                }
                 ui.fonts_mut(|f| f.layout_job(job))
             };
             // A read-only file is shown through a `&str`, which no key can change: it still
@@ -741,7 +738,7 @@ impl App {
             let galley = &output.galley;
             let origin = output.galley_pos;
             let first = galley.rows.partition_point(|r| origin.y + r.rect().bottom() < clip.top());
-            let numbers_right = resp.rect.left() + gutter - 14.0;
+            let numbers_right = resp.rect.left() + gutter - 23.0;
             let number_font = egui::FontId::monospace(font_size - 1.0);
             for (i, row) in galley.rows.iter().enumerate().skip(first) {
                 let y = origin.y + row.pos.y;
@@ -754,7 +751,7 @@ impl App {
                     Align2::RIGHT_CENTER,
                     (i + 1).to_string(),
                     number_font.clone(),
-                    if current { p.text_muted } else { style::soft(p.text_faint, 0.75) },
+                    if current { p.text_muted } else { p.text_faint },
                 );
             }
             if let Some(row) = caret_row.and_then(|r| galley.rows.get(r))
@@ -767,7 +764,7 @@ impl App {
                 );
                 ui.painter().set(
                     band,
-                    egui::Shape::rect_filled(band_rect, CornerRadius::ZERO, style::soft(p.text, if dark { 0.045 } else { 0.05 })),
+                    egui::Shape::rect_filled(band_rect, CornerRadius::ZERO, p.hover),
                 );
             }
             // Find results in view, the current one stronger.
@@ -796,7 +793,7 @@ impl App {
             // Beside the numbers: what changed since the agent started (or the last commit) —
             // a green bar for new lines, the accent for changed ones, a red notch where lines
             // were removed.
-            let mark_x = resp.rect.left() + gutter - 8.0;
+            let mark_x = resp.rect.left() + gutter - 11.5;
             let last_row = galley.rows.partition_point(|r| origin.y + r.rect().top() <= clip.bottom());
             for m in &file.marks {
                 let (l0, l1) = (m.line.saturating_sub(1) as usize, (m.line.saturating_sub(1) + m.count.max(1)) as usize);
@@ -817,8 +814,8 @@ impl App {
                     kind => {
                         let (Some(a), Some(b)) = (galley.rows.get(l0), galley.rows.get(l1.min(galley.rows.len()).saturating_sub(1))) else { continue };
                         let r = Rect::from_min_max(pos2(mark_x - 1.5, origin.y + a.pos.y), pos2(mark_x + 1.5, origin.y + b.pos.y + b.rect().height()));
-                        let c = if kind == tc_git::MarkKind::Added { p.ok } else { p.accent_text };
-                        ui.painter().rect_filled(r, CornerRadius::same(1), c);
+                        let c = if kind == tc_git::MarkKind::Added { p.ok } else { p.accent };
+                        ui.painter().rect_filled(r, CornerRadius::ZERO, c);
                     }
                 }
             }
@@ -984,8 +981,8 @@ pub fn paint_crumb(ui: &Ui, rect: Rect, root: &Path, path: &Path, p: &style::Pal
     let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
     let painter = ui.painter();
     painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
-    let font = egui::FontId::proportional(12.0);
-    let mut x = rect.left() + 16.0;
+    let font = egui::FontId::proportional(style::SMALL);
+    let mut x = rect.left() + 12.0;
     let cy = rect.center().y;
     for (i, part) in parts.iter().enumerate() {
         let last = i + 1 == parts.len();
