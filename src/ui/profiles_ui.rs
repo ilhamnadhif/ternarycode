@@ -1,19 +1,22 @@
-//! Multi-Account Agent Profiles & Failover Management view (`View::Profiles`), plus the
-//! inline Active Profile Switcher popover and Rate-Limit Recovery Banner inside agent panes.
+//! Agent accounts (profiles): Settings → Accounts (their usage, the failover policy, the
+//! accounts in failover order, the account editor), plus the account switcher in agent panes'
+//! headers and the rate-limit banner inside a paused pane.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use tc_core::agent::AgentKind;
 use tc_core::model::{AgentProfile, FailoverMode};
+use tc_core::status::Status;
 use tc_core::PaneId;
 
-use super::{agent_logo, icons, kit, style};
+use super::settings::{any_hit, card, galley, gap, group_head, hit, mono_field, raised, section, text};
+use super::{agent_logo, icons, kit, status, style};
 use crate::actions::Action;
 use crate::ade::ProfileDraft;
 use crate::app::App;
 use crate::i18n::{t, tf};
-use crate::profiles::{self, AuthStatus, ConnectionTest, ProfileState};
+use crate::profiles::{self, AuthStatus, ConnectionTest, LogLevel, ProfileState};
 
 pub fn profile_state_color(state: ProfileState, p: &style::Palette) -> Color32 {
     match state {
@@ -35,63 +38,185 @@ pub fn profile_state_label(state: ProfileState) -> &'static str {
     }
 }
 
-/// Paints a crisp 2×3 dot drag handle inside `rect`.
-fn paint_drag_grip(painter: &egui::Painter, rect: Rect, color: Color32) {
-    let cx = rect.center().x;
-    let cy = rect.center().y;
-    for dx in [-2.2_f32, 2.2] {
-        for dy in [-4.0_f32, 0.0, 4.0] {
-            painter.circle_filled(pos2(cx + dx, cy + dy), 1.15, color);
-        }
+/// An agent's avatar (16, 20 or 28 square): its logo on the active fill, or `letters` (a
+/// terminal when there are none).
+pub(super) fn paint_agent_tile(painter: &egui::Painter, rect: Rect, agent: Option<AgentKind>, letters: &str, p: &style::Palette) {
+    let s = rect.width();
+    let r = if s >= 26.0 { 7 } else if s >= 19.0 { 5 } else { 4 };
+    painter.rect_filled(rect, CornerRadius::same(r), p.subtle);
+    let m = (s * 0.68).round();
+    let logo = Rect::from_center_size(rect.center(), vec2(m, m));
+    if agent.is_some_and(|a| agent_logo::paint(painter, logo, a, p.text, false)) {
+        return;
+    }
+    if letters.is_empty() {
+        painter.text(rect.center(), Align2::CENTER_CENTER, icons::TERMINAL, style::icon_font((s * 0.72).round()), p.text_muted);
+    } else {
+        painter.text(rect.center(), Align2::CENTER_CENTER, letters, style::mono_semibold((s * 0.4).round()), p.text_muted);
     }
 }
 
-pub fn usage_pct_color(used_pct: f32, p: &style::Palette) -> Color32 {
-    if used_pct >= 90.0 {
+/// An account's state as a pill: In use (running), Ready, Limited, Cooling down, Error, or Off
+/// when it is left out of the failover order.
+enum Pill {
+    State(Status, &'static str),
+    Icon(&'static str, &'static str, Color32),
+}
+
+fn profile_pill(state: ProfileState, enabled: bool, p: &style::Palette) -> Pill {
+    if !enabled {
+        return Pill::State(Status::Idle, t("Off"));
+    }
+    match state {
+        ProfileState::Running => Pill::State(Status::Running, t("In use")),
+        ProfileState::Idle => Pill::State(Status::Done, t("Ready")),
+        ProfileState::RateLimited => Pill::Icon(icons::HOURGLASS_MEDIUM, t("Limited"), p.rate_limited),
+        ProfileState::Cooldown => Pill::Icon(icons::HOURGLASS_MEDIUM, t("Cooling down"), p.cooldown),
+        ProfileState::Error => Pill::State(Status::Failed(1), t("Error")),
+    }
+}
+
+/// How wide [`paint_profile_pill`] draws.
+pub(super) fn profile_pill_width(painter: &egui::Painter, state: ProfileState, enabled: bool, p: &style::Palette) -> f32 {
+    match profile_pill(state, enabled, p) {
+        Pill::State(s, text) => kit::state_pill_width(painter, s, text),
+        Pill::Icon(i, text, _) => kit::pill_width(painter, Some(i), text),
+    }
+}
+
+/// Paints an account's state pill with its left edge at `left_center`.
+pub(super) fn paint_profile_pill(painter: &egui::Painter, left_center: egui::Pos2, state: ProfileState, enabled: bool, p: &style::Palette, dark: bool) -> Rect {
+    match profile_pill(state, enabled, p) {
+        Pill::State(s, text) => kit::paint_state_pill(painter, left_center, s, text, p, dark),
+        Pill::Icon(i, text, c) => kit::paint_pill(painter, left_center, Some(i), text, c, style::tint(c, dark)),
+    }
+}
+
+/// A plan as a small accent badge ("MAX", "PRO"), `h` high; returns its rectangle.
+pub(super) fn paint_plan_badge(painter: &egui::Painter, left_center: egui::Pos2, plan: &str, h: f32, p: &style::Palette) -> Rect {
+    let g = painter.layout_no_wrap(plan.to_uppercase(), style::mono(style::DATA), p.accent_text);
+    let pad = if h >= 18.0 { 6.0 } else { 5.0 };
+    let r = Rect::from_min_size(pos2(left_center.x, left_center.y - h / 2.0), vec2(g.size().x + pad * 2.0, h));
+    painter.rect_filled(r, CornerRadius::same(if h >= 18.0 { 5 } else { 4 }), p.accent_tint);
+    painter.galley(r.center() - g.size() / 2.0, g, p.accent_text);
+    r
+}
+
+/// A reset countdown as the meters show it: "3d 14h", "4h 2m", "14m", "40s".
+pub(super) fn short_countdown(secs: u64) -> String {
+    if secs >= 86_400 {
+        format!("{}d {}h", secs / 86_400, (secs % 86_400) / 3600)
+    } else if secs >= 3600 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// One usage window as a meter: its label, a bar, the share used, the tokens and the reset.
+pub(super) struct Meter {
+    pub label: String,
+    pub pct: Option<f32>,
+    pub tokens: Option<String>,
+    pub reset: Option<String>,
+}
+
+/// The bar's colour: the rate-limit colour from 90 %, amber from 70 % (`amber`), else the accent.
+fn meter_color(pct: f32, amber: bool, p: &style::Palette) -> Color32 {
+    if pct >= 90.0 {
         p.rate_limited
-    } else if used_pct >= 70.0 {
+    } else if amber && pct >= 70.0 {
         p.warn
     } else {
-        p.ok
+        p.accent
     }
 }
 
-/// Renders one compact, disciplined usage-limit meter (`5h` or `Weekly` / `30d`) with progress bar,
-/// percentage or token count, and reset countdown.
-pub fn paint_window_meter(
-    ui: &mut Ui,
-    label: &str,
-    used_pct: Option<f32>,
-    tokens: u64,
-    reset_secs: Option<u64>,
-    bar_w: f32,
-    p: &style::Palette,
-) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(RichText::new(label).font(style::mono_semibold(10.5)).color(p.text_muted));
-        if let Some(pct) = used_pct {
-            let bc = usage_pct_color(pct, p);
-            let (bar_r, _) = ui.allocate_exact_size(vec2(bar_w, 5.0), Sense::hover());
-            kit::paint_quota_bar(ui.painter(), bar_r, pct, bc, p);
-            ui.label(RichText::new(format!("{pct:.0}%")).font(style::mono_semibold(10.5)).color(bc));
-            if tokens > 0 {
-                ui.label(RichText::new(profiles::format_tokens(tokens)).font(style::mono(10.0)).color(p.text_faint));
-            }
-        } else {
-            let tok_str = if tokens > 0 {
-                tf("{} tok", &[&profiles::format_tokens(tokens)])
-            } else {
-                "—".into()
-            };
-            ui.label(RichText::new(tok_str).font(style::mono(10.5)).color(p.text_faint));
+/// Paints a meter with its left edge at `left_center`: the label (24), the bar (`bar_w` ×
+/// `bar_h`), the share (`pct_w`, 0: as wide as it is), the tokens (60) and the reset. Returns its
+/// width.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_meter(painter: &egui::Painter, left_center: egui::Pos2, m: &Meter, bar_w: f32, bar_h: f32, pct_w: f32, amber: bool, p: &style::Palette) -> f32 {
+    let font = style::mono(style::DATA);
+    let cy = left_center.y;
+    let mut x = left_center.x;
+    let g = painter.layout_no_wrap(m.label.clone(), font.clone(), p.text_faint);
+    painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+    x += 24.0 + 8.0;
+    let bar = Rect::from_min_size(pos2(x, cy - bar_h / 2.0), vec2(bar_w, bar_h));
+    let r = CornerRadius::same((bar_h / 2.0).ceil() as u8);
+    painter.rect_filled(bar, r, p.subtle);
+    if let Some(pct) = m.pct {
+        let f = (pct / 100.0).clamp(0.0, 1.0);
+        if f > 0.0 {
+            painter.rect_filled(Rect::from_min_size(bar.min, vec2((bar_w * f).max(bar_h), bar_h)), r, meter_color(pct, amber, p));
         }
-        if let Some(secs) = reset_secs {
-            let rc = if used_pct.is_some_and(|v| v >= 90.0) { p.rate_limited } else { p.text_ghost };
-            ui.label(RichText::new(icons::CLOCK_COUNTER_CLOCKWISE).font(style::icon_font(10.5)).color(rc));
-            ui.label(RichText::new(profiles::format_countdown(secs)).font(style::mono(10.0)).color(rc));
-        }
-    });
+    }
+    x += bar_w + 8.0;
+    let pct_text = m.pct.map_or("—".to_string(), |v| format!("{v:.0}%"));
+    let g = painter.layout_no_wrap(pct_text, font.clone(), p.text_muted);
+    let gw = g.size().x;
+    painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_muted);
+    x += if pct_w > 0.0 { pct_w.max(gw) } else { gw } + 8.0;
+    if let Some(tok) = &m.tokens {
+        let g = painter.layout_no_wrap(tok.clone(), font.clone(), p.text_faint);
+        let gw = g.size().x;
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+        x += gw.max(60.0) + 8.0;
+    }
+    if let Some(reset) = &m.reset {
+        painter.text(pos2(x + 5.5, cy), Align2::CENTER_CENTER, icons::ARROW_COUNTER_CLOCKWISE, style::icon_font(11.0), p.text_faint);
+        x += 11.0 + 4.0;
+        let g = painter.layout_no_wrap(reset.clone(), font, p.text_faint);
+        let gw = g.size().x;
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+        x += gw;
+    } else {
+        x -= 8.0;
+    }
+    x - left_center.x
+}
+
+/// How wide a meter is with a bar of no width (what the rest takes).
+fn meter_rest(painter: &egui::Painter, m: &Meter, pct_w: f32) -> f32 {
+    let font = style::mono(style::DATA);
+    let w = |s: &str| painter.layout_no_wrap(s.to_string(), font.clone(), Color32::PLACEHOLDER).size().x;
+    let pct = w(&m.pct.map_or("—".to_string(), |v| format!("{v:.0}%")));
+    let mut x = 24.0 + 8.0 + 8.0 + if pct_w > 0.0 { pct_w.max(pct) } else { pct };
+    if let Some(tok) = &m.tokens {
+        x += 8.0 + w(tok).max(60.0);
+    }
+    if let Some(reset) = &m.reset {
+        x += 8.0 + 11.0 + 4.0 + w(reset);
+    }
+    x
+}
+
+/// An account's usage windows (5h and the week, or what the provider has), as meters.
+pub(super) fn profile_meters(prof: &AgentProfile, rt: &profiles::ProfileRuntime, now_unix: i64, now: Instant, with_tokens: bool) -> Vec<Meter> {
+    let mut out = Vec::new();
+    if rt.has_window_5h(prof) {
+        let tok = rt.usage.window_5h.tokens.total();
+        out.push(Meter {
+            label: rt.window_5h_label(),
+            pct: rt.quota_5h_used_pct(prof),
+            tokens: (with_tokens && tok > 0).then(|| tf("{} tok", &[&profiles::format_tokens(tok)])),
+            reset: rt.window_5h_reset_secs(now_unix, now).map(short_countdown),
+        });
+    }
+    if rt.has_window_weekly(prof) {
+        let tok = rt.usage.window_weekly.tokens.total();
+        let label = if rt.window_weekly_label() == "Weekly" { "Wk".to_string() } else { rt.window_weekly_label() };
+        out.push(Meter {
+            label,
+            pct: rt.quota_weekly_used_pct(prof),
+            tokens: (with_tokens && tok > 0).then(|| tf("{} tok", &[&profiles::format_tokens(tok)])),
+            reset: rt.window_weekly_reset_secs(now_unix).map(short_countdown),
+        });
+    }
+    out
 }
 
 fn compact_window_summary(
@@ -130,702 +255,365 @@ fn compact_window_summary(
     }
 }
 
-impl App {
-    /// Unified Agent Profiles, Failover & Live Usage page (`View::Profiles`).
-    pub fn profiles_view(&mut self, ui: &mut Ui) {
-        let p = style::pal(ui);
-        let full = ui.max_rect();
-        let body = self.top_bar(
-            ui,
-            full,
-            |app, ui| {
-                app.nav_back_button(ui);
-                ui.label(RichText::new(t("Agent Profiles & Usage")).font(style::semibold(14.0)).color(p.text));
-                ui.add_space(6.0);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(t("Multi-account credentials, live usage quotas, active sessions, and failover"))
-                            .size(12.0)
-                            .color(p.text_faint),
-                    )
-                    .truncate(),
-                );
-            },
-            None,
-        );
-        let area = super::focus::sheets_area(body, self.settings.sidebar_hidden);
-        super::focus::paint_sheet(ui.painter(), area, &p, super::focus::SheetLook::Plain);
+/// What the ⋯ menu of an account asked for.
+enum RowAction {
+    Clear,
+    Test,
+    SignIn,
+    Edit,
+    Delete,
+}
 
-        let inner = area.shrink(1.0);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
-            ui.set_clip_rect(inner);
-            egui::ScrollArea::vertical()
-                .id_salt("profiles-view-scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    egui::Frame::NONE
-                        .inner_margin(egui::Margin::symmetric(24, 20))
-                        .show(ui, |ui| {
-                            ui.set_width((inner.width() - 48.0).max(320.0));
-                            self.usage_summary_strip(ui);
-                            ui.add_space(16.0);
-                            self.profiles_policy_bar(ui);
-                            ui.add_space(16.0);
-                            if self.profile_draft.is_some() {
-                                self.profile_editor_panel(ui);
-                                ui.add_space(16.0);
-                            }
-                            self.profiles_table(ui);
-                            ui.add_space(18.0);
-                            self.active_sessions_and_events(ui);
-                        });
-                });
+impl App {
+    /// Settings → Accounts: the usage summary, what happens at a limit, the accounts in
+    /// failover order (drag to reorder), the account editor, then the sessions running now and
+    /// the recent failover events.
+    pub(super) fn accounts_page(&mut self, ui: &mut Ui, search: &str) {
+        // Countdowns tick while the page is open.
+        ui.ctx().request_repaint_after(Duration::from_secs(1));
+        // Esc closes the editor (or cancels a drag) before Settings.
+        let drag_id = egui::Id::new("profiles-drag-idx");
+        if (self.profile_draft.is_some() || ui.data(|d| d.get_temp::<usize>(drag_id).is_some()))
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            if ui.data(|d| d.get_temp::<usize>(drag_id).is_some()) {
+                ui.data_mut(|d| d.remove::<usize>(drag_id));
+            } else {
+                self.profile_draft = None;
+            }
+        }
+        let summary = [(t("Agents running"), ""), (t("Healthy accounts"), ""), (t("Rate-limited"), ""), (t("Tokens · 5h"), ""), (t("Tokens · week"), "")];
+        if any_hit(search, &summary) {
+            self.usage_summary(ui);
+        }
+        self.failover_policy(ui, search);
+        self.accounts_list(ui, search);
+        if self.profile_draft.is_some() {
+            self.profile_editor(ui);
+        } else if hit(search, t("Add account"), "") {
+            gap(ui);
+            ui.horizontal(|ui| {
+                let add = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::PLUS), t("Add account"), true);
+                #[cfg(debug_assertions)]
+                crate::devtest::record("profiles-add", add.rect);
+                if add.clicked() {
+                    let existing = self.effective_profiles();
+                    self.profile_draft = Some(ProfileDraft::new_for(AgentKind::Claude, &existing));
+                    ui.data_mut(|d| d.insert_temp(egui::Id::new("profile-editor-scroll"), true));
+                }
+            });
+        }
+        self.sessions_and_events(ui, search);
+    }
+
+    /// The numbers at the top: agents running, healthy accounts, rate-limited ones, tokens in
+    /// the 5-hour window and in the week.
+    fn usage_summary(&mut self, ui: &mut Ui) {
+        let p = style::pal(ui);
+        let now = Instant::now();
+        let profiles = self.effective_profiles();
+        let (running, limited, _errors, _) = self.telemetry_summary();
+        let (total_5h, total_weekly) = self.deduped_window_totals();
+        let enabled = profiles.iter().filter(|pr| pr.enabled).count();
+        let healthy = profiles.iter().filter(|pr| pr.enabled && self.profiles_rt.get(&pr.id).is_none_or(|r| r.is_healthy(now))).count();
+        let cells = [
+            (t("Agents running"), running.to_string(), p.text),
+            (t("Healthy accounts"), format!("{healthy} / {enabled}"), if healthy > 0 { p.ok } else { p.text }),
+            (t("Rate-limited"), limited.to_string(), if limited > 0 { p.rate_limited } else { p.text }),
+            (t("Tokens · 5h"), profiles::format_tokens(total_5h), p.text),
+            (t("Tokens · week"), profiles::format_tokens(total_weekly), p.text),
+        ];
+        raised(ui, 16, |ui| {
+            let w = ui.available_width();
+            let cell_w = (w - 12.0 * 4.0) / 5.0;
+            let (r, _) = ui.allocate_exact_size(vec2(w, 16.0 + 4.0 + 24.0), Sense::hover());
+            for (i, (label, value, c)) in cells.iter().enumerate() {
+                let x = r.left() + i as f32 * (cell_w + 12.0);
+                let lg = galley(ui, label, FontId::proportional(style::SMALL), p.text_faint, None, 16.0);
+                ui.painter().with_clip_rect(Rect::from_min_size(pos2(x, r.top()), vec2(cell_w, r.height()))).galley(pos2(x, r.top()), lg, p.text_faint);
+                let vg = galley(ui, value, style::semibold(style::TITLE), *c, None, 24.0);
+                ui.painter().galley(pos2(x, r.top() + 20.0), vg, *c);
+            }
         });
     }
 
-    fn profiles_policy_bar(&mut self, ui: &mut Ui) {
-        let p = style::pal(ui);
-        let dark = ui.visuals().dark_mode;
-        egui::Frame::NONE
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0, if dark { p.border } else { p.border_strong }))
-            .corner_radius(CornerRadius::same(9))
-            .inner_margin(egui::Margin::symmetric(16, 12))
-            .show(ui, |ui| {
-                let mut add_clicked = false;
-                ui.set_width(ui.available_width());
-                egui::Sides::new().spacing(12.0).shrink_left().wrap().show(
-                    ui,
-                    |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 8.0;
-                                ui.label(RichText::new(t("Failover Mode")).font(style::medium(12.5)).color(p.text));
-                                let modes = [
-                                    kit::Seg::new(t("Auto-Resume"), t("Automatically fail over to the next healthy profile and continue")).icon(icons::LIGHTNING),
-                                    kit::Seg::new(t("Manual Resume"), t("Pause with an inline banner to choose the fallback profile")).icon(icons::HAND_POINTING),
-                                ];
-                                let current = usize::from(self.settings.failover.mode == FailoverMode::Manual);
-                                if let Some(i) = kit::segmented(ui, &modes, current) {
-                                    self.settings.failover.mode = if i == 0 { FailoverMode::Auto } else { FailoverMode::Manual };
-                                    self.settings_changed();
-                                    self.push_companion_now();
-                                }
-                            });
-
-                            kit::vsep(ui);
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 8.0;
-                                let mut cross = self.settings.failover.cross_provider;
-                                kit::switch(ui, &mut cross);
-                                if cross != self.settings.failover.cross_provider {
-                                    self.settings.failover.cross_provider = cross;
-                                    self.settings_changed();
-                                }
-                                ui.label(RichText::new(t("Cross-provider fallback")).size(12.0).color(p.text_muted))
-                                    .on_hover_text(t("Fall back to another AI provider when all accounts of the active provider hit their limit"));
-                            });
-
-                            kit::vsep(ui);
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 8.0;
-                                ui.label(RichText::new(t("Default cooldown")).size(12.0).color(p.text_muted));
-                                let opts = ["15m", "30m", "60m", "120m"];
-                                let mins = [15u32, 30, 60, 120];
-                                let cur_label = format!("{}m", self.settings.failover.default_cooldown_mins);
-                                if let Some(i) = kit::select(ui, "failover-cooldown", &cur_label, &opts, 76.0) {
-                                    self.settings.failover.default_cooldown_mins = mins[i];
-                                    self.settings_changed();
-                                }
-                            });
-                        });
-                    },
-                    |ui| {
-                        let add = kit::button_ex(ui, kit::Kind::Primary, Some(icons::PLUS), t("Add Profile"), false);
-                        #[cfg(debug_assertions)]
-                        crate::devtest::record("profiles-add", add.rect);
-                        if add.clicked() {
-                            add_clicked = true;
-                        }
-                    },
-                );
-                if add_clicked {
-                    let existing = self.effective_profiles();
-                    self.profile_draft = Some(ProfileDraft::new_for(AgentKind::Claude, &existing));
+    /// "When an account hits its limit": switch automatically or ask, fall back to another
+    /// provider, and how long a limited account rests.
+    fn failover_policy(&mut self, ui: &mut Ui, search: &str) {
+        let labels = [
+            (t("Switch"), t("Auto resumes the session on the next healthy account; Ask pauses with a Notice.")),
+            (t("Fall back to another provider"), t("Only when every account of this agent is limited.")),
+            (t("Retry a limited account after"), ""),
+        ];
+        let mut changed = false;
+        section(ui, search, Some(t("When an account hits its limit")), None, &labels, |c| {
+            c.row(labels[0].0, labels[0].1, |ui| {
+                let modes = [kit::Seg::new(t("Automatically"), "").icon(icons::LIGHTNING), kit::Seg::new(t("Ask me"), "").icon(icons::HAND)];
+                let current = usize::from(self.settings.failover.mode == FailoverMode::Manual);
+                if let Some(i) = kit::segmented(ui, &modes, current) {
+                    self.settings.failover.mode = if i == 0 { FailoverMode::Auto } else { FailoverMode::Manual };
+                    changed = true;
                 }
             });
-    }
-
-    fn profile_editor_panel(&mut self, ui: &mut Ui) {
-        let p = style::pal(ui);
-        let dark = ui.visuals().dark_mode;
-        let Some(mut draft) = self.profile_draft.clone() else { return };
-        let mut save = false;
-        let mut cancel = false;
-
-        let existing = self.effective_profiles();
-        let sanitized_id = profiles::sanitize_id(draft.id.trim());
-        let id_empty = draft.id.trim().is_empty();
-        let id_dup = !id_empty
-            && existing
-                .iter()
-                .any(|x| x.id == sanitized_id && draft.editing_id.as_deref() != Some(x.id.as_str()));
-
-        egui::Frame::NONE
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0, style::soft(p.accent, 0.45)))
-            .corner_radius(CornerRadius::same(9))
-            .inner_margin(egui::Margin::symmetric(16, 14))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let heading = if draft.editing_id.is_some() { t("Edit Agent Profile") } else { t("New Agent Profile") };
-                    ui.label(RichText::new(heading).font(style::semibold(13.5)).color(p.text));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0).clicked() {
-                            cancel = true;
-                        }
-                    });
-                });
-                ui.add_space(10.0);
-
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(12.0, 8.0);
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(t("Provider")).size(11.5).color(p.text_muted));
-                        let providers = [
-                            (AgentKind::Claude, "Claude Code"),
-                            (AgentKind::Codex, "ChatGPT / Codex"),
-                        ];
-                        let names: Vec<&str> = providers.iter().map(|(_, n)| *n).collect();
-                        let cur = providers.iter().find(|(k, _)| *k == draft.agent).map(|(_, n)| *n).unwrap_or("Claude Code");
-                        if let Some(i) = kit::select(ui, "prof-agent", cur, &names, 165.0) {
-                            let new_agent = providers[i].0;
-                            if new_agent != draft.agent {
-                                // Auto-update sequential ID/name (`chatgpt2`, `claude2`) if still creating a new profile.
-                                if draft.editing_id.is_none() {
-                                    let (old_id, old_name) = ProfileDraft::suggest_id_and_name(draft.agent, &existing);
-                                    let (nid, nname) = ProfileDraft::suggest_id_and_name(new_agent, &existing);
-                                    if draft.id == old_id || draft.id.trim().is_empty() {
-                                        draft.id = nid;
-                                    }
-                                    if draft.name == old_name || draft.name.trim().is_empty() {
-                                        draft.name = nname;
-                                    }
-                                }
-                                draft.agent = new_agent;
-                            }
-                        }
-                    });
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(t("Profile ID")).size(11.5).color(p.text_muted));
-                        kit::field(ui, egui::Id::new("prof-id"), &mut draft.id, None, "chatgpt2", 130.0, false);
-                        if id_dup {
-                            ui.label(RichText::new(t("Profile ID already exists.")).size(11.0).color(p.err));
-                        }
-                    });
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(t("Display Name")).size(11.5).color(p.text_muted));
-                        kit::field(ui, egui::Id::new("prof-name"), &mut draft.name, None, "ChatGPT Plus #2", 170.0, false);
-                    });
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(t("Account Note / Email (optional)")).size(11.5).color(p.text_muted));
-                        kit::field(ui, egui::Id::new("prof-hint"), &mut draft.account_hint, None, "work@gmail.com", 180.0, false);
-                    });
-                });
-
-                ui.add_space(10.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(12.0, 8.0);
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(t("5-Hour Token Limit (optional)")).size(11.5).color(p.text_muted));
-                        kit::field(ui, egui::Id::new("prof-lim-5h"), &mut draft.limit_5h_text, None, "500k / 2M", 150.0, false);
-                    });
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(t("Weekly Token Limit (optional)")).size(11.5).color(p.text_muted));
-                        kit::field(ui, egui::Id::new("prof-lim-wk"), &mut draft.limit_weekly_text, None, "5M / 20M", 150.0, false);
-                    });
-                });
-                ui.add_space(4.0);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(t("Claude & ChatGPT / Codex report 5h & weekly % automatically; optionally set custom token caps."))
-                            .size(11.0)
-                            .color(p.text_faint),
-                    )
-                    .wrap(),
-                );
-
-                ui.add_space(10.0);
-                let form_w = ui.available_width();
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(12.0, 8.0);
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(t("Isolated Auth / Config Folder")).size(11.5).color(p.text_muted));
-                        let hint = crate::paths::contract_tilde(
-                            &crate::paths::data_dir().join("profiles").join(&sanitized_id),
-                        );
-                        let dir_w = form_w.clamp(160.0, 310.0);
-                        ui.add_enabled_ui(!draft.use_default_auth, |ui| {
-                            kit::field(ui, egui::Id::new("prof-dir"), &mut draft.config_dir, Some(icons::FOLDER), &hint, dir_w, false);
-                        });
-                    });
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(t("API Key (optional)")).size(11.5).color(p.text_muted));
-                        ui.horizontal(|ui| {
-                            let w = (form_w - 40.0).clamp(140.0, 250.0);
-                            let id = egui::Id::new("prof-key");
-                            let (rect, outer) = ui.allocate_exact_size(vec2(w, 30.0), Sense::click());
-                            if outer.clicked() {
-                                ui.ctx().memory_mut(|m| m.request_focus(id));
-                            }
-                            let focused = ui.ctx().memory(|m| m.has_focus(id));
-                            if focused {
-                                ui.painter().rect_stroke(
-                                    rect.expand(3.0),
-                                    CornerRadius::same(style::RADIUS + 3),
-                                    Stroke::new(3.0, p.accent_tint),
-                                    StrokeKind::Inside,
-                                );
-                            }
-                            let fill = if dark { p.inset } else { Color32::WHITE };
-                            ui.painter().rect(rect, CornerRadius::same(style::RADIUS), fill, Stroke::new(1.0, if focused { p.accent } else { p.border_strong }), StrokeKind::Inside);
-                            let inner = rect.shrink2(vec2(10.0, 1.0));
-                            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
-                            child.add_sized(
-                                inner.size(),
-                                egui::TextEdit::singleline(&mut draft.api_key)
-                                    .id(id)
-                                    .password(!draft.reveal_key)
-                                    .frame(egui::Frame::NONE)
-                                    .margin(egui::Margin::ZERO)
-                                    .font(style::mono(12.0))
-                                    .vertical_align(egui::Align::Center)
-                                    .hint_text(RichText::new("sk-…").color(p.text_faint)),
-                            );
-                            if kit::icon_button_ex(ui, icons::EYE, t("Show/Hide Key"), draft.reveal_key, 30.0).clicked() {
-                                draft.reveal_key = !draft.reveal_key;
-                            }
-                        });
-                    });
-                });
-
-                ui.add_space(10.0);
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(t("Extra Environment (KEY=VALUE per line, optional)")).size(11.5).color(p.text_muted));
-                    let env_id = egui::Id::new("prof-extra-env");
-                    let env_focused = ui.memory(|m| m.has_focus(env_id));
-                    let env_w = ui.available_width().min(580.0);
-                    let env_frame = egui::Frame::NONE
-                        .fill(if dark { p.inset } else { Color32::WHITE })
-                        .stroke(Stroke::new(1.0, if env_focused { p.accent } else { p.border_strong }))
-                        .corner_radius(CornerRadius::same(style::RADIUS))
-                        .inner_margin(egui::Margin::symmetric(10, 7))
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut draft.extra_env_text)
-                                    .id(env_id)
-                                    .desired_rows(2)
-                                    .desired_width((env_w - 20.0).max(120.0))
-                                    .frame(egui::Frame::NONE)
-                                    .margin(egui::Margin::ZERO)
-                                    .font(style::mono(11.5))
-                                    .hint_text(RichText::new("ANTHROPIC_BASE_URL=https://…").color(p.text_ghost)),
-                            );
-                        });
-                    if env_focused {
-                        ui.painter().rect_stroke(
-                            env_frame.response.rect.expand(2.5),
-                            CornerRadius::same(style::RADIUS + 2),
-                            Stroke::new(2.5, p.accent_tint),
-                            StrokeKind::Inside,
-                        );
-                    } else if env_frame.response.interact(Sense::click()).clicked() {
-                        ui.memory_mut(|m| m.request_focus(env_id));
-                    }
-                });
-
-                ui.add_space(10.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(16.0, 8.0);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        kit::switch(ui, &mut draft.use_default_auth);
-                        ui.label(RichText::new(t("Use system default auth folder (~/.claude, ~/.codex)")).size(12.0).color(p.text_muted));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        kit::switch(ui, &mut draft.enabled);
-                        ui.label(RichText::new(t("Enabled in failover chain")).size(12.0).color(p.text_muted));
-                    });
-                });
-
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let ok_enabled = !id_empty && !id_dup;
-                        if ui.add_enabled_ui(ok_enabled, |ui| kit::button_ex(ui, kit::Kind::Primary, Some(icons::CHECK), t("Save Profile"), false)).inner.clicked() {
-                            save = true;
-                        }
-                        if kit::button_ex(ui, kit::Kind::Secondary, None, t("Cancel"), false).clicked() {
-                            cancel = true;
-                        }
-                    });
-                });
+            c.row(labels[1].0, labels[1].1, |ui| {
+                changed |= kit::switch(ui, &mut self.settings.failover.cross_provider).changed();
             });
-
-        if cancel {
-            self.profile_draft = None;
-        } else if save && !id_empty && !id_dup {
-            self.ensure_mutable_profiles();
-            let editing = draft.editing_id.clone();
-            let next_order = self.settings.profiles.iter().map(|x| x.fallback_order).max().unwrap_or(0) + 1;
-            if let Some(old_id) = editing
-                && let Some(slot) = self.settings.profiles.iter_mut().find(|x| x.id == old_id)
-            {
-                let order = slot.fallback_order;
-                let updated = draft.into_profile(order);
-                let new_id = updated.id.clone();
-                *slot = updated;
-                if old_id != new_id {
-                    if let Some(rt) = self.profiles_rt.remove(&old_id) {
-                        self.profiles_rt.insert(new_id.clone(), rt);
-                    }
-                    for pane in self.panes.values_mut() {
-                        if pane.active_profile.as_deref() == Some(old_id.as_str()) {
-                            pane.active_profile = Some(new_id.clone());
-                        }
-                        if let Some(b) = &mut pane.rate_limit
-                            && b.from_profile == old_id
-                        {
-                            b.from_profile = new_id.clone();
-                        }
-                    }
-                    for proj in &mut self.projects {
-                        if proj.active_profile.as_deref() == Some(old_id.as_str()) {
-                            proj.active_profile = Some(new_id.clone());
-                        }
-                    }
-                    for list in self.project_sessions.values_mut() {
-                        for item in list {
-                            if item.profile_id.as_deref() == Some(old_id.as_str()) {
-                                item.profile_id = Some(new_id.clone());
-                            }
-                        }
-                    }
-                    self.sessions_scan_at.clear();
+            c.row(labels[2].0, "", |ui| {
+                const MINS: [u32; 4] = [15, 30, 60, 120];
+                let names = [t("15 minutes"), t("30 minutes"), t("1 hour"), t("2 hours")];
+                let now = self.settings.failover.default_cooldown_mins;
+                let current = match MINS.iter().position(|m| *m == now) {
+                    Some(i) => names[i].to_string(),
+                    None => tf("{} minutes", &[&now.to_string()]),
+                };
+                if let Some(i) = kit::select(ui, "failover-cooldown", &current, &names, 140.0) {
+                    self.settings.failover.default_cooldown_mins = MINS[i];
+                    changed = true;
                 }
-            } else {
-                let new_prof = draft.into_profile(next_order);
-                self.settings.profiles.push(new_prof);
-            }
+            });
+        });
+        if changed {
             self.settings_changed();
-            self.profile_draft = None;
-            self.recompute_usage_totals();
-            self.usage_scan_at = None;
             self.push_companion_now();
-            self.toast_ok(t("Profile saved.").into());
-        } else {
-            self.profile_draft = Some(draft);
         }
     }
 
-    fn profiles_table(&mut self, ui: &mut Ui) {
+    /// "Accounts, in failover order": a row per account (drag its grip to reorder), its usage
+    /// under it.
+    fn accounts_list(&mut self, ui: &mut Ui, search: &str) {
         let p = style::pal(ui);
         let dark = ui.visuals().dark_mode;
         let now = Instant::now();
+        let now_unix = profiles::now_unix_secs();
         let profiles = self.effective_profiles();
         let home = crate::paths::home_dir();
         let data = crate::paths::data_dir();
+        let title = t("Accounts, in failover order");
+        let title_hit = !search.trim().is_empty() && hit(search, title, "");
+        let shown: Vec<usize> = (0..profiles.len())
+            .filter(|i| {
+                let pr = &profiles[*i];
+                title_hit || hit(search, &pr.id, &pr.name) || pr.account_hint.as_deref().is_some_and(|h| hit(search, h, ""))
+            })
+            .collect();
+        if shown.is_empty() {
+            return;
+        }
 
-        let mut move_dir: Option<(usize, i32)> = None;
         let mut drag_reorder: Option<(usize, usize)> = None;
         let mut toggle_enabled: Option<String> = None;
+        let mut row_action: Option<(String, RowAction)> = None;
         let mut delete_id: Option<String> = None;
-        let mut edit_prof: Option<AgentProfile> = None;
-
         let drag_id = egui::Id::new("profiles-drag-idx");
+        let confirm_id = egui::Id::new("profiles-delete-confirm");
+        let mut confirm: Option<String> = ui.data(|d| d.get_temp(confirm_id));
         let mut dragging: Option<usize> = ui.data(|d| d.get_temp::<usize>(drag_id));
-        if dragging.is_some_and(|i| i >= profiles.len()) {
+        if dragging.is_some_and(|i| i >= profiles.len()) || !search.trim().is_empty() {
             dragging = None;
             ui.data_mut(|d| d.remove::<usize>(drag_id));
         }
+        let can_drag = profiles.len() > 1 && search.trim().is_empty();
         let mut row_rects: Vec<Rect> = Vec::with_capacity(profiles.len());
 
-        let now_unix = profiles::now_unix_secs();
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
-            ui.label(RichText::new(t("Fallback Priority Chain")).font(style::semibold(13.0)).color(p.text));
-            ui.label(
-                RichText::new(tf("{} configured", &[&profiles.len().to_string()]))
-                    .font(style::mono(11.0))
-                    .color(p.text_faint),
-            );
-        });
-        ui.add_space(8.0);
-
-        let table_resp = egui::Frame::NONE
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0, if dark { p.border } else { p.border_strong }))
-            .corner_radius(CornerRadius::same(9))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = 0.0;
-
-                for (idx, prof) in profiles.iter().enumerate() {
-                    if idx > 0 {
-                        let y = ui.cursor().top();
-                        ui.painter().hline(ui.max_rect().x_range(), y + 0.5, Stroke::new(1.0, p.border));
+        gap(ui);
+        group_head(ui, title, can_drag.then_some(t("Drag to reorder")));
+        let table = card(ui, "", |c| {
+            for &idx in &shown {
+                let prof = &profiles[idx];
+                let rt = self.profiles_rt.get(&prof.id).cloned().unwrap_or_default();
+                let auth = rt.auth_status(prof);
+                let is_dragged = dragging == Some(idx);
+                let dir = crate::paths::contract_tilde(&profiles::resolved_config_dir(prof, &home, data));
+                let meters = profile_meters(prof, &rt, now_unix, now, true);
+                c.divider();
+                let fill = if is_dragged { p.accent_tint } else { Color32::TRANSPARENT };
+                let resp = egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(16, 12)).show(c.ui, |ui| {
+                    let w = ui.available_width();
+                    ui.set_width(w);
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    // Row 1: grip, rank, avatar, id, hint, plan, state … sign-in, enabled, ⋯
+                    let (r1, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
+                    let cy = r1.center().y;
+                    let handle = Rect::from_min_size(r1.min, vec2(14.0 + 10.0 + 22.0, 24.0));
+                    let hr = ui.interact(handle, egui::Id::new(("profile-grip", &prof.id)), if can_drag { Sense::drag() } else { Sense::hover() });
+                    let lit = is_dragged || (can_drag && hr.hovered());
+                    ui.painter().text(pos2(r1.left() + 7.0, cy), Align2::CENTER_CENTER, icons::DOTS_SIX_VERTICAL, style::icon_font(14.0), if lit { p.text_muted } else { p.text_ghost });
+                    let rank = galley(ui, &format!("#{}", idx + 1), style::mono(style::DATA), p.text_faint, None, 14.0);
+                    ui.painter().galley(pos2(r1.left() + 24.0, cy - 7.0), rank, p.text_faint);
+                    if can_drag {
+                        if hr.drag_started() {
+                            dragging = Some(idx);
+                            ui.data_mut(|d| d.insert_temp(drag_id, idx));
+                        }
+                        if is_dragged {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        } else if hr.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        }
+                        hr.on_hover_text(t("Drag to reorder"));
                     }
-                    let rt = self.profiles_rt.get(&prof.id).cloned().unwrap_or_default();
-                    let state_c = profile_state_color(rt.state, &p);
-                    let dir = profiles::resolved_config_dir(prof, &home, data);
-                    let dir_str = crate::paths::contract_tilde(&dir);
-                    let auth = rt.auth_status(prof);
-                    let used_5h = rt.quota_5h_used_pct(prof);
-                    let used_wk = rt.quota_weekly_used_pct(prof);
-                    let reset_5h = rt.window_5h_reset_secs(now_unix, now);
-                    let reset_wk = rt.window_weekly_reset_secs(now_unix);
-                    let has_5h = rt.has_window_5h(prof);
-                    let has_wk = rt.has_window_weekly(prof);
-                    let l5 = rt.window_5h_label();
-                    let lw = rt.window_weekly_label();
-                    let can_delete = profiles.len() > 1;
-                    let needs_login = auth == AuthStatus::NotSignedIn;
-                    let is_dragged = dragging == Some(idx);
-                    let row_radius = CornerRadius {
-                        nw: if idx == 0 { 8 } else { 0 },
-                        ne: if idx == 0 { 8 } else { 0 },
-                        sw: if idx + 1 == profiles.len() { 8 } else { 0 },
-                        se: if idx + 1 == profiles.len() { 8 } else { 0 },
+                    let avatar = Rect::from_min_size(pos2(r1.left() + 56.0, cy - 10.0), vec2(20.0, 20.0));
+                    paint_agent_tile(ui.painter(), avatar, Some(prof.agent), "", &p);
+                    // The right side first, so the text at the left knows its room.
+                    let mut right = r1.right();
+                    let more = Rect::from_min_size(pos2(right - 24.0, cy - 12.0), vec2(24.0, 24.0));
+                    let more_resp = ui.scope_builder(egui::UiBuilder::new().max_rect(more), |ui| kit::icon_button_ex(ui, icons::DOTS_THREE, t("More"), false, 24.0)).inner;
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record(format!("profile-more:{}", prof.id), more_resp.rect);
+                    right = more.left() - 10.0;
+                    let sw = Rect::from_min_size(pos2(right - 26.0, cy - 8.0), vec2(26.0, 16.0));
+                    let mut en = prof.enabled;
+                    let swr = ui.scope_builder(egui::UiBuilder::new().max_rect(sw), |ui| kit::switch(ui, &mut en)).inner;
+                    if swr.changed() {
+                        toggle_enabled = Some(prof.id.clone());
+                    }
+                    swr.on_hover_text(t("In the failover order"));
+                    right = sw.left() - 10.0;
+                    let (auth_text, auth_c) = match auth {
+                        AuthStatus::SignedIn => (t("Signed in"), p.ok),
+                        AuthStatus::ApiKey => (t("API key"), p.text_muted),
+                        AuthStatus::NotSignedIn => (t("Not signed in"), p.warn),
+                        AuthStatus::Unknown => ("", p.text_faint),
                     };
+                    if !auth_text.is_empty() {
+                        let g = galley(ui, auth_text, FontId::proportional(style::SMALL), auth_c, None, 16.0);
+                        right -= g.size().x;
+                        ui.painter().galley(pos2(right, cy - 8.0), g, auth_c);
+                        right -= 10.0;
+                    }
+                    let mut x = avatar.right() + 10.0;
+                    let id_c = if prof.enabled { p.text } else { p.text_faint };
+                    let idg = galley(ui, &prof.id, style::mono_semibold(style::DATA), id_c, None, 14.0);
+                    let id_rect = Rect::from_min_size(pos2(x, cy - 7.0), idg.size());
+                    ui.painter().galley(id_rect.min, idg, id_c);
+                    ui.interact(id_rect, egui::Id::new(("profile-id", &prof.id)), Sense::hover()).on_hover_text(tf("Sign-in folder: {}", &[&dir]));
+                    x = id_rect.right() + 10.0;
+                    let pill_w = profile_pill_width(ui.painter(), rt.state, prof.enabled, &p);
+                    let plan = rt.usage.plan_type.clone().filter(|s| !s.is_empty());
+                    let plan_w = plan.as_ref().map_or(0.0, |s| ui.painter().layout_no_wrap(s.to_uppercase(), style::mono(style::DATA), p.accent_text).size().x + 12.0 + 10.0);
+                    let hint = prof.account_hint.clone().unwrap_or_else(|| prof.name.clone());
+                    let hint_room = right - x - plan_w - pill_w - 10.0;
+                    if hint_room > 24.0 && !hint.is_empty() {
+                        let mut job = egui::text::LayoutJob::simple_singleline(hint, FontId::proportional(style::SMALL), p.text_faint);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width(hint_room);
+                        let g = ui.painter().layout_job(job);
+                        let gw = g.size().x;
+                        ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+                        x += gw + 10.0;
+                    }
+                    if let Some(plan) = &plan
+                        && x + plan_w + pill_w <= right + 10.0
+                    {
+                        let b = paint_plan_badge(ui.painter(), pos2(x, cy), plan, 18.0, &p);
+                        x = b.right() + 10.0;
+                    }
+                    if x + pill_w <= right + 10.0 {
+                        paint_profile_pill(ui.painter(), pos2(x, cy), rt.state, prof.enabled, &p, dark);
+                    }
+                    // The ⋯ menu.
+                    egui::Popup::menu(&more_resp).align(egui::RectAlign::BOTTOM_END).width(220.0).show(|ui| {
+                        kit::menu_body(ui);
+                        ui.set_min_width(200.0);
+                        if matches!(rt.state, ProfileState::RateLimited | ProfileState::Cooldown)
+                            && kit::menu_item(ui, Some(icons::ARROW_COUNTER_CLOCKWISE), t("Clear cooldown"), None, false).clicked()
+                        {
+                            row_action = Some((prof.id.clone(), RowAction::Clear));
+                        }
+                        if kit::menu_item(ui, Some(icons::PLUGS_CONNECTED), t("Test connection"), None, false).clicked() {
+                            row_action = Some((prof.id.clone(), RowAction::Test));
+                        }
+                        let sign = if auth == AuthStatus::SignedIn { t("Sign in again") } else { t("Sign in") };
+                        if kit::menu_item(ui, Some(icons::KEY), sign, None, false).clicked() {
+                            row_action = Some((prof.id.clone(), RowAction::SignIn));
+                        }
+                        if kit::menu_item(ui, Some(icons::PENCIL_SIMPLE), t("Edit…"), None, false).clicked() {
+                            row_action = Some((prof.id.clone(), RowAction::Edit));
+                        }
+                        kit::menu_sep(ui);
+                        let can_delete = profiles.len() > 1;
+                        let del = ui.add_enabled_ui(can_delete, |ui| kit::menu_item(ui, Some(icons::TRASH), t("Delete…"), None, can_delete)).inner;
+                        let del = if can_delete { del } else { del.on_disabled_hover_text(t("At least one account is needed")) };
+                        if del.clicked() {
+                            row_action = Some((prof.id.clone(), RowAction::Delete));
+                        }
+                    });
 
-                    let row_frame = egui::Frame::NONE
-                        .fill(if is_dragged { p.accent_tint } else { Color32::TRANSPARENT })
-                        .corner_radius(row_radius)
-                        .inner_margin(egui::Margin::symmetric(14, 9))
-                        .show(ui, |ui| {
-                            let card_w = ui.available_width();
-                            ui.set_width(card_w);
-                            ui.spacing_mut().item_spacing.y = 4.0;
-                            let indent = if card_w < 560.0 { 24.0 } else { 94.0 };
-
-                            let mut draw_identity = |ui: &mut Ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
-                                    // Tactile 6-dot drag grip + rank handle confined strictly to its own rect.
-                                    let rank_text = format!("#{}", idx + 1);
-                                    let rank_g = ui.painter().layout_no_wrap(rank_text, style::mono_semibold(11.0), p.text_faint);
-                                    let handle_w = 14.0 + 4.0 + rank_g.size().x + 2.0;
-                                    let (handle_r, handle_resp) = ui.allocate_exact_size(vec2(handle_w, 20.0), Sense::drag());
-                                    let grip_r = Rect::from_min_size(handle_r.min, vec2(14.0, handle_r.height()));
-                                    if profiles.len() > 1 {
-                                        let grip_c = if is_dragged || handle_resp.hovered() { p.text_muted } else { p.text_ghost };
-                                        paint_drag_grip(ui.painter(), grip_r, grip_c);
-                                        if handle_resp.drag_started() {
-                                            dragging = Some(idx);
-                                            ui.data_mut(|d| d.insert_temp(drag_id, idx));
-                                        }
-                                        if is_dragged {
-                                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                                        } else if handle_resp.hovered() {
-                                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                                        }
-                                        ui.painter().galley(
-                                            pos2(grip_r.right() + 4.0, handle_r.center().y - rank_g.size().y / 2.0),
-                                            rank_g,
-                                            if is_dragged || handle_resp.hovered() { p.text_muted } else { p.text_faint },
-                                        );
-                                        let _ = handle_resp.on_hover_text(t("Drag to reorder"));
-                                    } else {
-                                        paint_drag_grip(ui.painter(), grip_r, p.border_heavy);
-                                        ui.painter().galley(
-                                            pos2(grip_r.right() + 4.0, handle_r.center().y - rank_g.size().y / 2.0),
-                                            rank_g,
-                                            p.text_faint,
-                                        );
-                                    }
-                                    if ui.add_enabled_ui(idx > 0, |ui| kit::icon_button_ex(ui, icons::ARROW_UP, t("Move Up"), false, 20.0)).inner.clicked() {
-                                        move_dir = Some((idx, -1));
-                                    }
-                                    if ui.add_enabled_ui(idx + 1 < profiles.len(), |ui| kit::icon_button_ex(ui, icons::ARROW_DOWN, t("Move Down"), false, 20.0)).inner.clicked() {
-                                        move_dir = Some((idx, 1));
-                                    }
-                                    let (mr, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-                                    if !agent_logo::paint(ui.painter(), mr, prof.agent, p.text, false) {
-                                        ui.painter().text(mr.center(), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(13.0), p.text_muted);
-                                    }
-                                    ui.label(RichText::new(&prof.id).font(style::mono_semibold(12.5)).color(if prof.enabled { p.text } else { p.text_faint }));
-                                    ui.label(RichText::new(&prof.name).size(12.0).color(p.text_muted));
-                                    if let Some(plan) = &rt.usage.plan_type {
-                                        kit::status_badge(ui, &plan.to_uppercase(), p.accent_text, true);
-                                    }
-                                    kit::status_badge(ui, profile_state_label(rt.state), state_c, false);
-                                    match auth {
-                                        AuthStatus::SignedIn => {
-                                            kit::status_badge(ui, t("Signed in"), p.ok, false);
-                                        }
-                                        AuthStatus::ApiKey => {
-                                            kit::status_badge(ui, t("API Key"), p.info, false);
-                                        }
-                                        AuthStatus::NotSignedIn => {
-                                            kit::status_badge(ui, t("Not signed in"), p.warn, false);
-                                        }
-                                        AuthStatus::Unknown => {}
-                                    }
-                                });
-                            };
-                            // Row 1: responsive identity + actions (side-by-side via Sides when wide, stacked when narrow).
-                            if card_w >= 680.0 {
-                                egui::Sides::new().spacing(12.0).shrink_left().wrap().show(
-                                    ui,
-                                    |ui| draw_identity(ui),
-                                    |ui| {
-                                        // `Sides` lays out its right side right-to-left, so emit rightmost controls first.
-                                        ui.spacing_mut().item_spacing.x = 6.0;
-                                        let del_tip = if can_delete { t("Delete Profile") } else { t("At least one profile is required") };
-                                        if ui.add_enabled_ui(can_delete, |ui| kit::icon_button_ex(ui, icons::TRASH, del_tip, false, 24.0)).inner.clicked() {
-                                            delete_id = Some(prof.id.clone());
-                                        }
-                                        if kit::icon_button_ex(ui, icons::PENCIL_SIMPLE, t("Edit Profile"), false, 24.0).clicked() {
-                                            edit_prof = Some(prof.clone());
-                                        }
-                                        let login_kind = if needs_login { kit::Kind::Primary } else { kit::Kind::Secondary };
-                                        if kit::button_ex(ui, login_kind, Some(icons::KEY), t("Auth Login"), true)
-                                            .on_hover_text(t("Sign in interactively inside this profile's isolated auth folder"))
-                                            .clicked()
-                                        {
-                                            self.actions.push(Action::LoginProfile(prof.id.clone()));
-                                        }
-                                        if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::PLUGS_CONNECTED), t("Test"), true).clicked() {
-                                            self.actions.push(Action::TestProfile(prof.id.clone()));
-                                        }
-                                        if matches!(rt.state, ProfileState::RateLimited | ProfileState::Cooldown)
-                                            && kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_CLOCKWISE), t("Clear"), true).clicked()
-                                        {
-                                            self.actions.push(Action::ClearProfileCooldown(prof.id.clone()));
-                                        }
-                                        let mut en = prof.enabled;
-                                        kit::switch(ui, &mut en);
-                                        if en != prof.enabled {
-                                            toggle_enabled = Some(prof.id.clone());
-                                        }
-                                    },
-                                );
-                            } else {
-                                draw_identity(ui);
-                                ui.horizontal(|ui| {
-                                    ui.add_space(indent);
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-                                        let mut en = prof.enabled;
-                                        kit::switch(ui, &mut en);
-                                        if en != prof.enabled {
-                                            toggle_enabled = Some(prof.id.clone());
-                                        }
-                                        if matches!(rt.state, ProfileState::RateLimited | ProfileState::Cooldown)
-                                            && kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_CLOCKWISE), t("Clear"), true).clicked()
-                                        {
-                                            self.actions.push(Action::ClearProfileCooldown(prof.id.clone()));
-                                        }
-                                        if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::PLUGS_CONNECTED), t("Test"), true).clicked() {
-                                            self.actions.push(Action::TestProfile(prof.id.clone()));
-                                        }
-                                        let login_kind = if needs_login { kit::Kind::Primary } else { kit::Kind::Secondary };
-                                        if kit::button_ex(ui, login_kind, Some(icons::KEY), t("Auth Login"), true)
-                                            .on_hover_text(t("Sign in interactively inside this profile's isolated auth folder"))
-                                            .clicked()
-                                        {
-                                            self.actions.push(Action::LoginProfile(prof.id.clone()));
-                                        }
-                                        if kit::icon_button_ex(ui, icons::PENCIL_SIMPLE, t("Edit Profile"), false, 24.0).clicked() {
-                                            edit_prof = Some(prof.clone());
-                                        }
-                                        let del_tip = if can_delete { t("Delete Profile") } else { t("At least one profile is required") };
-                                        if ui.add_enabled_ui(can_delete, |ui| kit::icon_button_ex(ui, icons::TRASH, del_tip, false, 24.0)).inner.clicked() {
-                                            delete_id = Some(prof.id.clone());
-                                        }
-                                    });
-                                });
+                    // Row 2: the usage windows, under the avatar.
+                    let indent = 56.0;
+                    let room = w - indent;
+                    if meters.is_empty() {
+                        let (r2, _) = ui.allocate_exact_size(vec2(w, 14.0), Sense::hover());
+                        let g = galley(ui, t("No usage reported yet"), style::mono(style::DATA), p.text_ghost, None, 14.0);
+                        ui.painter().galley(pos2(r2.left() + indent, r2.top()), g, p.text_ghost);
+                    } else {
+                        let (r2, _) = ui.allocate_exact_size(vec2(w, 14.0), Sense::hover());
+                        let rest: f32 = meters.iter().map(|m| meter_rest(ui.painter(), m, 36.0)).sum::<f32>() + 24.0 * (meters.len() - 1) as f32;
+                        let bar_w = ((room - rest) / meters.len() as f32).clamp(40.0, 120.0);
+                        let mut x = r2.left() + indent;
+                        let painter = ui.painter().with_clip_rect(r2.intersect(ui.clip_rect()));
+                        for m in &meters {
+                            x += paint_meter(&painter, pos2(x, r2.center().y), m, bar_w, 5.0, 36.0, true, &p) + 24.0;
+                        }
+                    }
+                    // A connection test's answer.
+                    if let Some(conn) = &rt.connection {
+                        let (msg, c) = match conn {
+                            ConnectionTest::Testing => (t("Testing connection…").to_string(), p.info),
+                            ConnectionTest::Ok(m) => (m.clone(), p.ok),
+                            ConnectionTest::Err(e) => (e.clone(), p.err),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.add_space(indent);
+                            text(ui, &msg, style::mono(style::DATA), c, 14.0, true);
+                        });
+                    }
+                    // Delete asks first, here in the row.
+                    if confirm.as_deref() == Some(prof.id.as_str()) {
+                        ui.horizontal(|ui| {
+                            ui.add_space(indent);
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            text(ui, &tf("Delete {}? Its sign-in folder stays on this computer.", &[&prof.id]), FontId::proportional(style::SMALL), p.text, 16.0, false);
+                            if kit::button_ex(ui, kit::Kind::Ghost, None, t("Cancel"), true).clicked() {
+                                confirm = None;
                             }
-
-                            // Row 2 (full width, overlap-proof): real provider quota windows (5h / Weekly / 30d).
-                            ui.horizontal(|ui| {
-                                ui.add_space(indent);
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.spacing_mut().item_spacing = vec2(20.0, 4.0);
-                                    if has_5h {
-                                        paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 96.0, &p);
-                                    }
-                                    if has_wk {
-                                        paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 96.0, &p);
-                                    }
-                                });
-                            });
-
-                            // Row 3 (quiet truncated metadata): account hint + isolated config folder.
-                            ui.horizontal(|ui| {
-                                ui.add_space(indent);
-                                let meta = match &prof.account_hint {
-                                    Some(hint) => format!("{hint}  ·  {dir_str}"),
-                                    None => dir_str.clone(),
-                                };
-                                ui.add(egui::Label::new(RichText::new(meta).font(style::mono(10.0)).color(p.text_ghost)).truncate());
-                            });
-
-                            if let Some(conn) = &rt.connection {
-                                ui.horizontal(|ui| {
-                                    ui.add_space(indent);
-                                    match conn {
-                                        ConnectionTest::Testing => {
-                                            ui.add(egui::Label::new(RichText::new(t("Testing connection…")).size(11.0).color(p.info)).wrap());
-                                        }
-                                        ConnectionTest::Ok(msg) => {
-                                            ui.add(egui::Label::new(RichText::new(msg).font(style::mono(10.5)).color(p.ok)).wrap());
-                                        }
-                                        ConnectionTest::Err(err) => {
-                                            ui.add(egui::Label::new(RichText::new(err).font(style::mono(10.5)).color(p.err)).wrap());
-                                        }
-                                    }
-                                });
+                            let d = kit::button_ex(ui, kit::Kind::DangerFilled, Some(icons::TRASH), t("Delete"), true);
+                            #[cfg(debug_assertions)]
+                            crate::devtest::record(format!("profile-delete:{}", prof.id), d.rect);
+                            if d.clicked() {
+                                delete_id = Some(prof.id.clone());
+                                confirm = None;
                             }
                         });
-                    row_rects.push(row_frame.response.rect);
-                }
-            });
+                    }
+                });
+                row_rects.push(resp.response.rect);
+            }
+        });
+        let table_rect = table.rect;
 
-        // Active mouse drag-and-drop overlay: live drop indicator line + floating ghost pill.
+        // Dragging: a line where the account would land and the account under the pointer.
         if let Some(from) = dragging {
-            let cancel = !ui.input(|i| i.focused)
-                || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            let cancel = !ui.input(|i| i.focused);
             if cancel {
                 ui.data_mut(|d| d.remove::<usize>(drag_id));
             } else {
                 let pointer_pos = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
                 let still_down = ui.input(|i| i.pointer.primary_down());
                 if let Some(pos) = pointer_pos {
-                    let drop_zone = table_resp.response.rect.expand(40.0);
-                    let in_zone = drop_zone.contains(pos);
+                    let in_zone = table_rect.expand(40.0).contains(pos);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                    let mut slot = row_rects.len();
-                    for (i, r) in row_rects.iter().enumerate() {
-                        if pos.y < r.center().y {
-                            slot = i;
-                            break;
-                        }
-                    }
+                    let slot = row_rects.iter().position(|r| pos.y < r.center().y).unwrap_or(row_rects.len());
                     let line_y = if slot == 0 {
-                        row_rects.first().map_or(table_resp.response.rect.top(), |r| r.top())
+                        row_rects.first().map_or(table_rect.top(), |r| r.top())
                     } else if slot >= row_rects.len() {
-                        row_rects.last().map_or(table_resp.response.rect.bottom(), |r| r.bottom())
+                        row_rects.last().map_or(table_rect.bottom(), |r| r.bottom())
                     } else {
                         row_rects[slot].top()
                     };
                     if in_zone && slot != from && slot != from + 1 {
-                        let x0 = table_resp.response.rect.left() + 10.0;
-                        let x1 = table_resp.response.rect.right() - 10.0;
-                        let painter = ui.painter();
+                        let x0 = table_rect.left() + 10.0;
+                        let x1 = table_rect.right() - 10.0;
+                        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("profiles-drop-line")));
                         painter.hline(x0..=x1, line_y, Stroke::new(2.0, p.accent));
                         painter.circle_filled(pos2(x0, line_y), 3.5, p.accent);
                         painter.circle_filled(pos2(x1, line_y), 3.5, p.accent);
@@ -837,18 +625,16 @@ impl App {
                             .fixed_pos(pos + vec2(14.0, -14.0))
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::NONE
-                                    .fill(p.overlay)
+                                    .fill(p.menu)
                                     .stroke(Stroke::new(1.0, p.accent))
                                     .corner_radius(CornerRadius::same(7))
                                     .inner_margin(egui::Margin::symmetric(10, 5))
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 6.0;
-                                            let (mr, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
-                                            if !agent_logo::paint(ui.painter(), mr, prof.agent, p.text, false) {
-                                                ui.painter().text(mr.center(), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(12.0), p.text_muted);
-                                            }
-                                            ui.label(RichText::new(&prof.id).font(style::mono_semibold(11.5)).color(p.text));
+                                            let (mr, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                                            paint_agent_tile(ui.painter(), mr, Some(prof.agent), "", &p);
+                                            ui.label(RichText::new(&prof.id).font(style::mono_semibold(style::DATA)).color(p.text));
                                         });
                                     });
                             });
@@ -868,6 +654,26 @@ impl App {
             }
         }
 
+        if let Some((id, action)) = row_action {
+            match action {
+                RowAction::Clear => self.actions.push(Action::ClearProfileCooldown(id)),
+                RowAction::Test => self.actions.push(Action::TestProfile(id)),
+                RowAction::SignIn => self.actions.push(Action::LoginProfile(id)),
+                RowAction::Edit => {
+                    if let Some(prof) = profiles.iter().find(|x| x.id == id) {
+                        self.profile_draft = Some(ProfileDraft::from_profile(prof));
+                        ui.data_mut(|d| d.insert_temp(egui::Id::new("profile-editor-scroll"), true));
+                    }
+                }
+                RowAction::Delete => confirm = Some(id),
+            }
+        }
+        ui.data_mut(|d| match &confirm {
+            Some(c) => {
+                d.insert_temp(confirm_id, c.clone());
+            }
+            None => d.remove::<String>(confirm_id),
+        });
         if let Some((from, to)) = drag_reorder {
             self.ensure_mutable_profiles();
             self.settings.profiles.sort_by_key(|x| (x.fallback_order, x.id.clone()));
@@ -876,19 +682,6 @@ impl App {
                 self.settings.profiles.insert(to, item);
                 for (i, p_item) in self.settings.profiles.iter_mut().enumerate() {
                     p_item.fallback_order = (i + 1) as u32;
-                }
-                self.settings_changed();
-                self.push_companion_now();
-            }
-        }
-        if let Some((idx, delta)) = move_dir {
-            self.ensure_mutable_profiles();
-            self.settings.profiles.sort_by_key(|x| (x.fallback_order, x.id.clone()));
-            let target = (idx as i32 + delta) as usize;
-            if idx < self.settings.profiles.len() && target < self.settings.profiles.len() {
-                self.settings.profiles.swap(idx, target);
-                for (i, item) in self.settings.profiles.iter_mut().enumerate() {
-                    item.fallback_order = (i + 1) as u32;
                 }
                 self.settings_changed();
                 self.push_companion_now();
@@ -904,45 +697,325 @@ impl App {
             }
         }
         if let Some(id) = delete_id {
-            self.ensure_mutable_profiles();
-            if self.settings.profiles.len() > 1 {
-                self.settings.profiles.retain(|x| x.id != id);
-                self.profiles_rt.remove(&id);
-                for pane in self.panes.values_mut() {
-                    if pane.active_profile.as_deref() == Some(id.as_str()) {
-                        pane.active_profile = None;
-                    }
-                    if pane.rate_limit.as_ref().is_some_and(|b| b.from_profile == id) {
-                        pane.rate_limit = None;
-                    }
-                }
-                for proj in &mut self.projects {
-                    if proj.active_profile.as_deref() == Some(id.as_str()) {
-                        proj.active_profile = None;
-                    }
-                }
-                for list in self.project_sessions.values_mut() {
-                    for item in list {
-                        if item.profile_id.as_deref() == Some(id.as_str()) {
-                            item.profile_id = None;
-                        }
-                    }
-                }
-                self.sessions_scan_at.clear();
-                if self.profile_draft.as_ref().and_then(|d| d.editing_id.as_deref()) == Some(id.as_str()) {
-                    self.profile_draft = None;
-                }
-                self.settings_changed();
-                self.recompute_usage_totals();
-                self.push_companion_now();
-                self.toast(tf("Removed profile {}.", &[&id]));
-            }
-        }
-        if let Some(prof) = edit_prof {
-            self.profile_draft = Some(ProfileDraft::from_profile(&prof));
+            self.delete_profile(&id);
         }
     }
 
+    /// Removes an account (at least one stays), and what pointed to it.
+    fn delete_profile(&mut self, id: &str) {
+        self.ensure_mutable_profiles();
+        if self.settings.profiles.len() <= 1 {
+            return;
+        }
+        self.settings.profiles.retain(|x| x.id != id);
+        self.profiles_rt.remove(id);
+        for pane in self.panes.values_mut() {
+            if pane.active_profile.as_deref() == Some(id) {
+                pane.active_profile = None;
+            }
+            if pane.rate_limit.as_ref().is_some_and(|b| b.from_profile == id) {
+                pane.rate_limit = None;
+            }
+        }
+        for proj in &mut self.projects {
+            if proj.active_profile.as_deref() == Some(id) {
+                proj.active_profile = None;
+            }
+        }
+        for list in self.project_sessions.values_mut() {
+            for item in list {
+                if item.profile_id.as_deref() == Some(id) {
+                    item.profile_id = None;
+                }
+            }
+        }
+        self.sessions_scan_at.clear();
+        if self.profile_draft.as_ref().and_then(|d| d.editing_id.as_deref()) == Some(id) {
+            self.profile_draft = None;
+        }
+        self.settings_changed();
+        self.recompute_usage_totals();
+        self.push_companion_now();
+        self.toast(tf("Removed account {}.", &[id]));
+    }
+
+    /// The account being added or edited, as rows; saved with its button (an id must be free).
+    fn profile_editor(&mut self, ui: &mut Ui) {
+        let p = style::pal(ui);
+        let Some(mut draft) = self.profile_draft.clone() else { return };
+        let mut save = false;
+        let mut cancel = false;
+        let existing = self.effective_profiles();
+        let sanitized_id = profiles::sanitize_id(draft.id.trim());
+        let id_empty = draft.id.trim().is_empty();
+        let id_dup = !id_empty && existing.iter().any(|x| x.id == sanitized_id && draft.editing_id.as_deref() != Some(x.id.as_str()));
+        let title = match &draft.editing_id {
+            Some(id) => tf("Edit {}", &[id]),
+            None => t("New account").to_string(),
+        };
+        gap(ui);
+        group_head(ui, &title, None);
+        let resp = card(ui, "", |c| {
+            c.row(t("Agent"), t("Which agent signs in with this account."), |ui| {
+                let providers = [(AgentKind::Claude, "Claude Code"), (AgentKind::Codex, "Codex")];
+                let names: Vec<&str> = providers.iter().map(|(_, n)| *n).collect();
+                let cur = providers.iter().find(|(k, _)| *k == draft.agent).map_or("Claude Code", |(_, n)| *n);
+                if let Some(i) = kit::select(ui, "prof-agent", cur, &names, 165.0) {
+                    let new_agent = providers[i].0;
+                    if new_agent != draft.agent {
+                        // A new account's suggested id and name follow the agent (claude2 → chatgpt2).
+                        if draft.editing_id.is_none() {
+                            let (old_id, old_name) = ProfileDraft::suggest_id_and_name(draft.agent, &existing);
+                            let (nid, nname) = ProfileDraft::suggest_id_and_name(new_agent, &existing);
+                            if draft.id == old_id || draft.id.trim().is_empty() {
+                                draft.id = nid;
+                            }
+                            if draft.name == old_name || draft.name.trim().is_empty() {
+                                draft.name = nname;
+                            }
+                        }
+                        draft.agent = new_agent;
+                    }
+                }
+            });
+            if id_dup {
+                c.row_note(t("Account id"), t("Another account has this id."), p.err, |ui| {
+                    mono_field(ui, egui::Id::new("prof-id"), &mut draft.id, "claude2", 140.0, false);
+                });
+            } else {
+                c.row(t("Account id"), t("A short name for panes and menus."), |ui| {
+                    mono_field(ui, egui::Id::new("prof-id"), &mut draft.id, "claude2", 140.0, false);
+                });
+            }
+            c.row(t("Name"), "", |ui| {
+                kit::field(ui, egui::Id::new("prof-name"), &mut draft.name, None, "Claude 2", 200.0, false);
+            });
+            c.row(t("Email or note"), t("Optional, to tell accounts apart."), |ui| {
+                kit::field(ui, egui::Id::new("prof-hint"), &mut draft.account_hint, None, "work@acme.dev", 220.0, false);
+            });
+            c.row(t("Token limits"), t("Claude and Codex report their own limits. Set caps only for other plans: 500k, 2M."), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                text(ui, "5h", style::mono(style::DATA), p.text_faint, 14.0, false);
+                mono_field(ui, egui::Id::new("prof-lim-5h"), &mut draft.limit_5h_text, "500k", 80.0, false);
+                ui.add_space(4.0);
+                text(ui, "Wk", style::mono(style::DATA), p.text_faint, 14.0, false);
+                mono_field(ui, egui::Id::new("prof-lim-wk"), &mut draft.limit_weekly_text, "5M", 80.0, false);
+            });
+            c.row(t("Use the agent's own sign-in folder"), t("~/.claude or ~/.codex, shared with the agent outside TernaryCode."), |ui| {
+                kit::switch(ui, &mut draft.use_default_auth);
+            });
+            let hint = crate::paths::contract_tilde(&crate::paths::data_dir().join("profiles").join(&sanitized_id));
+            c.row(t("Sign-in folder"), t("Where this account keeps its sign-in."), |ui| {
+                ui.add_enabled_ui(!draft.use_default_auth, |ui| {
+                    kit::field(ui, egui::Id::new("prof-dir"), &mut draft.config_dir, Some(icons::FOLDER), &hint, 260.0, false);
+                });
+            });
+            c.row(t("API key"), t("Optional: used instead of signing in."), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                key_field(ui, egui::Id::new("prof-key"), &mut draft.api_key, draft.reveal_key, 200.0);
+                if kit::icon_button_ex(ui, icons::EYE, t("Show/Hide Key"), draft.reveal_key, 28.0).clicked() {
+                    draft.reveal_key = !draft.reveal_key;
+                }
+            });
+            c.row(t("Extra environment"), t("KEY=value, one per line."), |ui| {
+                mono_field(ui, egui::Id::new("prof-extra-env"), &mut draft.extra_env_text, "ANTHROPIC_BASE_URL=https://…", 260.0, true);
+            });
+            c.row(t("In the failover order"), t("Off: the account is kept but never picked."), |ui| {
+                kit::switch(ui, &mut draft.enabled);
+            });
+            c.block(&[], egui::Margin::symmetric(16, 12), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let ok = !id_empty && !id_dup;
+                    let label = if draft.editing_id.is_some() { t("Save account") } else { t("Add account") };
+                    let s = ui.add_enabled_ui(ok, |ui| kit::button_ex(ui, kit::Kind::Primary, None, label, false)).inner;
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record("profile-save", s.rect);
+                    if s.clicked() {
+                        save = true;
+                    }
+                    if kit::button_ex(ui, kit::Kind::Secondary, None, t("Cancel"), false).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        });
+        // Just opened: brought into view.
+        let scroll_id = egui::Id::new("profile-editor-scroll");
+        if ui.data(|d| d.get_temp::<bool>(scroll_id).is_some()) {
+            ui.data_mut(|d| d.remove::<bool>(scroll_id));
+            ui.scroll_to_rect(resp.rect, Some(egui::Align::Min));
+        }
+
+        if cancel {
+            self.profile_draft = None;
+        } else if save && !id_empty && !id_dup {
+            self.ensure_mutable_profiles();
+            let editing = draft.editing_id.clone();
+            let next_order = self.settings.profiles.iter().map(|x| x.fallback_order).max().unwrap_or(0) + 1;
+            if let Some(old_id) = editing
+                && let Some(slot) = self.settings.profiles.iter_mut().find(|x| x.id == old_id)
+            {
+                let order = slot.fallback_order;
+                let updated = draft.into_profile(order);
+                let new_id = updated.id.clone();
+                *slot = updated;
+                if old_id != new_id {
+                    self.rename_profile_refs(&old_id, &new_id);
+                }
+            } else {
+                let new_prof = draft.into_profile(next_order);
+                self.settings.profiles.push(new_prof);
+            }
+            self.settings_changed();
+            self.profile_draft = None;
+            self.recompute_usage_totals();
+            self.usage_scan_at = None;
+            self.push_companion_now();
+            self.toast_ok(t("Account saved.").into());
+        } else {
+            self.profile_draft = Some(draft);
+        }
+    }
+
+    /// An account's id changed: every pane, project and session that pointed to the old one
+    /// follows.
+    fn rename_profile_refs(&mut self, old_id: &str, new_id: &str) {
+        if let Some(rt) = self.profiles_rt.remove(old_id) {
+            self.profiles_rt.insert(new_id.to_string(), rt);
+        }
+        for pane in self.panes.values_mut() {
+            if pane.active_profile.as_deref() == Some(old_id) {
+                pane.active_profile = Some(new_id.to_string());
+            }
+            if let Some(b) = &mut pane.rate_limit
+                && b.from_profile == old_id
+            {
+                b.from_profile = new_id.to_string();
+            }
+        }
+        for proj in &mut self.projects {
+            if proj.active_profile.as_deref() == Some(old_id) {
+                proj.active_profile = Some(new_id.to_string());
+            }
+        }
+        for list in self.project_sessions.values_mut() {
+            for item in list {
+                if item.profile_id.as_deref() == Some(old_id) {
+                    item.profile_id = Some(new_id.to_string());
+                }
+            }
+        }
+        self.sessions_scan_at.clear();
+    }
+
+    /// "Active sessions" (agents running now, with their account) and "Recent events" (the
+    /// failover log).
+    fn sessions_and_events(&mut self, ui: &mut Ui, search: &str) {
+        let p = style::pal(ui);
+        let dark = ui.visuals().dark_mode;
+        let mut sessions: Vec<_> = self
+            .panes
+            .values()
+            .filter(|x| x.alive() && (x.tracker.agent.is_some() || x.active_profile.is_some()))
+            .map(|x| {
+                let task = x.task.clone().or_else(|| x.tracker.message.clone());
+                (x.id, self.project_label(x.project), x.label(), x.active_profile.clone(), x.tracker.status, status::age(x.tracker.since), task)
+            })
+            .collect();
+        sessions.sort_by_key(|x| x.0);
+        let labels: Vec<(String, String)> = sessions.iter().map(|s| (s.1.clone(), s.2.clone())).collect();
+        let mut wanted: Vec<(&str, &str)> = labels.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        wanted.push((t("Active sessions"), ""));
+        let mut focus = None;
+        section(ui, search, Some(t("Active sessions")), None, &wanted, |c| {
+            if sessions.is_empty() {
+                c.block(&[], egui::Margin::symmetric(16, 12), |ui| {
+                    text(ui, t("No agents are running now."), FontId::proportional(style::SMALL), p.text_faint, 16.0, false);
+                });
+            }
+            for (pane, project, label, prof, st, age, task) in &sessions {
+                let mut note = format!("{label} · {age}");
+                if let Some(tk) = task {
+                    note.push_str(&format!(" · {tk}"));
+                }
+                c.row(project, &note, |ui| {
+                    if let Some(pr) = prof {
+                        let g = ui.painter().layout_no_wrap(pr.clone(), style::mono(style::DATA), p.accent_text);
+                        let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 12.0, 18.0), Sense::hover());
+                        paint_plan_badge(ui.painter(), r.left_center(), pr, 18.0, &p);
+                    }
+                    let st_text = status::text(*st);
+                    let w = kit::state_pill_width(ui.painter(), *st, &st_text);
+                    let (r, _) = ui.allocate_exact_size(vec2(w, kit::PILL_H), Sense::hover());
+                    kit::paint_state_pill(ui.painter(), r.left_center(), *st, &st_text, &p, dark);
+                    if kit::button_ex(ui, kit::Kind::Secondary, None, t("Open"), true).clicked() {
+                        focus = Some(*pane);
+                    }
+                });
+            }
+        });
+        if let Some(pane) = focus {
+            self.actions.push(Action::FocusPane(pane));
+        }
+
+        let wanted = [(t("Recent events"), "")];
+        section(ui, search, Some(t("Recent events")), None, &wanted, |c| {
+            c.block(&[], egui::Margin::symmetric(16, 12), |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                if self.agent_logs.is_empty() {
+                    text(ui, t("Nothing happened yet."), FontId::proportional(style::SMALL), p.text_faint, 16.0, false);
+                }
+                for entry in self.agent_logs.iter().rev().take(20) {
+                    let c = match entry.level {
+                        LogLevel::Failover => p.ok,
+                        LogLevel::Warn => p.warn,
+                        LogLevel::Err => p.err,
+                        LogLevel::Tool => p.info,
+                        LogLevel::Info => p.text_muted,
+                    };
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        text(ui, &entry.at.format("%H:%M:%S").to_string(), style::mono(style::DATA), p.text_faint, 16.0, false);
+                        if let Some(pr) = &entry.profile {
+                            text(ui, pr, style::mono_semibold(style::DATA), p.accent_text, 16.0, false);
+                        }
+                        text(ui, &entry.message, FontId::proportional(style::SMALL), c, 16.0, true);
+                    });
+                }
+            });
+        });
+    }
+}
+
+/// A password field (the API key): dots unless shown.
+fn key_field(ui: &mut Ui, id: egui::Id, key: &mut String, reveal: bool, width: f32) -> egui::Response {
+    let p = style::pal(ui);
+    let (rect, outer) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
+    if outer.clicked() {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
+    let focused = ui.memory(|m| m.has_focus(id));
+    if focused {
+        ui.painter().rect_stroke(rect.expand(3.0), CornerRadius::same(10), Stroke::new(3.0, style::soft(p.accent, 0.25)), StrokeKind::Inside);
+    }
+    ui.painter().rect(rect, CornerRadius::same(7), p.inset, Stroke::new(1.0, if focused { p.accent } else { p.border_strong }), StrokeKind::Inside);
+    let inner = rect.shrink2(vec2(10.0, 1.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.add_sized(
+        inner.size(),
+        egui::TextEdit::singleline(key)
+            .id(id)
+            .password(!reveal)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .font(style::mono(12.0))
+            .vertical_align(egui::Align::Center)
+            .hint_text(RichText::new("sk-…").color(p.text_faint)),
+    )
+}
+
+impl App {
     /// Compact interactive Active Profile Switcher + 1-Click Switch Account button rendered inside
     /// a pane's header bar (right-to-left layout).
     pub fn pane_profile_switcher(&mut self, ui: &mut Ui, pane_id: PaneId) {

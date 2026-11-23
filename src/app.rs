@@ -4008,30 +4008,9 @@ impl App {
                 self.settings.drawer_open = true;
                 self.settings_changed();
             }
-            Action::OpenProfiles | Action::OpenMonitor => {
-                self.exit_zen_mode();
-                self.drawer_maximized = false;
-                self.monitor_popover = false;
-                self.attention_open = false;
-                self.palette = None;
-                if !crate::ade::is_management_view(self.view) {
-                    self.prev_view = self.view;
-                }
-                self.view = View::Profiles;
-                self.mark_dirty();
-            }
-            Action::OpenPhonePairing => {
-                self.exit_zen_mode();
-                self.drawer_maximized = false;
-                self.monitor_popover = false;
-                self.attention_open = false;
-                self.palette = None;
-                if !crate::ade::is_management_view(self.view) {
-                    self.prev_view = self.view;
-                }
-                self.view = View::Pairing;
-                self.mark_dirty();
-            }
+            // Accounts and the phone live in Settings.
+            Action::OpenProfiles | Action::OpenMonitor => self.open_settings_at(ui::settings::SettingsPage::Accounts),
+            Action::OpenPhonePairing => self.open_settings_at(ui::settings::SettingsPage::Phone),
             Action::ToggleProjectSessions(pid) => {
                 let mut scan_path = None;
                 if let Some(p) = self.project_mut(pid) {

@@ -1240,6 +1240,37 @@ pub fn stepper(ui: &mut Ui, text: &str) -> i32 {
     out
 }
 
+/// The Slate stepper (30 high, a hairline box): − as a small icon button, the value in the data
+/// font centred in `value_w` (70 in Settings), + as a small icon button. Returns −1 or +1 when one
+/// is clicked.
+pub fn number_stepper(ui: &mut Ui, text: &str, value_w: f32) -> i32 {
+    let p = style::pal(ui);
+    let g = ui.painter().layout_no_wrap(text.to_string(), style::mono(12.0), p.text);
+    let w = 3.0 + 24.0 + 2.0 + value_w.max(g.size().x + 8.0) + 2.0 + 24.0 + 3.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 30.0), Sense::hover());
+    let mut out = 0;
+    let painter = ui.painter().clone();
+    painter.rect_stroke(rect, CornerRadius::same(7), Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
+    let minus = Rect::from_min_size(egui::pos2(rect.left() + 3.0, rect.center().y - 12.0), Vec2::splat(24.0));
+    let plus = Rect::from_min_size(egui::pos2(rect.right() - 3.0 - 24.0, rect.center().y - 12.0), Vec2::splat(24.0));
+    let enabled = ui.is_enabled();
+    for (r, glyph, step, salt) in [(minus, super::icons::MINUS, -1, "minus"), (plus, super::icons::PLUS, 1, "plus")] {
+        let b = ui.interact(r, resp.id.with(salt), Sense::click());
+        let hovered = enabled && b.hovered();
+        if hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            painter.rect_filled(r, CornerRadius::same(RADIUS), if b.is_pointer_button_down_on() { p.subtle } else { p.hover });
+        }
+        let c = if hovered { p.text } else { p.text_muted };
+        painter.text(r.center(), Align2::CENTER_CENTER, glyph, style::icon_font(14.0), if enabled { c } else { c.gamma_multiply(0.45) });
+        if enabled && b.clicked() {
+            out = step;
+        }
+    }
+    painter.galley(rect.center() - g.size() / 2.0, g, if enabled { p.text } else { p.text_faint });
+    out
+}
+
 /// A drop-down: the current choice in a box with a caret; a click lists `options` under it.
 /// Returns the option picked.
 pub fn select(ui: &mut Ui, id_salt: impl std::hash::Hash + std::fmt::Debug, current: &str, options: &[&str], min_width: f32) -> Option<usize> {
