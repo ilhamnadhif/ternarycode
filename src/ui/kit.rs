@@ -1481,7 +1481,7 @@ pub fn notice(
     );
     child.spacing_mut().item_spacing.x = 6.0;
     if dismiss {
-        let r = icon_button_ex(&mut child, super::icons::X, &crate::i18n::t("Dismiss"), false, 24.0);
+        let r = icon_button_ex(&mut child, super::icons::X, crate::i18n::t("Dismiss"), false, 24.0);
         out.dismissed = r.clicked();
         right -= 24.0 + 6.0;
     }

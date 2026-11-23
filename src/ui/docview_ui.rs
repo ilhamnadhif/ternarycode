@@ -1,7 +1,8 @@
-//! Documents in the editor: a toolbar (pages, zoom, open in the default app), the document,
-//! and a status line. PDF pages are pictures rendered for the zoom shown; Word and PowerPoint
-//! files are laid out once for the width shown and only what is on screen is drawn; sheets are
-//! a grid with its header row and row numbers kept in view.
+//! Documents in the editor: one toolbar (where you are at the left; zoom, find, open in the
+//! default app and show in the folder at the right), the document, and a status line. PDF
+//! pages are pictures rendered for the zoom shown; Word and PowerPoint files are laid out once
+//! for the width shown and only what is on screen is drawn; sheets are a grid with its header
+//! row and row numbers kept in view.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -15,11 +16,12 @@ use crate::app::App;
 use crate::docview::{Content, DocMatch, DocView, MAX_DOC_MATCHES, Pic, State};
 use crate::i18n::{t, tf};
 
-const BAR_H: f32 = 32.0;
+const BAR_H: f32 = 40.0;
 const STATUS_H: f32 = 28.0;
-const TABS_H: f32 = 34.0;
-const CELL_BAR_H: f32 = 34.0;
-const FIND_H: f32 = 36.0;
+const TABS_H: f32 = 36.0;
+const CELL_BAR_H: f32 = 40.0;
+/// The toolbar's small icon buttons.
+const ICON_S: f32 = 24.0;
 const ZOOMS: [f32; 13] = [0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
 
 /// What a click in the document's toolbar asks of the app.
@@ -30,7 +32,8 @@ enum Ask {
 }
 
 impl App {
-    /// The editor's active file is a document: its toolbar, the document and a status line.
+    /// The editor's active file is a document: its toolbar, the document and a status line (a
+    /// workbook of several sheets: its sheets' tabs), the find bar over the document's corner.
     pub fn doc_panel(&mut self, ui: &mut Ui, project: ProjectId, body: Rect) {
         let ctx = ui.ctx().clone();
         let p = style::pal(ui);
@@ -45,11 +48,11 @@ impl App {
             return;
         };
         view.poll(&ctx);
+        // A workbook of several sheets says what it is beside their tabs, at its foot.
+        let sheets = matches!(&view.state, State::Ready(Content::Sheet(b)) if b.sheets.len() > 1);
         let bar = Rect::from_min_size(body.min, vec2(body.width(), BAR_H));
-        let status = Rect::from_min_max(pos2(body.left(), body.bottom() - STATUS_H), body.max);
-        let find_h = if view.find.is_some() { FIND_H } else { 0.0 };
-        let find_rect = Rect::from_min_size(pos2(body.left(), bar.bottom()), vec2(body.width(), find_h));
-        let content = Rect::from_min_max(pos2(body.left(), find_rect.bottom()), pos2(body.right(), status.top()));
+        let status = Rect::from_min_max(pos2(body.left(), body.bottom() - if sheets { 0.0 } else { STATUS_H }), body.max);
+        let content = Rect::from_min_max(pos2(body.left(), bar.bottom()), pos2(body.right(), status.top()));
         // A click in the document gives it the keyboard (a terminal takes the keyboard back
         // whenever nobody has it): ⌘F then searches here and ⌘W closes the document. Widgets
         // inside (a sheet's grid) take it from there.
@@ -79,13 +82,11 @@ impl App {
         crate::devtest::record("doc-body", content);
         let mut ask = None;
         toolbar(ui, view, bar, &root, &mut ask);
-        status_line(ui, view, status);
+        if !sheets {
+            status_line(ui, view, status);
+        }
         if view.find.is_some() {
             refresh_find(view);
-            if find_bar(ui, view, find_rect, project, allow_keys) {
-                // The search field has the keyboard: the editor's keys (⌘W…) apply.
-                self.editor_seen = true;
-            }
             follow_sheet_match(view);
         }
         let mut sheet_focused = false;
@@ -104,12 +105,24 @@ impl App {
                     let e = e.clone();
                     failed(ui, content, &e, &mut ask);
                 }
-                State::Ready(Content::Pdf) => pdf_body(ui, view, content),
+                State::Ready(Content::Pdf) => {
+                    // Pages lie on the sunken colour.
+                    ui.painter().rect_filled(content, CornerRadius::ZERO, p.inset);
+                    pdf_body(ui, view, content);
+                }
                 State::Ready(Content::Text(_) | Content::Slides(_)) => rich_body(ui, view, content, &p),
                 State::Ready(Content::Sheet(_)) => sheet_focused = sheet_body(ui, view, content, &p),
                 State::Ready(Content::Image) => image_body(ui, view, content, &p),
             }
         });
+        // The find bar floats at the document's top right (under a sheet's cell bar).
+        if view.find.is_some() {
+            let top = content.top() + 8.0 + if matches!(view.state, State::Ready(Content::Sheet(_))) { CELL_BAR_H } else { 0.0 };
+            if find_bar(ui, view, content, top, project, allow_keys) {
+                // The search field has the keyboard: the editor's keys (⌘W…) apply.
+                self.editor_seen = true;
+            }
+        }
         let path = view.path.clone();
         if sheet_focused {
             self.editor_seen = true;
@@ -152,12 +165,14 @@ pub fn end_doc_selection_frame(ctx: &egui::Context) {
 
 // ----- toolbar and status line ---------------------------------------------------------------
 
-/// The document's toolbar: at the left what moves through it (a PDF's pages) or where it is
-/// (its path); at the right find, zoom, Open as Text (CSV), open in the default app, reveal.
+/// The document's toolbar (40): at the left what moves through it (a PDF's pages, a deck's
+/// slides: ↑, the number, "of N", ↓) or where it is (its path); at the right − 100% +, find,
+/// open in the default app and show in the folder (and Open as Text for a CSV).
 fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, ask: &mut Option<Ask>) {
     let p = style::pal(ui);
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
-    let inner = Rect::from_min_max(pos2(rect.left() + 16.0, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
+    let inner = rect.shrink2(vec2(10.0, 0.0));
+    let cy = inner.center().y;
     // What the arrows at the left move through: a PDF's pages, or a deck's slides.
     let slides = match &view.state {
         State::Ready(Content::Slides(deck)) => deck.slides.len(),
@@ -169,40 +184,48 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
         .map(|p| (p.page, p.pages.len()))
         .or((slides > 0).then_some((view.slide.min(slides.saturating_sub(1)), slides)))
         .filter(|(_, n)| *n > 0);
-    // Right side first.
-    let left_end = ui
-        .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let b = |ui: &mut Ui, icon: &str, tip: &str| kit::icon_button_ex(ui, icon, tip, false, 24.0);
-            if b(ui, icons::FOLDER_OPEN, reveal_label()).clicked() {
-                *ask = Some(Ask::Reveal);
-            }
-            if b(ui, icons::ARROW_SQUARE_OUT, t("Open in Default App")).clicked() {
-                *ask = Some(Ask::OpenDefault);
-            }
-            if view.kind == tc_doc::Kind::Csv {
-                let edit_clicked = if inner.width() < 380.0 {
-                    b(ui, icons::CODE, t("Open as Text")).clicked()
+    // Right side first, from the right edge.
+    let mut right = inner.right();
+    let mut button = |ui: &mut Ui, icon: &str, tip: &str| {
+        let r = Rect::from_min_max(pos2(right - ICON_S, cy - ICON_S / 2.0), pos2(right, cy + ICON_S / 2.0));
+        right = r.left() - 6.0;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, ICON_S)).inner.clicked()
+    };
+    if button(ui, icons::FOLDER_OPEN, reveal_label()) {
+        *ask = Some(Ask::Reveal);
+    }
+    if button(ui, icons::ARROW_SQUARE_OUT, t("Open in default app")) {
+        *ask = Some(Ask::OpenDefault);
+    }
+    let ready = matches!(view.state, State::Ready(_));
+    if ready && button(ui, icons::MAGNIFYING_GLASS, &format!("{}   {}", t("Find"), kit::keys(&crate::actions::Action::Find).unwrap_or(""))) {
+        view.open_find();
+    }
+    if ready {
+        right = zoom_controls(ui, view, right, cy) - 6.0;
+    }
+    if view.kind == tc_doc::Kind::Csv {
+        let narrow = inner.width() < 420.0;
+        let w = if narrow { ICON_S } else { kit::button_width(ui, Some(icons::CODE), t("Open as text"), None, true) };
+        let r = Rect::from_min_max(pos2(right - w, cy - 12.0), pos2(right, cy + 12.0));
+        right = r.left() - 6.0;
+        let clicked = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+                if narrow {
+                    kit::icon_button_ex(ui, icons::CODE, t("Open as text"), false, ICON_S).clicked()
                 } else {
-                    kit::button_ex(ui, kit::Kind::Ghost, Some(icons::CODE), t("Open as Text"), true).clicked()
-                };
-                if edit_clicked {
-                    *ask = Some(Ask::EditAsText);
+                    kit::button_ex(ui, kit::Kind::Ghost, Some(icons::CODE), t("Open as text"), true).clicked()
                 }
-            }
-            if matches!(view.state, State::Ready(_)) {
-                zoom_controls(ui, view);
-                if b(ui, icons::MAGNIFYING_GLASS, &format!("{}   {}", t("Find"), kit::keys(&crate::actions::Action::Find).unwrap_or(""))).clicked() {
-                    view.open_find();
-                }
-            }
-            ui.min_rect().left()
-        })
-        .inner;
-    let left = Rect::from_min_max(inner.min, pos2((left_end - 8.0).max(inner.left()), inner.bottom()));
+            })
+            .inner;
+        if clicked {
+            *ask = Some(Ask::EditAsText);
+        }
+    }
+    let left = Rect::from_min_max(pos2(inner.left(), rect.top()), pos2((right - 8.0).max(inner.left()), rect.bottom() - 1.0));
     ui.scope_builder(egui::UiBuilder::new().max_rect(left).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
         ui.set_clip_rect(left.intersect(ui.clip_rect()));
-        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().item_spacing.x = 6.0;
         if let Some((page, n)) = pages {
             let deck = view.pdf.is_none();
             let jump = |view: &mut DocView, to: usize| match view.pdf.as_mut() {
@@ -210,17 +233,29 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
                 None => view.slide_jump = Some(to),
             };
             let (prev, next) = if deck { (t("Previous Slide"), t("Next Slide")) } else { (t("Previous Page"), t("Next Page")) };
-            if deck {
-                ui.label(egui::RichText::new(t("Slide")).size(style::SMALL).color(p.text_muted));
-            }
-            if kit::icon_button_ex(ui, icons::CARET_UP, prev, false, 22.0).clicked() {
+            if kit::icon_button_ex(ui, icons::CARET_UP, prev, false, ICON_S).clicked() {
                 jump(view, page.saturating_sub(1));
             }
-            // The number can be typed.
+            // The number can be typed (Enter goes there, Esc leaves it).
             let id = egui::Id::new(("doc-page", view.path.clone()));
             let focused = ui.ctx().memory(|m| m.has_focus(id));
             let mut text: String = ui.data(|d| d.get_temp::<String>(id)).filter(|_| focused).unwrap_or_else(|| (page + 1).to_string());
-            let r = kit::field(ui, id, &mut text, None, "", 40.0, true);
+            let (well, _) = ui.allocate_exact_size(vec2(32.0, 24.0), Sense::hover());
+            ui.painter().rect(well, CornerRadius::same(5), p.inset, Stroke::new(1.0, if focused { p.accent } else { Color32::TRANSPARENT }), egui::StrokeKind::Inside);
+            let r = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(well.shrink2(vec2(3.0, 2.0))), |ui| {
+                    ui.add_sized(
+                        well.shrink2(vec2(3.0, 2.0)).size(),
+                        egui::TextEdit::singleline(&mut text)
+                            .id(id)
+                            .frame(egui::Frame::NONE)
+                            .margin(egui::Margin::ZERO)
+                            .font(style::mono(style::DATA))
+                            .horizontal_align(egui::Align::Center)
+                            .vertical_align(egui::Align::Center),
+                    )
+                })
+                .inner;
             ui.data_mut(|d| d.insert_temp(id, text.clone()));
             if r.lost_focus()
                 && !ui.input(|i| i.key_pressed(egui::Key::Escape))
@@ -228,14 +263,15 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
             {
                 jump(view, n_typed.clamp(1, n) - 1);
             }
-            ui.label(egui::RichText::new(tf("of {}", &[&n.to_string()])).size(style::SMALL).color(p.text_muted));
-            if kit::icon_button_ex(ui, icons::CARET_DOWN, next, false, 22.0).clicked() {
+            ui.label(egui::RichText::new(tf("of {}", &[&n.to_string()])).size(style::SMALL).color(p.text_faint));
+            if kit::icon_button_ex(ui, icons::CARET_DOWN, next, false, ICON_S).clicked() {
                 jump(view, (page + 1).min(n - 1));
             }
         } else {
-            let cell = Rect::from_min_size(ui.cursor().min, vec2(left.width(), inner.height()));
-            let mut crumb = cell;
-            crumb.min.x -= 14.0;
+            // The crumb's own room at its left lines its text up with the toolbar's edge; its
+            // own line under it falls outside (the toolbar's is there).
+            let cell = Rect::from_min_size(ui.cursor().min, vec2(left.width(), rect.height() - 1.0));
+            let crumb = Rect::from_min_max(pos2(inner.left() - 16.0, rect.top()), pos2(cell.right(), rect.bottom() + 1.0));
             super::editor_ui::paint_crumb(ui, crumb, root, &view.path, &p);
             ui.allocate_rect(cell, Sense::hover());
         }
@@ -246,97 +282,129 @@ fn reveal_label() -> &'static str {
     if cfg!(target_os = "macos") { t("Show in Finder") } else { t("Show in Folder") }
 }
 
-/// − 100% + in one outlined pill (added right to left): the percentage goes back to 100%.
-fn zoom_controls(ui: &mut Ui, view: &mut DocView) {
+/// − 100% + in one outlined pill whose right edge is at `right`: the percentage goes back to
+/// 100%. Returns its left edge.
+fn zoom_controls(ui: &mut Ui, view: &mut DocView, right: f32, cy: f32) -> f32 {
     let p = style::pal(ui);
     let pct = format!("{:.0}%", view.zoom * 100.0);
-    let g = ui.painter().layout_no_wrap(pct, style::mono(10.5), p.text_muted);
-    let w = 4.0 + 18.0 + 2.0 + g.size().x + 4.0 + 2.0 + 18.0 + 4.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
-    ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-    let minus = Rect::from_center_size(pos2(rect.left() + 4.0 + 9.0, rect.center().y), vec2(18.0, 18.0));
-    let plus = Rect::from_center_size(pos2(rect.right() - 4.0 - 9.0, rect.center().y), vec2(18.0, 18.0));
-    let mid = Rect::from_min_max(pos2(minus.right() + 1.0, rect.top() + 3.0), pos2(plus.left() - 1.0, rect.bottom() - 3.0));
-    let button = |r: Rect, icon: &str, tip: &str, salt: &str| {
-        let resp = ui.interact(r, egui::Id::new(("doc-zoom", salt)), Sense::click());
-        if resp.hovered() {
-            ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
-        }
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, icon, style::icon_font(11.0), if resp.hovered() { p.text } else { p.text_faint });
-        resp.on_hover_text(tip).clicked()
-    };
-    if button(minus, icons::MINUS, t("Zoom Out"), "out") {
+    let g = ui.painter().layout_no_wrap(pct, style::mono(style::DATA), p.text_muted);
+    const B: f32 = 20.0;
+    let w = 2.0 + B + 4.0 + g.size().x.max(30.0) + 4.0 + B + 2.0;
+    let rect = Rect::from_min_max(pos2(right - w, cy - 12.0), pos2(right, cy + 12.0));
+    ui.painter().rect_stroke(rect, CornerRadius::same(style::RADIUS_ROW), Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+    let minus = Rect::from_center_size(pos2(rect.left() + 2.0 + B / 2.0, cy), vec2(B, B));
+    let plus = Rect::from_center_size(pos2(rect.right() - 2.0 - B / 2.0, cy), vec2(B, B));
+    let mid = Rect::from_min_max(pos2(minus.right() + 2.0, rect.top() + 3.0), pos2(plus.left() - 2.0, rect.bottom() - 3.0));
+    let button = |ui: &mut Ui, r: Rect, icon: &str, tip: &str| ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, B)).inner.clicked();
+    if button(ui, minus, icons::MINUS, t("Zoom out")) {
         view.zoom = ZOOMS.iter().rev().copied().find(|z| *z < view.zoom - 0.01).unwrap_or(view.zoom);
     }
-    if button(plus, icons::PLUS, t("Zoom In"), "in") {
+    if button(ui, plus, icons::PLUS, t("Zoom in")) {
         view.zoom = ZOOMS.iter().copied().find(|z| *z > view.zoom + 0.01).unwrap_or(view.zoom);
     }
     let resp = ui.interact(mid, egui::Id::new(("doc-zoom", "reset")), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(mid, CornerRadius::same(4), p.hover);
     }
-    ui.painter().galley(pos2(mid.center().x - g.size().x / 2.0, mid.center().y - g.size().y / 2.0), g, p.text_muted);
-    if resp.on_hover_text(t("Actual Size")).clicked() {
+    let color = if resp.hovered() { p.text } else { p.text_muted };
+    ui.painter().galley(pos2(mid.center().x - g.size().x / 2.0, mid.center().y - g.size().y / 2.0), g, color);
+    if resp.on_hover_text(t("Actual size")).clicked() {
         view.zoom = 1.0;
+    }
+    rect.left()
+}
+
+/// What the document is ("PDF · 12 pages · 1.4 MB"; an image's format too).
+fn summary(ui: &Ui, view: &DocView) -> String {
+    let mut s = view.summary();
+    if matches!(view.state, State::Ready(Content::Image))
+        && let Some(ext) = view.path.extension()
+    {
+        s = format!("{s} · {}", ext.to_string_lossy().to_uppercase());
+    }
+    // Its size, read once while it is shown (again after a reload).
+    let id = egui::Id::new(("doc-size", view.path.clone()));
+    if matches!(view.state, State::Loading) {
+        ui.data_mut(|d| d.remove::<u64>(id));
+        return s;
+    }
+    let size = ui.data(|d| d.get_temp::<u64>(id)).or_else(|| {
+        let n = std::fs::metadata(&view.path).ok()?.len();
+        ui.data_mut(|d| d.insert_temp(id, n));
+        Some(n)
+    });
+    match size {
+        Some(n) => format!("{s} · {}", super::update_ui::human_size(n)),
+        None => s,
     }
 }
 
+/// The status line (28): what the document is in the data font; for a sheet, how to see a
+/// cell's whole text, and a warning when it was cut short.
 fn status_line(ui: &mut Ui, view: &DocView, rect: Rect) {
     let p = style::pal(ui);
     ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
-    let mut sum_job = egui::text::LayoutJob::simple_singleline(view.summary(), egui::FontId::proportional(11.0), p.text_faint);
-    sum_job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 28.0).max(20.0));
+    let mut sum_job = egui::text::LayoutJob::simple_singleline(summary(ui, view), style::mono(style::DATA), p.text_faint);
+    sum_job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 24.0).max(20.0));
     let sum_g = ui.painter().layout_job(sum_job);
-    let summary = Rect::from_min_size(pos2(rect.left() + 14.0, rect.center().y - sum_g.size().y / 2.0), sum_g.size());
+    let summary = Rect::from_min_size(pos2(rect.left() + 12.0, rect.center().y - sum_g.size().y / 2.0), sum_g.size());
     ui.painter().galley(summary.min, sum_g, p.text_faint);
     // A sheet: how to see a cell's whole text, at the right.
     let hint = matches!(view.state, State::Ready(Content::Sheet(_))).then(|| t("Click a cell to see all of its text."));
     let hint_w = hint.map_or(0.0, |h| {
-        let g = ui.painter().layout_no_wrap(h.to_string(), egui::FontId::proportional(11.0), p.text_faint);
+        let g = ui.painter().layout_no_wrap(h.to_string(), egui::FontId::proportional(style::LABEL), p.text_faint);
         let w = g.size().x;
         if rect.width() - summary.width() - 60.0 > w {
-            ui.painter().galley(pos2(rect.right() - 14.0 - w, rect.center().y - g.size().y / 2.0), g, p.text_faint);
-            w + 14.0
+            ui.painter().galley(pos2(rect.right() - 12.0 - w, rect.center().y - g.size().y / 2.0), g, p.text_faint);
+            w + 12.0
         } else {
             0.0
         }
     });
-    // A sheet cut short (too many cells, or a CSV record that could not be read) would look
-    // complete otherwise.
-    if let State::Ready(Content::Sheet(b)) = &view.state
-        && let Some(s) = b.sheets.get(view.sheet).filter(|s| s.truncated)
-    {
-        let text = format!("{}  {}", icons::WARNING, tf("Only the first {} rows are shown.", &[&s.rows.to_string()]));
-        let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(11.0), p.warn);
-        job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - summary.right() - 26.0 - hint_w).max(0.0));
-        let g = ui.painter().layout_job(job);
-        ui.painter().galley(pos2(summary.right() + 12.0, rect.center().y - g.size().y / 2.0), g, p.warn);
+    if let Some(w) = truncated(view) {
+        paint_truncated(ui, &w, summary.right() + 12.0, rect.right() - 12.0 - hint_w, rect.center().y);
     }
+}
+
+/// A sheet cut short (too many cells, or a CSV record that could not be read) would look
+/// complete otherwise: the warning, when it was.
+fn truncated(view: &DocView) -> Option<String> {
+    let State::Ready(Content::Sheet(b)) = &view.state else { return None };
+    let s = b.sheets.get(view.sheet).filter(|s| s.truncated)?;
+    Some(format!("{}  {}", icons::WARNING, tf("Only the first {} rows are shown.", &[&s.rows.to_string()])))
+}
+
+fn paint_truncated(ui: &Ui, text: &str, left: f32, right: f32, cy: f32) {
+    let p = style::pal(ui);
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), egui::FontId::proportional(style::LABEL), p.warn);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - left).max(0.0));
+    let g = ui.painter().layout_job(job);
+    ui.painter().galley(pos2(left, cy - g.size().y / 2.0), g, p.warn);
 }
 
 fn loading(ui: &mut Ui, rect: Rect) {
     let p = style::pal(ui);
     let c = rect.center();
-    ui.put(Rect::from_center_size(c - vec2(0.0, 14.0), vec2(22.0, 22.0)), egui::Spinner::new().size(20.0).color(p.text_faint));
-    ui.painter().text(c + vec2(0.0, 14.0), Align2::CENTER_CENTER, t("Opening…"), egui::FontId::proportional(style::SMALL + 0.5), p.text_faint);
+    super::status::paint_spinner(ui.painter(), c - vec2(0.0, 14.0), 20.0, p.text_faint);
+    ui.painter().text(c + vec2(0.0, 14.0), Align2::CENTER_CENTER, t("Opening…"), egui::FontId::proportional(style::SMALL), p.text_muted);
 }
 
 fn failed(ui: &mut Ui, rect: Rect, error: &str, ask: &mut Option<Ask>) {
     // The reader's reason, as a title and a sentence a person would write.
-    let (title, body) = match error {
-        e if e.contains("password") => (t("This PDF is password-protected"), t("TernaryCode can’t show protected PDFs. Your default app can.").to_string()),
-        e if e.contains("too big") => (t("This file is too big to show here"), e.to_string()),
-        e if e.contains("cannot be shown here") => (t("This format can’t be shown here"), t("Supported: PDF, Word, PowerPoint, Excel, ODS, CSV/TSV and images.").to_string()),
-        e if e.contains("no pages") => (t("This PDF has no pages"), String::new()),
-        e if e.contains("no sheets") => (t("This workbook has no sheets"), String::new()),
-        e => (t("This document cannot be shown"), {
+    let (icon, title, body) = match error {
+        e if e.contains("password") => (icons::LOCK_SIMPLE, t("This PDF is password-protected"), t("TernaryCode can’t show protected PDFs. Your default app can.").to_string()),
+        e if e.contains("too big") => (icons::FILE, t("This file is too big to show here"), e.to_string()),
+        e if e.contains("cannot be shown here") => (icons::FILE, t("This format can’t be shown here"), t("Supported: PDF, Word, PowerPoint, Excel, ODS, CSV/TSV and images.").to_string()),
+        e if e.contains("no pages") => (icons::FILE, t("This PDF has no pages"), String::new()),
+        e if e.contains("no sheets") => (icons::FILE, t("This workbook has no sheets"), String::new()),
+        e => (icons::FILE, t("This document cannot be shown"), {
             let mut c = e.chars();
             c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
         }),
     };
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-        kit::empty_state(ui, icons::FILE, title, &body, |ui| {
-            if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Open in Default App"), false).clicked() {
+        kit::empty_state(ui, icon, title, &body, |ui| {
+            if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Open in default app"), true).clicked() {
                 *ask = Some(Ask::OpenDefault);
             }
         });
@@ -345,74 +413,48 @@ fn failed(ui: &mut Ui, rect: Rect, error: &str, ask: &mut Option<Ask>) {
 
 // ----- search ---------------------------------------------------------------------------------
 
-/// The search bar under the toolbar. Returns whether its field has the keyboard.
-fn find_bar(ui: &mut Ui, view: &mut DocView, rect: Rect, project: ProjectId, allow_keys: bool) -> bool {
+/// The find bar, floating at the top right of `content` (its top at `top`), as the pages' and
+/// the terminals'. Returns whether its field has the keyboard.
+fn find_bar(ui: &mut Ui, view: &mut DocView, content: Rect, top: f32, project: ProjectId, allow_keys: bool) -> bool {
     let p = style::pal(ui);
     let Some(f) = view.find.as_mut() else { return false };
     let id = egui::Id::new(("doc-find", project));
-    let mut close = allow_keys && ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-    let mut focused = false;
-    ui.painter().rect_filled(rect, CornerRadius::ZERO, p.chrome);
-    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.border));
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 5.0))).layout(egui::Layout::left_to_right(egui::Align::Center)),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let field_w = (ui.available_width() - 170.0).clamp(90.0, 240.0);
-            let r = kit::field(ui, id, &mut f.query, Some(icons::MAGNIFYING_GLASS), t("Find in document"), field_w, true);
-            #[cfg(debug_assertions)]
-            crate::devtest::record("doc-find", r.rect);
-            if f.focus {
-                r.request_focus();
-                kit::select_text(ui.ctx(), id, 0, f.query.chars().count());
-                f.focus = false;
-            }
-            focused = r.has_focus();
-            // Esc is the field's: it closes the bar (egui would otherwise take the keyboard
-            // away on it first).
-            if focused {
-                ui.memory_mut(|m| m.set_focus_lock_filter(id, egui::EventFilter { escape: true, horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
-            }
-            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                let back = ui.input(|i| i.modifiers.shift);
-                f.step(!back);
-                r.request_focus();
-                focused = true;
-            }
-            let n = f.matches.len();
-            let more = if n >= MAX_DOC_MATCHES { "+" } else { "" };
-            let (info, color) = if f.query.trim().is_empty() {
-                (String::new(), p.text_muted)
-            } else if n == 0 && f.searching {
-                (t("Searching…").to_string(), p.text_muted)
-            } else if n == 0 {
-                (t("No results").to_string(), p.err)
-            } else {
-                match f.current {
-                    Some(c) => (tf("{} of {}", &[&(c + 1).to_string(), &format!("{n}{more}")]), p.text_muted),
-                    None => (tf("{} results", &[&format!("{n}{more}")]), p.text_muted),
-                }
-            };
-            ui.label(egui::RichText::new(info).size(style::SMALL).color(color));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if kit::icon_button_ex(ui, icons::X, t("Close"), false, 24.0).clicked() {
-                    close = true;
-                }
-                if kit::icon_button_ex(ui, icons::ARROW_DOWN, t("Next"), false, 24.0).clicked() {
-                    f.step(true);
-                }
-                if kit::icon_button_ex(ui, icons::ARROW_UP, t("Previous"), false, 24.0).clicked() {
-                    f.step(false);
-                }
-            });
-        },
+    let n = f.matches.len();
+    let more = if n >= MAX_DOC_MATCHES { "+" } else { "" };
+    let (info, color) = if f.query.trim().is_empty() {
+        (String::new(), p.text_muted)
+    } else if n == 0 && f.searching {
+        (t("Searching…").to_string(), p.text_muted)
+    } else if n == 0 {
+        (t("No results").to_string(), p.err)
+    } else {
+        match f.current {
+            Some(c) => (tf("{} of {}", &[&(c + 1).to_string(), &format!("{n}{more}")]), p.text_muted),
+            None => (tf("{} results", &[&format!("{n}{more}")]), p.text_muted),
+        }
+    };
+    let focus = std::mem::take(&mut f.focus);
+    let max_w = (content.width() - 16.0).max(120.0);
+    let w = super::browser_ui::find_card_width(ui, &info, 140.0).min(max_w);
+    let at = pos2((content.right() - 8.0 - w).max(content.left() + 8.0), top);
+    let out = super::browser_ui::find_card(
+        ui,
+        at,
+        max_w,
+        super::browser_ui::FindCard { id, query: &mut f.query, hint: t("Find in document"), count: info, count_color: color, field_w: 140.0, focus, shadow: true },
+        allow_keys,
     );
-    if close {
+    #[cfg(debug_assertions)]
+    crate::devtest::record("doc-find", out.field);
+    if let Some(step) = out.step {
+        f.step(step > 0);
+    }
+    if out.close {
         view.find = None;
         ui.memory_mut(|m| m.surrender_focus(id));
         return false;
     }
-    focused
+    out.focused
 }
 
 /// Finds the query again when it or the document changed (more of a PDF's text read, another
@@ -556,7 +598,7 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
         return;
     }
     let margin = 20.0;
-    let gap = 14.0;
+    let gap = 16.0;
     let avail = (rect.width() - margin * 2.0 - 10.0).max(80.0);
     let max_w = pdf.pages.iter().map(|p| p.0).fold(1.0f32, f32::max);
     // Fit the width (but small pages are not blown up past twice their size).
@@ -568,6 +610,8 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
         y += h * k + gap;
     }
     let total = vec2(max_w * k + margin * 2.0, y - gap + margin);
+    // White pages faded into the sheet's colour at the edges would look soiled.
+    ui.spacing_mut().scroll.fade.strength = 0.0;
     let mut area = egui::ScrollArea::both()
         .id_salt(("pdf", view.path.clone()))
         .auto_shrink([false, false]);
@@ -680,7 +724,7 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
         for i in visible {
             let (w, h) = (pages[i].0 * k, pages[i].1 * k);
             let page = Rect::from_min_size(pos2(o.x + (r.width() - w) / 2.0, o.y + tops[i]), vec2(w, h));
-            painter.rect_filled(page.translate(vec2(0.0, 2.0)).expand(1.0), CornerRadius::same(2), Color32::from_black_alpha(60));
+            painter.add(egui::epaint::Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(64) }.as_shape(page, CornerRadius::ZERO));
             painter.rect_filled(page, CornerRadius::ZERO, Color32::WHITE);
             match pdf.textures.get(&i) {
                 Some((_, tex)) => {
@@ -750,7 +794,7 @@ fn style_of(s: ParaStyle, p: &style::Palette, base: f32) -> (f32, bool, Color32,
         ParaStyle::Heading(2) => (base * 1.35, true, p.text, false, false),
         ParaStyle::Heading(3) => (base * 1.18, true, p.text, false, false),
         ParaStyle::Heading(_) => (base * 1.05, true, p.text, false, false),
-        ParaStyle::Quote => (base, false, p.text_muted, true, false),
+        ParaStyle::Quote => (base, false, p.text_muted, false, false),
         ParaStyle::Code => (base * 0.9, false, p.text, false, true),
         ParaStyle::Normal => (base, false, p.text, false, false),
     }
@@ -836,14 +880,14 @@ impl Builder<'_> {
         let mut w = w;
         if let Some(list) = &para.list {
             let indent = 22.0 * z * (list.level as f32 + 1.0);
-            let mark = self.ui.painter().layout_no_wrap(list.mark.clone(), egui::FontId::proportional(base), self.p.text_muted);
+            let mark = self.ui.painter().layout_no_wrap(list.mark.clone(), egui::FontId::proportional(base), self.p.text_faint);
             let mr = Rect::from_min_size(pos2(x + indent - mark.size().x - 6.0 * z, y), mark.size());
             self.items.push(Item::Text { rect: mr, galley: mark });
             x += indent;
             w -= indent;
         }
         if para.style == ParaStyle::Quote {
-            self.items.push(Item::Fill { rect: Rect::from_min_size(pos2(x, y), vec2(3.0 * z, 1.0)), color: self.p.border_strong, radius: 1, stroke: Stroke::NONE });
+            self.items.push(Item::Fill { rect: Rect::from_min_size(pos2(x, y), vec2(3.0 * z, 1.0)), color: self.p.border_heavy, radius: 1, stroke: Stroke::NONE });
             x += 14.0 * z;
             w -= 14.0 * z;
         }
@@ -1131,6 +1175,8 @@ fn cell_name(sheet: &tc_doc::sheet::Sheet, row: usize, col: usize) -> String {
 }
 
 fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -> bool {
+    let about = summary(ui, view);
+    let cut_short = truncated(view);
     let State::Ready(Content::Sheet(book)) = &view.state else { return false };
     let multi = book.sheets.len() > 1;
     let names: Vec<String> = book.sheets.iter().map(|s| s.name.clone()).collect();
@@ -1139,10 +1185,9 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
     let bar = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + CELL_BAR_H));
     let Some(sheet) = book.sheets.get(view.sheet) else { return false };
     let z = view.zoom;
-    let dark = ui.visuals().dark_mode;
-    let fs = 11.5 * z;
-    let row_h = (25.0 * z).round().max(12.0);
-    let char_w = fs * 0.6;
+    let fs = style::DATA * z;
+    let row_h = (26.0 * z).round().max(12.0);
+    let char_w = fs * 0.62;
     let widths: Vec<f32> = sheet.widths.iter().map(|w| (*w as f32 * char_w + 18.0 * z).clamp(46.0 * z, 380.0 * z).round()).collect();
     let mut xs = Vec::with_capacity(widths.len() + 1);
     let mut acc = 0.0;
@@ -1157,52 +1202,54 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
     let font = style::mono(fs);
     // The header row (the sheet's first) stays in view under the column letters.
     let sticky = if sheet.rows > 1 { row_h } else { 0.0 };
-    let gutter = if dark { style::over(p.canvas, p.chrome, 0.25) } else { style::over(p.canvas, p.chrome, 0.35) };
 
     // The selected cell: its name in a well, its whole text, what it is in words (its column's
-    // header, its row's first values); Copy at the right.
+    // header, the column's first values); Copy at the right.
     ui.painter().hline(bar.x_range(), bar.bottom() - 0.5, Stroke::new(1.0, p.border));
+    let cy = bar.center().y;
     let name = view.cell.map_or_else(|| "—".to_string(), |(r, c)| cell_name(sheet, r, c));
-    let ng = ui.painter().layout_no_wrap(name, style::mono(11.0), p.text_muted);
-    let nr = Rect::from_min_size(pos2(bar.left() + 10.0, bar.center().y - 11.0), vec2((ng.size().x + 14.0).max(44.0), 22.0));
-    let well = p.inset;
-    ui.painter().rect(nr, CornerRadius::same(5), well, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
-    ui.painter().galley(pos2(nr.center().x - ng.size().x / 2.0, nr.center().y - ng.size().y / 2.0), ng, p.text_muted);
+    let ng = ui.painter().layout_no_wrap(name, style::mono(style::DATA), p.text);
+    let nr = Rect::from_min_size(pos2(bar.left() + 10.0, cy - 12.0), vec2((ng.size().x + 14.0).max(44.0), 24.0));
+    ui.painter().rect_filled(nr, CornerRadius::same(5), p.inset);
+    ui.painter().galley(pos2(nr.center().x - ng.size().x / 2.0, nr.center().y - ng.size().y / 2.0), ng, p.text);
     if let Some((r, c)) = view.cell {
         let cell = sheet.cell(r, c);
         // What kind of value it is, on the name.
         ui.interact(nr, egui::Id::new("doc-cell-name"), Sense::hover()).on_hover_text(cell.kind_label());
-        let copy = Rect::from_center_size(pos2(bar.right() - 8.0 - 10.0, bar.center().y), vec2(20.0, 20.0));
-        let copied = ui.scope_builder(egui::UiBuilder::new().max_rect(copy), |ui| kit::icon_button_ex(ui, icons::COPY, t("Copy"), false, 20.0)).inner;
+        let copy = Rect::from_min_max(pos2(bar.right() - 10.0 - ICON_S, cy - ICON_S / 2.0), pos2(bar.right() - 10.0, cy + ICON_S / 2.0));
+        let copied = ui.scope_builder(egui::UiBuilder::new().max_rect(copy), |ui| kit::icon_button_ex(ui, icons::COPY, t("Copy"), false, ICON_S)).inner;
         if copied.clicked() {
             ui.ctx().copy_text(cell.text().to_string());
         }
-        let mut context: Vec<String> = Vec::new();
-        if r > 0 {
-            context.push(sheet.cell(0, c).text().to_string());
+        // The column's header, and its first values under it.
+        let first_line = |x: &str| x.lines().next().unwrap_or("").trim().to_string();
+        let header = if r > 0 && sticky > 0.0 { first_line(sheet.cell(0, c).text()) } else { String::new() };
+        let firsts: Vec<String> = (if sticky > 0.0 { 1 } else { 0 }..sheet.rows.min(200)).map(|row| first_line(sheet.cell(row, c).text())).filter(|x| !x.is_empty()).take(3).collect();
+        let mut context = Vec::new();
+        if !header.is_empty() {
+            context.push(header);
         }
-        for k in [0, 1] {
-            if k != c && k < sheet.cols && r > 0 {
-                context.push(sheet.cell(r, k).text().to_string());
-            }
+        if !firsts.is_empty() {
+            context.push(tf("first values {}", &[&firsts.join(", ")]));
         }
-        let context: Vec<String> = context.into_iter().map(|x| x.lines().next().unwrap_or("").trim().to_string()).filter(|x| !x.is_empty()).collect();
         let text = cell.text().replace('\n', " ⏎ ");
         let room = (copy.left() - 10.0 - (nr.right() + 10.0)).max(10.0);
         let mut job = egui::text::LayoutJob::default();
-        job.append(&text, 0.0, egui::TextFormat::simple(style::mono(11.5), p.text));
+        job.append(&text, 0.0, egui::TextFormat::simple(style::mono(style::MONO), p.text));
         if !context.is_empty() {
-            job.append(&context.join(" · "), 10.0, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.text_faint));
+            job.append(&context.join(" · "), 10.0, egui::TextFormat::simple(egui::FontId::proportional(style::SMALL), p.text_faint));
         }
         job.wrap = egui::text::TextWrapping::truncate_at_width(room);
         let g = ui.painter().layout_job(job);
-        ui.painter().galley(pos2(nr.right() + 10.0, bar.center().y - g.size().y / 2.0), g, p.text);
+        ui.painter().galley(pos2(nr.right() + 10.0, cy - g.size().y / 2.0), g, p.text);
     }
     if let Some(e) = &sheet.error {
         ui.painter().text(grid_rect.center(), Align2::CENTER_CENTER, e, egui::FontId::proportional(style::BODY), p.err);
     }
 
-    let total = vec2(rn_w + acc, head_h + sheet.rows as f32 * row_h);
+    // The grid has a margin round it (8 at 100%), its gutters lit, the cells on the sheet.
+    let pad = (8.0 * z).round();
+    let total = vec2(pad + rn_w + acc + pad, pad + head_h + sheet.rows as f32 * row_h + pad);
     let mut select = None;
     let mut keys_moved = None;
     let mut focused = false;
@@ -1215,21 +1262,21 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
             // last (a match on another sheet may have just switched to this one).
             let id = ui.make_persistent_id(egui::IdSalt::new(&salt));
             view.sheet_scroll = egui::scroll_area::State::load(ui.ctx(), id).map_or(egui::Vec2::ZERO, |s| s.offset);
-            if let Some(target) = scroll_target(view.cell, view.sheet_scroll, &xs, row_h, head_h, sticky, rn_w, grid_rect) {
+            if let Some(target) = scroll_target(view.cell, view.sheet_scroll, &xs, row_h, head_h + pad, sticky, rn_w + pad, grid_rect) {
                 area = area.scroll_offset(target);
             }
         }
         area.show_viewport(ui, |ui, vp| {
             let (r, resp) = ui.allocate_exact_size(total.max(vp.size()), Sense::click());
-            let o = r.min;
+            // The grid's origin: its top-left corner inside the margin.
+            let o = r.min + vec2(pad, pad);
             let painter = ui.painter();
-            let row1 = ((vp.max.y / row_h).ceil() as usize).min(sheet.rows);
+            let row1 = (((vp.max.y - pad) / row_h).ceil().max(0.0) as usize).min(sheet.rows);
             // The offset is clamped only at the frame's end: zoomed out at the bottom of a long
             // sheet, the view can start below the last row for a frame.
-            let row0 = ((((vp.min.y - head_h) / row_h).floor().max(0.0)) as usize).min(row1);
-            let col0 = xs.partition_point(|x| *x <= vp.min.x - rn_w).saturating_sub(1);
-            let col1 = xs.partition_point(|x| *x < vp.max.x - rn_w).min(widths.len());
-            let grid = Stroke::new(1.0, style::soft(p.border, 0.9));
+            let row0 = ((((vp.min.y - pad - head_h) / row_h).floor().max(0.0)) as usize).min(row1);
+            let col0 = xs.partition_point(|x| *x <= vp.min.x - pad - rn_w).saturating_sub(1);
+            let col1 = xs.partition_point(|x| *x < vp.max.x - pad - rn_w).min(widths.len());
             let (all, current) = match_colors(ui.visuals().dark_mode);
             let cur = view.find.as_ref().and_then(|f| f.current);
             let hits: std::collections::HashMap<(usize, usize), bool> = view
@@ -1246,11 +1293,14 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
                         .collect()
                 })
                 .unwrap_or_default();
-            let top = o.y + vp.min.y;
-            let left = o.x + vp.min.x;
-            let zebra = p.hover.gamma_multiply(0.5);
-            // One row's cells at `y`: a find's matches, the text (numbers at the right).
+            // What stays in view: the column letters at the view's top, the row numbers at its
+            // left (inside the margin while the grid is not scrolled past it).
+            let top = (r.min.y + vp.min.y).max(o.y);
+            let left = (r.min.x + vp.min.x).max(o.x);
+            // One row's cells at `y`: a find's match, the text (numbers at the right; the header
+            // row in the strong small font).
             let paint_cells = |row: usize, y: f32| {
+                let header = row == 0 && sticky > 0.0;
                 for col in col0..col1 {
                     let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[col], y), vec2(widths[col], row_h));
                     if let Some(is_current) = hits.get(&(row, col)) {
@@ -1262,32 +1312,25 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
                         continue;
                     }
                     let (color, right) = match cell {
-                        tc_doc::sheet::Cell::Number(_) => (p.text, true),
-                        tc_doc::sheet::Cell::Bool(_) => (p.accent_text, true),
+                        _ if header => (p.text, false),
+                        tc_doc::sheet::Cell::Number(_) => (p.text_muted, true),
+                        tc_doc::sheet::Cell::Bool(_) => (p.accent_text, false),
                         tc_doc::sheet::Cell::Error(_) => (p.err, false),
-                        _ => (p.text, false),
+                        _ => (p.text_muted, false),
                     };
-                    let mut job = egui::text::LayoutJob::simple_singleline(text.lines().next().unwrap_or("").to_string(), font.clone(), color);
+                    let f = if header { style::medium(style::SMALL * z) } else { font.clone() };
+                    let mut job = egui::text::LayoutJob::simple_singleline(text.lines().next().unwrap_or("").to_string(), f, color);
                     job.wrap = egui::text::TextWrapping::truncate_at_width((cr.width() - 16.0 * z).max(4.0));
                     let g = painter.layout_job(job);
                     let gx = if right { cr.right() - 8.0 * z - g.size().x } else { cr.left() + 8.0 * z };
                     painter.galley(pos2(gx, cr.center().y - g.size().y / 2.0), g, color);
                 }
             };
-            let cells_x = o.x + rn_w + xs[col0]..=o.x + rn_w + xs[col1];
             let first = if sticky > 0.0 { row0.max(1) } else { row0 };
             for row in first..row1 {
-                let y = o.y + head_h + row as f32 * row_h;
-                if row % 2 == 1 {
-                    painter.rect_filled(Rect::from_x_y_ranges(cells_x.clone(), y..=y + row_h), CornerRadius::ZERO, zebra);
-                }
-                painter.hline(cells_x.clone(), y + row_h - 0.5, grid);
-                paint_cells(row, y);
+                paint_cells(row, o.y + head_h + row as f32 * row_h);
             }
-            for x in &xs[col0..=col1.min(widths.len())] {
-                let x = o.x + rn_w + x - 0.5;
-                painter.vline(x, o.y + head_h + first as f32 * row_h..=o.y + head_h + row1 as f32 * row_h, grid);
-            }
+            // The selected cell: the accent's tint, ringed in it.
             let selected = |painter: &egui::Painter, row: usize, y: f32| {
                 if let Some((sr, sc)) = view.cell
                     && sr == row
@@ -1296,55 +1339,64 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
                     let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[sc], y), vec2(widths[sc], row_h));
                     painter.rect_filled(cr, CornerRadius::ZERO, p.accent_tint);
                     painter.rect_stroke(cr, CornerRadius::ZERO, Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
-                    // Its text again over the tint.
-                    let text = sheet.cell(sr, sc).text();
-                    let right = matches!(sheet.cell(sr, sc), tc_doc::sheet::Cell::Number(_) | tc_doc::sheet::Cell::Bool(_));
-                    let mut job = egui::text::LayoutJob::simple_singleline(text.lines().next().unwrap_or("").to_string(), font.clone(), p.text);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((cr.width() - 16.0 * z).max(4.0));
-                    let g = painter.layout_job(job);
-                    let gx = if right { cr.right() - 8.0 * z - g.size().x } else { cr.left() + 8.0 * z };
-                    painter.galley(pos2(gx, cr.center().y - g.size().y / 2.0), g, p.text);
                 }
             };
             if let Some((sr, _)) = view.cell
                 && (sticky == 0.0 || sr > 0)
             {
-                selected(painter, sr, o.y + head_h + sr as f32 * row_h);
+                let y = o.y + head_h + sr as f32 * row_h;
+                selected(painter, sr, y);
             }
-            // The header row, raised, kept under the column letters.
+            let cells_x = o.x + rn_w + xs[col0]..=o.x + rn_w + xs[col1];
+            // The header row, kept under the column letters.
             let sticky_y = top + head_h;
             if sticky > 0.0 {
                 let band = Rect::from_x_y_ranges(cells_x.clone(), sticky_y..=sticky_y + row_h);
-                painter.rect_filled(band, CornerRadius::ZERO, p.surface);
+                painter.rect_filled(band, CornerRadius::ZERO, p.canvas);
+                if view.cell.is_some_and(|(sr, _)| sr == 0) {
+                    selected(painter, 0, sticky_y);
+                }
                 paint_cells(0, sticky_y);
-                for x in &xs[col0..=col1.min(widths.len())] {
-                    painter.vline(o.x + rn_w + x - 0.5, band.y_range(), grid);
+                if sticky_y > o.y + head_h + 0.5 {
+                    painter.hline(band.x_range(), band.bottom() - 0.5, Stroke::new(1.0, p.border));
                 }
-                selected(painter, 0, sticky_y);
-                painter.hline(band.x_range(), band.bottom() - 0.5, Stroke::new(1.0, p.border_strong));
             }
-            // The column letters and the row numbers stay in view.
-            let head = Rect::from_min_size(pos2(o.x + rn_w + xs[col0], top), vec2(xs[col1] - xs[col0], head_h));
-            painter.rect_filled(head, CornerRadius::ZERO, gutter);
-            for col in col0..col1 {
-                let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[col], top), vec2(widths[col], head_h));
-                let on = view.cell.is_some_and(|(_, c)| c == col);
-                if on {
-                    painter.rect_filled(cr, CornerRadius::ZERO, p.accent_tint);
+            if let Some((sr, sc)) = view.cell
+                && sc < widths.len()
+                && (sticky == 0.0 || sr > 0)
+            {
+                // The selected cell's text again over its tint.
+                let y = o.y + head_h + sr as f32 * row_h;
+                if y >= sticky_y + sticky - 0.5 {
+                    let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[sc], y), vec2(widths[sc], row_h));
+                    let right = matches!(sheet.cell(sr, sc), tc_doc::sheet::Cell::Number(_));
+                    let mut job = egui::text::LayoutJob::simple_singleline(sheet.cell(sr, sc).text().lines().next().unwrap_or("").to_string(), font.clone(), p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((cr.width() - 16.0 * z).max(4.0));
+                    let g = painter.layout_job(job);
+                    let gx = if right { cr.right() - 8.0 * z - g.size().x } else { cr.left() + 8.0 * z };
+                    painter.galley(pos2(gx, cr.center().y - g.size().y / 2.0), g, p.text);
                 }
-                painter.text(cr.center(), Align2::CENTER_CENTER, tc_doc::sheet::column_name(sheet.origin.1 + col as u32), style::mono(10.5 * z), if on { p.accent_text } else { p.text_ghost });
-                painter.vline(cr.right() - 0.5, cr.y_range(), grid);
             }
-            painter.hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
-            let nums = Rect::from_min_size(pos2(left, o.y + head_h + row0 as f32 * row_h), vec2(rn_w, (row1 - row0) as f32 * row_h));
-            painter.rect_filled(nums, CornerRadius::ZERO, gutter);
-            let number = |painter: &egui::Painter, row: usize, y: f32| {
-                let rr = Rect::from_min_size(pos2(left, y), vec2(rn_w, row_h));
-                let on = view.cell.is_some_and(|(r, _)| r == row);
-                painter.rect_filled(rr, CornerRadius::ZERO, if on { p.accent_tint } else { gutter });
-                painter.text(pos2(rr.right() - 9.0 * z, rr.center().y), Align2::RIGHT_CENTER, (sheet.origin.0 as usize + row + 1).to_string(), style::mono(10.5 * z), if on { p.accent_text } else { p.text_ghost });
-                painter.hline(rr.x_range(), rr.bottom() - 0.5, grid);
+            // The column letters and the row numbers stay in view: lit blocks a point apart.
+            let lit = |painter: &egui::Painter, r: Rect, on: bool| {
+                painter.rect_filled(r, CornerRadius::ZERO, p.canvas);
+                painter.rect_filled(r, CornerRadius::ZERO, if on { p.accent_tint } else { p.hover });
             };
+            let head_y = top;
+            painter.rect_filled(Rect::from_min_size(pos2(o.x + rn_w + xs[col0], head_y), vec2(xs[col1] - xs[col0], head_h + 1.0)), CornerRadius::ZERO, p.canvas);
+            for col in col0..col1 {
+                let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[col] + 1.0, head_y), vec2(widths[col] - 1.0, head_h));
+                let on = view.cell.is_some_and(|(_, c)| c == col);
+                lit(painter, cr, on);
+                painter.text(cr.center(), Align2::CENTER_CENTER, tc_doc::sheet::column_name(sheet.origin.1 + col as u32), style::mono(style::DATA * z), if on { p.accent_text } else { p.text_faint });
+            }
+            let number = |painter: &egui::Painter, row: usize, y: f32| {
+                let rr = Rect::from_min_size(pos2(left, y + 1.0), vec2(rn_w, row_h - 1.0));
+                let on = view.cell.is_some_and(|(r, _)| r == row);
+                lit(painter, rr, on);
+                painter.text(rr.center(), Align2::CENTER_CENTER, (sheet.origin.0 as usize + row + 1).to_string(), style::mono(style::DATA * z), if on { p.accent_text } else { p.text_faint });
+            };
+            painter.rect_filled(Rect::from_min_size(pos2(left, o.y + head_h + row0 as f32 * row_h), vec2(rn_w + 1.0, (row1 - row0) as f32 * row_h)), CornerRadius::ZERO, p.canvas);
             for row in first..row1 {
                 let y = o.y + head_h + row as f32 * row_h;
                 if y + row_h < top + head_h + sticky {
@@ -1355,10 +1407,9 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
             if sticky > 0.0 {
                 number(painter, 0, sticky_y);
             }
-            painter.vline(left + rn_w - 0.5, nums.y_range(), Stroke::new(1.0, p.border));
-            painter.rect_filled(Rect::from_min_size(pos2(left, top), vec2(rn_w, head_h)), CornerRadius::ZERO, gutter);
-            painter.hline(left..=left + rn_w, top + head_h - 0.5, Stroke::new(1.0, p.border));
-            // A click picks the cell under it (ignoring clicks on the sticky column letters or row numbers).
+            // The corner over the row numbers.
+            lit(painter, Rect::from_min_size(pos2(left, head_y), vec2(rn_w, head_h)), false);
+            // A click picks the cell under it (ignoring clicks on the column letters or row numbers).
             if resp.clicked()
                 && let Some(pos) = resp.interact_pointer_pos()
             {
@@ -1410,20 +1461,34 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
         view.scroll_to_cell = true;
     }
     if multi {
-        let p = style::pal(ui);
-        ui.painter().rect_filled(tabs, CornerRadius::ZERO, p.chrome);
+        // The sheets' tabs, what the workbook is at the right.
         ui.painter().hline(tabs.x_range(), tabs.top() + 0.5, Stroke::new(1.0, p.border));
+        let g = ui.painter().layout_no_wrap(about, style::mono(style::DATA), p.text_faint);
+        let about_w = g.size().x.min(tabs.width() * 0.5);
+        let about_left = tabs.right() - 12.0 - about_w;
+        let about_y = tabs.center().y - g.size().y / 2.0;
+        ui.painter().with_clip_rect(Rect::from_min_max(pos2(about_left, tabs.top()), tabs.max)).galley(pos2(about_left, about_y), g, p.text_faint);
+        let mut strip_right = about_left - 12.0;
+        if let Some(w) = &cut_short {
+            let wg = ui.painter().layout_no_wrap(w.clone(), egui::FontId::proportional(style::LABEL), p.warn);
+            let ww = wg.size().x.min((strip_right - tabs.left()) * 0.5);
+            paint_truncated(ui, w, strip_right - ww, strip_right, tabs.center().y);
+            strip_right -= ww + 12.0;
+        }
+        let strip = Rect::from_min_max(pos2(tabs.left() + 8.0, tabs.top() + 1.0), pos2(strip_right.max(tabs.left() + 40.0), tabs.bottom()));
         let mut pick = None;
-        ui.scope_builder(egui::UiBuilder::new().max_rect(tabs.shrink2(vec2(6.0, 0.0))), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| {
+            ui.set_clip_rect(strip.intersect(ui.clip_rect()));
             egui::ScrollArea::horizontal()
                 .id_salt(("sheet-tabs", view.path.clone()))
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
                     ui.horizontal_centered(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
+                        ui.spacing_mut().item_spacing.x = 4.0;
                         for (i, name) in names.iter().enumerate() {
-                            let on = i == view.sheet;
-                            if kit::button_full(ui, kit::Kind::Ghost, Some(icons::TABLE), name, true, on).clicked() {
+                            let w = super::browser_ui::segment_width(ui, Some(icons::TABLE), name).min(220.0);
+                            let (r, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
+                            if super::browser_ui::segment(ui, r, egui::Id::new(("sheet-tab", view.path.clone(), i)), Some(icons::TABLE), name, i == view.sheet).clicked() {
                                 pick = Some(i);
                             }
                         }
