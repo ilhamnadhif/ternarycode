@@ -424,8 +424,6 @@ impl App {
                                 let pr = &self.projects[*i];
                                 let id = pr.id;
                                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), PROJECT_H), Sense::click());
-                                #[cfg(debug_assertions)]
-                                crate::devtest::record(format!("project:{}", pr.name), rect);
                                 let chosen = typing && !dim && found == sel;
                                 if !dim {
                                     found += 1;
@@ -437,6 +435,8 @@ impl App {
                                 if !ui.is_rect_visible(rect) {
                                     continue;
                                 }
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record(format!("project:{}", pr.name), rect.intersect(ui.clip_rect()));
                                 let selected = !filtering && self.active == Some(id) && self.view == View::Focus && !self.attention_open;
                                 let row = self.project_row(pr, &p);
                                 paint_project_row(ui, rect, &row, &pr.letters(), pr.color32(), marks, selected, resp.hovered() || chosen, *dim, chosen, dark, &p);
@@ -452,8 +452,6 @@ impl App {
                                 let pr = &self.projects[*j];
                                 let id = pr.id;
                                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SESSION_H), Sense::click());
-                                #[cfg(debug_assertions)]
-                                crate::devtest::record(format!("project:{}", pr.name), rect);
                                 let chosen = typing && found == sel;
                                 found += 1;
                                 order.push(id);
@@ -463,6 +461,8 @@ impl App {
                                 if !ui.is_rect_visible(rect) {
                                     continue;
                                 }
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record(format!("project:{}", pr.name), rect.intersect(ui.clip_rect()));
                                 let selected = !filtering && self.active == Some(id) && self.view == View::Focus && !self.attention_open;
                                 let st = self.project_status(pr).map(|(s, _)| s).filter(|s| shows_status(*s));
                                 let branch = pr.git.as_ref().map(|g| g.branch.clone()).unwrap_or_default();
@@ -474,11 +474,11 @@ impl App {
                             }
                             Line::Session(pid, k) => {
                                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SESSION_H), Sense::click());
-                                #[cfg(debug_assertions)]
-                                crate::devtest::record(format!("session:{pid}:{k}"), rect);
                                 if !ui.is_rect_visible(rect) {
                                     continue;
                                 }
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record(format!("session:{pid}:{k}"), rect.intersect(ui.clip_rect()));
                                 let Some(s) = self.session_row(*pid, *k) else { continue };
                                 paint_session_row(ui, rect, &s, resp.hovered(), &p);
                                 if resp.on_hover_text(&s.title).clicked() {
