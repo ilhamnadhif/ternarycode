@@ -168,12 +168,25 @@ impl App {
         (Some(stage), Some((panel, tab)))
     }
 
-    /// The panel in `rect`: its header, then what `tab` shows.
+    /// The panel in `rect`: its header, then what `tab` shows. Browser puts its page tabs in the
+    /// header row itself (with Expand and Close at the right) so the panel never stacks two chrome
+    /// bars above the address bar.
     pub fn right_panel(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, tab: PanelTab) {
         let p = style::pal(ui);
         super::focus::paint_sheet(ui.painter(), rect, &p, super::focus::SheetLook::Plain);
         #[cfg(debug_assertions)]
         crate::devtest::record("panel", rect);
+        if tab == PanelTab::Browser {
+            let body = Rect::from_min_max(pos2(rect.left() + 1.0, rect.top() + 1.0), pos2(rect.right() - 1.0, rect.bottom() - 1.0));
+            let strip = Rect::from_min_size(body.min, vec2(body.width(), super::browser_panel::TABS_H));
+            let right_left = self.panel_head_controls(ui, project, strip, 640.0);
+            if self.panel_tab(project) != Some(PanelTab::Browser) {
+                return;
+            }
+            let reserve = (strip.right() - right_left).max(0.0);
+            self.browser_panel_body(ui, project, body, reserve);
+            return;
+        }
         let head = Rect::from_min_size(rect.min, vec2(rect.width(), HEAD_H));
         self.panel_head(ui, project, head, tab);
         let body = Rect::from_min_max(pos2(rect.left() + 1.0, head.bottom()), pos2(rect.right() - 1.0, rect.bottom() - 1.0));
@@ -193,10 +206,40 @@ impl App {
                 PanelTab::Browser => {}
             }
         });
-        if tab == PanelTab::Browser {
-            // The page strip, its toolbar and the page, inside the panel (its own sheet is ours).
-            self.browser_panel_body(ui, project, body);
-        }
+    }
+
+    /// Right-side panel header controls (expanded hint, Expand / Back beside the terminals, Close),
+    /// returning the leftmost x they occupy.
+    fn panel_head_controls(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, hint_min_w: f32) -> f32 {
+        let p = style::pal(ui);
+        let expanded = self.panel_expanded(project);
+        let inner = Rect::from_min_max(pos2(rect.left() + 8.0, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let close = kit::icon_button_ex(ui, icons::X, t("Close Panel"), false, 24.0);
+            #[cfg(debug_assertions)]
+            crate::devtest::record("panel-close", close.rect);
+            if close.clicked() {
+                self.close_panel(project);
+            }
+            let (icon, tip) = if expanded {
+                (icons::ARROWS_IN_SIMPLE, t("Back beside the terminals"))
+            } else {
+                (icons::ARROWS_OUT_SIMPLE, t("Expand"))
+            };
+            let ex = kit::icon_button_ex(ui, icon, &kit::tip(tip, Action::TogglePanelExpanded), false, 24.0);
+            #[cfg(debug_assertions)]
+            crate::devtest::record("panel-expand", ex.rect);
+            if ex.clicked() {
+                self.actions.push(Action::TogglePanelExpanded);
+            }
+            if expanded && rect.width() > hint_min_w {
+                let keys = kit::keys(&Action::TogglePanelExpanded).unwrap_or_default();
+                ui.label(egui::RichText::new(format!("{keys} {}", t("back beside the terminals"))).font(egui::FontId::proportional(style::SMALL)).color(p.text_faint));
+            }
+            ui.min_rect().left()
+        })
+        .inner
     }
 
     /// The header: the active panel's title (with its count when relevant), then at the right a
@@ -205,37 +248,9 @@ impl App {
     fn panel_head(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, tab: PanelTab) {
         let p = style::pal(ui);
         let changed = self.project(project).and_then(|x| x.git.as_ref()).map_or(0, |g| g.changed);
-        let pages = self.panel_of(project).map_or(0, |x| x.pages.len());
-        let expanded = self.panel_expanded(project);
         let inner = Rect::from_min_max(pos2(rect.left() + 8.0, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
         // Right side first.
-        let right_left = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                let close = kit::icon_button_ex(ui, icons::X, t("Close Panel"), false, 24.0);
-                #[cfg(debug_assertions)]
-                crate::devtest::record("panel-close", close.rect);
-                if close.clicked() {
-                    self.close_panel(project);
-                }
-                let (icon, tip) = if expanded {
-                    (icons::ARROWS_IN_SIMPLE, t("Back beside the terminals"))
-                } else {
-                    (icons::ARROWS_OUT_SIMPLE, t("Expand"))
-                };
-                let ex = kit::icon_button_ex(ui, icon, &kit::tip(tip, Action::TogglePanelExpanded), false, 24.0);
-                #[cfg(debug_assertions)]
-                crate::devtest::record("panel-expand", ex.rect);
-                if ex.clicked() {
-                    self.actions.push(Action::TogglePanelExpanded);
-                }
-                if expanded && ui.available_width() > 520.0 {
-                    let keys = kit::keys(&Action::TogglePanelExpanded).unwrap_or_default();
-                    ui.label(egui::RichText::new(format!("{keys} {}", t("back beside the terminals"))).font(egui::FontId::proportional(style::SMALL)).color(p.text_faint));
-                }
-                ui.min_rect().left()
-            })
-            .inner;
+        let right_left = self.panel_head_controls(ui, project, rect, 520.0);
         let title_rect = Rect::from_min_max(inner.min, pos2((right_left - 8.0).max(inner.left()), inner.bottom()));
         let painter = ui.painter().with_clip_rect(title_rect.intersect(ui.clip_rect()));
         let cy = title_rect.center().y;
@@ -248,7 +263,6 @@ impl App {
         x += gw;
         let count = match tab {
             PanelTab::Changes if changed > 0 => Some(changed),
-            PanelTab::Browser if pages > 0 => Some(pages),
             _ => None,
         };
         if let Some(n) = count {

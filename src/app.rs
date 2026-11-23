@@ -663,6 +663,26 @@ impl App {
         let codex_hooks = !codex_config.as_deref().is_some_and(integrate::codex_has_own_hooks);
         let codex_own_notify = codex_config.as_deref().is_some_and(integrate::codex_has_own_notify);
 
+        // Keep Antigravity CLI's global TernaryCode plugin in sync automatically when `agy` is
+        // present on this machine and the user has not opted out, so Antigravity CLI uses
+        // TernaryCode's built-in browser out of the box (skipped in tests / isolated data dirs).
+        if !cfg!(test)
+            && std::env::var_os("TERNARYCODE_DATA_DIR").is_none()
+            && settings.browser_agents
+            && settings.integrations.get(AgentKind::Antigravity.slug()) != Some(&Integration::Off)
+            && hook_bin.bin.exists()
+            && let Some(hooks_path) = Self::agent_config_path(AgentKind::Antigravity)
+        {
+            let home = paths::home_dir();
+            let has_agy = home.join(".gemini/antigravity-cli").exists() || home.join(".gemini/config").exists();
+            if has_agy && let Ok(record) = integrate::sync_antigravity_plugin(&hook_bin, &hooks_path) {
+                let _ = tc_core::persist::save_json(&Self::install_record_path(AgentKind::Antigravity), &record);
+                if !settings.integrations.contains_key(AgentKind::Antigravity.slug()) {
+                    settings.integrations.insert(AgentKind::Antigravity.slug().into(), Integration::Installed);
+                }
+            }
+        }
+
         #[cfg(target_os = "macos")]
         let menu = Some((ui::menu::AppMenu::install(), ui::menu::event_channel(ctx)));
         crate::i18n::on_language_change(|| MENU_STALE.store(true, std::sync::atomic::Ordering::Relaxed));
@@ -1425,7 +1445,7 @@ impl App {
 
     /// The pane "this pane" commands act on (split, find, where ⌘J starts from): the target
     /// pane, else (in the Grid with no tile typed into) the open project's focused pane.
-    fn command_pane(&self) -> Option<PaneId> {
+    pub(crate) fn command_pane(&self) -> Option<PaneId> {
         self.target_pane().or_else(|| self.current_pane())
     }
 
@@ -1570,7 +1590,7 @@ impl App {
         if t.hooks_active || t.fg_for(Instant::now()) < UNCONNECTED_AFTER {
             return None;
         }
-        if matches!(agent, AgentKind::Custom | AgentKind::Antigravity) {
+        if matches!(agent, AgentKind::Custom) {
             return None;
         }
         // Installed hooks, or flags a preset added for this run: they are expected (an agent
@@ -2629,6 +2649,21 @@ impl App {
                     .filter(|p| p.enabled && p.agent == a)
                     .or_else(|| self.preferred_profile_for(a, proj_id))
             });
+        // Ensure Antigravity CLI's plugin is ready before launching `agy`, unless opted out.
+        if preset.agent == Some(AgentKind::Antigravity)
+            && !cfg!(test)
+            && std::env::var_os("TERNARYCODE_DATA_DIR").is_none()
+            && self.settings.browser_agents
+            && self.settings.integrations.get(AgentKind::Antigravity.slug()) != Some(&Integration::Off)
+            && self.hook_bin.bin.exists()
+            && let Some(hooks_path) = Self::agent_config_path(AgentKind::Antigravity)
+            && let Ok(record) = integrate::sync_antigravity_plugin(&self.hook_bin, &hooks_path)
+        {
+            let _ = tc_core::persist::save_json(&Self::install_record_path(AgentKind::Antigravity), &record);
+            if !self.settings.integrations.contains_key(AgentKind::Antigravity.slug()) {
+                self.settings.integrations.insert(AgentKind::Antigravity.slug().into(), Integration::Installed);
+            }
+        }
         let command = self.launch_command_for_profile(&preset, &base, profile.as_ref());
         let mut project = None;
         if let Some(p) = self.panes.get_mut(&pane) {
@@ -2639,6 +2674,8 @@ impl App {
             }
             p.rate_limit = None;
             p.last_limit_sig = None;
+            p.rate_limit_dismissed = false;
+            p.dismissed_limit_sigs.clear();
             p.limit_ignore_until = None;
             p.type_command(command);
             project = Some(p.project);
@@ -3012,6 +3049,7 @@ impl App {
             AgentKind::Claude => Some(home.join(".claude/settings.json")),
             AgentKind::Codex => Some(home.join(".codex/config.toml")),
             AgentKind::Gemini => Some(home.join(".gemini/settings.json")),
+            AgentKind::Antigravity => Some(home.join(".gemini/config/plugins/ternarycode/hooks.json")),
             AgentKind::OpenCode => Some(
                 std::env::var_os("XDG_CONFIG_HOME")
                     .map(PathBuf::from)
@@ -3020,6 +3058,27 @@ impl App {
             ),
             _ => None,
         }
+    }
+
+    /// Rewrites per-launch integration files and refreshes the agent browser env vars in
+    /// `self.base_env` when Settings → Browser → Agents can use the browser changes.
+    pub fn refresh_browser_pane_env(&mut self) {
+        let codex_config = std::fs::read_to_string(paths::home_dir().join(".codex/config.toml")).ok();
+        let Ok(fresh) = self.hook_bin.pane_env(&paths::integrations_dir(), self.settings.browser_agents, codex_config.as_deref()) else {
+            return;
+        };
+        const MANAGED: &[&str] = &[
+            integrate::ENV_CLAUDE_SETTINGS,
+            integrate::ENV_CLAUDE_MCP,
+            integrate::ENV_CODEX_HOOKS,
+            integrate::ENV_CODEX_NOTIFY,
+            integrate::ENV_CODEX_MCP,
+            integrate::ENV_CODEX_GUIDE,
+            integrate::ENV_OPENCODE_CONFIG,
+            integrate::ENV_BROWSER_AGENTS,
+        ];
+        self.base_env.retain(|(k, _)| !MANAGED.contains(&k.as_str()));
+        self.base_env.extend(fresh);
     }
 
     pub fn installed(&self, agent: AgentKind) -> Option<InstallRecord> {
@@ -3508,6 +3567,7 @@ impl App {
                     AgentKind::Claude => integrate::plan_claude(&self.hook_bin, &path),
                     AgentKind::Codex => integrate::plan_codex(&self.hook_bin, &path),
                     AgentKind::Gemini => integrate::plan_gemini(&self.hook_bin, &path),
+                    AgentKind::Antigravity => integrate::plan_antigravity(&self.hook_bin, &path),
                     AgentKind::OpenCode => integrate::plan_opencode(&self.hook_bin, &path),
                     _ => Err(t("This agent cannot be installed yet.").to_string()),
                 };
@@ -3596,9 +3656,12 @@ impl App {
                         }
                     }
                 }
-                self.settings
-                    .integrations
-                    .insert(agent.slug().into(), Integration::PerLaunch);
+                let after = if matches!(agent, AgentKind::Claude | AgentKind::Codex) {
+                    Integration::PerLaunch
+                } else {
+                    Integration::Off
+                };
+                self.settings.integrations.insert(agent.slug().into(), after);
                 self.settings_changed();
             }
             Action::OpenFile(path, line) => {
@@ -4112,24 +4175,57 @@ impl App {
                 self.switch_pane_profile_and_resume(ctx, pane, &profile_id, false);
             }
             Action::DismissRateLimit(pane) => {
+                let now = Instant::now();
                 if let Some(p) = self.panes.get_mut(&pane) {
-                    p.rate_limit = None;
+                    if let Some(banner) = p.rate_limit.take() {
+                        p.remember_dismissed_limit(banner.reason);
+                    }
+                    if let Some(sig) = p.last_limit_sig.clone() {
+                        p.remember_dismissed_limit(sig);
+                    }
+                    p.rate_limit_dismissed = true;
+                    p.tracker.dismiss_notice(now);
+                    self.notified.insert(pane, p.tracker.ask);
+                }
+                self.push_companion_now();
+            }
+            Action::DismissNotice(pane) => {
+                let now = Instant::now();
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    if let Some(banner) = p.rate_limit.take() {
+                        p.remember_dismissed_limit(banner.reason);
+                        p.rate_limit_dismissed = true;
+                    }
+                    if let Some(sig) = p.last_limit_sig.clone() {
+                        p.remember_dismissed_limit(sig);
+                    }
+                    p.last_words = None;
+                    p.done_stats = None;
+                    p.tracker.dismiss_notice(now);
+                    self.notified.insert(pane, p.tracker.ask);
                 }
                 self.push_companion_now();
             }
             Action::TestProfile(id) => self.test_profile(id),
             Action::LoginProfile(id) => self.login_profile(ctx, &id),
             Action::ClearProfileCooldown(id) => {
+                let now = Instant::now();
                 if let Some(rt) = self.profiles_rt.get_mut(&id) {
                     rt.reset_at = None;
                     rt.reset_reason = None;
                     rt.state = crate::profiles::ProfileState::Idle;
                 }
                 for pane in self.panes.values_mut() {
-                    if pane.rate_limit.as_ref().is_some_and(|b| b.from_profile == id) {
-                        pane.rate_limit = None;
-                        // Keep `last_limit_sig` intact so stale rate-limit lines still on screen do
-                        // not immediately re-trigger `RateLimited` on the next 1.2s scan.
+                    if pane.rate_limit.as_ref().is_some_and(|b| b.from_profile == id)
+                        || pane.active_profile.as_deref() == Some(id.as_str())
+                    {
+                        if let Some(banner) = pane.rate_limit.take() {
+                            pane.remember_dismissed_limit(banner.reason);
+                        }
+                        pane.rate_limit_dismissed = false;
+                        if pane.tracker.status == tc_core::status::Status::NeedsInput {
+                            pane.tracker.dismiss_notice(now);
+                        }
                     }
                 }
                 self.toast_ok(tf("Cleared cooldown for {}.", &[&id]));

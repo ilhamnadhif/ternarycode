@@ -29,9 +29,9 @@ your work needs it: to open, show, check or search something on a website (\"ope
 test a web app, to study a site's design. Do not start another browser for it: not Chrome, \
 Chromium, Edge, Firefox or Safari (headless included), not Playwright, Puppeteer, Selenium or a \
 script of your own that drives a browser, not `open <url>` or `open -a` in a shell, and not other \
-browser tools (Claude in Chrome, Zen, a Playwright server), unless the user names that other \
-browser. A project's own tests (npm test, playwright test) run as they always do. Start with \
-browser_navigate; then act on the refs of \
+browser tools (Claude in Chrome, Zen, Antigravity /browser subagent, Chrome DevTools MCP, a \
+Playwright server), unless the user names that other browser. A project's own tests (npm test, \
+playwright test) run as they always do. Start with browser_navigate; then act on the refs of \
 the snapshot each tool returns. Pages: you work in a page of your own, but when the user already \
 has the site you open in a page of theirs that is idle, browser_navigate works in that one \
 instead of opening another (it stays theirs); browser_tabs lists the pages and picks one when \
@@ -169,7 +169,7 @@ fn answer(msg: &Value, env: &Option<Pane>, call: &dyn Fn(&Pane, &str, &Value) ->
         }
         "ping" => json!({}),
         "tools/list" => {
-            let available = env.is_some();
+            let available = env.is_some() && std::env::var(crate::integrate::ENV_BROWSER_AGENTS).as_deref() != Ok("0");
             json!({"tools": if available { tools() } else { json!([]) }})
         }
         "tools/call" => {

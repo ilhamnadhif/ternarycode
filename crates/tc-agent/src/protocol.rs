@@ -107,8 +107,17 @@ pub fn classify(agent: AgentKind, event: &str, kind: Option<&str>) -> Option<Hoo
             "permission.replied" => Some(Working),
             _ => None,
         },
+        AgentKind::Antigravity => match event {
+            "SessionStart" | "start" => Some(SessionStart),
+            "PreToolUse" if kind == Some("ask_question") => Some(NeedsInput),
+            "PreInvocation" | "PreToolUse" | "PostToolUse" | "PostInvocation" | "working" => Some(Working),
+            "needs-input" => Some(NeedsInput),
+            "Stop" | "done" => Some(TurnDone),
+            "end" => Some(SessionEnd),
+            _ => None,
+        },
         // A plain vocabulary for agents without their own (documented for custom presets).
-        AgentKind::Antigravity | AgentKind::Custom => match event {
+        AgentKind::Custom => match event {
             "start" => Some(SessionStart),
             "working" => Some(Working),
             "needs-input" => Some(NeedsInput),
@@ -133,6 +142,7 @@ pub fn prompt(agent: AgentKind, event: &str, payload: &Value) -> Option<String> 
     let raw = match event {
         "UserPromptSubmit" => text(&payload["prompt"]),
         "notify" if agent == AgentKind::Codex => payload["input-messages"].as_array().and_then(|a| a.first()).and_then(text),
+        "PreInvocation" if agent == AgentKind::Antigravity => text(&payload["lastUserInput"]),
         _ => None,
     }?;
     let line = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
@@ -169,6 +179,11 @@ pub fn extract(
             // Which tool is about to run (only the ones that ask the user matter).
             (agent == AgentKind::Claude && event == "PreToolUse")
                 .then(|| text(&payload["tool_name"]))
+                .flatten()
+        })
+        .or_else(|| {
+            (agent == AgentKind::Antigravity && event == "PreToolUse")
+                .then(|| text(&payload["toolCall"]["name"]))
                 .flatten()
         })
         .or_else(|| text(&payload["type"]))
@@ -213,12 +228,17 @@ pub fn extract(
             None
         }
         (AgentKind::OpenCode, _) => text(&payload["title"]).or_else(|| text(&payload["message"])),
+        (AgentKind::Antigravity, "PreToolUse") if text(&payload["toolCall"]["name"]).as_deref() == Some("ask_question") => {
+            text(&payload["toolCall"]["args"]["questions"][0]["question"])
+        }
+        (AgentKind::Antigravity, "Stop") => text(&payload["error"]).or_else(|| text(&payload["message"])),
         _ => text(&payload["message"]),
     }
     .map(shorten);
     let session = text(&payload["session_id"])
         .or_else(|| text(&payload["thread-id"]))
-        .or_else(|| text(&payload["sessionID"]));
+        .or_else(|| text(&payload["sessionID"]))
+        .or_else(|| text(&payload["conversationId"]));
     let cwd = text(&payload["cwd"]);
     (kind, message, session, cwd)
 }
@@ -337,5 +357,35 @@ mod tests {
         let bash = json!({"tool_name": "Bash", "tool_input": {"command": "ls"}});
         let (kind, msg, ..) = extract(AgentKind::Claude, "PreToolUse", &bash);
         assert_eq!((kind.as_deref(), msg), (Some("Bash"), None));
+    }
+
+    #[test]
+    fn antigravity_events_and_extract() {
+        let c = |e, k| classify(AgentKind::Antigravity, e, k);
+        assert_eq!(c("SessionStart", None), Some(HookSignal::SessionStart));
+        assert_eq!(c("PreInvocation", None), Some(HookSignal::Working));
+        assert_eq!(c("PreToolUse", Some("run_command")), Some(HookSignal::Working));
+        assert_eq!(c("PreToolUse", Some("ask_question")), Some(HookSignal::NeedsInput));
+        assert_eq!(c("PostToolUse", None), Some(HookSignal::Working));
+        assert_eq!(c("Stop", None), Some(HookSignal::TurnDone));
+
+        let ask = json!({
+            "conversationId": "conv-123",
+            "cwd": "/repo",
+            "lastUserInput": "Open localhost:3000",
+            "toolCall": {
+                "name": "ask_question",
+                "args": {"questions": [{"question": "Deploy now?"}]}
+            }
+        });
+        let (kind, msg, session, cwd) = extract(AgentKind::Antigravity, "PreToolUse", &ask);
+        assert_eq!(kind.as_deref(), Some("ask_question"));
+        assert_eq!(msg.as_deref(), Some("Deploy now?"));
+        assert_eq!(session.as_deref(), Some("conv-123"));
+        assert_eq!(cwd.as_deref(), Some("/repo"));
+        assert_eq!(
+            prompt(AgentKind::Antigravity, "PreInvocation", &ask).as_deref(),
+            Some("Open localhost:3000")
+        );
     }
 }

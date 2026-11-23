@@ -1036,30 +1036,6 @@ impl App {
             self.dialog = Some(Dialog::Rename(id, name.to_string()));
             ui.close();
         }
-        let current = self.project(id).map(|x| x.color).unwrap_or_default() as usize;
-        let letters = self.project(id).map(|x| x.letters()).unwrap_or_default();
-        let color = kit::submenu_item(ui, Some(icons::PALETTE), t("Colour"));
-        egui::containers::menu::SubMenu::new().show(ui, &color, |ui| {
-            let p = style::pal(ui);
-            let dark = ui.visuals().dark_mode;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                for (ci, (r, g, b)) in crate::project::COLORS.iter().enumerate().take(6) {
-                    let c = egui::Color32::from_rgb(*r, *g, *b);
-                    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
-                    if ci == current {
-                        ui.painter().rect_stroke(rect, CornerRadius::same(7), Stroke::new(2.0, p.accent), StrokeKind::Inside);
-                    } else if resp.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(7), p.hover);
-                    }
-                    kit::paint_project_tile(ui.painter(), Rect::from_center_size(rect.center(), vec2(20.0, 20.0)), &letters, c, dark);
-                    if resp.clicked() {
-                        self.actions.push(Action::SetProjectColor(id, ci as u8));
-                        ui.close();
-                    }
-                }
-            });
-        });
         let reveal = if cfg!(target_os = "macos") {
             t("Show in Finder")
         } else {

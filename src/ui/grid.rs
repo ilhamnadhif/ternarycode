@@ -1353,13 +1353,16 @@ impl App {
         let rect = Rect::from_min_max(pos2(area.left(), area.bottom() - h), area.max);
         let out = ui
             .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                kit::notice(ui, rect.width(), tone, None, &title, body.as_deref(), Some(primary), secondary, false)
+                kit::notice(ui, rect.width(), tone, None, &title, body.as_deref(), Some(primary), secondary, true)
             })
             .inner;
         #[cfg(debug_assertions)]
         {
             crate::devtest::record(format!("tile-foot:{name}"), out.rect);
-            let (_, first, second) = notice_buttons(ui, out.rect, Some(primary), secondary, false);
+            let (dismiss_r, first, second) = notice_buttons(ui, out.rect, Some(primary), secondary, true);
+            if let Some(id) = review.or(pane) {
+                dismiss_r.into_iter().for_each(|r| crate::devtest::record(format!("tile-dismiss:{id}"), r));
+            }
             if let Some(id) = review.filter(|_| kind == Foot::Done) {
                 first.into_iter().for_each(|r| crate::devtest::record(format!("tile-commit:{id}"), r));
                 second.into_iter().for_each(|r| crate::devtest::record(format!("tile-review:{id}"), r));
@@ -1368,6 +1371,11 @@ impl App {
                 first.into_iter().for_each(|r| crate::devtest::record(format!("tile-foot-primary:{name}"), r));
                 second.into_iter().for_each(|r| crate::devtest::record(format!("tile-foot-open:{name}"), r));
             }
+        }
+        if out.dismissed
+            && let Some(id) = review.or(pane)
+        {
+            self.actions.push(Action::DismissNotice(id));
         }
         match kind {
             Foot::Wait | Foot::Fail => {

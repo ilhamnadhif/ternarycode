@@ -309,6 +309,10 @@ pub struct Pane {
     pub last_limit_check: Instant,
     /// Dedup key of the last rate-limit line handled in this pane.
     pub last_limit_sig: Option<String>,
+    /// User explicitly closed the rate-limit notice in this pane (suppresses forced header failover CTA).
+    pub rate_limit_dismissed: bool,
+    /// Rate-limit signatures already dismissed or superseded in this pane so stale scrollback never re-triggers them.
+    pub dismissed_limit_sigs: Vec<String>,
     /// Suppresses rate-limit re-scanning immediately after failover until new output replaces old text.
     pub limit_ignore_until: Option<Instant>,
     /// Quick composer draft text for sending follow-up instructions directly to an agent pane.
@@ -379,6 +383,8 @@ impl Pane {
             rate_limit: None,
             last_limit_check: Instant::now(),
             last_limit_sig: None,
+            rate_limit_dismissed: false,
+            dismissed_limit_sigs: Vec::new(),
             limit_ignore_until: None,
             composer_text: String::new(),
         };
@@ -1067,6 +1073,8 @@ impl Pane {
             self.active_profile = None;
             self.rate_limit = None;
             self.last_limit_sig = None;
+            self.rate_limit_dismissed = false;
+            self.dismissed_limit_sigs.clear();
             self.task = None;
             self.last_words = None;
         }
@@ -1102,6 +1110,14 @@ impl Pane {
         {
             self.last_words = Some(words.clone());
         }
+        // Once the agent actively works or finishes a turn, any prior manual rate-limit notice is
+        // stale (e.g. user switched models or quota reset): clear it and remember its signature.
+        if matches!(signal, tc_core::status::HookSignal::Working | tc_core::status::HookSignal::TurnDone)
+            && self.rate_limit.as_ref().is_some_and(|b| b.auto_switched_to.is_none())
+            && let Some(banner) = self.rate_limit.take()
+        {
+            self.remember_dismissed_limit(banner.reason);
+        }
         self.tracker.apply(
             Event::Hook {
                 agent,
@@ -1110,6 +1126,18 @@ impl Pane {
             },
             now,
         )
+    }
+
+    /// Remembers a rate-limit error line that the user dismissed (or worked past) so stale
+    /// scrollback lines do not re-trigger the same notification.
+    pub fn remember_dismissed_limit(&mut self, sig: String) {
+        if sig.is_empty() || self.dismissed_limit_sigs.iter().any(|s| s == &sig) {
+            return;
+        }
+        if self.dismissed_limit_sigs.len() >= 8 {
+            self.dismissed_limit_sigs.remove(0);
+        }
+        self.dismissed_limit_sigs.push(sig);
     }
 
     /// The pane's label: the user's title, the foreground program, or the folder.

@@ -1025,9 +1025,8 @@ impl App {
             });
         });
         if tools_changed {
-            // The next agent run gets (or no longer gets) the tools.
-            let codex_config = std::fs::read_to_string(crate::paths::home_dir().join(".codex/config.toml")).ok();
-            let _ = self.hook_bin.pane_env(&crate::paths::integrations_dir(), self.settings.browser_agents, codex_config.as_deref());
+            // The next agent run and any new pane get (or no longer get) the browser tools.
+            self.refresh_browser_pane_env();
         }
         if let Some(site) = remove_site {
             self.settings.browser_agent_sites.retain(|s| *s != site);
@@ -1069,20 +1068,28 @@ impl App {
         let mode = self.settings.integration(agent);
         let installed = self.installed(agent);
         let has_server = |rec: &Option<InstallRecord>| {
-            rec.as_ref().and_then(|r| std::fs::read_to_string(&r.path).ok()).is_some_and(|text| {
-                text.contains("ternarycode-hook")
-                    && (text.contains("\"mcpServers\"")
-                        // Codex asks before each call of a server not approved.
-                        || (text.contains("mcp_servers.ternarycode") && text.contains("default_tools_approval_mode")))
+            rec.as_ref().is_some_and(|r| {
+                if r.agent == AgentKind::Antigravity {
+                    return r
+                        .path
+                        .parent()
+                        .and_then(|d| std::fs::read_to_string(d.join("mcp_config.json")).ok())
+                        .is_some_and(|text| text.contains("ternarycode-hook") && text.contains("\"mcpServers\""));
+                }
+                std::fs::read_to_string(&r.path).ok().is_some_and(|text| {
+                    text.contains("ternarycode-hook")
+                        && (text.contains("\"mcpServers\"")
+                            // Codex asks before each call of a server not approved.
+                            || (text.contains("mcp_servers.ternarycode") && text.contains("default_tools_approval_mode")))
+                })
             })
         };
         match (agent, mode) {
             (AgentKind::Claude | AgentKind::Codex, Integration::PerLaunch) => (true, t("Added to each run")),
-            (AgentKind::Claude, _) => (false, t("Only with Per launch")),
+            (AgentKind::Claude, Integration::Installed) => (true, t("Added to each run")),
+            (AgentKind::Claude, _) => (false, t("Hooks off")),
             // In every pane (`OPENCODE_CONFIG_CONTENT`), whatever its hooks.
             (AgentKind::OpenCode, _) => (true, t("In every TernaryCode pane, typed by hand too")),
-            // Its MCP servers are in its own files only; it has a browser of its own.
-            (AgentKind::Antigravity, _) => (false, t("Not added for Antigravity CLI yet")),
             (_, Integration::Installed) if has_server(&installed) => (true, t("Browser tools installed")),
             (_, Integration::Installed) => (false, t("Installed before the browser tools: install again")),
             _ => (false, t("Hooks not installed")),
@@ -1506,11 +1513,7 @@ impl App {
                             }
                             ui.data_mut(|d| d.insert_temp(typed_id, text));
                         });
-                        if agent == AgentKind::Antigravity {
-                            field_row(ui, t("Status signals"), true, &mut |ui| {
-                                text(ui, hooks_note(agent), FontId::proportional(style::SMALL), p.text_faint, 16.0, true);
-                            });
-                        } else if agent != AgentKind::Custom {
+                        if agent != AgentKind::Custom {
                             field_row(ui, t("Status signals"), true, &mut |ui| {
                                 self.hooks_controls(ui, agent);
                                 text(ui, hooks_note(agent), FontId::proportional(style::SMALL), p.text_faint, 16.0, true);
@@ -1707,7 +1710,7 @@ impl App {
             agent,
             hooked: installed || per_launch,
             installed,
-            can_install: !matches!(agent, AgentKind::Custom | AgentKind::Antigravity),
+            can_install: agent != AgentKind::Custom,
             off: self.settings.integration(agent) == Integration::Off,
             active,
             unconnected,
@@ -1858,13 +1861,10 @@ impl Hooks {
             return (Status::Idle, t("Custom").to_string());
         }
         // Per launch covers what Run Agent starts, not the agent typed by hand.
-        if self.agent == AgentKind::Antigravity {
-            return (Status::NeedsInput, t("No hooks · status shows Active").to_string());
-        }
         if self.hooked && !self.installed && self.unconnected > 0 {
             return (Status::NeedsInput, t("Hooks · per launch only").to_string());
         }
-        if self.hooked && self.installed && self.agent == AgentKind::OpenCode {
+        if self.hooked && self.installed && matches!(self.agent, AgentKind::OpenCode | AgentKind::Antigravity) {
             return (Status::Done, t("Plugin installed").to_string());
         }
         if self.hooked {
@@ -1884,7 +1884,7 @@ fn hooks_note(agent: AgentKind) -> &'static str {
         AgentKind::Claude => t("Per launch adds the hooks and browser tools to each run, without touching your files. Installed writes them into ~/.claude/settings.json, with a backup."),
         AgentKind::Codex => t("Per launch adds the hooks, notify and browser tools to each run. Codex asks you once to trust TernaryCode's hooks (its own security check)."),
         AgentKind::Gemini => t("Install adds hooks to ~/.gemini/settings.json (tool permissions, finished turns). Gemini CLI has no per-launch option."),
-        AgentKind::Antigravity => t("TernaryCode does not add hooks to Antigravity CLI yet: while it runs, its status reads “Active”."),
+        AgentKind::Antigravity => t("Install adds a TernaryCode plugin to ~/.gemini/config/plugins/ternarycode (status hooks and built-in browser tools; inactive outside TernaryCode)."),
         _ => t("Install adds a small plugin file to OpenCode's plugins folder (permission requests, finished turns). OpenCode has no per-launch option."),
     }
 }
@@ -1911,6 +1911,7 @@ fn health_strip(ui: &mut Ui, hooks: &Hooks, agent: AgentKind, p: &style::Palette
         AgentKind::Claude => Some("2.1.319"),
         AgentKind::Codex => Some("0.162.1"),
         AgentKind::OpenCode => Some("1.19.5"),
+        AgentKind::Antigravity => Some("1.5.15"),
         AgentKind::Gemini => Some("0.43.0"),
         _ => None,
     };

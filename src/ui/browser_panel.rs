@@ -232,11 +232,11 @@ impl App {
         })
     }
 
-    /// The Browser panel from its strip of page tabs down, in `rect` (no sheet, no header): the
-    /// tabs and New Page, then the page in front with its toolbar, its notices, its frame and
-    /// its console.
-    pub fn browser_panel_body(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect) {
-        self.panel_body(ui, project, rect, 0.0);
+    /// The Browser panel from its strip of page tabs down, in `rect` (no sheet, no separate title
+    /// header): the tabs and New Page (leaving `reserve` points free on the right for Expand and
+    /// Close), then the page in front with its toolbar, its notices, its frame and its console.
+    pub fn browser_panel_body(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, reserve: f32) {
+        self.panel_body(ui, project, rect, reserve);
     }
 
     /// [`App::browser_panel_body`], `reserve` points kept free at the strip's right.

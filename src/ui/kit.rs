@@ -1127,16 +1127,40 @@ pub fn paint_lattice(painter: &egui::Painter, center: egui::Pos2, size: f32, col
     }
 }
 
-/// A project's identity tile (the Project avatar): a folder icon in its hue, on the hue's tint,
-/// `rect` square (16 to 32): 20 → radius 5, 16 → 4.
-pub fn paint_project_tile(painter: &egui::Painter, rect: Rect, _letters: &str, color: Color32, dark: bool) {
-    let side = rect.width();
-    let radius = if side >= 30.0 { 8 } else if side >= 24.0 { 6 } else if side >= 19.0 { 5 } else { 4 };
-    let ink = crate::project::hue_for_theme(color, dark);
-    let fill = style::soft(ink, if dark { 0.15 } else { 0.11 });
-    painter.rect_filled(rect, CornerRadius::same(radius), fill);
-    let icon_size = if side >= 30.0 { 16.5 } else if side >= 24.0 { 13.5 } else if side >= 19.0 { 12.5 } else { 10.5 };
-    painter.text(rect.center(), Align2::CENTER_CENTER, super::icons::FOLDER, style::icon_font(icon_size), ink);
+/// A project's identity icon: a refined monochrome dark-glass squircle housing a crisp duotone
+/// Phosphor folder glyph (uniform across all projects — no per-project rainbow colors).
+pub fn paint_project_tile(painter: &egui::Painter, rect: Rect, _letters: &str, _color: Color32, dark: bool) {
+    let side = rect.width().min(rect.height());
+    let radius: u8 = if side >= 30.0 { 8 } else if side >= 19.0 { 6 } else { 4 };
+    let (fill, border, sheen, duo_fill, stroke_ink) = if dark {
+        (
+            Color32::from_rgb(0x1B, 0x1E, 0x26),
+            Color32::from_rgb(0x2D, 0x32, 0x3E),
+            Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x16),
+            Color32::from_rgba_unmultiplied(0xC8, 0xD2, 0xE3, 0x28),
+            Color32::from_rgb(0xB8, 0xC2, 0xD1),
+        )
+    } else {
+        (
+            Color32::from_rgb(0xF1, 0xF3, 0xF7),
+            Color32::from_rgb(0xD8, 0xDD, 0xE6),
+            Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0xB0),
+            Color32::from_rgba_unmultiplied(0x47, 0x55, 0x69, 0x22),
+            Color32::from_rgb(0x47, 0x55, 0x69),
+        )
+    };
+    let cr = CornerRadius::same(radius);
+    painter.rect(rect, cr, fill, Stroke::new(1.0, border), StrokeKind::Inside);
+    let r = f32::from(radius);
+    painter.hline(
+        (rect.left() + r * 0.65)..=(rect.right() - r * 0.65),
+        rect.top() + 0.5,
+        Stroke::new(1.0, sheen),
+    );
+    let icon_size = if side >= 30.0 { 16.0 } else if side >= 24.0 { 13.5 } else if side >= 19.0 { 12.5 } else { 10.5 };
+    // True duotone folder: soft frosted silhouette behind crisp outline glyph.
+    painter.text(rect.center(), Align2::CENTER_CENTER, super::icons::FOLDER, style::icon_fill(icon_size), duo_fill);
+    painter.text(rect.center(), Align2::CENTER_CENTER, super::icons::FOLDER, style::icon_font(icon_size), stroke_ink);
 }
 
 /// A chip in the top bar (branch, changes, server): an icon, text, a hover fill. `mono` sets

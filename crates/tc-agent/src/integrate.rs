@@ -35,6 +35,26 @@ pub const ENV_CODEX_GUIDE: &str = "TC_CODEX_GUIDE";
 /// the guide saying its browser is the user's. In every pane (on macOS), so an `opencode` typed
 /// by hand gets them too.
 pub const ENV_OPENCODE_CONFIG: &str = "OPENCODE_CONFIG_CONTENT";
+/// `"1"` while Settings → Browser → Agents can use the browser is on, `"0"` when off (checked by
+/// installed MCP servers and hooks such as Antigravity CLI's plugin).
+pub const ENV_BROWSER_AGENTS: &str = "TC_BROWSER_AGENTS";
+
+/// What Antigravity CLI (`agy`) is injected with at `SessionStart` inside a TernaryCode pane so
+/// TernaryCode's built-in browser is its primary browser unless the user explicitly names another.
+pub const ANTIGRAVITY_GUIDE: &str = "You run in a terminal pane of TernaryCode, which has a browser \
+built in, beside this terminal: it is the user's primary browser in this session, and the user sees \
+every page and every click. Use the ternarycode browser MCP tools (browser_navigate first, \
+browser_snapshot to read, browser_click/browser_type to act, browser_take_screenshot for a picture) \
+for every web page you need, whether the user asks for it or your work needs it: to open, show, \
+check or search something on a website (open YouTube, check it in the browser, a URL, a dev server), \
+to look at a page or take a picture of it, to test a web app, to study a site's design. Do NOT use \
+Antigravity's browser subagent (/browser, Chrome DevTools), do NOT start Chrome, Chromium, Edge, \
+Firefox or Safari (headless included), do NOT use Playwright, Puppeteer, Selenium or a script that \
+drives a browser, and do NOT run `open <url>` or `open -a` in a shell, unless the user explicitly \
+names that other browser in their request. A project's own tests (npm test, playwright test) run as \
+they always do. A pop-up a page opens (a sign-in such as Continue with Google) shows in a window of \
+its own; the tools act in it until it closes. Never type the user's passwords or one-time codes: ask \
+the user to type them there.";
 
 /// What an agent that reads no MCP server's instructions (Codex, OpenCode) is told about
 /// TernaryCode's browser (after the user's own instructions).
@@ -85,6 +105,14 @@ pub const CODEX_EVENTS: &[&str] = &[
     "UserPromptSubmit",
     "PreToolUse",
     "PermissionRequest",
+    "Stop",
+];
+
+pub const ANTIGRAVITY_EVENTS: &[&str] = &[
+    "SessionStart",
+    "PreInvocation",
+    "PreToolUse",
+    "PostToolUse",
     "Stop",
 ];
 
@@ -486,7 +514,64 @@ impl Hooks {
             (ENV_CODEX_NOTIFY.into(), self.codex_notify_override()),
             (ENV_CODEX_MCP.into(), self.codex_mcp_override(tools)),
             (ENV_CODEX_GUIDE.into(), self.codex_guide_override(tools, codex_config.and_then(codex_developer_instructions).as_deref())),
+            (ENV_BROWSER_AGENTS.into(), if tools { "1" } else { "0" }.into()),
         ])
+    }
+
+    /// Manifest for the Antigravity CLI global plugin (`~/.gemini/config/plugins/ternarycode/plugin.json`).
+    pub fn antigravity_plugin_json() -> String {
+        let mut s = serde_json::to_string_pretty(&json!({
+            "name": "ternarycode",
+            "displayName": "TernaryCode",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "Connects Antigravity CLI in TernaryCode panes to TernaryCode's built-in browser and pane status."
+        }))
+        .unwrap_or_default();
+        s.push('\n');
+        s
+    }
+
+    /// MCP config for the Antigravity CLI plugin (`mcp_config.json`): exposes TernaryCode's built-in
+    /// browser tools when running inside a TernaryCode pane (outside TernaryCode, lists no tools).
+    pub fn antigravity_mcp_json(&self) -> String {
+        let mut s = serde_json::to_string_pretty(&json!({
+            "mcpServers": {
+                "ternarycode": {
+                    "command": self.bin.to_string_lossy(),
+                    "args": ["mcp", "antigravity"],
+                    "timeoutSeconds": MCP_TOOL_SECS,
+                }
+            }
+        }))
+        .unwrap_or_default();
+        s.push('\n');
+        s
+    }
+
+    /// Lifecycle hooks for the Antigravity CLI plugin (`hooks.json`): reports pane status, injects
+    /// primary-browser instructions on `SessionStart`, and guards `PreToolUse` against external
+    /// browsers unless the user explicitly names one.
+    pub fn antigravity_hooks_json(&self) -> String {
+        let mut hook = serde_json::Map::new();
+        for &event in ANTIGRAVITY_EVENTS {
+            let entry = json!({
+                "type": "command",
+                "command": self.command(AgentKind::Antigravity, event),
+                "timeout": 5,
+            });
+            let value = if matches!(event, "PreToolUse" | "PostToolUse") {
+                json!([{
+                    "matcher": "*",
+                    "hooks": [entry],
+                }])
+            } else {
+                json!([entry])
+            };
+            hook.insert(event.to_string(), value);
+        }
+        let mut s = serde_json::to_string_pretty(&json!({ "ternarycode": Value::Object(hook) })).unwrap_or_default();
+        s.push('\n');
+        s
     }
 }
 
@@ -605,6 +690,9 @@ pub fn launch_command_with(
 ) -> String {
     let flags = match (agent, integration) {
         (Some(AgentKind::Claude), Integration::PerLaunch) => claude_flags(),
+        // Installed: hooks live in ~/.claude/settings.json; browser tools still go per launch so
+        // TernaryCode's built-in browser remains the primary browser in both modes.
+        (Some(AgentKind::Claude), Integration::Installed) => format!("--mcp-config {}", env_ref(ENV_CLAUDE_MCP)),
         (Some(AgentKind::Codex), Integration::PerLaunch) if codex_hooks && codex_own_notify => {
             format!("-c {}{}", env_ref(ENV_CODEX_HOOKS), codex_mcp_flag())
         }
@@ -652,6 +740,9 @@ pub struct InstallPlan {
     /// `before` in the same formatting as `after`, so the diff shows only real changes (the
     /// backup keeps the original bytes).
     pub before_normalized: Option<String>,
+    /// Companion files written alongside `path` (e.g. Antigravity plugin's `plugin.json` and
+    /// `mcp_config.json`).
+    pub extra_files: Vec<(PathBuf, String)>,
 }
 
 /// Recorded at install time, for an exact uninstall.
@@ -733,6 +824,7 @@ pub fn plan_claude(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
         before,
         after,
         before_normalized,
+        extra_files: Vec::new(),
     })
 }
 
@@ -794,6 +886,7 @@ pub fn plan_codex(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
         before,
         after,
         before_normalized: None,
+        extra_files: Vec::new(),
     })
 }
 
@@ -874,6 +967,7 @@ pub fn plan_gemini(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
         before,
         after,
         before_normalized,
+        extra_files: Vec::new(),
     })
 }
 
@@ -925,6 +1019,52 @@ pub fn plan_opencode(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> 
         before,
         after: opencode_plugin(hooks),
         before_normalized: None,
+        extra_files: Vec::new(),
+    })
+}
+
+/// Installs the Antigravity CLI global plugin (`~/.gemini/config/plugins/ternarycode/`):
+/// `hooks.json` (status signals, `SessionStart` browser guide, `PreToolUse` browser guard),
+/// `mcp_config.json` (TernaryCode built-in browser MCP tools), and `plugin.json`.
+/// Outside a TernaryCode pane, both the MCP server and the hooks do nothing.
+pub fn plan_antigravity(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
+    let before = read_existing(path)?;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    Ok(InstallPlan {
+        agent: AgentKind::Antigravity,
+        path: path.to_path_buf(),
+        before,
+        after: hooks.antigravity_hooks_json(),
+        before_normalized: None,
+        extra_files: vec![
+            (dir.join("plugin.json"), Hooks::antigravity_plugin_json()),
+            (dir.join("mcp_config.json"), hooks.antigravity_mcp_json()),
+        ],
+    })
+}
+
+/// Idempotently writes or updates the Antigravity CLI plugin directory
+/// (`~/.gemini/config/plugins/ternarycode/`), touching disk only when a file changed.
+/// Returns the [`InstallRecord`] matching the installed `hooks.json` so Settings → Agents can
+/// display and cleanly uninstall it.
+pub fn sync_antigravity_plugin(hooks: &Hooks, hooks_path: &Path) -> io::Result<InstallRecord> {
+    let dir = hooks_path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let hooks_text = hooks.antigravity_hooks_json();
+    for (path, text) in [
+        (dir.join("plugin.json"), Hooks::antigravity_plugin_json()),
+        (dir.join("mcp_config.json"), hooks.antigravity_mcp_json()),
+        (hooks_path.to_path_buf(), hooks_text.clone()),
+    ] {
+        if std::fs::read(&path).ok().as_deref() != Some(text.as_bytes()) {
+            tc_core::persist::write_private(&path, text.as_bytes())?;
+        }
+    }
+    Ok(InstallRecord {
+        agent: AgentKind::Antigravity,
+        path: hooks_path.to_path_buf(),
+        backup: None,
+        written_hash: fnv(hooks_text.as_bytes()),
     })
 }
 
@@ -1047,6 +1187,12 @@ pub fn apply(plan: &InstallPlan, backup_dir: &Path) -> io::Result<InstallRecord>
         std::fs::create_dir_all(dir)?;
     }
     tc_core::persist::write_private(&plan.path, plan.after.as_bytes())?;
+    for (extra_path, extra_text) in &plan.extra_files {
+        if let Some(dir) = extra_path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        tc_core::persist::write_private(extra_path, extra_text.as_bytes())?;
+    }
     Ok(InstallRecord {
         agent: plan.agent,
         path: plan.path.clone(),
@@ -1065,6 +1211,21 @@ pub enum Uninstalled {
 }
 
 pub fn uninstall(record: &InstallRecord, hooks: &Hooks) -> Result<Uninstalled, String> {
+    if record.agent == AgentKind::Antigravity {
+        // The plugin directory is TernaryCode's own (`~/.gemini/config/plugins/ternarycode/`).
+        if let Some(dir) = record.path.parent() {
+            for name in ["hooks.json", "mcp_config.json", "plugin.json"] {
+                let p = dir.join(name);
+                if let Err(e) = std::fs::remove_file(&p)
+                    && e.kind() != io::ErrorKind::NotFound
+                {
+                    return Err(e.to_string());
+                }
+            }
+            let _ = std::fs::remove_dir(dir);
+        }
+        return Ok(Uninstalled::Restored);
+    }
     let current = match std::fs::read(&record.path) {
         Ok(bytes) => Some(bytes),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
@@ -1277,7 +1438,7 @@ mod tests {
         );
         assert_eq!(
             launch_command("claude", Some(AgentKind::Claude), Integration::Installed, true),
-            "claude"
+            format!("claude --mcp-config {}", env_ref("TC_CLAUDE_MCP"))
         );
         // Codex installed (hooks and browser tools in its config.toml): only that its browser is
         // TernaryCode's; nothing when off.
@@ -1826,5 +1987,32 @@ mod tests {
         assert!(codex_has_own_hooks("hooks = true\n"));
         assert!(codex_has_own_hooks("[hooks]\nStop = []\n"));
         assert_eq!(without_marked(&format!("{MARK_BEGIN}\nnotify = [\"ternarycode-hook\", \"codex\"]\n{MARK_END}\n")), "");
+    }
+
+    #[test]
+    fn antigravity_plugin_installs_syncs_and_uninstalls_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = dir.path().join("plugins/ternarycode");
+        let hooks_path = plugin.join("hooks.json");
+        let plan = plan_antigravity(&hooks(), &hooks_path).unwrap();
+        assert_eq!(plan.extra_files.len(), 2);
+        let record = apply(&plan, &dir.path().join("b")).unwrap();
+        assert!(plugin.join("plugin.json").exists());
+        assert!(plugin.join("mcp_config.json").exists());
+        assert!(hooks_path.exists());
+        let mcp: Value = serde_json::from_str(&std::fs::read_to_string(plugin.join("mcp_config.json")).unwrap()).unwrap();
+        assert_eq!(mcp["mcpServers"]["ternarycode"]["args"], json!(["mcp", "antigravity"]));
+        let hooks_v: Value = serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+        assert!(hooks_v["ternarycode"]["SessionStart"][0]["command"].as_str().unwrap().contains("antigravity SessionStart"));
+        assert_eq!(hooks_v["ternarycode"]["PreToolUse"][0]["matcher"], "*");
+        assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Restored));
+        assert!(!plugin.exists());
+        // Sync creates it idempotently too.
+        let rec2 = sync_antigravity_plugin(&hooks(), &hooks_path).unwrap();
+        assert!(plugin.join("plugin.json").exists());
+        assert!(plugin.join("mcp_config.json").exists());
+        assert!(hooks_path.exists());
+        assert_eq!(uninstall(&rec2, &hooks()), Ok(Uninstalled::Restored));
+        assert!(!plugin.exists());
     }
 }

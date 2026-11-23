@@ -143,12 +143,37 @@ pub fn run(args: &[String]) -> i32 {
         _ => {}
     }
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let is_antigravity = args.first().and_then(|a| AgentKind::from_slug(a)) == Some(AgentKind::Antigravity);
     // The payload comes from stdin unless it is the last argument; taken either way so the
     // agent's write succeeds.
     let stdin = if args.len() < 3 { read_stdin() } else { None };
     let raw = args.get(2).map(|j| j.clone().into_bytes()).or_else(|| stdin.clone());
     if let Some((sock, msg)) = message(args, env, || stdin) {
         let _ = send(&sock, &msg);
+        if is_antigravity {
+            let tools = crate::guard::tools_on(AgentKind::Antigravity, env);
+            if msg.event == "SessionStart" && tools {
+                let out = serde_json::json!({
+                    "injectSteps": [{
+                        "systemMessage": {
+                            "systemMessage": crate::integrate::ANTIGRAVITY_GUIDE,
+                        }
+                    }]
+                });
+                println!("{out}");
+            } else if msg.event == "PreToolUse" {
+                let payload: Value = raw.and_then(|r| serde_json::from_slice(&r).ok()).unwrap_or(Value::Null);
+                let prompt = || payload["lastUserInput"].as_str().map(str::to_string);
+                if let Some(out) = crate::guard::decision(AgentKind::Antigravity, &msg.event, &payload, tools, prompt) {
+                    println!("{out}");
+                } else {
+                    println!("{{}}");
+                }
+            } else {
+                println!("{{}}");
+            }
+            return 0;
+        }
         // A call that would open a page in another browser: refused (Claude Code, Codex).
         if msg.event == "PreToolUse"
             && let Some(agent) = AgentKind::from_slug(&msg.agent)
@@ -164,6 +189,9 @@ pub fn run(args: &[String]) -> i32 {
                 }
             }
         }
+    } else if is_antigravity {
+        // Antigravity CLI hooks always expect a JSON object on stdout, even outside TernaryCode.
+        println!("{{}}");
     }
     0
 }

@@ -678,11 +678,9 @@ impl App {
             self.actions.push(Action::Commit);
             return;
         }
-        let open_here = self.review.as_ref().is_some_and(|r| r.project == project);
-        if !open_here {
+        if self.panel_tab(project) != Some(crate::ui::panel::PanelTab::Changes) {
+            self.history = None;
             self.open_review(None);
-        } else if let Some(e) = self.editors.get_mut(&project) {
-            e.visible = true;
         }
         self.ship_focus = true;
         self.ship_load(project);

@@ -34,7 +34,7 @@ const PUPPETEER: Other = Other { name: "Puppeteer", words: &["puppeteer"] };
 const SELENIUM: Other = Other { name: "Selenium", words: &["selenium", "webdriver"] };
 const BROWSER_TOOL: Other = Other { name: "another browser tool", words: &[] };
 /// The system's opener given a web address (`start https://…`, `xdg-open …`).
-const DEFAULT: Other = Other { name: "the default browser", words: &["default"] };
+const DEFAULT: Other = Other { name: "the default browser", words: &["default", "external", "eksternal"] };
 
 /// A web address as an opener is given it.
 fn is_url(arg: &str) -> bool {
@@ -333,8 +333,48 @@ fn command_browser(command: &str, cwd: Option<&Path>) -> Option<Other> {
     None
 }
 
+/// Whether an Antigravity CLI `PreToolUse` payload calls one of TernaryCode's own MCP browser tools.
+pub fn is_antigravity_ternarycode_tool(payload: &Value) -> bool {
+    let Some(name) = payload["toolCall"]["name"].as_str() else { return false };
+    let lower = name.to_ascii_lowercase();
+    lower.contains("ternarycode")
+}
+
 /// The other browser a tool call (a `PreToolUse` payload) would use.
 pub fn other_browser(payload: &Value) -> Option<Other> {
+    // Antigravity CLI payload: {"toolCall": {"name": "...", "args": {...}}, "cwd": "..."}
+    if let Some(tool_call) = payload.get("toolCall").and_then(Value::as_object) {
+        let name = tool_call.get("name").and_then(Value::as_str).unwrap_or("");
+        if is_antigravity_ternarycode_tool(payload) {
+            return None;
+        }
+        let args = tool_call.get("args").unwrap_or(&Value::Null);
+        let lower = name.to_ascii_lowercase();
+        if lower == "run_command" {
+            let cmd = args["CommandLine"].as_str().or_else(|| args["command"].as_str())?;
+            let cwd = payload["cwd"].as_str().map(Path::new);
+            return command_browser(cmd, cwd);
+        }
+        if lower == "invoke_subagent" {
+            let ty = args["TypeName"].as_str().or_else(|| args["typeName"].as_str()).unwrap_or("");
+            if ty.eq_ignore_ascii_case("browser") {
+                return Some(CHROME);
+            }
+            return None;
+        }
+        if matches!(lower.as_str(), "browser_subagent" | "open_browser_url" | "read_browser_page") {
+            return Some(CHROME);
+        }
+        if let Some(rest) = lower.strip_prefix("mcp__") {
+            let (server, tool) = rest.split_once("__").unwrap_or((rest, ""));
+            return mcp_browser(server, tool);
+        }
+        if let Some(rest) = lower.strip_prefix("mcp_") {
+            let (server, tool) = rest.split_once('_').unwrap_or((rest, ""));
+            return mcp_browser(server, tool);
+        }
+        return None;
+    }
     let tool = payload["tool_name"].as_str().unwrap_or("");
     if let Some(rest) = tool.strip_prefix("mcp__") {
         let (server, name) = rest.split_once("__").unwrap_or((rest, ""));
@@ -402,29 +442,40 @@ fn names(prompt: &str, browser: Other) -> bool {
 /// agent is refused, and told why. `tools`: the agent has TernaryCode's browser tools.
 /// `prompt`: the user's latest prompt (read only when needed).
 pub fn decision(agent: AgentKind, event: &str, payload: &Value, tools: bool, prompt: impl FnOnce() -> Option<String>) -> Option<String> {
-    if event != "PreToolUse" || !tools || !matches!(agent, AgentKind::Claude | AgentKind::Codex) {
+    if event != "PreToolUse" || !tools || !matches!(agent, AgentKind::Claude | AgentKind::Codex | AgentKind::Antigravity) {
         return None;
     }
+    if agent == AgentKind::Antigravity && is_antigravity_ternarycode_tool(payload) {
+        return Some(json!({ "decision": "allow" }).to_string());
+    }
     let other = other_browser(payload)?;
-    if prompt().is_some_and(|p| names(&p, other)) {
-        return None;
+    if let Some(p) = prompt() {
+        let explicit_agy_browser = agent == AgentKind::Antigravity && other == CHROME && p.to_lowercase().contains("/browser");
+        if names(&p, other) || explicit_agy_browser {
+            return None;
+        }
     }
     let reason = format!(
         "TernaryCode keeps web pages in its own browser, beside this terminal, where the user sees them: use the ternarycode browser tools (browser_navigate first, browser_take_screenshot for a picture of the page) instead of {}. Use {} only when the user names it in their request.",
         other.name, other.name
     );
+    if agent == AgentKind::Antigravity {
+        return Some(json!({ "decision": "deny", "reason": reason }).to_string());
+    }
     Some(json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason } }).to_string())
 }
 
 /// Whether the pane's agent has TernaryCode's browser tools, from the pane's variables (as the
 /// agent was started with them): Claude Code's `--mcp-config` file names the server; Codex's
-/// override does not disable it.
+/// override does not disable it; Antigravity CLI uses the plugin inside a TernaryCode pane unless
+/// `TC_BROWSER_AGENTS=0`.
 pub fn tools_on(agent: AgentKind, env: impl Fn(&str) -> Option<String>) -> bool {
     match agent {
         AgentKind::Claude => env(crate::integrate::ENV_CLAUDE_MCP)
             .and_then(|p| std::fs::read_to_string(p).ok())
             .is_some_and(|t| t.contains("\"ternarycode\"")),
         AgentKind::Codex => env(crate::integrate::ENV_CODEX_MCP).is_some_and(|v| v.contains("ternarycode") && !v.contains("enabled=false")),
+        AgentKind::Antigravity => env(crate::ENV_SOCK).is_some() && env(crate::integrate::ENV_BROWSER_AGENTS).as_deref() != Some("0"),
         _ => false,
     }
 }
@@ -603,5 +654,32 @@ mod tests {
         assert!(command_browser("sudo -u root google-chrome https://x.dev", None).is_some());
         assert!(command_browser("timeout -s KILL 5 firefox https://x.dev", None).is_some());
         assert!(command_browser("cmd /c start https://x.dev", None).is_some());
+    }
+
+    #[test]
+    fn antigravity_guards_other_browsers_and_allows_ternarycode_tools() {
+        // TernaryCode's own browser MCP tools are auto-approved.
+        let own = json!({"toolCall": {"name": "mcp_ternarycode_browser_navigate", "args": {"url": "http://localhost:3000"}}});
+        assert_eq!(other_browser(&own), None);
+        let allow: Value = serde_json::from_str(&decision(AgentKind::Antigravity, "PreToolUse", &own, true, || None).unwrap()).unwrap();
+        assert_eq!(allow["decision"], "allow");
+
+        // Antigravity's Chrome browser subagent is denied unless the user explicitly asks for Chrome or /browser.
+        let sub = json!({"toolCall": {"name": "invoke_subagent", "args": {"TypeName": "browser", "Prompt": "open localhost:3000"}}});
+        let deny: Value = serde_json::from_str(&decision(AgentKind::Antigravity, "PreToolUse", &sub, true, || Some("cek tampilan web di browser".into())).unwrap()).unwrap();
+        assert_eq!(deny["decision"], "deny");
+        assert!(deny["reason"].as_str().unwrap().contains("ternarycode browser tools"));
+        assert!(decision(AgentKind::Antigravity, "PreToolUse", &sub, true, || Some("buka di chrome aja".into())).is_none());
+        assert!(decision(AgentKind::Antigravity, "PreToolUse", &sub, true, || Some("/browser cek halaman".into())).is_none());
+
+        // `run_command` opening Chrome or `open https://…` is also denied unless user asked for it.
+        let run_chrome = json!({"toolCall": {"name": "run_command", "args": {"CommandLine": "open -a 'Google Chrome' https://example.com"}}});
+        let deny2: Value = serde_json::from_str(&decision(AgentKind::Antigravity, "PreToolUse", &run_chrome, true, || Some("buka example.com".into())).unwrap()).unwrap();
+        assert_eq!(deny2["decision"], "deny");
+        assert!(decision(AgentKind::Antigravity, "PreToolUse", &run_chrome, true, || Some("buka example.com di chrome".into())).is_none());
+
+        // Non-browser commands pass through untouched (`None`).
+        let cargo = json!({"toolCall": {"name": "run_command", "args": {"CommandLine": "cargo test"}}});
+        assert!(decision(AgentKind::Antigravity, "PreToolUse", &cargo, true, || Some("run tests".into())).is_none());
     }
 }

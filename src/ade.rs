@@ -496,15 +496,17 @@ impl App {
                 continue;
             }
             pane.last_limit_check = now;
-            let tail = pane.screen_tail(if need_agy_plan && pane.tracker.agent == Some(AgentKind::Antigravity) { 60 } else { 28 });
             if need_agy_plan
                 && agy_plan.is_none()
                 && pane.tracker.agent == Some(AgentKind::Antigravity)
             {
-                agy_plan = profiles::detect_agy_plan(&tail);
+                let wide_tail = pane.screen_tail(60);
+                agy_plan = profiles::detect_agy_plan(&wide_tail);
             }
+            let tail = pane.screen_tail(16);
             if let Some(hit) = profiles::detect_rate_limit(&tail) {
-                if pane.last_limit_sig.as_deref() != Some(hit.reason.as_str()) {
+                let already_dismissed = pane.dismissed_limit_sigs.iter().any(|s| s == &hit.reason);
+                if !already_dismissed && pane.last_limit_sig.as_deref() != Some(hit.reason.as_str()) {
                     pane.last_limit_sig = Some(hit.reason.clone());
                     detected.push((pane.id, hit));
                 }
@@ -823,6 +825,7 @@ impl App {
         // Manual Resume mode (or no healthy fallback profile left): pause cleanly with inline banner
         // and force NeedsInput even when hooks are active so desktop & mobile alerts fire.
         if let Some(pane) = self.panes.get_mut(&pane_id) {
+            pane.rate_limit_dismissed = false;
             pane.rate_limit = Some(RateLimitBanner {
                 from_profile: from_profile.clone(),
                 agent,
@@ -839,11 +842,15 @@ impl App {
                 now,
             );
         }
-        self.toast_with(
-            ToastKind::Warn,
-            tf("{} hit its usage limit. Choose another account to resume.", &[&from_profile]),
-            Some((t("Accounts").into(), Action::OpenProfiles)),
-        );
+        // Only show a floating toast when the pane is not already in front of the user (avoid
+        // stacking a pushy toast over the inline banner they already see).
+        if self.command_pane() != Some(pane_id) {
+            self.toast_with(
+                ToastKind::Warn,
+                tf("{} hit its usage limit. Choose another account to resume.", &[&from_profile]),
+                Some((t("Accounts").into(), Action::OpenProfiles)),
+            );
+        }
         self.push_companion_now();
     }
 
@@ -961,6 +968,8 @@ impl App {
             }
             pane.active_profile = Some(target.id.clone());
             pane.preset = Some(preset.id.clone());
+            pane.rate_limit_dismissed = false;
+            pane.dismissed_limit_sigs.clear();
             // Keep `last_limit_sig` and hold scanning for 6s so stale 429 output on screen never cascades!
             pane.limit_ignore_until = Some(now + Duration::from_secs(6));
             if !copied_session {
@@ -969,6 +978,9 @@ impl App {
             }
             if !auto {
                 pane.rate_limit = None;
+            }
+            if pane.tracker.status == Status::NeedsInput {
+                pane.tracker.dismiss_notice(now);
             }
             pane.type_command(typed);
         }

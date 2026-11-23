@@ -652,7 +652,7 @@ pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
     let lines: Vec<&str> = tail
         .lines()
         .rev()
-        .take(24)
+        .take(10)
         .map(str::trim)
         .filter(|l| !l.is_empty() && !looks_like_code_or_test(l))
         .collect();
@@ -979,6 +979,13 @@ mod tests {
         assert!(detect_rate_limit("+ // Error: 429 Too Many Requests\n- let s = \"rate limit exceeded\";").is_none());
         assert!(detect_rate_limit("test profiles::tests::rate_limit_exceeded ... ok").is_none());
         assert!(detect_rate_limit("fn detect_rate_limit() { \"usage limit reached\" }").is_none());
+
+        // Stale rate-limit line scrolled >10 non-empty lines above active agent work must NOT re-trigger.
+        let mut stale = String::from("Individual quota reached. Resets in 3h23m50s.\n");
+        for i in 1..=12 {
+            stale.push_str(&format!("Explored file_{i}.rs and updated handlers\n"));
+        }
+        assert!(detect_rate_limit(&stale).is_none());
     }
 
     #[test]

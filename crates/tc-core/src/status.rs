@@ -341,6 +341,19 @@ impl Tracker {
         }
     }
 
+    /// The user explicitly closed the pane's notice banner (`×`): clears attention and any stale
+    /// prompt or rate-limit message, returning `NeedsInput`, `Done`, or `CommandDone` to `Idle`
+    /// so the banner and amber attention ring disappear immediately.
+    pub fn dismiss_notice(&mut self, now: Instant) {
+        self.unseen = false;
+        self.message = None;
+        if matches!(self.status, Status::NeedsInput | Status::Done | Status::CommandDone) {
+            self.status = Status::Idle;
+            self.source = Source::Input;
+            self.since = now;
+        }
+    }
+
     /// Applies one signal. Returns whether anything visible changed.
     pub fn apply(&mut self, event: Event, now: Instant) -> bool {
         // Anything the agent or the shell says settles a provisional Running.
@@ -832,5 +845,10 @@ mod tests {
         assert_eq!(t.status, Status::NeedsInput);
         assert!(t.wants_attention());
         assert_eq!(t.message.as_deref(), Some("claude1 hit usage limit"));
+        // Dismissing the rate-limit / confirmation notice clears NeedsInput, message, and unseen immediately.
+        t.dismiss_notice(t0 + Duration::from_secs(2));
+        assert_eq!(t.status, Status::Idle);
+        assert!(!t.wants_attention());
+        assert_eq!(t.message, None);
     }
 }

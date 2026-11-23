@@ -652,10 +652,11 @@ impl App {
                 self.actions.push(Action::ReviewAgent);
             }
             Do::Seen => {
-                if item.kind == InboxKind::Limited {
-                    self.actions.push(Action::DismissRateLimit(item.pane));
+                if matches!(item.kind, InboxKind::Limited | InboxKind::Ask | InboxKind::Done) {
+                    self.actions.push(Action::DismissNotice(item.pane));
+                } else {
+                    self.actions.push(Action::MarkSeen(item.pane));
                 }
-                self.actions.push(Action::MarkSeen(item.pane));
             }
         }
     }

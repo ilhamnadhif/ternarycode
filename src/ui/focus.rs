@@ -141,9 +141,14 @@ impl App {
                 for tab in super::panel::PanelTab::ALL {
                     let r = Rect::from_min_size(pos2(x, rect.top() + 2.0), vec2(28.0, 28.0));
                     x += 30.0;
+                    let tip = if tab == super::panel::PanelTab::Changes {
+                        format!("{}\n{}", kit::tip(tab.label(), tab.action()), kit::tip(t("Commit, push and open a pull request"), Action::Commit))
+                    } else {
+                        kit::tip(tab.label(), tab.action())
+                    };
                     let resp = ui
                         .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
-                            kit::icon_button_ex(ui, tab.icon(), &kit::tip(tab.label(), tab.action()), open == Some(tab), 28.0)
+                            kit::icon_button_ex(ui, tab.icon(), &tip, open == Some(tab), 28.0)
                         })
                         .inner;
                     #[cfg(debug_assertions)]
@@ -176,14 +181,6 @@ impl App {
         crate::devtest::record("run-agent", run.rect);
         if run.on_hover_text(kit::tip(t("Start an agent in a new pane"), Action::PickPreset)).clicked() {
             self.actions.push(Action::PickPreset);
-        }
-        ui.add_space(6.0);
-        let commit_keys = (!compact).then(|| kit::keys(&Action::Commit)).flatten();
-        let commit = kit::button_keys(ui, kit::Kind::Secondary, Some(icons::GIT_COMMIT), t("Commit"), commit_keys, false);
-        #[cfg(debug_assertions)]
-        crate::devtest::record("commit", commit.rect);
-        if commit.on_hover_text(kit::tip(t("Commit, push and open a pull request"), Action::Commit)).clicked() {
-            self.actions.push(Action::Commit);
         }
     }
 
@@ -1296,18 +1293,23 @@ impl App {
         };
         let out = ui
             .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                kit::notice(ui, rect.width(), kit::Tone::Input, None, &title, body.as_deref(), None, None, false)
+                kit::notice(ui, rect.width(), kit::Tone::Input, None, &title, body.as_deref(), None, None, true)
             })
             .inner;
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("approval:{pane_id}"), out.rect);
-        if ui.interact(out.rect, egui::Id::new(("approval-focus", pane_id)), Sense::click()).clicked() {
-            self.actions.push(Action::FocusPane(pane_id));
+        if out.dismissed {
+            self.actions.push(Action::DismissNotice(pane_id));
+        } else {
+            let focus_rect = Rect::from_min_max(out.rect.min, pos2((out.rect.right() - 36.0).max(out.rect.left()), out.rect.bottom()));
+            if ui.interact(focus_rect, egui::Id::new(("approval-focus", pane_id)), Sense::click()).clicked() {
+                self.actions.push(Action::FocusPane(pane_id));
+            }
         }
     }
 
     /// An agent that finished its turn, at the foot of its pane: what its run changed (or its
-    /// last words), then Review and Commit…. Typing in the pane puts it away.
+    /// last words), then Review, Commit… and Dismiss. Typing in the pane also puts it away.
     fn done_notice(&mut self, ui: &mut Ui, pane_id: PaneId, rect: Rect) {
         let Some(pane) = self.panes.get(&pane_id) else { return };
         let who = pane.tracker.agent.map_or_else(|| t("The agent").to_string(), |a| a.label().to_string());
@@ -1326,12 +1328,15 @@ impl App {
                     (!body.is_empty()).then_some(body.as_str()),
                     Some((t("Commit…"), None)),
                     Some(t("Review")),
-                    false,
+                    true,
                 )
             })
             .inner;
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("done:{pane_id}"), out.rect);
+        if out.dismissed {
+            self.actions.push(Action::DismissNotice(pane_id));
+        }
         if out.primary {
             self.actions.push(Action::Commit);
         }

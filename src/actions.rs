@@ -259,6 +259,8 @@ pub enum Action {
     },
     /// Dismisses a pane's inline rate-limit recovery banner.
     DismissRateLimit(PaneId),
+    /// Dismisses a pane's active notice banner (`NeedsInput`, `Done`, `Failed`, or `RateLimit`).
+    DismissNotice(PaneId),
     /// Tests CLI & auth readiness for a configured profile.
     TestProfile(String),
     /// Opens an interactive login pane using a profile's isolated auth/config directory.

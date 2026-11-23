@@ -1137,10 +1137,12 @@ impl App {
 
         // One-click Switch Account button right beside the active profile chip when another
         // pre-registered account is ready (no logout / re-login required).
-        // Shown only while the account runs out (otherwise the chip's menu switches).
-        let urgent = rt.zip(prof_cfg).is_some_and(|(r, c)| {
-            r.state == ProfileState::RateLimited || r.quota_5h_used_pct(c).is_some_and(|u| u >= 85.0)
-        });
+        // Shown only while the account runs out and the user has not dismissed failover for this pane.
+        let dismissed = self.panes.get(&pane_id).is_some_and(|x| x.rate_limit_dismissed);
+        let urgent = !dismissed
+            && rt.zip(prof_cfg).is_some_and(|(r, c)| {
+                r.state == ProfileState::RateLimited || r.quota_5h_used_pct(c).is_some_and(|u| u >= 85.0)
+            });
         if has_live_agent
             && urgent
             && let Some(next_prof) = self.next_switch_profile(pane_id)

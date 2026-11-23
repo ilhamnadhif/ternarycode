@@ -60,3 +60,25 @@ if status --is-interactive; and not set -q __tc_loaded; and not __tc_fish_marks_
     end
 end
 functions -e __tc_fish_marks_prompt
+
+# `open https://…` (macOS) / `xdg-open https://…` (Linux) opens in TernaryCode's browser
+# (unless the user already defines their own function).
+if status --is-interactive; and set -q TERNARYCODE_HOOK; and test -n "$TERNARYCODE_HOOK"
+    if test -x /usr/bin/open; and not functions -q open
+        function open
+            if test (count $argv) -eq 1; and string match -qr '^https?://' -- "$argv[1]"; and set -q TERNARYCODE_SOCK; and test -n "$TERNARYCODE_SOCK"
+                command "$TERNARYCODE_HOOK" browse "$argv[1]"
+            else
+                command open $argv
+            end
+        end
+    else if not test -x /usr/bin/open; and type -q xdg-open; and not functions -q xdg-open
+        function xdg-open
+            if test (count $argv) -eq 1; and string match -qr '^https?://' -- "$argv[1]"; and set -q TERNARYCODE_SOCK; and test -n "$TERNARYCODE_SOCK"
+                command "$TERNARYCODE_HOOK" browse "$argv[1]"
+            else
+                command xdg-open $argv
+            end
+        end
+    end
+end
