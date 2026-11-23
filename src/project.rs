@@ -788,9 +788,9 @@ mod tests {
 
         // Hidden, or no page: the panes have it all.
         assert_eq!(place_panel(body, &Panel::default(), &one, room), PanelPlace::without(body));
-        // One terminal: beside it, 45%.
+        // One terminal: beside it, 42% (at least 440).
         let p = place_panel(body, &shown, &one, room);
-        assert_eq!(p.panel.map(|r| r.width()), Some(468.0));
+        assert_eq!(p.panel.map(|r| r.width()), Some(440.0));
         assert!(!p.stacked && !p.float && p.panes.right() < p.panel.unwrap().left());
         // Two side by side: they don't fit beside it, stacked they do.
         let p = place_panel(body, &shown, &two, room);

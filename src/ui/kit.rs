@@ -33,7 +33,7 @@ pub fn key_labels(action: &crate::actions::Action) -> Option<(&'static str, &'st
         A::ToggleEditor => ("⌘E", "Ctrl+Shift+Y"),
         A::ToggleZenMode => ("⌥⌘Z", "Ctrl+Alt+Z"),
         A::ToggleDrawer => ("⇧⌘L", "Ctrl+Shift+L"),
-        A::TogglePanelExpanded => ("⇧⌘E", "Ctrl+Shift+Alt+E"),
+        A::TogglePanelExpanded => ("⇧⌘E", "Ctrl+Alt+E"),
         A::MoveProject(_, true) | A::MoveActiveProject(true) => ("⌥⌘↑", "Ctrl+Alt+Up"),
         A::MoveProject(_, false) | A::MoveActiveProject(false) => ("⌥⌘↓", "Ctrl+Alt+Down"),
         A::QuickOpen => ("⌘O", "Ctrl+Shift+O"),

@@ -4685,7 +4685,7 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::J, Action::BackAttention));
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::B, Action::ToggleCompactSidebar));
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::Z, Action::ToggleZenMode));
-    keys.push((Modifiers::CTRL | Modifiers::SHIFT | Modifiers::ALT, Key::E, Action::TogglePanelExpanded));
+    keys.push((Modifiers::CTRL | Modifiers::ALT, Key::E, Action::TogglePanelExpanded));
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::ArrowUp, Action::MoveActiveProject(true)));
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::ArrowDown, Action::MoveActiveProject(false)));
     keys
@@ -4842,8 +4842,8 @@ mod shortcut_tests {
                     chord.push_str(name);
                 }
             }
-            // egui writes a minus as U+2212.
-            chord.push_str(&key.symbol_or_name().replace('\u{2212}', "-"));
+            // egui writes a minus as U+2212, and the arrows as triangles (shown as words).
+            chord.push_str(&key.symbol_or_name().replace('\u{2212}', "-").replace('⏶', "Up").replace('⏷', "Down"));
             let (_, label) = ui::kit::key_labels(action).unwrap_or_default();
             // The first key of an action is the one shown; the rest stand in for it on other
             // layouts (Shift+`]` reads as `}`, Shift+`=` as `+`).
