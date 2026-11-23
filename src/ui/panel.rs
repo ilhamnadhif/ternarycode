@@ -16,6 +16,8 @@ pub const HEAD_H: f32 = 44.0;
 /// The least the panel is wide, and the least the terminals keep beside it.
 const MIN_W: f32 = 440.0;
 const MIN_STAGE: f32 = 360.0;
+/// The least Files is wide: its tree and the code beside it.
+const FILES_MIN_W: f32 = 600.0;
 
 /// What the right panel shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +85,14 @@ impl App {
     pub fn switch_panel(&mut self, tab: PanelTab, toggle: bool) {
         let Some(pid) = self.active else { return };
         if toggle && self.panel_tab(pid) == Some(tab) {
-            self.close_panel(pid);
+            // Changes, Files or History put away: the Browser waiting behind them comes back.
+            if tab != PanelTab::Browser && self.panel_of(pid).is_some_and(|p| p.open && !p.pages.is_empty()) {
+                self.hide_drawer(pid);
+                self.focus_request = self.current_pane();
+                self.mark_dirty();
+            } else {
+                self.close_panel(pid);
+            }
             return;
         }
         match tab {
@@ -147,7 +156,9 @@ impl App {
         }
         let share = self.panel_of(project).map_or(crate::project::PANEL_SHARE, |p| p.share()).clamp(0.25, 0.75);
         let max_w = (body.width() - MIN_STAGE - style::GAP).max(MIN_W.min(body.width() * 0.5));
-        let w = (body.width() * share).max(MIN_W).min(max_w).round();
+        // Files keeps room for its tree beside the code.
+        let least = if tab == PanelTab::Files { FILES_MIN_W } else { MIN_W };
+        let w = (body.width() * share).max(least).min(max_w.max(MIN_W)).round();
         let panel = Rect::from_min_max(pos2(body.right() - w, body.top()), body.max);
         let stage = Rect::from_min_max(body.min, pos2(panel.left() - style::GAP, body.bottom()));
         (Some(stage), Some((panel, tab)))

@@ -3824,10 +3824,8 @@ impl App {
             Action::FindAll => self.open_palette(PaletteMode::Search),
             // Toggle Changes in the docked Code drawer (no duplicate full-screen overlay).
             Action::Review => {
-                if self.view == View::Focus && self.review.as_ref().is_some_and(|r| Some(r.project) == self.active) {
-                    if let Some(pid) = self.active {
-                        self.close_panel(pid);
-                    }
+                if self.view == View::Focus && self.review.as_ref().is_some_and(|r| Some(r.project) == self.active && !r.expanded) {
+                    self.switch_panel(crate::ui::panel::PanelTab::Changes, true);
                 } else {
                     self.open_review(None);
                 }
