@@ -614,11 +614,16 @@ impl App {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         let section = |m: egui::Margin| egui::Frame::NONE.inner_margin(m);
                         if !diags.is_empty() {
-                            section(egui::Margin { left: 12, right: 12, top: 9, bottom: 9 }).show(ui, |ui| {
+                            section(egui::Margin { left: 12, right: 12, top: 10, bottom: 8 }).show(ui, |ui| {
                                 ui.set_width(372.0 - 24.0);
                                 ui.spacing_mut().item_spacing.y = 4.0;
                                 for (c, msg) in &diags {
-                                    ui.label(egui::RichText::new(msg).size(12.5).color(*c));
+                                    let icon = if *c == p.err { icons::X_CIRCLE } else if *c == p.warn { icons::WARNING } else { icons::INFO };
+                                    ui.horizontal_top(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        ui.label(egui::RichText::new(icon).font(style::icon_font(13.0)).color(*c));
+                                        ui.add(egui::Label::new(egui::RichText::new(msg).size(style::SMALL).color(*c)).wrap());
+                                    });
                                 }
                             });
                             if hover.is_some() {
@@ -631,12 +636,12 @@ impl App {
                                 for (i, b) in h.blocks.iter().enumerate() {
                                     if b.code {
                                         let band = egui::Frame::NONE
-                                            .fill(style::over(p.menu, p.chrome, 0.3))
-                                            .inner_margin(egui::Margin { left: 12, right: 12, top: 10, bottom: 9 });
+                                            .fill(p.inset)
+                                            .inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 8 });
                                         let resp = band.show(ui, |ui| {
                                             ui.set_width(372.0 - 24.0);
                                             let mut job = egui::text::LayoutJob::default();
-                                            let mono = style::mono(12.0);
+                                            let mono = style::mono(style::DATA);
                                             for (n, line) in b.text.lines().enumerate() {
                                                 if n > 0 {
                                                     job.append("\n", 0.0, egui::TextFormat::simple(mono.clone(), p.text));
@@ -652,7 +657,7 @@ impl App {
                                     } else {
                                         section(egui::Margin { left: 12, right: 12, top: if i == 0 { 10 } else { 9 }, bottom: 10 }).show(ui, |ui| {
                                             ui.set_width(372.0 - 24.0);
-                                            ui.label(egui::RichText::new(&b.text).size(12.5).color(p.text_muted).line_height(Some(19.0)));
+                                            ui.label(egui::RichText::new(&b.text).size(style::SMALL).color(p.text_muted).line_height(Some(18.0)));
                                         });
                                     }
                                 }
@@ -671,32 +676,29 @@ impl App {
                                 Some(l) => format!("{name}:{l}"),
                                 None => name,
                             };
-                            let mut right = rect.right() - 10.0;
+                            // "Definition F12", "References ⇧F12" at the right, as links.
+                            let mut right = rect.right() - 12.0;
                             let links = [
                                 (t("References"), IdeCmd::References, IdeCmd::ReferencesAt(h.at)),
-                                (t("Go to Definition"), IdeCmd::Goto(Goto::Definition), IdeCmd::DefinitionAt(h.at)),
+                                (t("Definition"), IdeCmd::Goto(Goto::Definition), IdeCmd::DefinitionAt(h.at)),
                             ];
                             for (k, (label, key_cmd, cmd)) in links.into_iter().enumerate() {
                                 let keys = kit::keys(&crate::actions::Action::Ide(key_cmd)).unwrap_or_default();
-                                let kw = if keys.is_empty() { 0.0 } else { kit::kbd_width(ui.painter(), keys) + 5.0 };
-                                let g = ui.painter().layout_no_wrap(label.to_string(), style::medium(11.5), p.accent_text);
-                                let w = g.size().x + kw;
-                                let lr = Rect::from_min_max(pos2(right - w - 4.0, rect.center().y - 10.0), pos2(right + 2.0, rect.center().y + 10.0));
+                                let text = if keys.is_empty() { label.to_string() } else { format!("{label} {keys}") };
+                                let g = ui.painter().layout_no_wrap(text, egui::FontId::proportional(style::SMALL), p.accent_text);
+                                let lr = Rect::from_min_max(pos2(right - g.size().x - 3.0, rect.center().y - 10.0), pos2(right + 3.0, rect.center().y + 10.0));
                                 let resp = ui.interact(lr, egui::Id::new(("ide-hover-link", k)), Sense::click());
                                 if resp.hovered() {
                                     ui.painter().rect_filled(lr, CornerRadius::same(5), p.hover);
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                 }
-                                ui.painter().galley(pos2(lr.left() + 2.0, rect.center().y - g.size().y / 2.0), g, p.accent_text);
-                                if !keys.is_empty() {
-                                    kit::paint_kbd_text(ui.painter(), pos2(right - kw + 5.0, rect.center().y), keys, &p);
-                                }
+                                ui.painter().galley(pos2(lr.left() + 3.0, rect.center().y - g.size().y / 2.0), g, p.accent_text);
                                 if resp.clicked() {
                                     cmds.push(cmd);
                                 }
-                                right = lr.left() - 10.0;
+                                right = lr.left() - 9.0;
                             }
-                            let mut job = egui::text::LayoutJob::simple_singleline(place, style::mono(10.5), p.text_faint);
+                            let mut job = egui::text::LayoutJob::simple_singleline(place, style::mono(style::DATA), p.text_faint);
                             job.wrap = egui::text::TextWrapping::truncate_at_width((right - rect.left() - 12.0).max(10.0));
                             let g = ui.painter().layout_job(job);
                             ui.painter().galley(pos2(rect.left() + 12.0, rect.center().y - g.size().y / 2.0), g, p.text_faint);
@@ -808,14 +810,19 @@ impl App {
         // Laid out right to left: the server, then the problems, then Undo Refactor.
         self.lsp_chip(ui, path);
         let (errors, warnings) = self.lsp.counts(path);
-        // With a server: its errors and warnings, both counted (0 too).
-        if self.lsp.server_for(path).is_some() || errors + warnings > 0 {
+        // The file's errors and warnings, those it has.
+        if errors + warnings > 0 {
             let mut job = egui::text::LayoutJob::default();
-            let mono = style::mono(10.5);
-            job.append(icons::X_CIRCLE, 0.0, egui::TextFormat::simple(style::icon_fill(12.0), if errors > 0 { p.err } else { p.text_faint }));
-            job.append(&errors.to_string(), 4.0, egui::TextFormat::simple(mono.clone(), if errors > 0 { p.err } else { p.text_faint }));
-            job.append(icons::WARNING, 10.0, egui::TextFormat::simple(style::icon_fill(12.0), if warnings > 0 { p.warn } else { p.text_faint }));
-            job.append(&warnings.to_string(), 4.0, egui::TextFormat::simple(mono, if warnings > 0 { p.warn } else { p.text_faint }));
+            let mono = style::mono(style::DATA);
+            let mut gap = 0.0;
+            for (n, icon, c) in [(errors, icons::X_CIRCLE, p.err), (warnings, icons::WARNING, p.warn)] {
+                if n == 0 {
+                    continue;
+                }
+                job.append(icon, gap, egui::TextFormat::simple(style::icon_fill(12.0), c));
+                job.append(&n.to_string(), 4.0, egui::TextFormat::simple(mono.clone(), c));
+                gap = 10.0;
+            }
             let r = ui.add(egui::Label::new(job).sense(Sense::click()));
             if r.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -839,22 +846,19 @@ impl App {
     fn lsp_chip(&mut self, ui: &mut Ui, path: &std::path::Path) {
         let p = style::pal(ui);
         let chip = |ui: &mut Ui, dot: Option<Color32>, text: &str| {
-            let w = 6.0 + 6.0 + style::text_width(ui, text) * (style::SMALL / style::BODY) + 6.0;
-            let g = ui.painter().layout_no_wrap(text.to_string(), egui::FontId::proportional(11.0), p.text_faint);
-            let (rect, r) = ui.allocate_exact_size(vec2(7.0 + 7.0 + g.size().x, 18.0), Sense::click());
-            let c = pos2(rect.left() + 3.5, rect.center().y);
+            // A 6 px dot in the server's state (a ring: not started), then its name in mono.
+            let g = ui.painter().layout_no_wrap(text.to_string(), style::mono(style::DATA), p.text_faint);
+            let (rect, r) = ui.allocate_exact_size(vec2(6.0 + 5.0 + g.size().x, 18.0), Sense::click());
+            let c = pos2(rect.left() + 3.0, rect.center().y);
             match dot {
                 Some(d) => {
-                    // The dot with a soft ring round it.
-                    ui.painter().circle_filled(c, 6.5, style::soft(d, 0.18));
-                    ui.painter().circle_filled(c, 3.5, d);
+                    ui.painter().circle_filled(c, 3.0, d);
                 }
                 None => {
-                    ui.painter().circle_stroke(c, 2.5, Stroke::new(1.0, p.text_faint));
+                    ui.painter().circle_stroke(c, 2.75, Stroke::new(1.0, p.border_heavy));
                 }
             }
-            ui.painter().galley(pos2(rect.left() + 14.0, rect.center().y - g.size().y / 2.0), g, p.text_faint);
-            let _ = w;
+            ui.painter().galley(pos2(rect.left() + 11.0, rect.center().y - g.size().y / 2.0), g, p.text_faint);
             #[cfg(debug_assertions)]
             crate::devtest::record("ide-status", rect);
             r
@@ -930,7 +934,7 @@ impl App {
         rows.sort_by(|a, b| (a.0, &a.2, a.3).cmp(&(b.0, &b.2, b.3)));
         let counts = [0, 1, 2].map(|s| rows.iter().filter(|r| r.0 == s).count());
         // Compact filter toolbar (title & close button already live in `secondary_drawer_bar`).
-        let head = Rect::from_min_size(rect.min, vec2(rect.width(), 34.0));
+        let head = Rect::from_min_size(rect.min, vec2(rect.width(), 40.0));
         ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
         let dark = ui.visuals().dark_mode;
         let options = [
@@ -938,7 +942,7 @@ impl App {
             kit::Seg::new(t("Project"), ""),
         ];
         let sw = kit::segmented_width(ui, &options).min((head.width() - 24.0).max(120.0));
-        let seg = Rect::from_min_size(pos2(head.right() - 10.0 - sw, head.center().y - kit::SEGMENTED_H / 2.0), vec2(sw, kit::SEGMENTED_H));
+        let seg = Rect::from_min_size(pos2(head.right() - 12.0 - sw, head.center().y - kit::SEGMENTED_H / 2.0), vec2(sw, kit::SEGMENTED_H));
         if let Some(i) = ui
             .add_enabled_ui(has_file || show_project, |ui| {
                 kit::segmented_in(ui, seg, egui::Id::new("problems-scope"), &options, show_project as usize)
@@ -948,11 +952,20 @@ impl App {
         {
             self.problems_project = i == 1;
         }
-        let pills_clip = Rect::from_min_max(pos2(head.left() + 10.0, head.top()), pos2((seg.left() - 8.0).max(head.left() + 10.0), head.bottom()));
+        // The counts: errors and warnings (notes when there are some), each in a small pill.
+        let pills_clip = Rect::from_min_max(pos2(head.left() + 12.0, head.top()), pos2((seg.left() - 8.0).max(head.left() + 12.0), head.bottom()));
         let pp = ui.painter().with_clip_rect(pills_clip.intersect(ui.clip_rect()));
         let mut x = pills_clip.left();
         for (i, (icon, c)) in [(icons::X_CIRCLE, p.err), (icons::WARNING, p.warn), (icons::INFO, p.info)].into_iter().enumerate() {
-            let r = kit::paint_pill(&pp, pos2(x, head.center().y), Some(icon), &counts[i].to_string(), c, style::tint(c, dark));
+            if i == 2 && counts[2] == 0 {
+                continue;
+            }
+            let n = counts[i];
+            let g = pp.layout_no_wrap(n.to_string(), style::mono(style::DATA), p.text);
+            let r = Rect::from_min_size(pos2(x, head.center().y - 10.0), vec2(6.0 + 12.0 + 4.0 + g.size().x + 6.0, 20.0));
+            pp.rect_filled(r, CornerRadius::same(5), if n > 0 { style::tint(c, dark) } else { p.hover });
+            pp.text(pos2(r.left() + 6.0 + 6.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_fill(12.0), c);
+            pp.galley(pos2(r.left() + 6.0 + 12.0 + 4.0, r.center().y - g.size().y / 2.0), g, p.text);
             x = r.right() + 6.0;
         }
         // Rows.
@@ -967,20 +980,21 @@ impl App {
             egui::ScrollArea::vertical().id_salt("problems").auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for (sev, msg, path, line, col) in &rows {
-                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
                     if resp.hovered() {
-                        ui.painter().rect_filled(r, CornerRadius::ZERO, p.faint_row());
+                        ui.painter().rect_filled(r.shrink2(vec2(6.0, 0.0)), CornerRadius::same(style::RADIUS), p.hover);
                     }
+                    // Its severity (filled), the message, where it is.
                     let (icon, c) = [(icons::X_CIRCLE, p.err), (icons::WARNING, p.warn), (icons::INFO, p.info)][*sev as usize];
-                    ui.painter().text(pos2(r.left() + 12.0 + 7.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(14.0), c);
+                    ui.painter().text(pos2(r.left() + 12.0 + 6.5, r.center().y), Align2::CENTER_CENTER, icon, style::icon_fill(13.0), c);
                     let place = format!("{}:{}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), line + 1);
-                    let pg = ui.painter().layout_no_wrap(place, egui::FontId::proportional(style::SMALL), p.text_faint);
+                    let pg = ui.painter().layout_no_wrap(place, style::mono(style::DATA), p.text_faint);
                     let pw = pg.size().x;
                     ui.painter().galley(pos2(r.right() - 12.0 - pw, r.center().y - pg.size().y / 2.0), pg, p.text_faint);
-                    let mut job = egui::text::LayoutJob::simple_singleline(msg.clone(), egui::FontId::proportional(12.5), p.text);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((r.width() - 12.0 - 14.0 - 8.0 - pw - 24.0).max(10.0));
+                    let mut job = egui::text::LayoutJob::simple_singleline(msg.clone(), egui::FontId::proportional(style::SMALL), p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((r.width() - 12.0 - 13.0 - 8.0 - pw - 24.0).max(10.0));
                     let g = ui.painter().layout_job(job);
-                    ui.painter().galley(pos2(r.left() + 12.0 + 14.0 + 8.0, r.center().y - g.size().y / 2.0), g, p.text);
+                    ui.painter().galley(pos2(r.left() + 12.0 + 13.0 + 8.0, r.center().y - g.size().y / 2.0), g, p.text);
                     if resp.clicked() {
                         go = Some((path.clone(), *line, *col));
                     }
