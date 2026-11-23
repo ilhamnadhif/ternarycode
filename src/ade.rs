@@ -68,6 +68,7 @@ impl ProfileDraft {
         };
         let label = match agent {
             AgentKind::Codex => "ChatGPT / Codex",
+            AgentKind::Antigravity => "Antigravity",
             _ => agent.label(),
         };
         let mut idx = 1u32;
@@ -179,7 +180,7 @@ impl ProfileDraft {
 
 impl App {
     /// Configured multi-account profiles, falling back to starter defaults (`claude1`, `chatgpt1`,
-    /// `gemini1`) until customized.
+    /// `agy1`) until customized.
     pub fn effective_profiles(&self) -> Vec<AgentProfile> {
         let mut list = if self.settings.profiles.is_empty() {
             profiles::default_profiles()
@@ -219,7 +220,7 @@ impl App {
     }
 
     /// Returns a preset for `agent`, synthesizing a default command preset when none is configured
-    /// (for example Gemini CLI or Custom accounts).
+    /// (for example Antigravity CLI or Custom accounts).
     pub fn preset_for_agent(&self, agent: AgentKind) -> Preset {
         self.presets()
             .into_iter()
@@ -236,7 +237,7 @@ impl App {
     }
 
     /// Builds a shell launch command for `preset` combining hooks, permissions flag, preset env,
-    /// and isolated account profile env (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, API keys).
+    /// and isolated account profile env (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `AGY_DATA_DIR`, API keys).
     pub fn launch_command_for_profile(&self, preset: &Preset, command: &str, profile: Option<&AgentProfile>) -> String {
         let integration = preset
             .agent
@@ -536,7 +537,7 @@ impl App {
                 Some(h) => tc_agent::sessions::Roots::under(Path::new(h)),
                 None => tc_agent::sessions::Roots::from_env(&home),
             };
-            for agent in [AgentKind::Claude, AgentKind::Codex, AgentKind::Gemini, AgentKind::Antigravity] {
+            for agent in [AgentKind::Claude, AgentKind::Codex, AgentKind::Antigravity] {
                 let default_prof = profiles
                     .iter()
                     .find(|p| p.agent == agent && p.use_default_auth && !profiles::has_custom_config_dir(p))
@@ -826,6 +827,7 @@ impl App {
                     match from_agent {
                         AgentKind::Claude => default_roots.claude,
                         AgentKind::Codex => default_roots.codex,
+                        AgentKind::Antigravity => default_roots.antigravity,
                         AgentKind::Gemini => default_roots.gemini,
                         _ => to_root.clone(),
                     }
@@ -864,6 +866,7 @@ impl App {
                 let q = integrate::shell_quote(&prompt);
                 match target.agent {
                     AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini => format!("{} {q}", preset.command.trim()),
+                    AgentKind::Antigravity => format!("{} -i {q}", preset.command.trim()),
                     _ => preset.command.clone(),
                 }
             } else {
@@ -973,7 +976,7 @@ impl App {
     }
 
     /// Runs an interactive login session inside a terminal pane with `profile_id`'s isolated auth
-    /// directory (`CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `GEMINI_CLI_HOME`).
+    /// directory (`CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `AGY_DATA_DIR`).
     pub fn login_profile(&mut self, ctx: &egui::Context, profile_id: &str) {
         let Some(profile) = self.profile_by_id(profile_id) else { return };
         if self.active.is_none() {

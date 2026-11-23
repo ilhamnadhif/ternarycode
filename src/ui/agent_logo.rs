@@ -1,7 +1,7 @@
-//! The agents' own logos (Claude Code, Codex, OpenCode, Antigravity CLI, Gemini CLI) where an
-//! agent is shown in a small tile, in place of two letters. The Claude, OpenAI (for Codex) and
-//! Gemini marks are Simple Icons' (CC0), drawn white into `assets/agents/` and tinted here: Claude
-//! and Gemini in their brand colours, OpenAI in the text colour (its mark is black or white).
+//! The agents' own logos (Claude Code, Codex, OpenCode, Antigravity CLI) where an
+//! agent is shown in a small tile, in place of two letters. The Claude and OpenAI (for Codex)
+//! marks are Simple Icons' (CC0), drawn white into `assets/agents/` and tinted here: Claude in
+//! its brand colour, OpenAI in the text colour (its mark is black or white).
 //! Antigravity's mark is in its own colours (a gradient), from antigravity.google's logo, scaled
 //! to 64 pixels. OpenCode's mark is two rectangles, drawn as such.
 
@@ -10,12 +10,10 @@ use tc_core::agent::AgentKind;
 
 const CLAUDE: &[u8] = include_bytes!("../../assets/agents/claude.png");
 const OPENAI: &[u8] = include_bytes!("../../assets/agents/openai.png");
-const GEMINI: &[u8] = include_bytes!("../../assets/agents/gemini.png");
 const ANTIGRAVITY: &[u8] = include_bytes!("../../assets/agents/antigravity.png");
 
-/// Claude's orange and Gemini's violet (Simple Icons' brand colours).
+/// Claude's orange (Simple Icons' brand colour).
 const CLAUDE_COLOR: Color32 = Color32::from_rgb(0xD9, 0x77, 0x57);
-const GEMINI_COLOR: Color32 = Color32::from_rgb(0x8E, 0x75, 0xB2);
 
 /// Whether the agent has a logo (else its tile shows letters).
 pub fn has(agent: AgentKind) -> bool {
@@ -29,9 +27,8 @@ pub fn paint(painter: &egui::Painter, r: Rect, agent: AgentKind, ink: Color32, d
     let (name, png, tint) = match agent {
         AgentKind::Claude => ("claude", CLAUDE, CLAUDE_COLOR),
         AgentKind::Codex => ("openai", OPENAI, ink),
-        AgentKind::Gemini => ("gemini", GEMINI, GEMINI_COLOR),
-        // In its own colours.
-        AgentKind::Antigravity => ("antigravity", ANTIGRAVITY, Color32::WHITE),
+        // Antigravity CLI (`agy`) replaced Gemini CLI: render Antigravity's logo in its own colours.
+        AgentKind::Antigravity | AgentKind::Gemini => ("antigravity", ANTIGRAVITY, Color32::WHITE),
         AgentKind::OpenCode => {
             opencode(painter, r, fade(ink));
             return true;
@@ -77,7 +74,7 @@ mod tests {
 
     #[test]
     fn logos_decode() {
-        for png in [CLAUDE, OPENAI, GEMINI, ANTIGRAVITY] {
+        for png in [CLAUDE, OPENAI, ANTIGRAVITY] {
             let img = tc_doc::img::decode(png, 256).unwrap();
             assert_eq!((img.width, img.height), (64, 64));
             // A mark on a clear ground: some pixels drawn, some not.

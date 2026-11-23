@@ -60,7 +60,7 @@ pub enum FailoverMode {
     Manual,
 }
 
-/// An independent agent account profile (e.g. `claude1`, `claude2`, `chatgpt1`, `gemini1`),
+/// An independent agent account profile (e.g. `claude1`, `claude2`, `chatgpt1`, `agy1`),
 /// isolated via its own auth/config directory and optional API key / environment overrides.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -68,7 +68,7 @@ pub struct AgentProfile {
     pub id: String,
     pub name: String,
     pub agent: AgentKind,
-    /// Isolated config/auth folder (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, …).
+    /// Isolated config/auth folder (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `AGY_DATA_DIR`, …).
     /// `None` uses the provider's default folder for the first profile or `<data>/profiles/<id>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<PathBuf>,
@@ -95,8 +95,8 @@ pub struct AgentProfile {
     /// Optional human account label / email hint (e.g. `work@gmail.com` or `Plus #2`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_hint: Option<String>,
-    /// Uses the system default auth folder (`~/.claude`, `~/.codex`, `~/.gemini`) rather than an
-    /// isolated subfolder.
+    /// Uses the system default auth folder (`~/.claude`, `~/.codex`, `~/.gemini/antigravity-cli`)
+    /// rather than an isolated subfolder.
     #[serde(default)]
     pub use_default_auth: bool,
 }
@@ -543,7 +543,7 @@ pub struct Settings {
     /// Agents may run their own JavaScript in pages (`browser_evaluate`).
     #[serde(default)]
     pub browser_agent_js: bool,
-    /// Multi-account agent profiles (e.g. `claude1`, `claude2`, `chatgpt1`, `gemini1`).
+    /// Multi-account agent profiles (e.g. `claude1`, `claude2`, `chatgpt1`, `agy1`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<AgentProfile>,
     /// Rate-limit failover policy (auto-resume vs manual recovery banner).
@@ -688,6 +688,18 @@ impl Settings {
         // Sanitize & deduplicate hand-edited profiles so IDs, paths, keys, and env names are valid.
         let mut seen_ids = std::collections::HashSet::new();
         for (idx, pr) in self.profiles.iter_mut().enumerate() {
+            // Antigravity CLI (`agy`) replaced Gemini CLI: migrate any saved legacy Gemini profiles.
+            if pr.agent == AgentKind::Gemini {
+                pr.agent = AgentKind::Antigravity;
+                if pr.id.trim().eq_ignore_ascii_case("gemini1") {
+                    pr.id = "agy1".into();
+                }
+                if pr.name.trim().eq_ignore_ascii_case("Gemini 1")
+                    || pr.name.trim().eq_ignore_ascii_case("Gemini CLI")
+                {
+                    pr.name = "Antigravity 1".into();
+                }
+            }
             let mut id: String = pr
                 .id
                 .trim()
@@ -1013,5 +1025,20 @@ mod tests {
             let dec: View = serde_json::from_str(&enc).unwrap();
             assert_eq!(dec, v);
         }
+        // Saved legacy Gemini CLI profiles migrate cleanly to Antigravity CLI (`agy1`).
+        let mut legacy = Settings::default();
+        legacy.profiles.push(AgentProfile {
+            id: "gemini1".into(),
+            name: "Gemini 1".into(),
+            agent: AgentKind::Gemini,
+            fallback_order: 3,
+            enabled: true,
+            use_default_auth: true,
+            ..Default::default()
+        });
+        assert!(legacy.sanitize());
+        assert_eq!(legacy.profiles[0].id, "agy1");
+        assert_eq!(legacy.profiles[0].name, "Antigravity 1");
+        assert_eq!(legacy.profiles[0].agent, AgentKind::Antigravity);
     }
 }

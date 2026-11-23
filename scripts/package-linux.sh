@@ -33,7 +33,7 @@ WORK="$ROOT/target/linux-pkg"
 REPO="https://github.com/ilhamnadhif/ternarycode"
 SUMMARY="Terminal workspace for many projects and AI coding agents"
 DESCRIPTION="TernaryCode is a native, terminal-first workspace written in Rust: every project with its
-own terminals, tabs and split panes, AI coding agents (Claude Code, Codex, Gemini CLI, OpenCode)
+own terminals, tabs and split panes, AI coding agents (Claude Code, Codex, Antigravity CLI, OpenCode)
 with their status at a glance, a grid of all projects, a code editor with language servers, git
 changes to review, and a viewer for PDF, Word, Excel and PowerPoint files. No account, no telemetry."
 NAME="TernaryCode-$VERSION-linux"

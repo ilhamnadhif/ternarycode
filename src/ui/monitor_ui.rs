@@ -154,18 +154,21 @@ impl App {
                                 let l5 = rt.window_5h_label();
                                 let lw = if rt.window_weekly_label() == "Weekly" { "Wk".to_string() } else { rt.window_weekly_label() };
 
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 7.0;
-                                    let (mr, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                                    if !agent_logo::paint(ui.painter(), mr, prof.agent, if prof.enabled { p.text } else { p.text_faint }, false) {
-                                        ui.painter().text(mr.center(), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(12.0), p.text_muted);
-                                    }
-                                    ui.label(RichText::new(&prof.id).font(style::mono_semibold(11.5)).color(if prof.enabled { p.text } else { p.text_faint }));
-                                    kit::status_badge(ui, badge_label, sc, false);
-                                    if auth == AuthStatus::NotSignedIn {
-                                        ui.label(RichText::new(t("Not signed in")).size(10.0).color(p.warn));
-                                    }
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                egui::Sides::new().spacing(8.0).shrink_left().show(
+                                    ui,
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 7.0;
+                                        let (mr, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                                        if !agent_logo::paint(ui.painter(), mr, prof.agent, if prof.enabled { p.text } else { p.text_faint }, false) {
+                                            ui.painter().text(mr.center(), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(12.0), p.text_muted);
+                                        }
+                                        ui.label(RichText::new(&prof.id).font(style::mono_semibold(11.5)).color(if prof.enabled { p.text } else { p.text_faint }));
+                                        kit::status_badge(ui, badge_label, sc, false);
+                                        if auth == AuthStatus::NotSignedIn {
+                                            ui.label(RichText::new(t("Not signed in")).size(10.0).color(p.warn));
+                                        }
+                                    },
+                                    |ui| {
                                         if let Some(pane_id) = cur_agent_pane
                                             && prof.enabled
                                             && cur_pane_profile.as_deref() != Some(prof.id.as_str())
@@ -176,8 +179,8 @@ impl App {
                                             this.actions.push(Action::ResumeWithProfile { pane: pane_id, profile_id: prof.id.clone() });
                                             this.monitor_popover = false;
                                         }
-                                    });
-                                });
+                                    },
+                                );
                                 ui.add_space(2.0);
                                 ui.horizontal(|ui| {
                                     ui.add_space(20.0);
@@ -242,10 +245,10 @@ impl App {
         let body = self.top_bar(
             ui,
             full,
-            |_, ui| {
-                ui.add_space(4.0);
+            |app, ui| {
+                app.nav_back_button(ui);
                 ui.label(RichText::new(t("Usage & Status Monitor")).font(style::semibold(14.0)).color(p.text));
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 ui.add(
                     egui::Label::new(
                         RichText::new(t("Real-time execution state, token usage, quotas, and reset timers across all accounts"))
@@ -292,19 +295,24 @@ impl App {
                                 .inner_margin(egui::Margin::symmetric(16, 12))
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.spacing_mut().item_spacing = vec2(26.0, 8.0);
-                                        metric_cell(ui, t("Running Agents"), &running.to_string(), if running > 0 { p.info } else { p.text });
-                                        metric_cell(ui, t("Healthy Profiles"), &format!("{healthy} / {enabled_count}"), p.ok);
-                                        metric_cell(ui, t("Rate-Limited"), &limited.to_string(), if limited > 0 { p.rate_limited } else { p.text_muted });
-                                        metric_cell(ui, t("5-Hour Tokens"), &profiles::format_tokens(total_5h), p.text);
-                                        metric_cell(ui, t("Weekly Tokens"), &profiles::format_tokens(total_weekly), p.text);
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    egui::Sides::new().spacing(12.0).shrink_left().wrap().show(
+                                        ui,
+                                        |ui| {
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.spacing_mut().item_spacing = vec2(26.0, 8.0);
+                                                metric_cell(ui, t("Running Agents"), &running.to_string(), if running > 0 { p.info } else { p.text });
+                                                metric_cell(ui, t("Healthy Profiles"), &format!("{healthy} / {enabled_count}"), p.ok);
+                                                metric_cell(ui, t("Rate-Limited"), &limited.to_string(), if limited > 0 { p.rate_limited } else { p.text_muted });
+                                                metric_cell(ui, t("5-Hour Tokens"), &profiles::format_tokens(total_5h), p.text);
+                                                metric_cell(ui, t("Weekly Tokens"), &profiles::format_tokens(total_weekly), p.text);
+                                            });
+                                        },
+                                        |ui| {
                                             if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_CLOCKWISE), t("Refresh"), true).clicked() {
                                                 self.usage_scan_at = None;
                                             }
-                                        });
-                                    });
+                                        },
+                                    );
                                 });
 
                             ui.add_space(18.0);
@@ -337,40 +345,49 @@ impl App {
                                             .inner_margin(egui::Margin::symmetric(14, 10))
                                             .show(ui, |ui| {
                                                 ui.set_width(ui.available_width());
-                                                ui.horizontal(|ui| {
-                                                    ui.spacing_mut().item_spacing.x = 12.0;
-                                                    ui.label(RichText::new(format!("#{}", i + 1)).font(style::mono(11.0)).color(p.text_faint));
-                                                    ui.vertical(|ui| {
-                                                        ui.spacing_mut().item_spacing.y = 4.0;
-                                                        ui.horizontal_wrapped(|ui| {
-                                                            ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
-                                                            ui.label(RichText::new(&prof.id).font(style::mono_semibold(12.5)).color(p.text));
-                                                            ui.label(RichText::new(prof.agent.label()).size(11.5).color(p.text_muted));
-                                                            if let Some(hint) = &prof.account_hint {
-                                                                ui.label(RichText::new(hint).font(style::mono(10.5)).color(p.text_faint));
+                                                egui::Sides::new().spacing(12.0).shrink_left().wrap().show(
+                                                    ui,
+                                                    |ui| {
+                                                        ui.horizontal_top(|ui| {
+                                                            ui.spacing_mut().item_spacing.x = 10.0;
+                                                            ui.label(RichText::new(format!("#{}", i + 1)).font(style::mono(11.0)).color(p.text_faint));
+                                                            let (mr, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                                                            if !agent_logo::paint(ui.painter(), mr, prof.agent, p.text, false) {
+                                                                ui.painter().text(mr.center(), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(13.0), p.text_muted);
                                                             }
-                                                            if let Some(plan) = &rt.usage.plan_type {
-                                                                kit::status_badge(ui, &plan.to_uppercase(), p.accent_text, true);
-                                                            }
-                                                            kit::status_badge(ui, profile_state_label(rt.state), sc, false);
-                                                            if auth == AuthStatus::NotSignedIn {
-                                                                kit::status_badge(ui, t("Not signed in"), p.warn, false);
-                                                            }
-                                                            if let Some(secs) = reset {
-                                                                ui.label(
-                                                                    RichText::new(tf("resets in {}", &[&profiles::format_countdown(secs)]))
-                                                                        .font(style::mono(11.0))
-                                                                        .color(p.rate_limited),
-                                                                );
-                                                            }
+                                                            ui.vertical(|ui| {
+                                                                ui.spacing_mut().item_spacing.y = 4.0;
+                                                                ui.horizontal_wrapped(|ui| {
+                                                                    ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
+                                                                    ui.label(RichText::new(&prof.id).font(style::mono_semibold(12.5)).color(p.text));
+                                                                    ui.label(RichText::new(prof.agent.label()).size(11.5).color(p.text_muted));
+                                                                    if let Some(hint) = &prof.account_hint {
+                                                                        ui.label(RichText::new(hint).font(style::mono(10.5)).color(p.text_faint));
+                                                                    }
+                                                                    if let Some(plan) = &rt.usage.plan_type {
+                                                                        kit::status_badge(ui, &plan.to_uppercase(), p.accent_text, true);
+                                                                    }
+                                                                    kit::status_badge(ui, profile_state_label(rt.state), sc, false);
+                                                                    if auth == AuthStatus::NotSignedIn {
+                                                                        kit::status_badge(ui, t("Not signed in"), p.warn, false);
+                                                                    }
+                                                                    if let Some(secs) = reset {
+                                                                        ui.label(
+                                                                            RichText::new(tf("resets in {}", &[&profiles::format_countdown(secs)]))
+                                                                                .font(style::mono(11.0))
+                                                                                .color(p.rate_limited),
+                                                                        );
+                                                                    }
+                                                                });
+                                                                ui.horizontal_wrapped(|ui| {
+                                                                    ui.spacing_mut().item_spacing = vec2(18.0, 4.0);
+                                                                    paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 88.0, &p);
+                                                                    paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 88.0, &p);
+                                                                });
+                                                            });
                                                         });
-                                                        ui.horizontal_wrapped(|ui| {
-                                                            ui.spacing_mut().item_spacing = vec2(18.0, 4.0);
-                                                            paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 88.0, &p);
-                                                            paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 88.0, &p);
-                                                        });
-                                                    });
-                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    },
+                                                    |ui| {
                                                         if let Some((pane_id, proj_id)) = rt.active_panes.first().copied() {
                                                             let pname = self.project_label(proj_id);
                                                             if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_UP_RIGHT), &pname, true).clicked() {
@@ -383,8 +400,8 @@ impl App {
                                                         } else {
                                                             ui.label(RichText::new(t("Unassigned")).size(11.0).color(p.text_ghost));
                                                         }
-                                                    });
-                                                });
+                                                    },
+                                                );
                                             });
                                     }
                                 });
@@ -428,24 +445,29 @@ impl App {
                                             }
                                             egui::Frame::NONE.inner_margin(egui::Margin::symmetric(14, 9)).show(ui, |ui| {
                                                 ui.set_width(ui.available_width());
-                                                ui.horizontal(|ui| {
-                                                    ui.spacing_mut().item_spacing.x = 10.0;
-                                                    ui.label(RichText::new(&project).font(style::medium(12.5)).color(p.text));
-                                                    ui.label(RichText::new(&label).size(12.0).color(p.text_muted));
-                                                    if let Some(pr) = prof {
-                                                        kit::status_badge(ui, &pr, p.accent_text, true);
-                                                    }
-                                                    kit::status_badge(ui, &status::text(st), status::color(st, &p), false);
-                                                    ui.label(RichText::new(age).font(style::mono(10.5)).color(p.text_faint));
-                                                    if let Some(ttext) = task {
-                                                        ui.add(egui::Label::new(RichText::new(ttext).size(11.5).color(p.text_faint)).truncate());
-                                                    }
-                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                egui::Sides::new().spacing(10.0).shrink_left().wrap().show(
+                                                    ui,
+                                                    |ui| {
+                                                        ui.horizontal_wrapped(|ui| {
+                                                            ui.spacing_mut().item_spacing = vec2(10.0, 4.0);
+                                                            ui.label(RichText::new(&project).font(style::medium(12.5)).color(p.text));
+                                                            ui.label(RichText::new(&label).size(12.0).color(p.text_muted));
+                                                            if let Some(pr) = prof {
+                                                                kit::status_badge(ui, &pr, p.accent_text, true);
+                                                            }
+                                                            kit::status_badge(ui, &status::text(st), status::color(st, &p), false);
+                                                            ui.label(RichText::new(age).font(style::mono(10.5)).color(p.text_faint));
+                                                            if let Some(ttext) = task {
+                                                                ui.add(egui::Label::new(RichText::new(ttext).size(11.5).color(p.text_faint)).truncate());
+                                                            }
+                                                        });
+                                                    },
+                                                    |ui| {
                                                         if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::TERMINAL_WINDOW), t("Open"), true).clicked() {
                                                             self.actions.push(Action::FocusPane(pane_id));
                                                         }
-                                                    });
-                                                });
+                                                    },
+                                                );
                                             });
                                         }
                                     }
@@ -472,13 +494,13 @@ impl App {
                                                 LogLevel::Tool => p.info,
                                                 LogLevel::Info => p.text_muted,
                                             };
-                                            ui.horizontal(|ui| {
-                                                ui.spacing_mut().item_spacing.x = 8.0;
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.spacing_mut().item_spacing = vec2(8.0, 2.0);
                                                 ui.label(RichText::new(entry.at.format("%H:%M:%S").to_string()).font(style::mono(10.5)).color(p.text_ghost));
                                                 if let Some(pr) = &entry.profile {
                                                     ui.label(RichText::new(pr).font(style::mono_medium(10.5)).color(p.accent_text));
                                                 }
-                                                ui.label(RichText::new(&entry.message).size(12.0).color(c));
+                                                ui.add(egui::Label::new(RichText::new(&entry.message).size(12.0).color(c)).wrap());
                                             });
                                         }
                                     }

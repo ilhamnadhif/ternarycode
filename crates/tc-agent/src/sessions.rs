@@ -657,6 +657,7 @@ pub fn copy_session_between_roots(agent: AgentKind, project: &Path, from_root: &
             let Some(fname) = src.file_name() else { return false };
             copy_if_newer(&src, &dst_proj.join("chats").join(fname))
         }
+        AgentKind::Antigravity => same_root,
         _ => false,
     }
 }
@@ -1006,10 +1007,39 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
             }
         }
         AgentKind::Antigravity => {
+            let hist = antigravity_history(root);
             let has_auth = non_empty_file(&root.join("settings.json"))
+                || non_empty_file(&root.join("installation_id"))
                 || non_empty_file(&root.join("history.jsonl"))
-                || antigravity_history(root).is_some();
+                || hist.is_some();
             report.signed_in = Some(has_auth);
+            if let Some(path) = hist {
+                let (head, tail) = edges(&path, 64 * 1024, 512 * 1024);
+                let mut oldest_5h: Option<i64> = None;
+                let mut oldest_7d: Option<i64> = None;
+                for line in head.iter().chain(tail.iter()) {
+                    let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+                    let ts_raw = v["timestamp"].as_i64().unwrap_or(0);
+                    let ts = if ts_raw > 10_000_000_000 { ts_raw / 1000 } else { ts_raw };
+                    if ts <= 0 {
+                        continue;
+                    }
+                    if ts >= cut_7d {
+                        report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
+                        oldest_7d = Some(oldest_7d.map_or(ts, |o| o.min(ts)));
+                    }
+                    if ts >= cut_5h {
+                        report.window_5h.turns = report.window_5h.turns.saturating_add(1);
+                        oldest_5h = Some(oldest_5h.map_or(ts, |o| o.min(ts)));
+                    }
+                }
+                if let Some(o) = oldest_5h {
+                    report.window_5h.resets_at_unix = Some(o + WIN_5H);
+                }
+                if let Some(o) = oldest_7d {
+                    report.window_weekly.resets_at_unix = Some(o + WIN_7D);
+                }
+            }
         }
         AgentKind::OpenCode => {
             let has_auth = non_empty_file(&root.join("data/opencode/auth.json"))

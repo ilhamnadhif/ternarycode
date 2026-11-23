@@ -1,4 +1,4 @@
-//! Multi-account agent profiles (`claude1`, `claude2`, `chatgpt1`, `gemini1`, …), real usage
+//! Multi-account agent profiles (`claude1`, `claude2`, `chatgpt1`, `agy1`, …), real usage
 //! telemetry, rate-limit detection, failover chain selection, and project-nested session history.
 
 use std::collections::BTreeMap;
@@ -244,9 +244,9 @@ pub fn default_profiles() -> Vec<AgentProfile> {
             ..Default::default()
         },
         AgentProfile {
-            id: "gemini1".into(),
-            name: "Gemini 1".into(),
-            agent: AgentKind::Gemini,
+            id: "agy1".into(),
+            name: "Antigravity 1".into(),
+            agent: AgentKind::Antigravity,
             fallback_order: 3,
             enabled: true,
             use_default_auth: true,
@@ -261,7 +261,7 @@ pub fn has_custom_config_dir(profile: &AgentProfile) -> bool {
 
 /// Resolves the config/auth root folder for `profile`.
 /// - Explicit non-empty `profile.config_dir` wins.
-/// - `use_default_auth` maps to `~/.claude`, `~/.codex`, `~/.gemini` (honoring standard env vars).
+/// - `use_default_auth` maps to `~/.claude`, `~/.codex`, `~/.gemini/antigravity-cli` (honoring standard env vars).
 /// - Otherwise isolates cleanly into `<data_dir>/profiles/<sanitized_id>`.
 pub fn resolved_config_dir(profile: &AgentProfile, home: &Path, data_dir: &Path) -> PathBuf {
     if let Some(dir) = &profile.config_dir
@@ -278,7 +278,8 @@ pub fn resolved_config_dir(profile: &AgentProfile, home: &Path, data_dir: &Path)
                 .or_else(|| env_path("GEMINI_CLI_HOME").map(|h| h.join(".gemini")))
                 .unwrap_or_else(|| home.join(".gemini")),
             AgentKind::OpenCode => home.join(".config").join("opencode"),
-            AgentKind::Antigravity => home.join(".gemini").join("antigravity-cli"),
+            AgentKind::Antigravity => env_path("AGY_DATA_DIR")
+                .unwrap_or_else(|| home.join(".gemini").join("antigravity-cli")),
             AgentKind::Custom => data_dir.join("profiles").join(sanitize_id(&profile.id)),
         };
     }
@@ -316,7 +317,10 @@ pub fn profile_env(profile: &AgentProfile, home: &Path, data_dir: &Path) -> BTre
                 }
                 env.insert("CODEX_HOME".into(), dir_s);
             }
-            AgentKind::Gemini | AgentKind::Antigravity => {
+            AgentKind::Antigravity => {
+                env.insert("AGY_DATA_DIR".into(), dir_s);
+            }
+            AgentKind::Gemini => {
                 env.insert("GEMINI_CLI_HOME".into(), dir_s.clone());
                 env.insert("GEMINI_CONFIG_DIR".into(), dir_s);
             }
@@ -382,7 +386,15 @@ pub fn profile_unset_env(profile: &AgentProfile) -> Vec<&'static str> {
                 unset.push("OPENAI_API_KEY");
             }
         }
-        AgentKind::Gemini | AgentKind::Antigravity => {
+        AgentKind::Antigravity => {
+            if uses_default {
+                unset.push("AGY_DATA_DIR");
+            }
+            if !has_key {
+                unset.push("GEMINI_API_KEY");
+            }
+        }
+        AgentKind::Gemini => {
             if uses_default {
                 unset.push("GEMINI_CLI_HOME");
                 unset.push("GEMINI_CONFIG_DIR");
@@ -486,7 +498,7 @@ pub fn login_command(agent: AgentKind) -> &'static str {
         AgentKind::Codex => "codex login",
         AgentKind::Gemini => "gemini",
         AgentKind::OpenCode => "opencode auth login",
-        AgentKind::Antigravity => "agy login",
+        AgentKind::Antigravity => "agy",
         AgentKind::Custom => "echo 'Configure credentials for this custom profile'",
     }
 }
@@ -530,7 +542,7 @@ fn looks_like_code_or_test(trimmed: &str) -> bool {
 }
 
 /// Scans recent agent terminal lines for genuine rate-limit / usage-limit pauses across Claude
-/// Code, Codex / ChatGPT, and Gemini CLI, supporting 2-line wrapped error messages while skipping
+/// Code, Codex / ChatGPT, and Antigravity CLI, supporting 2-line wrapped error messages while skipping
 /// source code / diff / test false positives.
 pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
     let patterns = [
@@ -846,6 +858,15 @@ mod tests {
         let cenv = profile_env(&codex, home, data);
         assert_eq!(cenv.get("CODEX_HOME").map(PathBuf::from), Some(data.join("profiles").join("chatgpt2")));
         assert_eq!(cenv.get("OPENAI_API_KEY").map(String::as_str), Some("sk-openai"));
+
+        let agy = AgentProfile {
+            id: "agy2".into(),
+            name: "Antigravity 2".into(),
+            agent: AgentKind::Antigravity,
+            ..Default::default()
+        };
+        let aenv = profile_env(&agy, home, data);
+        assert_eq!(aenv.get("AGY_DATA_DIR").map(PathBuf::from), Some(data.join("profiles").join("agy2")));
     }
 
     #[test]
@@ -887,7 +908,7 @@ mod tests {
         let profiles = vec![
             AgentProfile { id: "claude1".into(), agent: AgentKind::Claude, fallback_order: 1, enabled: true, ..Default::default() },
             AgentProfile { id: "claude2".into(), agent: AgentKind::Claude, fallback_order: 2, enabled: true, ..Default::default() },
-            AgentProfile { id: "gemini1".into(), agent: AgentKind::Gemini, fallback_order: 3, enabled: true, ..Default::default() },
+            AgentProfile { id: "agy1".into(), agent: AgentKind::Antigravity, fallback_order: 3, enabled: true, ..Default::default() },
         ];
         let mut rt = std::collections::HashMap::new();
         rt.insert("claude1".into(), ProfileRuntime { state: ProfileState::RateLimited, reset_at: Some(now + Duration::from_secs(600)), ..Default::default() });
@@ -897,10 +918,10 @@ mod tests {
         let pick = pick_failover_profile(&profiles, &rt, "claude1", AgentKind::Claude, &policy, now).unwrap();
         assert_eq!(pick.id, "claude2");
 
-        // All Claude profiles limited: falls over to gemini1.
+        // All Claude profiles limited: falls over to agy1.
         rt.insert("claude2".into(), ProfileRuntime { state: ProfileState::RateLimited, reset_at: Some(now + Duration::from_secs(600)), ..Default::default() });
         let pick2 = pick_failover_profile(&profiles, &rt, "claude1", AgentKind::Claude, &policy, now).unwrap();
-        assert_eq!(pick2.id, "gemini1");
+        assert_eq!(pick2.id, "agy1");
 
         // Cross-provider disabled: returns None.
         let strict = FailoverSettings { cross_provider: false, ..Default::default() };

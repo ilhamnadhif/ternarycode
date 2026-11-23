@@ -498,7 +498,8 @@ pub fn shortcuts_card(ui: &mut Ui) {
         (Action::ToggleEditor, t("Show code beside the terminal")),
         (Action::Review, t("Review what the agent changed")),
     ];
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(620.0, 12.0 + rows.len() as f32 * 34.0), egui::Sense::hover());
+    let card_w = ui.available_width().clamp(280.0, 620.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(card_w, 12.0 + rows.len() as f32 * 34.0), egui::Sense::hover());
     let painter = ui.painter();
     painter.rect(rect, egui::CornerRadius::same(9), p.surface, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
     for (i, (action, what)) in rows.iter().enumerate() {

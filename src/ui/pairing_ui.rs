@@ -19,10 +19,10 @@ impl App {
         let body = self.top_bar(
             ui,
             full,
-            |_, ui| {
-                ui.add_space(4.0);
+            |app, ui| {
+                app.nav_back_button(ui);
                 ui.label(RichText::new(t("Phone Pairing & Mobile Companion")).font(style::semibold(14.0)).color(p.text));
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 ui.add(
                     egui::Label::new(
                         RichText::new(t("Monitor agents, approve tools, and trigger profile failover remotely from your phone"))
@@ -68,34 +68,39 @@ impl App {
             .inner_margin(egui::Margin::symmetric(16, 14))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
-                            ui.label(RichText::new(t("Mobile Companion Server")).font(style::semibold(13.5)).color(p.text));
-                            kit::status_badge(
-                                ui,
-                                if running { t("Online") } else { t("Stopped") },
-                                if running { p.ok } else { p.idle },
-                                false,
+                egui::Sides::new().spacing(14.0).shrink_left().wrap().show(
+                    ui,
+                    |ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
+                                ui.label(RichText::new(t("Mobile Companion Server")).font(style::semibold(13.5)).color(p.text));
+                                kit::status_badge(
+                                    ui,
+                                    if running { t("Online") } else { t("Stopped") },
+                                    if running { p.ok } else { p.idle },
+                                    false,
+                                );
+                            });
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(t("Serves a responsive mobile web companion over your local Wi-Fi or secure tunnel."))
+                                        .size(12.0)
+                                        .color(p.text_muted),
+                                )
+                                .wrap(),
                             );
                         });
-                        ui.label(
-                            RichText::new(t("Serves a responsive mobile web companion over your local Wi-Fi or secure tunnel."))
-                                .size(12.0)
-                                .color(p.text_muted),
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    },
+                    |ui| {
                         let mut enabled = self.settings.companion.enabled;
                         kit::switch(ui, &mut enabled);
                         if enabled != self.settings.companion.enabled {
                             self.actions.push(Action::ToggleCompanionServer);
                         }
-                    });
-                });
+                    },
+                );
 
                 ui.add_space(12.0);
                 let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
@@ -173,30 +178,36 @@ impl App {
                 .corner_radius(CornerRadius::same(9))
                 .inner_margin(egui::Margin::same(18))
                 .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing.x = 22.0;
-
+                    let card_w = ui.available_width();
+                    ui.set_width(card_w);
+                    let draw_qr = |ui: &mut Ui| {
                         // Crisp native QR code inside a high-contrast quiet zone (cached per URL).
                         let qr_box_size = 196.0;
                         let (qr_rect, _) = ui.allocate_exact_size(vec2(qr_box_size, qr_box_size), Sense::hover());
                         #[cfg(debug_assertions)]
                         crate::devtest::record("pairing-qr", qr_rect);
                         paint_qr_card(ui, qr_rect, &pair_url, &p);
-
+                    };
+                    let mut draw_details = |ui: &mut Ui| {
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 8.0;
                             ui.label(RichText::new(t("Scan with your phone camera")).font(style::semibold(14.0)).color(p.text));
-                            ui.label(
-                                RichText::new(t("Point your iPhone or Android camera at this QR code to pair securely. Every device receives its own revocable token."))
-                                    .size(12.0)
-                                    .color(p.text_muted),
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(t("Point your iPhone or Android camera at this QR code to pair securely. Every device receives its own revocable token."))
+                                        .size(12.0)
+                                        .color(p.text_muted),
+                                )
+                                .wrap(),
                             );
                             if loopback_only {
-                                ui.label(
-                                    RichText::new(t("No LAN IP detected — connect to Wi-Fi or configure a tunnel URL above."))
-                                        .size(11.5)
-                                        .color(p.warn),
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(t("No LAN IP detected — connect to Wi-Fi or configure a tunnel URL above."))
+                                            .size(11.5)
+                                            .color(p.warn),
+                                    )
+                                    .wrap(),
                                 );
                             }
                             ui.add_space(4.0);
@@ -221,10 +232,13 @@ impl App {
                             });
 
                             ui.add_space(4.0);
-                            ui.label(
-                                RichText::new(tf("Local network endpoint: {}", &[&local_addr]))
-                                    .font(style::mono(11.0))
-                                    .color(p.text_faint),
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(tf("Local network endpoint: {}", &[&local_addr]))
+                                        .font(style::mono(11.0))
+                                        .color(p.text_faint),
+                                )
+                                .wrap(),
                             );
                             ui.horizontal(|ui| {
                                 if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Preview Mobile UI"), true).clicked() {
@@ -232,7 +246,18 @@ impl App {
                                 }
                             });
                         });
-                    });
+                    };
+                    if card_w < 580.0 {
+                        draw_qr(ui);
+                        ui.add_space(14.0);
+                        draw_details(ui);
+                    } else {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 22.0;
+                            draw_qr(ui);
+                            draw_details(ui);
+                        });
+                    }
                 });
             ui.add_space(16.0);
         }
@@ -271,26 +296,34 @@ impl App {
                         }
                         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(icons::DEVICE_MOBILE).font(style::icon_font(16.0)).color(p.text_muted));
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 2.0;
-                                    ui.label(RichText::new(&dev.name).font(style::medium(12.5)).color(p.text));
-                                    let seen = chrono::DateTime::from_timestamp(dev.last_seen, 0)
-                                        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
-                                        .unwrap_or_default();
-                                    ui.label(
-                                        RichText::new(format!("{} · {} {seen}", dev.ip, t("Last seen")))
-                                            .font(style::mono(10.5))
-                                            .color(p.text_faint),
-                                    );
-                                });
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            egui::Sides::new().spacing(12.0).shrink_left().wrap().show(
+                                ui,
+                                |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(icons::DEVICE_MOBILE).font(style::icon_font(16.0)).color(p.text_muted));
+                                        ui.vertical(|ui| {
+                                            ui.spacing_mut().item_spacing.y = 2.0;
+                                            ui.label(RichText::new(&dev.name).font(style::medium(12.5)).color(p.text));
+                                            let seen = chrono::DateTime::from_timestamp(dev.last_seen, 0)
+                                                .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                                                .unwrap_or_default();
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(format!("{} · {} {seen}", dev.ip, t("Last seen")))
+                                                        .font(style::mono(10.5))
+                                                        .color(p.text_faint),
+                                                )
+                                                .truncate(),
+                                            );
+                                        });
+                                    });
+                                },
+                                |ui| {
                                     if kit::button_ex(ui, kit::Kind::Danger, Some(icons::SIGN_OUT), t("Revoke"), true).clicked() {
                                         self.actions.push(Action::RevokeDevice(dev.id.clone()));
                                     }
-                                });
-                            });
+                                },
+                            );
                         });
                     }
                 }

@@ -565,7 +565,7 @@ SCROLL_SCRIPT="$SCROLL_SCRIPT;; sleep 1000;; action select-name proj-01;; sleep 
 run ade-sidebar-scroll 90 "$SCROLL_SCRIPT"
 
 # 3. Multi-account Profiles view, Rate-Limit Manual & Auto Failover, and All-Agent Usage Monitor.
-run ade-profiles-monitor 60 "sleep 1000;; action add-project $P1;; sleep 1200;; set-failover manual;; trigger-limit claude1;; sleep 500;; expect-shown rate-limit-banner:2;; shot e2e-ade-failover;; set-failover auto;; trigger-limit claude1;; sleep 500;; wait-toast auto-resumed|otomatis dilanjutkan;; action profiles;; sleep 500;; expect-view profiles;; shot e2e-ade-profiles;; action monitor;; sleep 500;; expect-view monitor;; shot e2e-ade-monitor;; click view:focus;; sleep 400;; expect-view focus;; click telemetry-pill;; sleep 400;; expect-shown monitor-popover;; shot e2e-ade-popover;; click telemetry-pill;; sleep 300;; expect-hidden monitor-popover;; quit"
+run ade-profiles-monitor 60 "sleep 1000;; action add-project $P1;; sleep 1200;; set-failover manual;; trigger-limit claude1;; sleep 500;; expect-shown rate-limit-banner:2;; shot e2e-ade-failover;; set-failover auto;; trigger-limit claude1;; sleep 500;; wait-toast auto-resumed|otomatis dilanjutkan;; action profiles;; sleep 500;; expect-view profiles;; expect-shown nav-back;; shot e2e-ade-profiles;; action monitor;; sleep 500;; expect-view monitor;; expect-shown nav-back;; shot e2e-ade-monitor;; click nav-back;; sleep 400;; expect-view focus;; click telemetry-pill;; sleep 400;; expect-shown monitor-popover;; shot e2e-ade-popover;; click telemetry-pill;; sleep 300;; expect-hidden monitor-popover;; quit"
 
 # 4. Phone Pairing view, QR code rendering, and real Mobile Companion HTTP API handshake.
 PAIR_INFO="$WORK/pair-info.json"

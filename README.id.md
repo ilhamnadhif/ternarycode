@@ -28,15 +28,15 @@
 
 ![Editor Kode lebar di viewport utama dengan riwayat sesi agent di dalam sidebar project (Claude Code, Codex, Antigravity CLI) dan Panel Terminal yang dapat dilipat di bawah](docs/screenshots/focus.png)
 
-Menjalankan **Claude Code**, **ChatGPT / Codex**, **Gemini CLI**, **Antigravity CLI**, atau **OpenCode** di banyak project biasanya berarti jendela terminal berserakan, repot logout-login ulang saat kuota akun habis, dan bingung agent mana yang sedang menunggu. TernaryCode menyatukan semua project, sesi, akun, dan editor dalam satu aplikasi native Rust yang cepat.
+Menjalankan **Claude Code**, **ChatGPT / Codex**, **Antigravity CLI (`agy`)**, atau **OpenCode** di banyak project biasanya berarti jendela terminal berserakan, repot logout-login ulang saat kuota akun habis, dan bingung agent mana yang sedang menunggu. TernaryCode menyatukan semua project, sesi, akun, dan editor dalam satu aplikasi native Rust yang cepat.
 
 Tanpa Electron dan tanpa server perantara: terbuka ~0,2 detik, CPU 0% saat diam, dan seluruh kredensial tetap lokal di mesin Anda.
 
 ## Sorotan
 
 - **Editor Kode Lebar & Panel Terminal Fleksibel**: Code Editor & Diff Viewer mengisi viewport utama (≥60% secara default), sementara Terminal, Agent Logs, dan LSP Problems berada di panel bawah/kanan yang bisa dilipat (`⇧⌘L`).
-- **Riwayat Sesi di Dalam Tree Project**: klik panah `›` pada project mana pun di sidebar untuk melihat sesi aktif & riwayat **Claude Code, Codex, Gemini CLI, dan Antigravity CLI** lengkap dengan logo asli dan resume 1-klik.
-- **Profil Multi-Akun & Batas 5 Jam / Mingguan**: daftarkan banyak akun sejak awal (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `gemini1`) dengan folder auth terisolasi. Pindah akun **1-klik tanpa logout/login ulang**, atau aktifkan failover Auto/Manual Resume saat akun kena limit.
+- **Riwayat Sesi di Dalam Tree Project**: klik panah `›` pada project mana pun di sidebar untuk melihat sesi aktif & riwayat **Claude Code, Codex, dan Antigravity CLI (`agy`)** lengkap dengan logo asli dan resume 1-klik.
+- **Profil Multi-Akun & Batas 5 Jam / Mingguan**: daftarkan banyak akun sejak awal (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `agy1`) dengan folder auth terisolasi. Pindah akun **1-klik tanpa logout/login ulang**, atau aktifkan failover Auto/Manual Resume saat akun kena limit.
 - **Monitor Pemakaian & Status Semua Agent**: pill telemetri live di top bar, popover cepat dengan tombol Switch 1-klik, dan halaman penuh yang memantau kuota **5 jam** & **mingguan**, hitung mundur reset, sesi aktif, serta log failover.
 - **Pairing Ponsel & Mobile Companion**: pindai kode QR lewat Wi-Fi lokal atau tunnel aman untuk memantau output agent secara live, menyetujui tool, mengirim prompt lanjutan, dan memindah akun dari HP.
 - **Tahu Agent Mana yang Butuh Anda**: status berbasis hook (*Butuh input*, *Berjalan*, *Selesai*, *Gagal*), lompatan `⌘J`, dan **Grid** (`⌘0`) live untuk semua project.
@@ -68,8 +68,8 @@ Di Linux, TernaryCode butuh OpenGL dan glibc 2.28+; panel Browser butuh WebKitGT
 ## Mulai cepat
 
 1. **Tambah project**: klik **+** di sidebar, jatuhkan folder ke jendela, atau jalankan `ternarycode .` di terminal.
-2. **Daftarkan akun sejak awal** (opsional): buka **Profil** (ikon 👤 di kiri bawah), klik **+ ChatGPT / + Claude / + Gemini**, lalu klik **Auth Login** sekali per akun. Setiap akun login di folder privat `0o700` masing-masing tanpa saling menimpa.
-3. **Jalankan Agent** (`⇧⌘A`): mulai Claude Code, Codex, Gemini CLI, Antigravity CLI, atau OpenCode. Buka dropdown project di sidebar kapan saja untuk melanjutkan sesi lama dengan 1 klik.
+2. **Daftarkan akun sejak awal** (opsional): buka **Profil** (ikon 👤 di kiri bawah), klik **+ Add Profile**, pilih provider (**Claude Code**, **ChatGPT / Codex**, **Antigravity CLI (`agy`)**, atau **OpenCode**), lalu klik **Auth Login** sekali per akun. Setiap akun login di folder privat `0o700` masing-masing tanpa saling menimpa.
+3. **Jalankan Agent** (`⇧⌘A`): mulai Claude Code, Codex, Antigravity CLI (`agy`), atau OpenCode. Buka dropdown project di sidebar kapan saja untuk melanjutkan sesi lama dengan 1 klik.
 4. **Pindah akun instan**: klik tombol `⇄ <akun_berikutnya>` langsung di header pane untuk pindah akun tanpa logout, atau tekan `⌘J` untuk lompat ke agent yang menunggu.
 
 ## Fitur
@@ -78,14 +78,14 @@ Di Linux, TernaryCode butuh OpenGL dan glibc 2.28+; panel Browser butuh WebKitGT
 
 - **Workspace fokus kode**: Code Editor (`⌘E`) tampil lebar dengan split yang bisa digeser mulus, integrasi LSP (rust-analyzer, gopls, TypeScript, pyright, clangd…), serta penanda baris berubah dari git.
 - **Panel Terminal yang bisa dilipat** (`⇧⌘L`): tempel Terminal, Log Agent, dan Problems di bawah atau kanan, maksimalkan saat perlu, atau sembunyikan saat membaca kode.
-- **Riwayat sesi di dalam tree project**: buka project mana pun di sidebar (`›`) untuk melihat sesi aktif (`● live`) dan sesi sebelumnya dari **Claude Code**, **Codex**, **Gemini CLI**, dan **Antigravity CLI** (`agy --conversation <id>`) — sekali klik langsung fokus atau resume.
+- **Riwayat sesi di dalam tree project**: buka project mana pun di sidebar (`›`) untuk melihat sesi aktif (`● live`) dan sesi sebelumnya dari **Claude Code**, **Codex**, dan **Antigravity CLI** (`agy --conversation <id>`) — sekali klik langsung fokus atau resume.
 
 ### Profil Multi-Akun, Batas 5 Jam & Mingguan, & Pindah Akun 1-Klik
 
-![Profil Agent & Failover menampilkan 6 akun terdaftar untuk Claude Max, ChatGPT Plus, dan Gemini lengkap dengan meter batas 5 jam & mingguan serta folder auth terisolasi](docs/screenshots/profiles.png)
+![Profil Agent & Failover menampilkan 6 akun terdaftar untuk Claude Max, ChatGPT Plus, dan Antigravity CLI lengkap dengan meter batas 5 jam & mingguan serta folder auth terisolasi](docs/screenshots/profiles.png)
 
-- **Tanpa logout-login ulang**: daftarkan banyak akun (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `gemini1`) sejak awal. Setiap profil punya `CLAUDE_CONFIG_DIR`, `CODEX_HOME` berbasis file (`auth.json`), atau `GEMINI_CLI_HOME` sendiri sehingga login tidak pernah bentrok.
-- **Meter Batas 5 Jam & Mingguan**: menampilkan pemakaian **jendela 5 jam** dan **mingguan (7 hari)** — membaca persentase & waktu reset langsung dari telemetri server Codex (`rate_limits.primary` / `secondary`, `plan_type`), serta jendela log 5 jam/7 hari + batas token opsional untuk Claude dan Gemini.
+- **Tanpa logout-login ulang**: daftarkan banyak akun (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `agy1`) sejak awal. Setiap profil punya `CLAUDE_CONFIG_DIR`, `CODEX_HOME` berbasis file (`auth.json`), atau `AGY_DATA_DIR` sendiri sehingga login tidak pernah bentrok.
+- **Meter Batas 5 Jam & Mingguan**: menampilkan pemakaian **jendela 5 jam** dan **mingguan (7 hari)** — membaca persentase & waktu reset langsung dari telemetri server Codex (`rate_limits.primary` / `secondary`, `plan_type`), serta jendela log 5 jam/7 hari + batas token opsional untuk Claude dan Antigravity.
 - **Pindah Akun Live 1-Klik & Failover**: klik tombol `⇄` di header pane agent kapan saja — atau biarkan **Auto-Resume** / **Manual Resume** mengambil alih saat kena limit. Perpindahan sesama provider otomatis menyalin file sesi dan melakukan `--resume` dengan riwayat utuh; lintas provider membuat ringkasan *handoff* dengan penyensoran secret otomatis.
 
 ![Banner pemulihan Rate Limit inline dengan tombol 1-klik Resume on claude2, chatgpt1, atau chatgpt2](docs/screenshots/editor.png)

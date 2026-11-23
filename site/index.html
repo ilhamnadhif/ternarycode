@@ -85,7 +85,6 @@
     <div class="agent-row">
       <span class="ag-pill"><span class="lg" data-logo="CC"></span>Claude Code</span>
       <span class="ag-pill"><span class="lg" data-logo="Cx"></span>ChatGPT / Codex</span>
-      <span class="ag-pill"><span class="lg" data-logo="Gm"></span>Gemini CLI</span>
       <span class="ag-pill"><span class="lg" data-logo="AG"></span>Antigravity CLI</span>
       <span class="ag-pill"><span class="lg" data-logo="OC"></span>OpenCode</span>
       <span class="ag-pill any"><span class="lg">&gt;_</span>Any command</span>
@@ -194,7 +193,7 @@
         <h2>Code wide. <span class="q">Every session in your project tree.</span></h2>
       </div>
       <div class="ch-body">
-        <p>The Code Editor commands the main viewport while Terminals, Agent Logs, and LSP Problems live in a collapsible bottom or right panel (<span data-k="drawer"><kbd>⇧⌘L</kbd></span>). Expand any project in the sidebar to see live and past sessions for <b>Claude Code, Codex, Gemini CLI, and Antigravity CLI</b> — one click resumes right where you stopped.</p>
+        <p>The Code Editor commands the main viewport while Terminals, Agent Logs, and LSP Problems live in a collapsible bottom or right panel (<span data-k="drawer"><kbd>⇧⌘L</kbd></span>). Expand any project in the sidebar to see live and past sessions for <b>Claude Code, Codex, and Antigravity CLI (<span class="mono">agy</span>)</b> — one click resumes right where you stopped.</p>
         <ul class="facts">
           <li>Your language servers: <b>rust-analyzer, gopls, TypeScript, pyright, clangd</b>… Definitions, references, rename, hover and problems.</li>
           <li>Dock the Terminal Panel bottom or right, maximize it, or hide it completely while reading code.</li>
@@ -217,7 +216,7 @@
         <h2>Switch accounts in one click. <span class="q">Zero logout dance.</span></h2>
       </div>
       <div class="ch-body">
-        <p>Pre-register multiple accounts — <b>chatgpt1, chatgpt2, chatgpt3, claude1, claude2, gemini1</b> — each signed in inside its own isolated <span class="mono">0o700</span> auth folder. Track both <b>5-hour</b> and <b>weekly</b> usage limits with live reset countdowns, switch accounts mid-session in one click, or let Auto-Resume fail over automatically.</p>
+        <p>Pre-register multiple accounts — <b>chatgpt1, chatgpt2, chatgpt3, claude1, claude2, agy1</b> — each signed in inside its own isolated <span class="mono">0o700</span> auth folder. Track both <b>5-hour</b> and <b>weekly</b> usage limits with live reset countdowns, switch accounts mid-session in one click, or let Auto-Resume fail over automatically.</p>
         <ul class="facts">
           <li><b>Same-provider failover</b> copies the session across isolated roots and runs native <span class="mono">--resume</span> with full conversation history intact.</li>
           <li><b>Cross-provider failover</b> writes a secret-redacted handoff summary so another agent picks up from the exact stopping point.</li>
@@ -225,7 +224,7 @@
       </div>
     </div>
     <figure class="shot rv" style="margin-left:0;margin-right:0">
-      <img src="assets/img/profiles.webp" alt="Multi-Account Profiles showing Claude Max, ChatGPT Plus #1/#2/#3, and Gemini with 5-hour and weekly usage limit bars" width="1600" height="1000" loading="lazy" decoding="async">
+      <img src="assets/img/profiles.webp" alt="Multi-Account Profiles showing Claude Max, ChatGPT Plus #1/#2/#3, and Antigravity CLI with 5-hour and weekly usage limit bars" width="1600" height="1000" loading="lazy" decoding="async">
       <figcaption><b></b>Pre-registered accounts with 5-hour &amp; weekly usage limits</figcaption>
     </figure>
     <figure class="shot rv" style="margin-left:0;margin-right:0;margin-top:20px">
@@ -474,7 +473,7 @@
     </div>
     <div class="faq-l rv">
       <details><summary>Is it really free?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Yes. TernaryCode is MIT licensed, with no account, no paid tier and no telemetry. You pay only for the agents you already use, through their own plans.</p></div></details>
-      <details><summary>Which agents does it work with?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Run Agent has presets for <b>Claude Code, ChatGPT / Codex, Gemini CLI, Antigravity CLI, and OpenCode</b>, and you can add any command as a preset of your own. Each agent is installed on its own, as usual.</p><p>Sessions for Claude Code, Codex, Gemini CLI, and Antigravity CLI appear directly inside each project in the sidebar for one-click resume, and you can pre-register multiple isolated accounts per provider with 5-hour and weekly usage limit tracking.</p></div></details>
+      <details><summary>Which agents does it work with?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Run Agent has presets for <b>Claude Code, ChatGPT / Codex, Antigravity CLI (<span class="mono">agy</span>), and OpenCode</b>, and you can add any command as a preset of your own. Each agent is installed on its own, as usual.</p><p>Sessions for Claude Code, Codex, and Antigravity CLI appear directly inside each project in the sidebar for one-click resume, and you can pre-register multiple isolated accounts per provider with 5-hour and weekly usage limit tracking.</p></div></details>
       <details><summary>Will it change my agent’s settings?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not unless you ask. Hooks are passed for each launch, and secondary accounts live in private <span class="mono">0o700</span> profile folders so your default CLI login is untouched. If you want agents you start by hand to report too, <b>Settings → Agents</b> installs hooks once with an exact preview and full <b>Uninstall</b>.</p></div></details>
       <details><summary>How does multi-account switching work?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Register each account once in <b>Profiles</b> (for example <span class="mono">chatgpt1</span>, <span class="mono">chatgpt2</span>, <span class="mono">chatgpt3</span>) and click <b>Auth Login</b> inside its isolated folder. When an account nears or hits its 5-hour or weekly limit, click the one-click Switch button in the pane header — or let Auto-Resume fail over — to copy the session and continue right where you stopped without logging out.</p></div></details>
       <details><summary>Does my code go anywhere?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not through TernaryCode. It sends nothing about you or your code; it only asks GitHub whether there’s an update. When you push or open a pull request, your own git and GitHub CLI send it where you asked. Your agents talk to their own providers, exactly as they do in any terminal.</p></div></details>

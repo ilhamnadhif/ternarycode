@@ -22,8 +22,6 @@ pub enum SettingsPage {
     Browser,
     /// Presets and how each agent reports to TernaryCode (its hooks).
     Agents,
-    /// Phone pairing and embedded mobile companion server.
-    Pairing,
     Editor,
     Notifications,
     Updates,
@@ -37,7 +35,7 @@ const H: f32 = 768.0;
 const NAV_W: f32 = 236.0;
 
 /// The pages, their icons, and the rows on each (for the search).
-fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 10] {
+fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 9] {
     [
         (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically", "Group active projects at the top", "Worktrees"]),
         (SettingsPage::Appearance, icons::PAINT_BRUSH, "Appearance", &["Theme", "Language", "With the dark theme", "With the light theme", "Font", "Size", "Cursor", "Blinking cursor"]),
@@ -52,8 +50,7 @@ fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str
             },
         ),
         (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "When an agent opens a page", "Put browsers to sleep after", "Pages in Grid tiles", "Logins & cookies", "Agents can use the browser", "Ask before agents open a site", "Sites agents may open without asking", "Agents may run JavaScript in pages"]),
-        (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks", "Agent Profiles"]),
-        (SettingsPage::Pairing, icons::DEVICE_MOBILE, "Phone Pairing", &["Mobile Companion Server", "Local Port", "Paired Devices"]),
+        (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks"]),
         (SettingsPage::Editor, icons::CODE, "Editor", &["Language features", "Start servers only when needed", "Completion while typing", "Format on save"]),
         (
             SettingsPage::Notifications,
@@ -170,36 +167,43 @@ impl Card<'_> {
         self.first = false;
         self.rows += 1;
         egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 14, top: 12, bottom: 12 }).show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            let row_w = ui.available_width();
+            ui.set_width(row_w);
             ui.set_min_height(26.0);
             let icon = self.icon;
             let text = |ui: &mut Ui| {
+                // Respect the space shrunk by `Sides::shrink_left()` — never expand past `available_width()`!
+                let max_text_w = ui.available_width().clamp(80.0, 600.0);
+                ui.set_max_width(max_text_w);
                 ui.vertical(|ui| {
+                    ui.set_max_width(max_text_w);
                     ui.spacing_mut().item_spacing.y = 2.0;
                     match icon {
                         Some((i, c)) => {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.x = 6.0;
                                 ui.label(RichText::new(i).font(style::icon_fill(13.0)).color(c));
-                                ui.label(RichText::new(label).size(13.0).color(p.text));
+                                ui.add(egui::Label::new(RichText::new(label).size(13.0).color(p.text)).wrap());
                             });
                         }
                         None => {
-                            ui.label(RichText::new(label).size(13.0).color(p.text));
+                            ui.add(egui::Label::new(RichText::new(label).size(13.0).color(p.text)).wrap());
                         }
                     }
                     if !note.is_empty() {
-                        ui.set_max_width(600.0);
                         ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint).line_height(Some(17.4))).wrap());
                     }
                 });
             };
-            if stacked {
+            if stacked || row_w < 430.0 {
                 text(ui);
-                ui.add_space(10.0);
-                control(ui);
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    control(ui);
+                });
             } else {
-                egui::Sides::new().height(26.0).spacing(16.0).shrink_left().wrap().show(
+                egui::Sides::new().height(26.0).spacing(18.0).shrink_left().wrap().show(
                     ui,
                     |ui| text(ui),
                     |ui| {
@@ -255,8 +259,9 @@ impl App {
             *page = SettingsPage::Agents;
         }
         let screen = ui.ctx().content_rect();
-        let w = W.min(screen.width() - 40.0);
-        let h = H.min(screen.height() - 60.0);
+        let w = W.min((screen.width() - 32.0).max(360.0));
+        let h = H.min((screen.height() - 48.0).max(360.0));
+        let nav_w = if w < 760.0 { 184.0 } else { NAV_W };
         ui.set_width(w);
         ui.set_height(h);
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
@@ -267,7 +272,7 @@ impl App {
         kit::paint_highlight(ui.painter(), Rect::from_min_size(full.min, vec2(w, 1.0)), style::RADIUS_DIALOG, &p);
 
         // ----- the pages at the left: "Settings", the search, the pages, the version ----------
-        let nav = Rect::from_min_max(full.min, pos2(full.left() + NAV_W, full.bottom()));
+        let nav = Rect::from_min_max(full.min, pos2(full.left() + nav_w, full.bottom()));
         let nav_fill = if dark { style::over(p.overlay, p.chrome, 0.45) } else { Color32::from_rgb(0xf6, 0xf6, 0xf5) };
         ui.painter().rect_filled(nav, CornerRadius { nw: style::RADIUS_DIALOG, ne: 0, sw: style::RADIUS_DIALOG, se: 0 }, nav_fill);
         ui.painter().vline(nav.right() - 0.5, nav.y_range(), Stroke::new(1.0, p.border));
@@ -277,10 +282,10 @@ impl App {
         job.append(t("Settings"), 0.0, f);
         let g = ui.painter().layout_job(job);
         ui.painter().galley(pos2(nav.left() + 18.0, nav.top() + 18.0), g, p.text);
-        let search_rect = Rect::from_min_size(pos2(nav.left() + 10.0, nav.top() + 18.0 + 22.0 + 10.0), vec2(NAV_W - 20.0, 30.0));
+        let search_rect = Rect::from_min_size(pos2(nav.left() + 10.0, nav.top() + 18.0 + 22.0 + 10.0), vec2(nav_w - 20.0, 30.0));
         let mut search = self.settings_search.clone();
         ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect), |ui| {
-            kit::field(ui, egui::Id::new("settings-search"), &mut search, Some(icons::MAGNIFYING_GLASS), t("Search settings"), NAV_W - 20.0, false)
+            kit::field(ui, egui::Id::new("settings-search"), &mut search, Some(icons::MAGNIFYING_GLASS), t("Search settings"), nav_w - 20.0, false)
         });
         self.settings_search = search.clone();
         // ⌘F, at the right of the empty field.
@@ -320,13 +325,13 @@ impl App {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
                     for (i, (pg, icon, name, rows)) in pages().into_iter().enumerate() {
-                        if i == 8 {
-                            let (sr, _) = ui.allocate_exact_size(vec2(NAV_W - 20.0, 14.0), Sense::hover());
+                        if i == 7 {
+                            let (sr, _) = ui.allocate_exact_size(vec2(nav_w - 20.0, 14.0), Sense::hover());
                             ui.painter().hline((sr.left() + 8.0)..=(sr.right() - 8.0), sr.center().y, Stroke::new(1.0, p.border));
                         }
                         let label = t(name);
                         let matches = !search.trim().is_empty() && rows.iter().any(|r| hit(&search, t(r), ""));
-                        let (item, r) = ui.allocate_exact_size(vec2(NAV_W - 20.0, 31.0), Sense::click());
+                        let (item, r) = ui.allocate_exact_size(vec2(nav_w - 20.0, 31.0), Sense::click());
                         #[cfg(debug_assertions)]
                         crate::devtest::record(format!("settings:{name}"), item);
                         let on = *page == pg;
@@ -369,10 +374,17 @@ impl App {
         if ui.scope_builder(egui::UiBuilder::new().max_rect(close), |ui| kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0)).inner.clicked() {
             keep = false;
         }
-        let saved = ui.painter().layout_no_wrap(t("Saved as you change them").to_string(), egui::FontId::proportional(11.5), p.text_faint);
-        let sx = close.left() - 12.0 - saved.size().x;
-        ui.painter().galley(pos2(sx, close.center().y - saved.size().y / 2.0), saved, p.text_faint);
-        ui.painter().text(pos2(sx - 5.0, close.center().y), Align2::RIGHT_CENTER, icons::CHECK, style::icon_font(12.0), p.ok);
+        let pad_x: i8 = if main_full.width() < 560.0 { 18 } else { 34 };
+        let show_saved = main_full.width() >= 480.0;
+        let sx = if show_saved {
+            let saved = ui.painter().layout_no_wrap(t("Saved as you change them").to_string(), egui::FontId::proportional(11.5), p.text_faint);
+            let x = close.left() - 12.0 - saved.size().x;
+            ui.painter().galley(pos2(x, close.center().y - saved.size().y / 2.0), saved, p.text_faint);
+            ui.painter().text(pos2(x - 5.0, close.center().y), Align2::RIGHT_CENTER, icons::CHECK, style::icon_font(12.0), p.ok);
+            x - 16.0
+        } else {
+            close.left() - 10.0
+        };
         // ----- the page -------------------------------------------------------------------------
         let main = Rect::from_min_max(pos2(nav.right(), head.bottom()), full.max);
         #[cfg(debug_assertions)]
@@ -380,8 +392,8 @@ impl App {
         let before = self.settings.clone();
         ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
             egui::ScrollArea::vertical().id_salt(("settings-page", *page as u8)).auto_shrink([false, false]).show(ui, |ui| {
-                egui::Frame::NONE.inner_margin(egui::Margin { left: 34, right: 34, top: 4, bottom: 30 }).show(ui, |ui| {
-                    ui.set_width((main.width() - 68.0).max(160.0));
+                egui::Frame::NONE.inner_margin(egui::Margin { left: pad_x, right: pad_x, top: 4, bottom: 30 }).show(ui, |ui| {
+                    ui.set_width((main.width() - f32::from(pad_x) * 2.0).max(160.0));
                     ui.spacing_mut().item_spacing.y = 0.0;
                     match *page {
                         SettingsPage::General => self.general_page(ui, &search),
@@ -389,10 +401,6 @@ impl App {
                         SettingsPage::Terminal => self.terminal_page(ui, &search),
                         SettingsPage::Browser => self.browser_page(ui, &search),
                         SettingsPage::Agents | SettingsPage::Integrations => self.agents_page(ui, &search),
-                        SettingsPage::Pairing => {
-                            page_head(ui, t("Phone Pairing"), t("Pair your smartphone with this desktop ADE via QR code."));
-                            self.pairing_content(ui);
-                        }
                         SettingsPage::Editor => self.editor_page(ui, &search),
                         SettingsPage::Notifications => self.notifications_page(ui, &search),
                         SettingsPage::Updates => self.updates_page(ui, &search),
@@ -403,18 +411,20 @@ impl App {
         });
         // The head's title and line, given by the page just drawn.
         if let Some((title, lead)) = ui.ctx().data(|d| d.get_temp::<(String, String)>(egui::Id::new("settings-head"))) {
-            let max_head_w = (sx - 20.0 - (head.left() + 34.0)).max(60.0);
+            let hx = head.left() + f32::from(pad_x);
+            let max_head_w = (sx - 12.0 - hx).max(60.0);
+            let max_lead_w = (close.left() - 12.0 - hx).max(60.0);
             let mut job = egui::text::LayoutJob::default();
             let mut f = egui::TextFormat::simple(style::semibold(21.0), p.text);
             f.extra_letter_spacing = -0.42;
             job.append(&title, 0.0, f);
             job.wrap = egui::text::TextWrapping::truncate_at_width(max_head_w);
             let g = ui.painter().layout_job(job);
-            ui.painter().galley(pos2(head.left() + 34.0, head.top() + 24.0), g, p.text);
+            ui.painter().galley(pos2(hx, head.top() + 24.0), g, p.text);
             let mut job = egui::text::LayoutJob::simple_singleline(lead, egui::FontId::proportional(13.0), p.text_muted);
-            job.wrap = egui::text::TextWrapping::truncate_at_width(max_head_w);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(max_lead_w);
             let g = ui.painter().layout_job(job);
-            ui.painter().galley(pos2(head.left() + 34.0, head.top() + 24.0 + 26.0 + 5.0), g, p.text_muted);
+            ui.painter().galley(pos2(hx, head.top() + 24.0 + 26.0 + 5.0), g, p.text_muted);
         }
 
         ui.allocate_rect(full, Sense::hover());
@@ -581,30 +591,20 @@ impl App {
             for dark in [true, false] {
                 let (label, note) = if dark { (t("With the dark theme"), t("Also used in Grid tiles and previews.")) } else { (t("With the light theme"), "") };
                 c.bare_hit(label, note, |ui| {
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        let p = style::pal(ui);
-                        ui.vertical(|ui| {
-                            ui.set_width(190.0);
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.label(RichText::new(label).size(13.0).color(p.text));
-                            if !note.is_empty() {
-                                ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint).line_height(Some(17.4))).wrap());
-                            }
-                        });
-                        // Four schemes (the chosen one among them), the rest behind "N more".
-                        let current = self.scheme(dark).name;
-                        let schemes: Vec<&'static tc_term::scheme::Scheme> = tc_term::scheme::SCHEMES.iter().filter(|s| s.dark == dark).collect();
-                        let open_id = egui::Id::new(("schemes-open", dark));
-                        let open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
-                        let mut shown: Vec<&'static tc_term::scheme::Scheme> = if open { schemes.clone() } else { schemes.iter().take(4).copied().collect() };
-                        if !open && !shown.iter().any(|s| s.name == current)
-                            && let Some(s) = schemes.iter().find(|s| s.name == current)
-                        {
-                            shown.pop();
-                            shown.push(s);
-                        }
-                        let more = schemes.len().saturating_sub(4);
+                    let p = style::pal(ui);
+                    let current = self.scheme(dark).name;
+                    let schemes: Vec<&'static tc_term::scheme::Scheme> = tc_term::scheme::SCHEMES.iter().filter(|s| s.dark == dark).collect();
+                    let open_id = egui::Id::new(("schemes-open", dark));
+                    let open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+                    let mut shown: Vec<&'static tc_term::scheme::Scheme> = if open { schemes.clone() } else { schemes.iter().take(4).copied().collect() };
+                    if !open && !shown.iter().any(|s| s.name == current)
+                        && let Some(s) = schemes.iter().find(|s| s.name == current)
+                    {
+                        shown.pop();
+                        shown.push(s);
+                    }
+                    let more = schemes.len().saturating_sub(4);
+                    let mut draw_tiles = |ui: &mut Ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = vec2(6.0, 10.0);
                             for s in &shown {
@@ -623,7 +623,31 @@ impl App {
                                 }
                             }
                         });
-                    });
+                    };
+                    if ui.available_width() < 520.0 {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            ui.label(RichText::new(label).size(13.0).color(p.text));
+                            if !note.is_empty() {
+                                ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint).line_height(Some(17.4))).wrap());
+                            }
+                            ui.add_space(6.0);
+                            draw_tiles(ui);
+                        });
+                    } else {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 12.0;
+                            ui.vertical(|ui| {
+                                ui.set_width(180.0);
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.label(RichText::new(label).size(13.0).color(p.text));
+                                if !note.is_empty() {
+                                    ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint).line_height(Some(17.4))).wrap());
+                                }
+                            });
+                            draw_tiles(ui);
+                        });
+                    }
                 });
             }
         });
@@ -1117,26 +1141,16 @@ impl App {
                     if !preset.agent.is_some_and(|a| super::agent_logo::paint(ui.painter(), logo, a, p.text, false)) {
                         ui.painter().text(tile.center(), Align2::CENTER_CENTER, agent_mark(preset), style::mono_semibold(11.0), p.text_muted);
                     }
-                    let x = tile.right() + 12.0;
-                    let g = ui.painter().layout_no_wrap(preset.name.clone(), style::medium(13.5), p.text);
-                    let nw = g.size().x;
-                    ui.painter().galley(pos2(x, cy - 9.0 - g.size().y / 2.0), g, p.text);
-                    let (icon, text, fg, bg) = hooks.pill(&p, dark);
-                    kit::paint_pill(ui.painter(), pos2(x + nw + 8.0, cy - 9.0), icon, &text, fg, bg);
-                    let sub = match &preset.resume {
-                        Some(r) if !r.is_empty() => format!("{}  ·  {} {r}", preset.command, t("resume:")),
-                        _ => format!("{}  ·  {} —", preset.command, t("resume:")),
-                    };
-                    ui.painter().text(pos2(x, cy + 10.0), Align2::LEFT_CENTER, sub, style::mono(11.0), p.text_faint);
                     let chevron_x = head.right() - 14.0 - 8.0;
                     ui.painter().text(pos2(chevron_x, cy), Align2::CENTER_CENTER, if expanded { icons::CARET_UP } else { icons::CARET_DOWN }, style::icon_font(12.0), p.text_faint);
-                    let right = chevron_x - 8.0 - 14.0;
+                    let mut right = chevron_x - 8.0 - 14.0;
                     if !hooks.hooked && hooks.can_install && self.installed(agent).is_none() {
                         let w = kit::button_width(ui, None, t("Install…"), None, true);
                         let br = Rect::from_min_size(pos2(right - w, cy - 12.0), vec2(w, 24.0));
                         if ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| kit::button_ex(ui, kit::Kind::Primary, None, t("Install…"), true)).inner.clicked() {
                             self.actions.push(Action::PlanInstall(agent));
                         }
+                        right = br.left() - 10.0;
                     } else if hooks.installed && !matches!(agent, AgentKind::Claude | AgentKind::Codex) && !expanded {
                         // An agent whose hooks are only ever installed: Uninstall right here.
                         let w = kit::button_width(ui, None, t("Uninstall"), None, true);
@@ -1144,10 +1158,35 @@ impl App {
                         if ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| kit::button_ex(ui, kit::Kind::Ghost, None, t("Uninstall"), true)).inner.clicked() {
                             self.actions.push(Action::Uninstall(agent));
                         }
+                        right = br.left() - 10.0;
                     } else if hooks.active > 0 {
                         let text = crate::i18n::count(hooks.active, t("Active in 1 pane"), t("Active in {} panes"));
-                        ui.painter().text(pos2(right, cy), Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), p.text_faint);
+                        let ag = ui.painter().layout_no_wrap(text, egui::FontId::proportional(12.0), p.text_faint);
+                        let aw = ag.size().x;
+                        ui.painter().galley(pos2(right - aw, cy - ag.size().y / 2.0), ag, p.text_faint);
+                        right -= aw + 10.0;
                     }
+                    let x = tile.right() + 12.0;
+                    let room = (right - x).max(40.0);
+                    let (icon, text, fg, bg) = hooks.pill(&p, dark);
+                    let pill_w = kit::pill_width(ui.painter(), icon, &text);
+                    let name_max = if room > pill_w + 68.0 { room - pill_w - 8.0 } else { room };
+                    let mut njob = egui::text::LayoutJob::simple_singleline(preset.name.clone(), style::medium(13.5), p.text);
+                    njob.wrap = egui::text::TextWrapping::truncate_at_width(name_max);
+                    let g = ui.painter().layout_job(njob);
+                    let nw = g.size().x;
+                    ui.painter().galley(pos2(x, cy - 9.0 - g.size().y / 2.0), g, p.text);
+                    if x + nw + 8.0 + pill_w <= right {
+                        kit::paint_pill(ui.painter(), pos2(x + nw + 8.0, cy - 9.0), icon, &text, fg, bg);
+                    }
+                    let sub = match &preset.resume {
+                        Some(r) if !r.is_empty() => format!("{}  ·  {} {r}", preset.command, t("resume:")),
+                        _ => format!("{}  ·  {} —", preset.command, t("resume:")),
+                    };
+                    let mut sjob = egui::text::LayoutJob::simple_singleline(sub, style::mono(11.0), p.text_faint);
+                    sjob.wrap = egui::text::TextWrapping::truncate_at_width(room);
+                    let sg = ui.painter().layout_job(sjob);
+                    ui.painter().galley(pos2(x, cy + 10.0 - sg.size().y / 2.0), sg, p.text_faint);
                     if resp.clicked() {
                         open = if expanded { None } else { Some(preset.id.clone()) };
                     }
@@ -1264,36 +1303,39 @@ impl App {
             presets.remove(i);
             changed = true;
         }
-        ui.horizontal(|ui| {
-            if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::PLUS), t("Add Preset"), true).clicked() {
-                let n = presets.iter().filter(|p| !p.builtin).count() + 1;
-                // An id no preset has (counting would repeat one after a deletion).
-                let mut k = n;
-                while presets.iter().any(|p| p.id == format!("custom-{k}")) {
-                    k += 1;
+        egui::Sides::new().spacing(12.0).shrink_right().show(
+            ui,
+            |ui| {
+                if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::PLUS), t("Add Preset"), true).clicked() {
+                    let n = presets.iter().filter(|p| !p.builtin).count() + 1;
+                    // An id no preset has (counting would repeat one after a deletion).
+                    let mut k = n;
+                    while presets.iter().any(|p| p.id == format!("custom-{k}")) {
+                        k += 1;
+                    }
+                    let id = format!("custom-{k}");
+                    presets.push(Preset {
+                        id: id.clone(),
+                        name: tf("My agent {}", &[&n.to_string()]),
+                        agent: Some(AgentKind::Custom),
+                        command: String::new(),
+                        resume: None,
+                        env: Default::default(),
+                        builtin: false,
+                    });
+                    ui.data_mut(|d| d.insert_temp(open_id, Some(id)));
+                    changed = true;
                 }
-                let id = format!("custom-{k}");
-                presets.push(Preset {
-                    id: id.clone(),
-                    name: tf("My agent {}", &[&n.to_string()]),
-                    agent: Some(AgentKind::Custom),
-                    command: String::new(),
-                    resume: None,
-                    env: Default::default(),
-                    builtin: false,
-                });
-                ui.data_mut(|d| d.insert_temp(open_id, Some(id)));
-                changed = true;
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
+            },
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
                 let exists = self.hook_bin.bin.exists();
                 let path = format!("{}{}", crate::paths::contract_tilde(&self.hook_bin.bin), if exists { "" } else { t(" (missing)") });
                 ui.add(egui::Label::new(RichText::new(path).font(style::mono(10.5)).color(if exists { p.text_faint } else { p.err })).truncate());
                 ui.label(RichText::new(t("Hook program")).size(12.0).color(p.text_muted));
                 ui.label(RichText::new(if exists { icons::CHECK_CIRCLE } else { icons::WARNING }).font(style::icon_fill(12.0)).color(if exists { p.ok } else { p.err }));
-            });
-        });
+            },
+        );
         if changed {
             // Saved: every user preset, and built-ins only where they differ from the default.
             let defaults = tc_core::agent::builtin_presets();
@@ -1380,7 +1422,7 @@ impl Hooks {
         }
         // Per launch covers what Run Agent starts, not the agent typed by hand.
         if self.agent == AgentKind::Antigravity {
-            return (Some(icons::CIRCLE_HALF), t("No hooks yet · status shows Active").to_string(), p.text_muted, p.subtle);
+            return (Some(icons::INFO), t("No hooks yet · status shows Active").to_string(), p.text_muted, p.subtle);
         }
         if self.hooked && !self.installed && self.unconnected > 0 {
             return (Some(icons::WARNING), t("Hooks · per launch only").to_string(), p.warn, style::tint(p.warn, dark));
@@ -1405,7 +1447,7 @@ fn hooks_note(agent: AgentKind) -> &'static str {
         AgentKind::Claude => t("Per launch adds the hooks (--settings) and browser tools (--mcp-config) to each run, without touching your files. Installed writes the hooks into ~/.claude/settings.json, with a backup."),
         AgentKind::Codex => t("Per launch adds the hooks, notify and browser tools to each run. Codex asks you once to trust TernaryCode's hooks (its own security check)."),
         AgentKind::Gemini => t("Install adds hooks to ~/.gemini/settings.json (tool permissions, finished turns). Gemini CLI has no per-launch option."),
-        AgentKind::Antigravity => t("Antigravity CLI replaced Gemini CLI. TernaryCode does not add hooks to it yet: while it runs, its status reads “Active”."),
+        AgentKind::Antigravity => t("TernaryCode does not add hooks to Antigravity CLI yet: while it runs, its status reads “Active”."),
         _ => t("Install adds a small plugin file to OpenCode's plugins folder (permission requests, finished turns). OpenCode has no per-launch option."),
     }
 }
@@ -1568,7 +1610,14 @@ fn theme_card(ui: &mut Ui, mode: ThemeMode, name: &str, on: bool, w: f32) -> egu
     painter.galley(pos2(card.left() + 8.0 + 8.0 + 8.0, ry - g.size().y / 2.0), g, if on { p.text } else { p.text_muted });
     if mode == ThemeMode::System {
         let os = if cfg!(target_os = "macos") { t("follows macOS") } else if cfg!(windows) { t("follows Windows") } else { t("follows the system") };
-        painter.text(pos2(card.left() + 24.0 + gw + 8.0, ry), Align2::LEFT_CENTER, os, egui::FontId::proportional(11.5), p.text_faint);
+        let ox = card.left() + 24.0 + gw + 8.0;
+        let room = card.right() - ox;
+        if room > 32.0 {
+            let mut job = egui::text::LayoutJob::simple_singleline(os.to_string(), egui::FontId::proportional(11.5), p.text_faint);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            let og = painter.layout_job(job);
+            painter.galley(pos2(ox, ry - og.size().y / 2.0), og, p.text_faint);
+        }
     }
     resp
 }

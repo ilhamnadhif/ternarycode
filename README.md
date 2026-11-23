@@ -28,15 +28,15 @@
 
 ![Wide Code Editor commanding the workspace with project-nested agent sessions (Claude Code, Codex, Antigravity CLI) in the sidebar and collapsible Terminal Panel below](docs/screenshots/focus.png)
 
-Running **Claude Code**, **ChatGPT / Codex**, **Gemini CLI**, **Antigravity CLI**, or **OpenCode** across multiple projects usually means scattered terminal windows, manual logout/re-login dances when an account hits its usage limit, and guessing which agent is waiting for you. TernaryCode brings every project, session, account, and editor into one fast native Rust workspace.
+Running **Claude Code**, **ChatGPT / Codex**, **Antigravity CLI (`agy`)**, or **OpenCode** across multiple projects usually means scattered terminal windows, manual logout/re-login dances when an account hits its usage limit, and guessing which agent is waiting for you. TernaryCode brings every project, session, account, and editor into one fast native Rust workspace.
 
 No Electron, no cloud middleman: it launches in ~0.2 s, idles at 0% CPU, and keeps all credentials strictly local on your machine.
 
 ## Highlights
 
 - **Wide Code Editor & Collapsible Terminal Panel**: the Code Editor & Diff Viewer commands the primary viewport (≥60% by default), while Terminals, Agent Logs, and LSP Problems live in a dockable bottom or right panel (`⇧⌘L`).
-- **Project-Nested Agent Sessions**: expand any project in the sidebar to see live and past sessions for **Claude Code, Codex, Gemini CLI, and Antigravity CLI** with brand logos, live status pills, and 1-click resume.
-- **Multi-Account Profiles & 5-Hour / Weekly Usage Limits**: pre-register multiple accounts (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `gemini1`) with isolated file-backed auth folders. Switch accounts in **one click without logging out**, or let Auto/Manual Failover resume your session automatically when an account hits its limit.
+- **Project-Nested Agent Sessions**: expand any project in the sidebar to see live and past sessions for **Claude Code, Codex, and Antigravity CLI (`agy`)** with brand logos, live status pills, and 1-click resume.
+- **Multi-Account Profiles & 5-Hour / Weekly Usage Limits**: pre-register multiple accounts (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `agy1`) with isolated file-backed auth folders. Switch accounts in **one click without logging out**, or let Auto/Manual Failover resume your session automatically when an account hits its limit.
 - **Unified All-Agent Usage & Status Monitor**: live top-bar telemetry pill, quick-switch popover, and full monitor tracking **5-hour** & **weekly** quotas, reset countdowns, active sessions, and failover events.
 - **Phone Pairing & Mobile Companion**: pair your smartphone via QR code over local Wi-Fi or a secure tunnel to stream live agent output, approve pending tools, send follow-ups, and trigger profile failovers remotely.
 - **Know Which Agent Needs You**: hook-backed *Needs input*, *Running*, *Done*, and *Failed* states, `⌘J` jump queue, and a live **Grid** (`⌘0`) of every project.
@@ -74,8 +74,8 @@ TernaryCode updates itself (the `.deb`, `.rpm`, and portable `.zip` through a ne
 ## Quick start
 
 1. **Add a project**: click **+** in the sidebar, drop a folder on the window, or run `ternarycode .` in any terminal.
-2. **Pre-register your accounts** (optional): open **Profiles** (bottom-left 👤), click **+ ChatGPT / + Claude / + Gemini**, and click **Auth Login** once per account. Each account stays signed in inside its own private `0o700` folder.
-3. **Run Agent** (`⇧⌘A`): launch Claude Code, Codex, Gemini CLI, Antigravity CLI, or OpenCode. Expand the project in the sidebar anytime to resume past sessions in one click.
+2. **Pre-register your accounts** (optional): open **Profiles** (bottom-left 👤), click **+ Add Profile**, choose your provider (**Claude Code**, **ChatGPT / Codex**, **Antigravity CLI (`agy`)**, or **OpenCode**), and click **Auth Login** once per account. Each account stays signed in inside its own private `0o700` folder.
+3. **Run Agent** (`⇧⌘A`): launch Claude Code, Codex, Antigravity CLI (`agy`), or OpenCode. Expand the project in the sidebar anytime to resume past sessions in one click.
 4. **Switch accounts or jump to waiting agents**: click `⇄ <next_account>` right in the pane header to switch accounts mid-session without logout, or press `⌘J` to jump to any waiting agent.
 
 ## Features
@@ -84,14 +84,14 @@ TernaryCode updates itself (the `.deb`, `.rpm`, and portable `.zip` through a ne
 
 - **Code-first workspace**: the Code Editor (`⌘E`) opens wide by default with smooth resizable splits, language servers (rust-analyzer, gopls, TypeScript, pyright, clangd…), and git gutter change markers.
 - **Collapsible Terminal Panel** (`⇧⌘L`): dock Terminals, Agent Logs, and LSP Problems at the bottom or right, maximize to full height, or hide when reading code.
-- **Project-nested session tree**: expand any project row in the left sidebar (`›`) to view live sessions (`● live`) and past history for **Claude Code**, **Codex**, **Gemini CLI**, and **Antigravity CLI** (`agy --conversation <id>`) — click any session to focus or resume directly.
+- **Project-nested session tree**: expand any project row in the left sidebar (`›`) to view live sessions (`● live`) and past history for **Claude Code**, **Codex**, and **Antigravity CLI** (`agy --conversation <id>`) — click any session to focus or resume directly.
 
 ### Multi-Account Profiles, 5-Hour & Weekly Limits, & 1-Click Switch
 
-![Agent Profiles & Failover showing 6 pre-registered accounts across Claude Max, ChatGPT Plus, and Gemini with 5-hour & weekly usage meters and isolated auth folders](docs/screenshots/profiles.png)
+![Agent Profiles & Failover showing 6 pre-registered accounts across Claude Max, ChatGPT Plus, and Antigravity CLI with 5-hour & weekly usage meters and isolated auth folders](docs/screenshots/profiles.png)
 
-- **Zero logout/re-login dance**: register multiple accounts (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `gemini1`) upfront. Each isolated profile gets its own `CLAUDE_CONFIG_DIR`, file-backed `CODEX_HOME` (`auth.json`), or `GEMINI_CLI_HOME`, plus automatic env cleanup across switches.
-- **Dual Usage Limit Meters**: tracks both **5-Hour rolling limits** and **Weekly (7-day) limits** — reading real server-reported percentages & reset timestamps directly from Codex session telemetry (`rate_limits.primary` / `secondary`, `plan_type`), and rolling 5h/7d log windows + optional token caps for Claude and Gemini.
+- **Zero logout/re-login dance**: register multiple accounts (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `agy1`) upfront. Each isolated profile gets its own `CLAUDE_CONFIG_DIR`, file-backed `CODEX_HOME` (`auth.json`), or `AGY_DATA_DIR`, plus automatic env cleanup across switches.
+- **Dual Usage Limit Meters**: tracks both **5-Hour rolling limits** and **Weekly (7-day) limits** — reading real server-reported percentages & reset timestamps directly from Codex session telemetry (`rate_limits.primary` / `secondary`, `plan_type`), and rolling 5h/7d log windows + optional token caps for Claude and Antigravity.
 - **1-Click Live Account Switch & Rate-Limit Failover**: click the `⇄` quick-switch button in any running agent pane header — or let **Auto-Resume** / **Manual Resume** kick in when a limit hits. Same-provider switches atomically copy the session file across isolated roots and natively `--resume` your exact conversation; cross-provider switches write a secret-redacted handoff note so work continues seamlessly.
 
 ![Inline Rate-Limit Recovery Banner inside the workspace with one-click Resume on claude2, chatgpt1, or chatgpt2](docs/screenshots/editor.png)

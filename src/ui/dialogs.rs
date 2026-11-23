@@ -723,7 +723,8 @@ impl App {
                     }
                 }
                 Dialog::Install(plan, diff) => {
-                    ui.set_width(760.0);
+                    let max_w = (ui.ctx().content_rect().width() - 48.0).clamp(360.0, 760.0);
+                    ui.set_width(max_w);
                     if header(
                         ui,
                         icons::PLUGS_CONNECTED,

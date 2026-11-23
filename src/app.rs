@@ -506,6 +506,8 @@ pub struct App {
     pub companion_last_push: Instant,
     /// Active add/edit form draft in the Profiles & Accounts view.
     pub profile_draft: Option<crate::ade::ProfileDraft>,
+    /// Last workspace view (`Focus` or `Grid`) before opening Profiles / Monitor / Pairing.
+    pub prev_view: View,
     /// Search/filter query in the Agent Logs drawer tab.
     pub logs_filter: String,
     #[cfg(debug_assertions)]
@@ -795,6 +797,7 @@ impl App {
             companion: None,
             companion_last_push: Instant::now(),
             profile_draft: None,
+            prev_view: View::Focus,
             logs_filter: String::new(),
             #[cfg(debug_assertions)]
             devtest: crate::devtest::Script::from_env(),
@@ -3949,6 +3952,9 @@ impl App {
                 self.monitor_popover = false;
                 self.attention_open = false;
                 self.palette = None;
+                if !crate::ade::is_management_view(self.view) {
+                    self.prev_view = self.view;
+                }
                 self.view = View::Profiles;
                 self.mark_dirty();
             }
@@ -3958,6 +3964,9 @@ impl App {
                 self.monitor_popover = false;
                 self.attention_open = false;
                 self.palette = None;
+                if !crate::ade::is_management_view(self.view) {
+                    self.prev_view = self.view;
+                }
                 self.view = View::Monitor;
                 self.mark_dirty();
             }
@@ -3967,6 +3976,9 @@ impl App {
                 self.monitor_popover = false;
                 self.attention_open = false;
                 self.palette = None;
+                if !crate::ade::is_management_view(self.view) {
+                    self.prev_view = self.view;
+                }
                 self.view = View::Pairing;
                 self.mark_dirty();
             }

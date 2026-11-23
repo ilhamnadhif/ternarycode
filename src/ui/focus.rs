@@ -147,12 +147,6 @@ impl App {
             return;
         }
         if crate::ade::is_management_view(self.view) {
-            if !self.projects.is_empty()
-                && kit::button_ex(ui, kit::Kind::Secondary, Some(icons::CODE), t("Back to Workspace"), true).clicked()
-            {
-                self.actions.push(Action::SetView(View::Focus));
-            }
-            kit::vsep(ui);
             self.telemetry_pill(ui);
             return;
         }
@@ -196,6 +190,35 @@ impl App {
         crate::devtest::record("run-agent", run.rect);
         if run.on_hover_text(t("Start an agent in a new pane")).clicked() {
             self.actions.push(Action::PickPreset);
+        }
+    }
+
+    /// Standard top-left back arrow button (`←`) for management pages (`Profiles`, `Monitor`,
+    /// `Phone Pairing`), matching `Review` and supporting `Esc` when no overlay or input is active.
+    pub fn nav_back_button(&mut self, ui: &mut Ui) {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let tip = format!("{}   Esc", t("Back"));
+        let back = kit::icon_button_ex(ui, icons::ARROW_LEFT, &tip, false, 26.0);
+        #[cfg(debug_assertions)]
+        crate::devtest::record("nav-back", back.rect);
+        let mut go_back = back.clicked();
+        let no_overlay = self.dialog.is_none()
+            && self.palette.is_none()
+            && !self.attention_open
+            && !self.monitor_popover
+            && !self.updater.dialog_open
+            && !egui::Popup::is_any_open(ui.ctx())
+            && !ui.ctx().egui_wants_keyboard_input();
+        if !go_back && no_overlay && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if self.view == View::Profiles && self.profile_draft.is_some() {
+                self.profile_draft = None;
+            } else {
+                go_back = true;
+            }
+        }
+        if go_back {
+            let target = if crate::ade::is_management_view(self.prev_view) { View::Focus } else { self.prev_view };
+            self.actions.push(Action::SetView(target));
         }
     }
 
