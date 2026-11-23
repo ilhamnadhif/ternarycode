@@ -5,7 +5,8 @@
 //! it floats over them. A Grid tile big enough shows it too, its page zoomed out so that it
 //! keeps the layout it has in Focus.
 
-use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
+use tc_core::agent::AgentKind;
 use tc_core::{PaneId, ProjectId};
 
 use super::{icons, kit, style};
@@ -15,7 +16,7 @@ use crate::i18n::{t, tf};
 use crate::project::{Panel, PanelPlace};
 
 /// The strip of page tabs at the top of the panel.
-pub const TABS_H: f32 = 36.0;
+pub const TABS_H: f32 = 40.0;
 /// The least a terminal gets beside the panel (else they show stacked, or it floats).
 pub const MIN_COLS: usize = 60;
 pub const MIN_ROWS: usize = 12;
@@ -24,10 +25,16 @@ const TILE_PANEL_MIN_W: f32 = 560.0;
 const TILE_PANEL_MIN_H: f32 = 200.0;
 /// The least a page in a tile is zoomed to (smaller text is not read).
 const MIN_ZOOM: f32 = 0.5;
-/// A page tab's width.
+/// A page tab: its height, the least and most it is wide, the room between tabs, inside its
+/// sides and between what it shows.
+const TAB_H: f32 = 28.0;
 const TAB_MIN: f32 = 96.0;
-const TAB_MAX: f32 = 210.0;
+const TAB_MAX: f32 = 220.0;
 const TAB_GAP: f32 = 2.0;
+const TAB_PAD: f32 = 9.0;
+const TAB_GAP_IN: f32 = 6.0;
+/// New Page (and ⋯) after the tabs.
+const NEW_W: f32 = 24.0;
 
 impl App {
     pub fn panel_of(&self, project: ProjectId) -> Option<&Panel> {
@@ -226,7 +233,8 @@ impl App {
     }
 
     /// The panel in Focus in `rect`: the strip of its pages, then the page in front (`float`:
-    /// over the terminals).
+    /// over the terminals). Fill the Window and Hide sit at the strip's right until the panel
+    /// is hosted under a header of its own ([`App::browser_panel_body`]).
     pub fn panel_view(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, float: bool) {
         let p = style::pal(ui);
         if float {
@@ -239,7 +247,23 @@ impl App {
         #[cfg(debug_assertions)]
         crate::devtest::record("panel", rect);
         let strip = Rect::from_min_size(rect.min, vec2(rect.width(), TABS_H));
-        self.page_tabs(ui, project, strip);
+        let reserve = self.panel_buttons(ui, project, strip);
+        self.panel_body(ui, project, rect, reserve);
+    }
+
+    /// The Browser panel from its strip of page tabs down, in `rect` (no sheet, no header): the
+    /// tabs and New Page, then the page in front with its toolbar, its notices, its frame and
+    /// its console.
+    pub fn browser_panel_body(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect) {
+        self.panel_body(ui, project, rect, 0.0);
+    }
+
+    /// [`App::browser_panel_body`], `reserve` points kept free at the strip's right.
+    fn panel_body(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, reserve: f32) {
+        let p = style::pal(ui);
+        let strip = Rect::from_min_size(rect.min, vec2(rect.width(), TABS_H));
+        self.page_tabs(ui, project, strip, reserve);
+        ui.painter().hline(strip.x_range(), strip.bottom() - 0.5, Stroke::new(1.0, p.border));
         if let Some(front) = self.panel_of(project).and_then(Panel::shown) {
             let page = Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max);
             if let Some(b) = self.browsers.get_mut(&front) {
@@ -259,6 +283,32 @@ impl App {
         {
             panel.max = false;
         }
+    }
+
+    /// Fill the Window and Hide at the right of the strip (the panel's own buttons, while it has
+    /// no header); returns the room they take.
+    fn panel_buttons(&mut self, ui: &mut Ui, project: ProjectId, strip: Rect) -> f32 {
+        let Some(max_on) = self.panel_of(project).map(|x| x.max) else { return 0.0 };
+        let cy = strip.center().y;
+        let mut right = strip.right() - 8.0;
+        let mut button = |ui: &mut Ui, icon: &str, tip: &str, on: bool, name: &str| {
+            let r = Rect::from_center_size(pos2(right - 12.0, cy), vec2(24.0, 24.0));
+            right -= 24.0 + 4.0;
+            #[cfg(debug_assertions)]
+            crate::devtest::record(name, r);
+            let _ = name;
+            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, on, 24.0)).inner.clicked()
+        };
+        let hide = button(ui, icons::X, &kit::tip(t("Hide Browser"), Action::ShowBrowser), false, "panel-hide");
+        let fill_tip = if max_on { t("Back beside the terminals") } else { t("Fill the window") };
+        let max = button(ui, if max_on { icons::ARROWS_IN } else { icons::ARROWS_OUT }, fill_tip, max_on, "panel-max");
+        if hide {
+            self.hide_panel(project);
+        }
+        if max && let Some(x) = self.panel_mut(project) {
+            x.max = !x.max;
+        }
+        strip.right() - 8.0 - right
     }
 
     /// The edge between the terminals and the panel, dragged to size it (after the panes, so
@@ -290,65 +340,49 @@ impl App {
         }
     }
 
-    /// The strip at the top of the panel: a tab per page (its agent's mark, its title, a dot
-    /// while an agent uses it or it asks the user something), then New Page, Fill the Window,
-    /// Hide.
-    fn page_tabs(&mut self, ui: &mut Ui, project: ProjectId, strip: Rect) {
-        let dark = ui.visuals().dark_mode;
+    /// The strip at the top of the panel: a tab per page (its agent's avatar, its title, a dot
+    /// while an agent uses it or it asks the user something), then New Page. Tabs are as wide
+    /// as what they show; too many, they share the room, then the page in front and those
+    /// before it that fit stay, the rest in ⋯.
+    fn page_tabs(&mut self, ui: &mut Ui, project: ProjectId, strip: Rect, reserve: f32) {
         let Some(panel) = self.panel_of(project).cloned() else { return };
         let cy = strip.center().y;
-        let mut right = strip.right() - 6.0;
-        let mut button = |ui: &mut Ui, icon: &str, tip: &str, on: bool, name: &str| {
-            let r = Rect::from_center_size(pos2(right - 10.0, cy), vec2(20.0, 20.0));
-            right -= 22.0;
-            #[cfg(debug_assertions)]
-            crate::devtest::record(name, r);
-            let _ = name;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, on, 20.0)).inner.clicked()
-        };
-        let hide = button(ui, icons::X, &kit::tip(t("Hide Browser"), Action::ShowBrowser), false, "panel-hide");
-        let fill_tip = if panel.max { t("Back beside the terminals") } else { t("Fill the window") };
-        let max = button(ui, if panel.max { icons::ARROWS_IN } else { icons::ARROWS_OUT }, fill_tip, panel.max, "panel-max");
-        if hide {
-            self.hide_panel(project);
-        }
-        if max && let Some(x) = self.panel_mut(project) {
-            x.max = !x.max;
-        }
-
-        // The tabs: as wide as there is room for (within bounds); too many, the page in front
-        // and those before it that fit, the rest in ⋯. New Page right after them.
-        let left = strip.left() + 6.0;
-        let room = (right - 6.0 - 24.0 - left).max(0.0);
+        let left = strip.left() + 8.0;
+        let right = strip.right() - 8.0 - reserve;
+        let room = (right - left - TAB_GAP - NEW_W).max(0.0);
+        let marks = self.page_marks(&panel.pages);
+        let looks: std::collections::HashMap<PaneId, TabLook> =
+            panel.pages.iter().filter_map(|id| Some((*id, self.tab_look(*id, marks.get(id).map(String::as_str))?))).collect();
+        let natural: Vec<f32> = panel.pages.iter().map(|id| looks.get(id).map_or(TAB_MIN, |l| tab_natural(ui, l, panel.front == Some(*id)))).collect();
         let n = panel.pages.len();
-        let fits = |room: f32| (((room + TAB_GAP) / (TAB_MIN + TAB_GAP)).floor() as usize).max(1);
-        let (shown, more): (Vec<PaneId>, Vec<PaneId>) = if fits(room) >= n {
-            (panel.pages.clone(), Vec::new())
+        let gaps = |k: usize| TAB_GAP * k.saturating_sub(1) as f32;
+        let (shown, widths, more): (Vec<PaneId>, Vec<f32>, Vec<PaneId>) = if natural.iter().sum::<f32>() + gaps(n) <= room {
+            (panel.pages.clone(), natural, Vec::new())
+        } else if n as f32 * TAB_MIN + gaps(n) <= room {
+            let w = ((room - gaps(n)) / n.max(1) as f32).min(TAB_MAX);
+            (panel.pages.clone(), vec![w; n], Vec::new())
         } else {
-            let k = fits(room - 30.0);
+            // The ⋯ button takes a place too.
+            let room = room - TAB_GAP - NEW_W;
+            let k = (((room + TAB_GAP) / (TAB_MIN + TAB_GAP)).floor() as usize).max(1);
             let mut shown: Vec<PaneId> = panel.pages.iter().copied().take(k).collect();
             if let Some(f) = panel.front.filter(|f| !shown.contains(f)) {
                 shown.pop();
                 shown.push(f);
             }
             let more = panel.pages.iter().copied().filter(|id| !shown.contains(id)).collect();
-            (shown, more)
+            let w = ((room - gaps(shown.len())) / shown.len().max(1) as f32).clamp(24.0_f32.min(room.max(0.0)), TAB_MAX);
+            let widths = vec![w; shown.len()];
+            (shown, widths, more)
         };
-        let avail = (room - if more.is_empty() { 0.0 } else { 30.0 }).max(24.0);
-        let width = if shown.is_empty() {
-            TAB_MIN
-        } else {
-            (avail / shown.len() as f32 - TAB_GAP).clamp(24.0_f32.min(avail), TAB_MAX)
-        };
-        let marks = self.page_marks(&panel.pages);
         let mut x = left;
         let mut front = None;
         let mut close = None;
-        for id in &shown {
-            let r = Rect::from_min_size(pos2(x, cy - 13.0), vec2(width, 26.0));
-            x += width + TAB_GAP;
-            let mark = marks.get(id).map(String::as_str);
-            let (clicked, closed) = self.page_tab(ui, *id, r, panel.front == Some(*id), mark, dark);
+        for (id, w) in shown.iter().zip(&widths) {
+            let r = Rect::from_min_size(pos2(x, cy - TAB_H / 2.0), vec2(*w, TAB_H));
+            x += w + TAB_GAP;
+            let Some(look) = looks.get(id) else { continue };
+            let (clicked, closed) = self.page_tab(ui, *id, r, panel.front == Some(*id), look);
             if clicked {
                 front = Some(*id);
             }
@@ -357,26 +391,27 @@ impl App {
             }
         }
         if !more.is_empty() {
-            let r = Rect::from_min_size(pos2(x, cy - 10.0), vec2(26.0, 20.0));
-            x += 28.0;
-            let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icons::DOTS_THREE, &tf("{} more pages", &[&more.len().to_string()]), false, 22.0)).inner;
+            let r = Rect::from_min_size(pos2(x, cy - NEW_W / 2.0), Vec2::splat(NEW_W));
+            x += NEW_W + TAB_GAP;
+            let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icons::DOTS_THREE, &tf("{} more pages", &[&more.len().to_string()]), false, NEW_W)).inner;
             #[cfg(debug_assertions)]
             crate::devtest::record("page-more", r);
             egui::Popup::menu(&resp).align(egui::RectAlign::BOTTOM_START).width(240.0).show(|ui| {
                 kit::menu_body(ui);
                 for id in &more {
-                    let label = self.browsers.get(id).map(|b| b.label()).unwrap_or_default();
-                    if kit::menu_item(ui, Some(icons::GLOBE), &label, None, false).clicked() {
+                    let Some(look) = looks.get(id) else { continue };
+                    let icon = if look.asleep { icons::MOON } else { icons::GLOBE_SIMPLE };
+                    if kit::menu_item(ui, Some(icon), &look.title, None, false).clicked() {
                         front = Some(*id);
                         ui.close();
                     }
                 }
             });
         }
-        let nr = Rect::from_center_size(pos2(x + 2.0 + 10.0, cy), vec2(20.0, 20.0));
+        let nr = Rect::from_min_size(pos2(x, cy - NEW_W / 2.0), Vec2::splat(NEW_W));
         #[cfg(debug_assertions)]
         crate::devtest::record("panel-new", nr);
-        if ui.scope_builder(egui::UiBuilder::new().max_rect(nr), |ui| kit::icon_button_ex(ui, icons::PLUS, &kit::tip(t("New Browser Page"), Action::NewBrowserTab), false, 20.0)).inner.clicked() {
+        if ui.scope_builder(egui::UiBuilder::new().max_rect(nr), |ui| kit::icon_button_ex(ui, icons::PLUS, &kit::tip(t("New Browser Page"), Action::NewBrowserTab), false, NEW_W)).inner.clicked() {
             self.actions.push(Action::NewBrowserTab);
         }
         if let Some(id) = front
@@ -412,92 +447,116 @@ impl App {
             .collect()
     }
 
-    /// One page's tab (`mark`: its agent's, for an agent's page); returns (clicked, close asked).
-    fn page_tab(&mut self, ui: &mut Ui, id: PaneId, r: Rect, front: bool, mark: Option<&str>, dark: bool) -> (bool, bool) {
+    /// What a page's tab shows (`mark`: its agent's, for an agent's page).
+    fn tab_look(&self, id: PaneId, mark: Option<&str>) -> Option<TabLook> {
+        let p_kind = |pane: PaneId| self.panes.get(&pane).and_then(|x| x.tracker.agent.or(x.last_agent));
+        let b = self.browsers.get(&id)?;
+        // Its agent (still in its terminal, or gone: then the page is the agent's last).
+        let agent = b.owner.map(|o| {
+            let ended = !self.panes.contains_key(&o);
+            let kind = p_kind(o);
+            let mark = mark.map_or_else(|| kind.map_or("AI", tc_core::agent::AgentKind::mark).to_string(), str::to_string);
+            let letters = kind.map_or("AI", tc_core::agent::AgentKind::mark);
+            let number = mark.strip_prefix(letters).unwrap_or("").to_string();
+            TabAgent { kind, letters, number, ended }
+        });
+        // An agent at work in a page of the user's: its avatar beside the user's globe.
+        let borrowed = match (&agent, b.driver.as_ref()) {
+            (None, Some(d)) if !d.paused => {
+                let kind = p_kind(d.pane);
+                Some(TabAgent { kind, letters: kind.map_or("AI", tc_core::agent::AgentKind::mark), number: String::new(), ended: false })
+            }
+            _ => None,
+        };
+        Some(TabLook {
+            agent,
+            borrowed,
+            asleep: b.asleep && !b.url.is_empty(),
+            speaker: (b.state.audible || b.muted).then_some(b.muted),
+            dot: if b.ask.is_some() || b.dialog.is_some() { Some(Dot::Asks) } else if b.driven() { Some(Dot::Agent) } else { None },
+            title: b.label(),
+        })
+    }
+
+    /// One page's tab; returns (clicked, close asked).
+    fn page_tab(&mut self, ui: &mut Ui, id: PaneId, r: Rect, front: bool, look: &TabLook) -> (bool, bool) {
         let p = style::pal(ui);
         let Some(b) = self.browsers.get(&id) else { return (false, false) };
         let resp = ui.interact(r, egui::Id::new(("page-tab", id)), Sense::click());
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("page-tab:{id}"), r);
         let hovered = resp.hovered();
-        let painter = ui.painter();
-        let radius = CornerRadius::same(style::RADIUS);
+        if hovered && !front {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let painter = ui.painter_at(r);
+        let radius = CornerRadius::same(style::RADIUS_ROW);
         if front {
-            painter.rect(r, radius, p.surface, Stroke::new(1.0, if dark { p.border } else { p.border_strong }), egui::StrokeKind::Inside);
-            if dark {
-                kit::paint_highlight(painter, r, style::RADIUS, &p);
-            }
+            painter.rect(r, radius, p.surface, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
         } else if hovered {
             painter.rect_filled(r, radius, p.hover);
         }
-        // Its agent (still in its terminal, or gone: then the page is the agent's last).
-        let owner = b.owner.map(|o| (o, self.panes.get(&o)));
-        let ended = owner.is_some_and(|(_, pane)| pane.is_none());
-        let kind = owner.and_then(|(_, pane)| pane).and_then(|x| x.tracker.agent.or(x.last_agent));
-        let who = kind.map(|k| k.label().to_string()).or_else(|| owner.and_then(|(_, pane)| pane).map(|x| x.label()));
-        let text_color = if ended { p.text_faint } else if front || hovered { p.text } else { p.text_faint };
-        let mut x = r.left() + 9.0;
-        if owner.is_some() {
-            let mark = mark.unwrap_or_else(|| kind.map_or("AI", tc_core::agent::AgentKind::mark));
-            let ink = if ended { p.text_faint } else { p.text };
-            match kind.filter(|k| super::agent_logo::has(*k)) {
-                // Its agent's logo, and its number when two agents of a kind have pages here.
-                Some(k) => {
-                    let n = mark.strip_prefix(k.mark()).unwrap_or("");
-                    super::agent_logo::paint(painter, Rect::from_min_size(pos2(x, r.center().y - 6.0), vec2(12.0, 12.0)), k, p.text, ended);
-                    x += 12.0 + 7.0;
-                    if !n.is_empty() {
-                        let g = painter.layout_no_wrap(n.to_string(), style::mono_semibold(9.5), p.text_faint);
-                        painter.galley(pos2(x - 5.0, r.center().y - g.size().y / 2.0), g.clone(), p.text_faint);
-                        x += g.size().x - 1.0;
-                    }
-                }
-                None => {
-                    let g = painter.layout_no_wrap(mark.to_string(), style::mono_semibold(9.5), ink);
-                    let w = g.size().x;
-                    painter.galley(pos2(x, r.center().y - g.size().y / 2.0), g, ink);
-                    x += w + 7.0;
+        let ended = look.agent.as_ref().is_some_and(|a| a.ended);
+        let cy = r.center().y;
+        let mut x = r.left() + TAB_PAD;
+        // The lead: the agent's avatar (its page), the user's globe (or the moon: asleep) with
+        // the avatar of an agent at work in it; the speaker while it plays sound.
+        match &look.agent {
+            Some(a) => {
+                paint_avatar(&painter, Rect::from_min_size(pos2(x, cy - 8.0), Vec2::splat(16.0)), a, &p);
+                x += 16.0;
+                if !a.number.is_empty() {
+                    let g = painter.layout_no_wrap(a.number.clone(), style::mono_semibold(9.5), p.text_faint);
+                    painter.galley(pos2(x + 2.0, cy - g.size().y / 2.0), g.clone(), p.text_faint);
+                    x += 2.0 + g.size().x;
                 }
             }
-        } else {
-            let icon = if b.asleep && !b.url.is_empty() { icons::MOON } else { icons::GLOBE };
-            painter.text(pos2(x + 6.5, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), p.text_faint);
-            x += 13.0 + 7.0;
+            None => {
+                let icon = if look.asleep { icons::MOON } else { icons::GLOBE_SIMPLE };
+                painter.text(pos2(x + 6.5, cy), Align2::CENTER_CENTER, icon, style::icon_font(13.0), p.text_faint);
+                x += 13.0;
+                if let Some(a) = &look.borrowed {
+                    paint_avatar(&painter, Rect::from_min_size(pos2(x + 3.0, cy - 8.0), Vec2::splat(16.0)), a, &p);
+                    x += 3.0 + 16.0;
+                }
+            }
         }
-        // The dot: it needs the user (a site to allow), or an agent works in it.
-        let dot = if b.ask.is_some() || b.dialog.is_some() { Some(p.warn) } else if b.driven() { Some(p.info) } else { None };
+        let speaker = look.speaker.map(|_| {
+            let sr = Rect::from_center_size(pos2(x + 4.0 + 6.0, cy), vec2(16.0, 16.0));
+            x += 4.0 + 12.0;
+            sr
+        });
+        x += TAB_GAP_IN;
         let show_x = hovered || front;
-        let mut text_right = r.right() - 6.0;
-        let x_rect = Rect::from_center_size(pos2(r.right() - 8.0 - 7.0, r.center().y), vec2(16.0, 16.0));
-        if show_x {
-            text_right = x_rect.left() - 2.0;
+        let x_rect = Rect::from_center_size(pos2(r.right() - TAB_PAD - 5.0, cy), vec2(16.0, 16.0));
+        let mut text_right = if show_x { x_rect.center().x - 5.0 - TAB_GAP_IN } else { r.right() - TAB_PAD };
+        // The dot: it needs the user (a site to allow, a dialog), or an agent works in it.
+        if let Some(dot) = look.dot {
+            let c = match dot {
+                Dot::Asks => p.warn,
+                Dot::Agent => p.info,
+            };
+            painter.circle_filled(pos2(text_right - 3.0, cy), 3.0, c);
+            text_right -= 6.0 + TAB_GAP_IN;
         }
-        // The speaker: the page plays sound (a click mutes it), or it is muted (a click lets it
-        // play again).
-        let speaker = (b.state.audible || b.muted).then(|| Rect::from_center_size(pos2(text_right - 8.0, r.center().y), vec2(16.0, 16.0)));
-        if let Some(sr) = speaker {
-            text_right = sr.left() - 2.0;
-        }
-        if let Some(c) = dot {
-            painter.circle_filled(pos2(text_right - 3.0, r.center().y), 3.0, c);
-            text_right -= 10.0;
-        }
-        let mut job = egui::text::LayoutJob::simple_singleline(b.label(), style::medium(12.0), text_color);
+        let text_color = if ended { p.text_faint } else if front || hovered { p.text } else { p.text_muted };
+        let font = if front { style::medium(style::SMALL) } else { egui::FontId::proportional(style::SMALL) };
+        let mut job = egui::text::LayoutJob::simple_singleline(look.title.clone(), font, text_color);
         job.wrap = egui::text::TextWrapping::truncate_at_width((text_right - x).max(8.0));
         let g = painter.layout_job(job);
-        painter.galley(pos2(x, r.center().y - g.size().y / 2.0), g, text_color);
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, text_color);
         let mut toggled = false;
-        if let Some(sr) = speaker {
+        if let (Some(sr), Some(muted)) = (speaker, look.speaker) {
             let mr = ui.interact(sr, egui::Id::new(("page-mute", id)), Sense::click());
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("page-mute:{id}"), sr);
             if mr.hovered() {
-                ui.painter().rect_filled(sr, CornerRadius::same(4), if front { p.hover } else { p.subtle });
+                painter.rect_filled(sr, CornerRadius::same(4), p.subtle);
             }
-            let icon = if b.muted { icons::SPEAKER_SLASH } else { icons::SPEAKER_HIGH };
-            let ink = if mr.hovered() || !b.muted { p.text } else { p.text_faint };
-            ui.painter().text(sr.center(), Align2::CENTER_CENTER, icon, style::icon_font(12.0), ink);
-            toggled = mr.on_hover_text(if b.muted { t("Unmute Page") } else { t("Mute Page") }).clicked();
+            let icon = if muted { icons::SPEAKER_SLASH } else { icons::SPEAKER_HIGH };
+            let ink = if mr.hovered() { p.text } else if muted { p.text_faint } else { p.text_muted };
+            painter.text(sr.center(), Align2::CENTER_CENTER, icon, style::icon_font(12.0), ink);
+            toggled = mr.on_hover_text(if muted { t("Unmute Page") } else { t("Mute Page") }).clicked();
         }
         let mut closed = false;
         if show_x {
@@ -505,13 +564,17 @@ impl App {
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("page-close:{id}"), x_rect);
             if xr.hovered() {
-                ui.painter().rect_filled(x_rect, CornerRadius::same(4), if front { p.hover } else { p.subtle });
+                painter.rect_filled(x_rect, CornerRadius::same(4), p.subtle);
             }
-            ui.painter().text(x_rect.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), if xr.hovered() { p.text } else { p.text_faint });
-            closed = xr.on_hover_text(t("Close Page")).clicked();
+            painter.text(x_rect.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), if xr.hovered() { p.text } else { p.text_faint });
+            closed = xr.on_hover_text(t("Close page")).clicked();
         }
+        let who = look.agent.as_ref().and_then(|a| {
+            let pane = b.owner.and_then(|o| self.panes.get(&o));
+            a.kind.map(|k| k.label().to_string()).or_else(|| pane.map(|x| x.label()))
+        });
         let (host, path) = crate::browser::split_url(&b.url);
-        let mut tip = b.label();
+        let mut tip = look.title.clone();
         if !host.is_empty() {
             tip = format!("{tip}\n{host}{path}");
         }
@@ -524,7 +587,6 @@ impl App {
         if b.state.audible && !b.muted {
             tip = format!("{tip}\n{}", t("Playing sound"));
         }
-        let _ = dark;
         let resp = resp.on_hover_text(tip);
         if resp.middle_clicked() {
             closed = true;
@@ -558,4 +620,60 @@ impl App {
 /// A tile (its body `w` × `h`) has room for its project's Browser panel.
 pub fn tile_fits_panel(w: f32, h: f32) -> bool {
     w >= TILE_PANEL_MIN_W && h >= TILE_PANEL_MIN_H
+}
+
+/// An agent in a page's tab: its kind (when known), its letters (without a logo), its number
+/// when two agents of a kind have pages here, and whether its terminal is gone.
+struct TabAgent {
+    kind: Option<AgentKind>,
+    letters: &'static str,
+    number: String,
+    ended: bool,
+}
+
+/// The dot of a page's tab.
+#[derive(Clone, Copy)]
+enum Dot {
+    /// It needs the user (a site to allow, a dialog): amber.
+    Asks,
+    /// An agent works in it: blue.
+    Agent,
+}
+
+/// What a page's tab shows.
+struct TabLook {
+    /// The page is an agent's.
+    agent: Option<TabAgent>,
+    /// An agent works in this page of the user's.
+    borrowed: Option<TabAgent>,
+    asleep: bool,
+    /// It plays sound (`false`) or is muted (`true`).
+    speaker: Option<bool>,
+    dot: Option<Dot>,
+    title: String,
+}
+
+/// How wide a tab is for what it shows (`front`: its title is stronger and it has ×).
+fn tab_natural(ui: &Ui, l: &TabLook, front: bool) -> f32 {
+    let w = |t: &str, f: egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f, egui::Color32::PLACEHOLDER).size().x;
+    let mut lead = match &l.agent {
+        Some(a) => 16.0 + if a.number.is_empty() { 0.0 } else { 2.0 + w(&a.number, style::mono_semibold(9.5)) },
+        None => 13.0 + if l.borrowed.is_some() { 3.0 + 16.0 } else { 0.0 },
+    };
+    if l.speaker.is_some() {
+        lead += 4.0 + 12.0;
+    }
+    let font = if front { style::medium(style::SMALL) } else { egui::FontId::proportional(style::SMALL) };
+    let fixed = TAB_PAD + lead + TAB_GAP_IN + if l.dot.is_some() { TAB_GAP_IN + 6.0 } else { 0.0 } + if front { TAB_GAP_IN + 10.0 } else { 0.0 } + TAB_PAD;
+    (fixed + w(&l.title, font).max(24.0)).min(TAB_MAX)
+}
+
+/// An agent's avatar (16 square): its logo on the active fill, else its letters.
+fn paint_avatar(painter: &egui::Painter, rect: Rect, a: &TabAgent, p: &style::Palette) {
+    painter.rect_filled(rect, CornerRadius::same(4), p.subtle);
+    let logo = Rect::from_center_size(rect.center(), Vec2::splat((rect.width() * 0.68).round()));
+    if !a.kind.is_some_and(|k| super::agent_logo::paint(painter, logo, k, p.text, a.ended)) {
+        let ink = if a.ended { p.text_faint } else { p.text_muted };
+        painter.text(rect.center(), Align2::CENTER_CENTER, a.letters, style::mono_semibold(8.0), ink);
+    }
 }

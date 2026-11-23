@@ -1,11 +1,11 @@
-//! The browser pane: its toolbar (back, forward, reload, the address, the terminal that serves
-//! the page, open in the default browser) over its page; opening pages in it; and keeping each
-//! page's web view where its pane is drawn, hidden when the pane is out of view or something is
-//! drawn over it.
+//! The browser pane: its toolbar (back, forward, reload, the address, the console, ⋯) over its
+//! page, with what asks about the page as notices between them; opening pages in it; and
+//! keeping each page's web view where its pane is drawn, hidden when the pane is out of view or
+//! something is drawn over it.
 
 use std::time::Duration;
 
-use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 use tc_core::PaneId;
 
 use super::{icons, kit, style};
@@ -15,17 +15,23 @@ use crate::browser::{Answer, Ask, Browser, Dialog, DialogKind, Driver, Event, Pa
 use crate::i18n::{t, tf};
 
 /// The toolbar at the top of a browser pane (its header, also in a split).
-pub const BAR_H: f32 = 40.0;
+pub const BAR_H: f32 = 44.0;
 /// How far a page's web view keeps from its pane's sides and foot (see `browser_pane`).
 const WEB_INSET: f32 = 3.0;
 /// How round a page's frame is (in the Browser panel and in a Grid tile).
-pub const PAGE_ROUND: f32 = 8.0;
-/// The bar under it while an agent uses the page.
-const AGENT_H: f32 = 44.0;
-/// The question about a site an agent's step would open.
-const ASK_H: f32 = 14.0 + 16.0 + 8.0 + 30.0 + 8.0 + 16.0 + 10.0 + 24.0 + 14.0 + 6.0;
-/// The find bar's height.
-const FIND_H: f32 = 34.0 + 6.0;
+pub const PAGE_ROUND: f32 = 10.0;
+/// The room around the page's frame, its notices and its console.
+const EDGE: f32 = 8.0;
+/// A find bar's height (pages and documents).
+pub const FIND_H: f32 = 36.0;
+/// The toolbar's small icon buttons (back, forward, reload, ⋯) and chips.
+const ICON_S: f32 = 24.0;
+/// What the toolbar keeps between its controls.
+const BAR_GAP: f32 = 4.0;
+/// A console line's height.
+const CONSOLE_ROW: f32 = 26.0;
+/// The console drawer's header.
+const CONSOLE_HEAD: f32 = 36.0;
 
 impl App {
     /// What a pane is called (a tab, a tile): a terminal's label, or a browser's page.
@@ -37,8 +43,10 @@ impl App {
         }
     }
 
-    /// A browser pane in `rect`: its toolbar, then its page (the web view is laid over it once
-    /// the frame is drawn; meanwhile, or asleep, a placeholder).
+    /// A browser pane in `rect`: its toolbar, the notices about the page (an agent using it, a
+    /// site to allow, its dialog, the find bar), then its page in a rounded frame (the web view
+    /// is laid over it once the frame is drawn; meanwhile, or asleep, a placeholder) and its
+    /// console under it.
     pub fn browser_pane(&mut self, ui: &mut Ui, id: PaneId, rect: Rect, focused: bool, single: bool) {
         let p = style::pal(ui);
         let Some(b) = self.browsers.get(&id) else { return };
@@ -46,274 +54,71 @@ impl App {
         let driver = b.driver.clone();
         let ask = b.ask.clone();
         let dialog = b.dialog.clone();
+        let url = b.url.clone();
         let bar = Rect::from_min_size(rect.min, vec2(rect.width(), BAR_H));
-        let mut top = bar.bottom();
         let _ = single;
         // A click on the bar makes the pane the focused one (⌘W closes it, splits go beside it).
         let bar_resp = ui.interact(bar, egui::Id::new(("browser-bar", id)), Sense::click());
         if bar_resp.clicked() && !focused {
             self.actions.push(Action::FocusPane(id));
         }
-
         // The terminal whose server this page comes from (same port on this machine).
-        let (host, _) = crate::browser::split_url(&b.url);
+        let (host, _) = crate::browser::split_url(&url);
         let port = crate::browser::is_local_host(&host)
             .then(|| host.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()))
             .flatten();
-        let from = port.and_then(|port| self.project_servers(project).into_iter().find(|(_, s)| s.port == port)).map(|(pane, _)| (pane, self.leaf_label(pane)));
-        let url = b.url.clone();
-        let loading = b.loading;
-
-        // Right side first: what is left goes to the address. In a narrow pane the address keeps
-        // its room: the terminal serving the page, the console's chip and ↗ (also in ⋯) go first.
-        // The bar's controls sit a little above its middle (its foot is the page's margin).
-        let inner = Rect::from_min_max(pos2(bar.left() + 6.0, bar.top()), pos2(bar.right() - 8.0, bar.bottom() - 4.0));
-        const MIN_FIELD: f32 = 90.0;
-        let field_left = inner.left() + 3.0 * 24.0 + 6.0;
-        let fits = |right: f32, w: f32| right - w - 4.0 - field_left >= MIN_FIELD;
-        let mut right = inner.right();
-        let more = Rect::from_center_size(pos2(right - 11.0, inner.center().y), vec2(22.0, 22.0));
-        right = more.left() - 4.0;
-        let ext = fits(right, 22.0).then(|| Rect::from_center_size(pos2(more.left() - 13.0, inner.center().y), vec2(22.0, 22.0)));
-        if let Some(e) = ext {
-            right = e.left() - 4.0;
-        }
-        // The console's warnings and errors, when there are any (a click opens its drawer).
-        let (errors, warnings) = self.browsers.get(&id).map_or((0, 0), |b| {
-            (b.console.iter().filter(|l| l.is_error()).count(), b.console.iter().filter(|l| l.is_warning()).count())
-        });
-        let console_open = self.browsers.get(&id).is_some_and(|b| b.console_open);
-        let cons_rect = (errors + warnings > 0 || console_open).then(|| {
-            let n = if errors + warnings > 0 { (errors + warnings).to_string() } else { String::new() };
-            let g = ui.painter().layout_no_wrap(n, style::mono_medium(10.5), p.text);
-            let w = if g.size().x > 0.0 { g.size().x + 30.0 } else { 26.0 };
-            fits(right, w).then(|| {
-                let r = Rect::from_min_max(pos2(right - w, inner.center().y - 12.0), pos2(right, inner.center().y + 12.0));
-                right = r.left() - 4.0;
-                r
-            })
-        }).flatten();
-        // The page's zoom, when it is not 100% (a click: back to 100%).
-        let user_zoom = self.browsers.get(&id).map_or(1.0, |b| b.user_zoom);
-        let zoom_rect = ((user_zoom - 1.0).abs() > 0.001).then(|| {
-            let w = 44.0;
-            fits(right, w).then(|| {
-                let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
-                right = r.left() - 4.0;
-                r
-            })
-        }).flatten();
-        // What the page downloaded (a click lists it): blue while one runs, red when the last
-        // failed, green when all came.
-        let (dl_count, dl_running, dl_failed) = self.browsers.get(&id).map_or((0, false, false), |b| {
-            (b.downloads.len(), b.downloads.iter().any(|d| d.done.is_none()), b.downloads.last().is_some_and(|d| d.done == Some(false)))
-        });
-        let dl_rect = (dl_count > 0).then(|| {
-            let g = ui.painter().layout_no_wrap(dl_count.to_string(), style::mono_medium(10.5), p.text);
-            let w = g.size().x + 30.0;
-            fits(right, w).then(|| {
-                let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
-                right = r.left() - 4.0;
-                r
-            })
-        }).flatten();
-        let from_rect = from.as_ref().and_then(|(_, label)| {
-            let g = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(style::SMALL), p.text_muted);
-            let w = (g.size().x + 26.0).min(160.0);
-            fits(right, w).then(|| {
-                let r = Rect::from_min_max(pos2(right - w, inner.center().y - 11.0), pos2(right, inner.center().y + 11.0));
-                right = r.left() - 4.0;
-                r
-            })
-        });
-        let mut x = inner.left();
-        let mut nav = |icon: &str, tip: &str| {
-            let r = Rect::from_center_size(pos2(x + 12.0, inner.center().y), vec2(24.0, 24.0));
-            x += 24.0;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, 24.0)).inner.clicked()
-        };
-        let back = nav(icons::ARROW_LEFT, t("Back"));
-        let forward = nav(icons::ARROW_RIGHT, t("Forward"));
-        let reload = nav(icons::ARROW_CLOCKWISE, t("Reload"));
-        let field = Rect::from_min_max(pos2(x + 6.0, inner.center().y - 15.0), pos2(right.max(x + 60.0), inner.center().y + 15.0));
-        let fid = egui::Id::new(("browser-address", id));
-        let typing = ui.memory(|m| m.has_focus(fid));
-        // Asked for (⌘L, the Browser button, a new empty browser): the address as shown, all of
-        // it selected, so that what is typed replaces it.
-        if self.browser_edit == Some(id) {
-            self.browser_edit = None;
-            let shown = self.browsers.get(&id).map(|b| b.url.trim_end_matches('/').trim_start_matches("http://").to_string()).unwrap_or_default();
-            kit::select_text(ui.ctx(), fid, 0, shown.chars().count());
-            if let Some(b) = self.browsers.get_mut(&id) {
-                b.address = shown;
-            }
-            ui.memory_mut(|m| m.request_focus(fid));
-        }
-        let typing = typing || ui.memory(|m| m.has_focus(fid));
-        let mut text = match self.browsers.get(&id) {
-            Some(b) if typing => b.address.clone(),
-            Some(b) => b.url.trim_end_matches('/').trim_start_matches("http://").to_string(),
-            None => String::new(),
-        };
-        let icon = if url.starts_with("https://") { icons::LOCK_SIMPLE } else { icons::GLOBE_SIMPLE };
-        let resp = address_field(ui, fid, &mut text, icon, field, typing);
-        #[cfg(debug_assertions)]
-        crate::devtest::record(format!("browser-address:{id}"), field);
-        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if loading {
-            // A thin line under the bar while the page loads.
-            let w = bar.width() * 0.35;
-            let t0 = ui.input(|i| i.time) as f32;
-            let x0 = bar.left() + (t0 * 420.0) % (bar.width() + w) - w;
-            ui.painter().with_clip_rect(field.shrink2(vec2(6.0, 0.0))).hline(x0..=x0 + w, field.bottom() - 1.5, Stroke::new(2.0, p.accent));
-            ui.ctx().request_repaint_after(Duration::from_millis(33));
-        }
-        if let Some((pane, _)) = &from
+        let from = port.and_then(|port| self.project_servers(project).into_iter().find(|(_, s)| s.port == port)).map(|(pane, _)| pane);
+        if let Some(pane) = from
             && let Some(b) = self.browsers.get_mut(&id)
         {
-            b.served_by = Some(*pane);
+            b.served_by = Some(pane);
         }
-        if let Some(((pane, label), r)) = from.zip(from_rect) {
-            let resp = ui.interact(r, egui::Id::new(("browser-from", id)), Sense::click());
-            if resp.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), p.hover);
-            }
-            ui.painter().text(pos2(r.left() + 7.0 + 6.0, r.center().y), Align2::CENTER_CENTER, icons::TERMINAL, style::icon_font(12.0), p.text_faint);
-            let mut job = egui::text::LayoutJob::simple_singleline(label, egui::FontId::proportional(style::SMALL), p.text_muted);
-            job.wrap = egui::text::TextWrapping::truncate_at_width(r.width() - 26.0);
-            let g = ui.painter().layout_job(job);
-            ui.painter().galley(pos2(r.left() + 21.0, r.center().y - g.size().y / 2.0), g, p.text_muted);
-            if resp.on_hover_text(t("Served by this terminal: show it")).clicked() {
-                self.actions.push(Action::FocusPane(pane));
-            }
-        }
-        let open_ext = ext.is_some_and(|ext| {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(ext), |ui| kit::icon_button_ex(ui, icons::ARROW_SQUARE_OUT, t("Open in Default Browser"), false, 22.0))
-                .inner
-                .clicked()
-        });
-        let more = ui.scope_builder(egui::UiBuilder::new().max_rect(more), |ui| kit::icon_button_ex(ui, icons::DOTS_THREE, t("More"), false, 22.0)).inner;
-        #[cfg(debug_assertions)]
-        crate::devtest::record(format!("browser-more:{id}"), more.rect);
-        egui::Popup::menu(&more).align(egui::RectAlign::BOTTOM_END).width(230.0).show(|ui| self.browser_menu(ui, id));
-        if let Some(r) = zoom_rect {
-            let resp = ui.interact(r, egui::Id::new(("browser-zoom", id)), Sense::click());
-            ui.painter().rect(r, CornerRadius::same(6), if resp.hovered() { p.hover } else { egui::Color32::TRANSPARENT }, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, format!("{:.0}%", user_zoom * 100.0), style::mono_medium(10.5), p.text);
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("browser-zoom:{id}"), r);
-            if resp.on_hover_text(t("Actual Size")).clicked()
-                && let Some(b) = self.browsers.get_mut(&id)
-            {
-                b.user_zoom = 1.0;
-            }
-        }
-        if let Some(r) = dl_rect {
-            let resp = ui.interact(r, egui::Id::new(("browser-downloads", id)), Sense::click());
-            let c = if dl_running { p.info } else if dl_failed { p.err } else { p.ok };
-            let dark = ui.visuals().dark_mode;
-            ui.painter().rect_filled(r, CornerRadius::same(6), if resp.hovered() { style::tint(c, dark).gamma_multiply(1.6) } else { style::tint(c, dark) });
-            ui.painter().text(pos2(r.left() + 13.0, r.center().y), Align2::CENTER_CENTER, icons::TRAY_ARROW_DOWN, style::icon_font(12.0), c);
-            ui.painter().text(pos2(r.left() + 23.0, r.center().y), Align2::LEFT_CENTER, dl_count.to_string(), style::mono_medium(10.5), c);
-            if dl_running {
-                ui.ctx().request_repaint_after(Duration::from_millis(250));
-            }
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("browser-downloads:{id}"), r);
-            let resp = resp.on_hover_text(t("Downloads"));
-            egui::Popup::menu(&resp).align(egui::RectAlign::BOTTOM_END).width(300.0).show(|ui| self.downloads_menu(ui, id));
-        }
-        bar_resp.context_menu(|ui| self.browser_menu(ui, id));
-        let mut navigated = false;
-        if let Some(b) = self.browsers.get_mut(&id) {
-            if resp.gained_focus() || typing || resp.changed() {
-                b.address = text;
-            }
-            if enter {
-                let address = b.address.clone();
-                b.navigate(&address);
-                navigated = true;
-            }
-            if back {
-                b.back();
-            }
-            if forward {
-                b.forward();
-            }
-            if reload {
-                b.reload();
-            }
-        }
-        if navigated {
-            self.mark_dirty();
-        }
+        let moved = self.page_toolbar(ui, id, bar, &bar_resp);
         // The user moving the page while an agent uses it takes it over.
-        if (navigated || back || forward || reload) && driver.as_ref().is_some_and(|d| !d.paused) {
+        if moved && driver.as_ref().is_some_and(|d| !d.paused) {
             self.take_over_browser(id, true);
         }
-        if open_ext && !url.is_empty() {
-            crate::platform::open_url(&url);
-        }
 
-        // Who uses the page, and a question about a site.
+        // Above the page, one notice each: who uses it, a site to allow, its dialog, then the
+        // find bar.
+        let mut top = bar.bottom();
+        let at = |top: f32| pos2(rect.left() + EDGE, top);
+        let width = (rect.width() - 2.0 * EDGE).max(40.0);
         if let Some(d) = &driver {
-            let r = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), AGENT_H));
-            self.agent_bar(ui, id, r, d);
-            top = r.bottom();
+            top += self.agent_notice(ui, id, at(top), width, d) + EDGE;
         }
         if let Some(a) = &ask {
-            let r = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), ASK_H));
             let who = driver.as_ref().map_or_else(|| t("The agent").to_string(), |d| d.who.clone());
             let name = self.project(project).map(|x| x.name.clone()).unwrap_or_default();
-            self.ask_card(ui, id, r, a, &who, &name);
-            top = r.bottom();
+            top += self.ask_notice(ui, id, at(top), width, a, &who, &name) + EDGE;
         }
         // A dialog of the page (alert, confirm, prompt): the page waits for its answer.
         if let Some(d) = &dialog {
-            top += self.dialog_bar(ui, id, pos2(rect.left(), top), rect.width(), d);
+            top += self.dialog_notice(ui, id, at(top), width, d) + EDGE;
         }
         // The find bar (⌘F while the page has the keyboard).
         if let Some(f) = self.browsers.get(&id).and_then(|b| b.find.clone()) {
-            let r = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), FIND_H));
-            self.page_find_bar(ui, id, r, &f);
-            top = r.bottom();
+            top += self.page_find_bar(ui, id, at(top), width, &f) + EDGE;
         }
-        // The console's chip in the toolbar, and its drawer at the foot of the pane.
-        if let Some(r) = cons_rect {
-            let resp = ui.interact(r, egui::Id::new(("browser-console", id)), Sense::click());
-            let c = if errors > 0 { p.err } else if warnings > 0 { p.warn } else { p.text_muted };
-            let fill = if resp.hovered() || console_open { p.hover } else { egui::Color32::TRANSPARENT };
-            ui.painter().rect(r, CornerRadius::same(6), fill, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
-            let icon = if errors > 0 { icons::WARNING_CIRCLE } else if warnings > 0 { icons::WARNING } else { icons::TERMINAL_WINDOW };
-            ui.painter().text(pos2(r.left() + 13.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_fill(12.0), c);
-            if errors + warnings > 0 {
-                ui.painter().text(pos2(r.left() + 23.0, r.center().y), Align2::LEFT_CENTER, (errors + warnings).to_string(), style::mono_medium(10.5), c);
-            }
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("browser-console:{id}"), r);
-            if resp.on_hover_text(t("Console")).clicked()
-                && let Some(b) = self.browsers.get_mut(&id)
-            {
-                b.console_open = !b.console_open;
-            }
-        }
-        let mut bottom = rect.bottom();
+        // The console's drawer at the foot of the pane, a card under the page's.
+        let mut bottom = rect.bottom() - EDGE;
         if self.browsers.get(&id).is_some_and(|b| b.console_open) {
-            let h = (rect.height() * 0.32).clamp(110.0, 260.0).min((rect.bottom() - top - 60.0).max(0.0));
+            let h = (rect.height() * 0.32).clamp(110.0, 260.0).min((bottom - top - 60.0 - EDGE).max(0.0));
             if h >= 60.0 {
-                let r = Rect::from_min_max(pos2(rect.left(), rect.bottom() - h), rect.max);
+                let r = Rect::from_min_max(pos2(rect.left() + EDGE, bottom - h), pos2(rect.right() - EDGE, bottom));
                 self.console_drawer(ui, id, r);
-                bottom = r.top();
+                bottom = r.top() - EDGE;
             }
         }
-        // The page: inset in the sheet, rounded, a hairline round it; ringed in the accent while
-        // an agent has it (the web view sits inside).
-        let frame = Rect::from_min_max(pos2(rect.left() + 8.0, top.min(bottom)), pos2(rect.right() - 8.0, (bottom - 8.0).max(top.min(bottom))));
+        // The page: inset in the sheet, rounded, a hairline round it; ringed in the accent with
+        // a soft halo while an agent has it (the web view sits inside).
+        let frame = Rect::from_min_max(pos2(rect.left() + EDGE, top.min(bottom)), pos2(rect.right() - EDGE, bottom.max(top.min(bottom))));
         let agent_on = driver.as_ref().is_some_and(|d| !d.paused);
+        let round = CornerRadius::same(PAGE_ROUND as u8);
         if agent_on {
-            ui.painter().rect_stroke(frame, CornerRadius::same(PAGE_ROUND as u8), Stroke::new(3.0, style::soft(p.accent, 0.16)), egui::StrokeKind::Outside);
+            ui.painter().rect_stroke(frame, round, Stroke::new(3.0, style::soft(p.accent, 0.2)), egui::StrokeKind::Outside);
         }
-        ui.painter().rect(frame, CornerRadius::same(PAGE_ROUND as u8), p.canvas, Stroke::new(if agent_on { 2.0 } else { 1.0 }, if agent_on { p.accent } else { p.border }), egui::StrokeKind::Inside);
+        ui.painter().rect(frame, round, p.canvas, Stroke::new(if agent_on { 2.0 } else { 1.0 }, if agent_on { p.accent } else { p.border }), egui::StrokeKind::Inside);
         let page = frame.shrink(if agent_on { 2.0 } else { 1.0 });
         // Its server does not answer: which terminal served it, and Reload.
         if self.browsers.get(&id).is_some_and(|b| b.down) {
@@ -327,14 +132,9 @@ impl App {
             let size = tex.size_vec2();
             let h = page.width() * size.y / size.x.max(1.0);
             let shown = Rect::from_min_size(page.min, vec2(page.width(), h));
-            ui.painter().with_clip_rect(page).image(tex.id(), shown, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+            ui.painter().with_clip_rect(page).image(tex.id(), shown, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         } else if !self.browsers.get(&id).is_some_and(Browser::live) {
-            let label = if url.is_empty() { t("No page yet: type an address above.").to_string() } else { tf("Loading {}…", &[&host]) };
-            ui.painter().text(page.center() - vec2(0.0, 14.0), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(26.0), p.text_faint);
-            ui.painter().text(page.center() + vec2(0.0, 16.0), Align2::CENTER_CENTER, label, egui::FontId::proportional(style::SMALL), p.text_muted);
-            if !crate::browser::supported() {
-                ui.painter().text(page.center() + vec2(0.0, 36.0), Align2::CENTER_CENTER, t("Pages can't show in TernaryCode here: ↗ opens it in your browser."), egui::FontId::proportional(style::SMALL), p.text_faint);
-            }
+            self.page_placeholder(ui, page, &url, &host);
         }
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser:{id}"), page);
@@ -355,10 +155,195 @@ impl App {
         }
     }
 
-    /// The page's server (on this machine) does not answer: said in the page's place, with the
-    /// terminal that served it (Go to Pane) and Reload. The page comes back by itself.
-    fn down_card(&mut self, ui: &mut Ui, id: PaneId, page: Rect, host: &str) {
+    /// The page's toolbar in `bar`: back, forward, reload, the address (Enter goes there), the
+    /// console's chip while it has errors or warnings, what the page downloaded, its zoom when
+    /// not 100%, and ⋯ (also a right-click on the bar). Returns whether the user moved the page.
+    fn page_toolbar(&mut self, ui: &mut Ui, id: PaneId, bar: Rect, bar_resp: &egui::Response) -> bool {
         let p = style::pal(ui);
+        let Some(b) = self.browsers.get(&id) else { return false };
+        let url = b.url.clone();
+        let loading = b.loading;
+        let errors = b.console.iter().filter(|l| l.is_error()).count();
+        let warnings = b.console.iter().filter(|l| l.is_warning()).count();
+        let console_open = b.console_open;
+        let user_zoom = b.user_zoom;
+        let (dl_count, dl_running, dl_failed) = (b.downloads.len(), b.downloads.iter().any(|d| d.done.is_none()), b.downloads.last().is_some_and(|d| d.done == Some(false)));
+        let cy = bar.center().y;
+        let inner = bar.shrink2(vec2(EDGE, 0.0));
+        // Right side first: what is left goes to the address, which keeps its room in a narrow
+        // pane (the chips go first, the zoom's, then the downloads', then the console's).
+        const MIN_FIELD: f32 = 90.0;
+        let field_left = inner.left() + 3.0 * ICON_S + 3.0 * BAR_GAP;
+        let mut right = inner.right();
+        let more_r = Rect::from_min_max(pos2(right - ICON_S, cy - ICON_S / 2.0), pos2(right, cy + ICON_S / 2.0));
+        right = more_r.left() - BAR_GAP;
+        let mut chip = |w: f32| {
+            (right - w - BAR_GAP - field_left >= MIN_FIELD).then(|| {
+                let r = Rect::from_min_max(pos2(right - w, cy - ICON_S / 2.0), pos2(right, cy + ICON_S / 2.0));
+                right = r.left() - BAR_GAP;
+                r
+            })
+        };
+        let count_w = |n: usize| ui.painter().layout_no_wrap(n.to_string(), style::mono(style::DATA), p.text).size().x;
+        // The console's warnings and errors, when there are any (a click opens its drawer).
+        let issues = errors + warnings;
+        let cons_rect = (issues > 0 || console_open).then(|| chip(7.0 + 12.0 + if issues > 0 { 5.0 + count_w(issues) } else { 0.0 } + 7.0)).flatten();
+        // What the page downloaded (a click lists it): blue while one runs, red when the last
+        // failed, green when all came.
+        let dl_rect = (dl_count > 0).then(|| chip(7.0 + 12.0 + 5.0 + count_w(dl_count) + 7.0)).flatten();
+        // The page's zoom, when it is not 100% (a click: back to 100%).
+        let zoom_text = format!("{:.0}%", user_zoom * 100.0);
+        let zoom_w = ui.painter().layout_no_wrap(zoom_text.clone(), style::mono(style::DATA), p.text).size().x;
+        let zoom_rect = ((user_zoom - 1.0).abs() > 0.001).then(|| chip(7.0 + zoom_w + 7.0)).flatten();
+
+        let mut x = inner.left();
+        let mut nav = |icon: &str, tip: &str| {
+            let r = Rect::from_min_size(pos2(x, cy - ICON_S / 2.0), vec2(ICON_S, ICON_S));
+            x += ICON_S + BAR_GAP;
+            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, ICON_S)).inner.clicked()
+        };
+        let back = nav(icons::ARROW_LEFT, t("Back"));
+        let forward = nav(icons::ARROW_RIGHT, t("Forward"));
+        let reload = nav(icons::ARROW_CLOCKWISE, t("Reload"));
+        let field = Rect::from_min_max(pos2(x, cy - 15.0), pos2(right.max(x + 60.0), cy + 15.0));
+        let fid = egui::Id::new(("browser-address", id));
+        let typing = ui.memory(|m| m.has_focus(fid));
+        // How the address is typed: without http://, with https:// (Enter keeps the scheme).
+        let editable = |url: &str| url.trim_end_matches('/').trim_start_matches("http://").to_string();
+        // Asked for (⌘L, the Browser button, a new empty browser): the address as typed, all of
+        // it selected, so that what is typed replaces it.
+        if self.browser_edit == Some(id) {
+            self.browser_edit = None;
+            let shown = editable(&url);
+            kit::select_text(ui.ctx(), fid, 0, shown.chars().count());
+            if let Some(b) = self.browsers.get_mut(&id) {
+                b.address = shown;
+            }
+            ui.memory_mut(|m| m.request_focus(fid));
+        }
+        let typing = typing || ui.memory(|m| m.has_focus(fid));
+        // At rest the address shows without its scheme (the lock says https).
+        let mut text = match self.browsers.get(&id) {
+            Some(b) if typing => b.address.clone(),
+            Some(_) => editable(&url).trim_start_matches("https://").to_string(),
+            None => String::new(),
+        };
+        let (host, _) = crate::browser::split_url(&url);
+        let icon = if url.starts_with("https://") { icons::LOCK_SIMPLE } else { icons::GLOBE_SIMPLE };
+        let insecure = url.starts_with("http://") && !crate::browser::is_local_host(&host);
+        let (resp, well_clicked) = address_field(ui, fid, &mut text, icon, field, typing, insecure);
+        #[cfg(debug_assertions)]
+        crate::devtest::record(format!("browser-address:{id}"), field);
+        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if loading {
+            // A 2 pt segment of the accent runs along the field's foot while the page loads.
+            let w = 120.0_f32.min(field.width() * 0.4);
+            let t0 = ui.input(|i| i.time) as f32;
+            let x0 = field.left() + (t0 * 420.0) % (field.width() + w) - w;
+            let seg = Rect::from_min_max(pos2(x0, field.bottom() - 3.0), pos2(x0 + w, field.bottom() - 1.0));
+            ui.painter().with_clip_rect(field.shrink2(vec2(6.0, 0.0))).rect_filled(seg, CornerRadius::same(1), p.accent);
+            ui.ctx().request_repaint_after(Duration::from_millis(33));
+        }
+        let more = ui.scope_builder(egui::UiBuilder::new().max_rect(more_r), |ui| kit::icon_button_ex(ui, icons::DOTS_THREE, t("More"), false, ICON_S)).inner;
+        #[cfg(debug_assertions)]
+        crate::devtest::record(format!("browser-more:{id}"), more.rect);
+        egui::Popup::menu(&more).align(egui::RectAlign::BOTTOM_END).width(250.0).show(|ui| self.browser_menu(ui, id));
+        bar_resp.context_menu(|ui| self.browser_menu(ui, id));
+        // The chips.
+        if let Some(r) = cons_rect {
+            let resp = ui.interact(r, egui::Id::new(("browser-console", id)), Sense::click());
+            let (icon, c) = if errors > 0 {
+                (icons::WARNING_CIRCLE, p.err)
+            } else if warnings > 0 {
+                (icons::WARNING, p.warn)
+            } else {
+                (icons::TERMINAL_WINDOW, p.text_muted)
+            };
+            paint_chip(ui, r, resp.hovered() || console_open, icon, issues > 0, c, (issues > 0).then(|| issues.to_string()).as_deref());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("browser-console:{id}"), r);
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t("Console")).clicked()
+                && let Some(b) = self.browsers.get_mut(&id)
+            {
+                b.console_open = !b.console_open;
+            }
+        }
+        // The list of downloads opens under its chip (or ⋯: from the menu).
+        let dl_pop = egui::Id::new(("browser-downloads-list", id));
+        let mut anchor = more.clone();
+        if let Some(r) = dl_rect {
+            let resp = ui.interact(r, egui::Id::new(("browser-downloads", id)), Sense::click());
+            let c = if dl_running { p.info } else if dl_failed { p.err } else { p.ok };
+            paint_chip(ui, r, resp.hovered(), icons::TRAY_ARROW_DOWN, false, c, Some(&dl_count.to_string()));
+            if dl_running {
+                ui.ctx().request_repaint_after(Duration::from_millis(250));
+            }
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("browser-downloads:{id}"), r);
+            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t("Downloads"));
+            if resp.clicked() {
+                egui::Popup::toggle_id(ui.ctx(), dl_pop);
+            }
+            anchor = resp;
+        }
+        if ui.data_mut(|d| d.remove_temp::<bool>(dl_pop.with("ask")).unwrap_or(false)) {
+            egui::Popup::open_id(ui.ctx(), dl_pop);
+        }
+        let frame = egui::Frame::popup(ui.style()).inner_margin(egui::Margin::same(14)).corner_radius(CornerRadius::same(style::RADIUS_LG));
+        egui::Popup::from_response(&anchor)
+            .id(dl_pop)
+            .open_memory(None)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .align(egui::RectAlign::BOTTOM_END)
+            .gap(4.0)
+            .frame(frame)
+            .show(|ui| self.downloads_list(ui, id));
+        if let Some(r) = zoom_rect {
+            let resp = ui.interact(r, egui::Id::new(("browser-zoom", id)), Sense::click());
+            let fill = if resp.hovered() { p.hover } else { Color32::TRANSPARENT };
+            ui.painter().rect(r, CornerRadius::same(style::RADIUS), fill, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, zoom_text, style::mono(style::DATA), if resp.hovered() { p.text } else { p.text_muted });
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("browser-zoom:{id}"), r);
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t("Actual size")).clicked()
+                && let Some(b) = self.browsers.get_mut(&id)
+            {
+                b.user_zoom = 1.0;
+            }
+        }
+        let mut navigated = false;
+        if let Some(b) = self.browsers.get_mut(&id) {
+            if (resp.gained_focus() || well_clicked) && !typing {
+                // A click in the field: the whole address, as typed, selected.
+                b.address = editable(&url);
+                kit::select_text(ui.ctx(), fid, 0, b.address.chars().count());
+            } else if typing || resp.changed() {
+                b.address = text;
+            }
+            if enter {
+                let address = b.address.clone();
+                b.navigate(&address);
+                navigated = true;
+            }
+            if back {
+                b.back();
+            }
+            if forward {
+                b.forward();
+            }
+            if reload {
+                b.reload();
+            }
+        }
+        if navigated {
+            self.mark_dirty();
+        }
+        navigated || back || forward || reload
+    }
+
+    /// The page's server (on this machine) does not answer: said in the page's place, with the
+    /// terminal that served it (Show Terminal) and Reload. The page comes back by itself.
+    fn down_card(&mut self, ui: &mut Ui, id: PaneId, page: Rect, host: &str) {
         let served = self.browsers.get(&id).and_then(|b| b.served_by).filter(|pane| self.panes.contains_key(pane));
         let why = match served.and_then(|pane| self.panes.get(&pane)) {
             Some(pane) => match pane.tracker.status {
@@ -367,27 +352,22 @@ impl App {
             },
             None => t("Nothing is serving it on this machine.").to_string(),
         };
-        let c = page.center();
-        let painter = ui.painter();
-        painter.text(c - vec2(0.0, 50.0), Align2::CENTER_CENTER, icons::PLUG, style::icon_font(26.0), p.text_ghost);
-        painter.text(c - vec2(0.0, 16.0), Align2::CENTER_CENTER, tf("{} isn’t answering", &[host]), style::semibold(13.5), p.text);
-        let mut job = egui::text::LayoutJob::simple(format!("{why} {}", t("The page loads again once it answers.")), egui::FontId::proportional(12.5), p.text_muted, (page.width() - 48.0).clamp(120.0, 380.0));
-        job.halign = egui::Align::Center;
-        let g = painter.layout_job(job);
-        let text_h = g.size().y;
-        painter.galley(pos2(c.x, c.y + 4.0), g, p.text_muted);
-        // The buttons, centred: their row is exactly as wide as they are.
-        let go_w = if served.is_some() { kit::button_width(ui, Some(icons::TERMINAL_WINDOW), t("Show Terminal"), None, true) + 6.0 } else { 0.0 };
-        let w = go_w + kit::button_width(ui, Some(icons::ARROW_CLOCKWISE), t("Reload"), None, true);
-        let row = Rect::from_center_size(pos2(c.x, c.y + 4.0 + text_h + 24.0), vec2(w, 28.0));
+        let body = format!("{why} {}", t("The page loads again once it answers."));
         let mut go = false;
         let mut reload = false;
-        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if served.is_some() {
-                go = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::TERMINAL_WINDOW), t("Show Terminal"), true).clicked();
-            }
-            reload = kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_CLOCKWISE), t("Reload"), true).clicked();
+        ui.scope_builder(egui::UiBuilder::new().max_rect(page), |ui| {
+            ui.set_clip_rect(page.intersect(ui.clip_rect()));
+            kit::empty_state(ui, icons::PLUGS, &tf("{} isn’t answering", &[host]), &body, |ui| {
+                let go_w = if served.is_some() { kit::button_width(ui, Some(icons::TERMINAL_WINDOW), t("Show terminal"), None, true) + 8.0 } else { 0.0 };
+                let w = go_w + kit::button_width(ui, Some(icons::ARROW_CLOCKWISE), t("Reload"), None, true);
+                ui.allocate_ui_with_layout(vec2(w, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if served.is_some() {
+                        go = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::TERMINAL_WINDOW), t("Show terminal"), true).clicked();
+                    }
+                    reload = kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_CLOCKWISE), t("Reload"), true).clicked();
+                });
+            });
         });
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser-down:{id}"), page);
@@ -399,80 +379,137 @@ impl App {
         }
     }
 
-    /// The page's console at the foot of its pane: errors first, then the rest as they came.
+    /// In the frame of a page with no web view: no address yet, pages that can't show here, or
+    /// the page loading (asleep, or not built yet).
+    fn page_placeholder(&mut self, ui: &mut Ui, page: Rect, url: &str, host: &str) {
+        let p = style::pal(ui);
+        if !crate::browser::supported() || url.is_empty() {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(page), |ui| {
+                ui.set_clip_rect(page.intersect(ui.clip_rect()));
+                if !crate::browser::supported() {
+                    kit::empty_state(ui, icons::GLOBE_SIMPLE, t("Pages can't show in TernaryCode here"), t("They open in your default browser."), |ui| {
+                        if !url.is_empty() && kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Open in default browser"), true).clicked() {
+                            crate::platform::open_url(url);
+                        }
+                    });
+                } else {
+                    kit::empty_state(ui, icons::GLOBE_SIMPLE, t("No page yet"), t("Type an address above, or a port like 5173."), |ui| {
+                        if let Some(k) = kit::keys(&Action::BrowserAddress) {
+                            kit::kbd(ui, k);
+                        }
+                    });
+                }
+            });
+            return;
+        }
+        let c = page.center();
+        let g = ui.painter().layout_no_wrap(tf("Loading {}…", &[host]), egui::FontId::proportional(style::SMALL), p.text_muted);
+        let w = 16.0 + 8.0 + g.size().x;
+        let x = c.x - w / 2.0;
+        super::status::paint_spinner(ui.painter(), pos2(x + 8.0, c.y), 16.0, p.text_faint);
+        ui.painter().galley(pos2(x + 24.0, c.y - g.size().y / 2.0), g, p.text_muted);
+    }
+
+    /// The page's console, a card under the page: its counts, All or only the errors, Clear and
+    /// Close; the lines (errors first, then the rest as they came), one each.
     fn console_drawer(&mut self, ui: &mut Ui, id: PaneId, r: Rect) {
         let p = style::pal(ui);
+        let dark = ui.visuals().dark_mode;
         let Some(b) = self.browsers.get(&id) else { return };
         let errors = b.console.iter().filter(|l| l.is_error()).count();
         let warnings = b.console.iter().filter(|l| l.is_warning()).count();
-        let mut lines: Vec<&crate::browser::ConsoleLine> = b.console.iter().filter(|l| l.is_error()).collect();
-        lines.extend(b.console.iter().filter(|l| !l.is_error()));
-        let lines: Vec<crate::browser::ConsoleLine> = lines.into_iter().cloned().collect();
-        let painter = ui.painter_at(r);
-        painter.rect_filled(r, CornerRadius::ZERO, p.chrome);
-        painter.hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, p.border));
-        let head = Rect::from_min_size(r.min, vec2(r.width(), 28.0));
-        painter.hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
-        painter.text(pos2(head.left() + 18.0, head.center().y), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(13.0), p.text_muted);
-        let g = painter.layout_no_wrap(t("Console").to_string(), style::medium(12.0), p.text_muted);
-        let mut x = head.left() + 30.0;
-        painter.galley(pos2(x, head.center().y - g.size().y / 2.0), g.clone(), p.text_muted);
-        x += g.size().x + 8.0;
+        let filter_id = egui::Id::new(("browser-console-errors", id));
+        let only_errors = ui.data(|d| d.get_temp::<bool>(filter_id)).unwrap_or(false);
+        let mut lines: Vec<crate::browser::ConsoleLine> = b.console.iter().filter(|l| l.is_error()).cloned().collect();
+        if !only_errors {
+            lines.extend(b.console.iter().filter(|l| !l.is_error()).cloned());
+        }
+        let painter = ui.painter_at(r.expand(1.0));
+        painter.rect(r, CornerRadius::same(PAGE_ROUND as u8), p.canvas, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+        let head = Rect::from_min_size(r.min, vec2(r.width(), CONSOLE_HEAD));
+        painter.hline(head.x_range().shrink(1.0), head.bottom() - 0.5, Stroke::new(1.0, p.border));
+        let cy = head.center().y;
+        let mut x = head.left() + 12.0;
+        painter.text(pos2(x + 6.5, cy), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(13.0), p.text_muted);
+        x += 13.0 + 6.0;
+        let g = painter.layout_no_wrap(t("Console").to_string(), style::medium(style::SMALL), p.text);
+        let gw = g.size().x;
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
+        x += gw + 6.0;
+        // The counts: red for errors, amber for warnings.
         for (n, c) in [(errors, p.err), (warnings, p.warn)] {
             if n > 0 {
-                let g = ui.painter().layout_no_wrap(n.to_string(), style::semibold(10.0), p.on_accent);
-                let w = (g.size().x + 10.0).max(16.0);
-                kit::paint_badge(ui.painter(), pos2(x + w, head.center().y), &n.to_string(), c, p.on_accent, 15.0);
-                x += w + 5.0;
+                let g = painter.layout_no_wrap(n.to_string(), style::mono(style::DATA), c);
+                let pill = Rect::from_min_size(pos2(x, cy - 8.0), vec2((g.size().x + 10.0).max(16.0), 16.0));
+                painter.rect_filled(pill, CornerRadius::same(8), style::tint(c, dark));
+                painter.galley(pill.center() - g.size() / 2.0, g, c);
+                x += pill.width() + 6.0;
             }
         }
-        // Clear and close, at the right.
+        // Close, Clear, then All / Errors, at the right.
+        let close_r = Rect::from_min_size(pos2(head.right() - 8.0 - ICON_S, cy - ICON_S / 2.0), vec2(ICON_S, ICON_S));
+        let clear_r = close_r.translate(vec2(-(ICON_S + 6.0), 0.0));
         let mut clear = false;
         let mut close = false;
-        let close_r = Rect::from_center_size(pos2(head.right() - 17.0, head.center().y), vec2(22.0, 22.0));
-        let clear_r = Rect::from_center_size(pos2(close_r.left() - 13.0, head.center().y), vec2(22.0, 22.0));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(clear_r), |ui| clear = kit::icon_button_ex(ui, icons::TRASH, t("Clear"), false, 22.0).clicked());
-        ui.scope_builder(egui::UiBuilder::new().max_rect(close_r), |ui| close = kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0).clicked());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(clear_r), |ui| clear = kit::icon_button_ex(ui, icons::TRASH, t("Clear"), false, ICON_S).clicked());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(close_r), |ui| close = kit::icon_button_ex(ui, icons::X, t("Close"), false, ICON_S).clicked());
+        let mut seg_right = clear_r.left() - 6.0;
+        let mut pick = None;
+        for (i, label) in [(1, t("Errors")), (0, t("All"))] {
+            let w = segment_width(ui, None, label);
+            if seg_right - w < x + 8.0 {
+                break;
+            }
+            let sr = Rect::from_min_size(pos2(seg_right - w, cy - 12.0), vec2(w, 24.0));
+            seg_right = sr.left() - 2.0;
+            if segment(ui, sr, filter_id.with(i), None, label, only_errors == (i == 1)).clicked() {
+                pick = Some(i == 1);
+            }
+        }
+        if let Some(e) = pick {
+            ui.data_mut(|d| d.insert_temp(filter_id, e));
+        }
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser-console-drawer:{id}"), r);
         // The lines.
-        let list = Rect::from_min_max(pos2(r.left(), head.bottom()), r.max);
+        let list = Rect::from_min_max(pos2(r.left() + 1.0, head.bottom()), pos2(r.right() - 1.0, r.bottom() - 4.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
+            ui.set_clip_rect(list.intersect(ui.clip_rect()));
             egui::ScrollArea::vertical().id_salt(("browser-console-lines", id)).auto_shrink([false, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
                 if lines.is_empty() {
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(12.0);
-                        ui.label(egui::RichText::new(t("Nothing in the console yet.")).size(style::SMALL).color(p.text_faint));
-                    });
+                    let empty = if only_errors { t("No errors in the console.") } else { t("Nothing in the console yet.") };
+                    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), CONSOLE_ROW + 6.0), Sense::hover());
+                    ui.painter().text(pos2(row.left() + 12.0, row.center().y), Align2::LEFT_CENTER, empty, egui::FontId::proportional(style::SMALL), p.text_faint);
                 }
                 for l in &lines {
-                    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+                    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), CONSOLE_ROW), Sense::hover());
                     let painter = ui.painter();
-                    painter.hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, p.border));
-                    let (icon, c) = match l.level.as_str() {
-                        "error" => (Some(icons::WARNING_CIRCLE), p.err),
-                        "warn" => (Some(icons::WARNING), p.warn),
-                        _ => (None, p.text_faint),
+                    let level = match l.level.as_str() {
+                        "error" => Some((icons::WARNING_CIRCLE, p.err)),
+                        "warn" => Some((icons::WARNING, p.warn)),
+                        _ => None,
                     };
-                    if let Some(i) = icon {
-                        painter.text(pos2(row.left() + 18.0, row.center().y), Align2::CENTER_CENTER, i, style::icon_font(12.5), c);
+                    if let Some((icon, c)) = level {
+                        painter.text(pos2(row.left() + 12.0 + 6.0, row.center().y), Align2::CENTER_CENTER, icon, style::icon_fill(12.0), c);
                     }
+                    let font = style::mono(style::DATA);
                     let src_w = if l.src.is_empty() || row.width() < 220.0 {
                         0.0
                     } else {
                         let max_src = (row.width() * 0.35).clamp(40.0, 220.0);
-                        let mut sjob = egui::text::LayoutJob::simple_singleline(l.src.clone(), egui::FontId::monospace(11.0), p.text_faint);
+                        let mut sjob = egui::text::LayoutJob::simple_singleline(l.src.clone(), font.clone(), p.text_faint);
                         sjob.wrap = egui::text::TextWrapping::truncate_at_width(max_src);
                         let g = painter.layout_job(sjob);
                         let w = g.size().x;
                         painter.galley(pos2(row.right() - 12.0 - w, row.center().y - g.size().y / 2.0), g, p.text_faint);
-                        w + 16.0
+                        w + 12.0
                     };
-                    let mut job = egui::text::LayoutJob::simple_singleline(l.text.lines().next().unwrap_or("").to_string(), egui::FontId::monospace(11.5), p.text);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((row.width() - 30.0 - 12.0 - src_w).max(20.0));
+                    let text_x = row.left() + 12.0 + 12.0 + 8.0;
+                    let mut job = egui::text::LayoutJob::simple_singleline(l.text.lines().next().unwrap_or("").to_string(), font, p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((row.right() - 12.0 - src_w - text_x).max(20.0));
                     let g = painter.layout_job(job);
-                    painter.galley(pos2(row.left() + 30.0, row.center().y - g.size().y / 2.0), g, p.text);
+                    painter.galley(pos2(text_x, row.center().y - g.size().y / 2.0), g, p.text);
                 }
             });
         });
@@ -486,165 +523,153 @@ impl App {
         }
     }
 
-    /// The bar saying which agent uses the page and what it does, with Take Over; once the
-    /// user took it, Hand Back.
-    /// The card above a page an agent uses: the agent at work and what it does, Take Over; once
-    /// the user took it over, a quiet card with Hand Back.
-    fn agent_bar(&mut self, ui: &mut Ui, id: PaneId, r: Rect, d: &Driver) {
-        let p = style::pal(ui);
-        let card = Rect::from_min_max(pos2(r.left() + 8.0, r.top()), pos2(r.right() - 8.0, r.bottom() - 6.0));
-        let painter = ui.painter_at(r);
-        let radius = CornerRadius::same(9);
-        if d.paused {
-            painter.rect(card, radius, p.surface, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
-            kit::paint_highlight(&painter, card, 9, &p);
+    /// The notice of the agent using the page (what it does, Take Over); once the user took
+    /// the page over, the quiet one with Hand Back. Returns its height.
+    fn agent_notice(&mut self, ui: &mut Ui, id: PaneId, at: egui::Pos2, width: f32, d: &Driver) -> f32 {
+        let rect = Rect::from_min_size(at, vec2(width, kit::NOTICE_H));
+        let (tone, glyph, title, body) = if d.paused {
+            (kit::Tone::Neutral, icons::HAND_POINTING, t("You have this page").to_string(), tf("{} waits until you hand it back", &[&d.who]))
         } else {
-            painter.rect(card, radius, style::over(p.canvas, p.accent, 0.13), Stroke::new(1.0, style::soft(p.accent, 0.38)), egui::StrokeKind::Inside);
-        }
-        let cy = card.center().y;
-        let mut x = card.left() + 11.0;
-        let kind = self.panes.get(&d.pane).and_then(|x| x.tracker.agent.or(x.last_agent));
-        if d.paused {
-            painter.text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, icons::HAND_POINTING, style::icon_font(14.0), p.accent_text);
-            x += 14.0 + 8.0;
-        } else {
-            kit::paint_lattice(&painter, pos2(x + 6.0, cy), 12.0, p.info, true);
-            x += 12.0 + 8.0;
-            if let Some(k) = kind.filter(|k| super::agent_logo::has(*k)) {
-                super::agent_logo::paint(&painter, Rect::from_min_size(pos2(x, cy - 6.5), vec2(13.0, 13.0)), k, p.text, false);
-                x += 13.0 + 8.0;
-            }
-        }
-        // The button at the right, then the words in what is left.
-        let (label, bicon, bkind) = if d.paused {
-            (t("Hand Back").to_string(), icons::ARROW_U_UP_LEFT, kit::Kind::Primary)
-        } else {
-            (t("Take Over").to_string(), icons::HAND_POINTING, kit::Kind::Secondary)
+            let body = if d.doing.is_empty() { t("Click or type in the page to take over").to_string() } else { tf("{} · click or type in the page to take over", &[&d.doing]) };
+            (kit::Tone::Info, icons::CURSOR_CLICK, tf("{} is using this page", &[&d.who]), body)
         };
-        let area = Rect::from_min_max(pos2(x, card.top()), pos2(card.right() - 5.0, card.bottom()));
-        let clicked = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-                let b = kit::button_ex(ui, bkind, Some(bicon), &label, true);
-                #[cfg(debug_assertions)]
-                crate::devtest::record(format!("browser-take-over:{id}"), b.rect);
-                let b = if d.paused { b.on_hover_text(tf("Hand Back to {}", &[&d.who])) } else { b };
-                (b.clicked(), b.rect.left())
-            })
-            .inner;
-        let font = egui::FontId::proportional(12.0);
-        let mut job = egui::text::LayoutJob::default();
-        let mut add = |text: &str, font: egui::FontId, color: egui::Color32| {
-            job.append(text, 0.0, egui::TextFormat { font_id: font, color, ..Default::default() });
-        };
-        if d.paused {
-            add(t("You"), style::semibold(12.0), p.text);
-            add(&format!(" {}", t("have this page")), font.clone(), p.text);
-            add("  ·  ", font.clone(), p.text_faint);
-            add(&tf("{} waits", &[&d.who]), font, p.text_faint);
-        } else {
-            add(&d.who, style::semibold(12.0), p.text);
-            add(&format!(" {}", t("is using this page")), font.clone(), p.text);
-            if !d.doing.is_empty() {
-                add("  ·  ", font.clone(), p.text_faint);
-                add(&d.doing, font, p.text_muted);
-            }
-        }
-        let room = clicked.1 - 10.0 - x;
-        if room >= 32.0 {
-            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-            let g = painter.layout_job(job);
-            painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
+        let primary = d.paused.then_some((t("Hand back"), Some("↵")));
+        let secondary = (!d.paused).then_some(t("Take over"));
+        // A click on the notice gives it the keyboard: Enter hands the page back.
+        let keys = notice_keys(ui, rect, egui::Id::new(("browser-agent-keys", id)));
+        let out = ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| kit::notice(ui, width, tone, Some(glyph), &title, Some(&body), primary, secondary, false)).inner;
+        let (pr, sr) = notice_buttons(ui, rect, primary, secondary);
+        if let Some(r) = pr {
+            ui.interact(r, egui::Id::new(("browser-hand-back-tip", id)), Sense::hover()).on_hover_text(tf("Hand back to {}", &[&d.who]));
         }
         #[cfg(debug_assertions)]
-        crate::devtest::record(format!("browser-agent:{id}"), card);
-        if clicked.0 {
+        {
+            if let Some(r) = pr.or(sr) {
+                crate::devtest::record(format!("browser-take-over:{id}"), r);
+            }
+            crate::devtest::record(format!("browser-agent:{id}"), rect);
+        }
+        let enter = d.paused && keys && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        if out.primary || out.secondary || enter {
             self.take_over_browser(id, !d.paused);
         }
+        kit::NOTICE_H
     }
 
-    /// The find bar of a page: the field (Enter: next, ⇧Enter: the one before, Esc: done), how
-    /// many matches, ↑ ↓ and ×.
-    fn page_find_bar(&mut self, ui: &mut Ui, id: PaneId, r: Rect, f: &PageFind) {
+    /// The question about a site an agent's step would open: Allow Once (⌘: always for the
+    /// project), Block. Returns its height.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_notice(&mut self, ui: &mut Ui, id: PaneId, at: egui::Pos2, width: f32, a: &Ask, who: &str, project: &str) -> f32 {
         let p = style::pal(ui);
-        // A card above the page: the field, how many matches, ↑ ↓ ×.
-        let r = Rect::from_min_max(pos2(r.left() + 8.0, r.top()), pos2(r.right() - 8.0, r.bottom() - 6.0));
-        let painter = ui.painter_at(r.expand(1.0));
-        painter.rect(r, CornerRadius::same(9), p.menu, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-        kit::paint_highlight(&painter, r, 9, &p);
+        let rect = Rect::from_min_size(at, vec2(width, kit::NOTICE_H));
+        let host = match crate::browser::split_url(&a.url).0 {
+            h if h.is_empty() => a.host.clone(),
+            h => h,
+        };
+        let title = if a.click { tf("{}’s click goes to {}", &[who, &host]) } else { tf("{} wants to open {}", &[who, &host]) };
+        let (cmd, always_keys) = if cfg!(target_os = "macos") { ("⌘", "⌘↵") } else { ("Ctrl", "Ctrl+Enter") };
+        let primary = Some((t("Allow once"), Some("↵")));
+        let secondary = Some(t("Block"));
+        // Where it is too narrow for the whole line, its end ("⌘↵ always") stays.
+        let (pr, sr) = notice_buttons(ui, rect, primary, secondary);
+        let body = tf("{} · not on your list of sites · {} always", &[project, always_keys]);
+        let room = sr.or(pr).map_or(rect.right() - 8.0, |b| b.left() - 6.0) - (rect.left() + 38.0) - 8.0;
+        let body = if ui.painter().layout_no_wrap(body.clone(), style::mono(style::DATA), p.text).size().x <= room { body } else { tf("{} · {} always", &[project, always_keys]) };
+        // A click on the notice gives it the keyboard: Enter allows once, ⌘↵ always, Esc blocks.
+        let kid = egui::Id::new(("browser-ask-keys", id));
+        let keys = notice_keys(ui, rect, kid);
+        let out = ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| kit::notice(ui, width, kit::Tone::Input, Some(icons::GLOBE_SIMPLE), &title, Some(&body), primary, secondary, false)).inner;
+        if let Some(r) = pr {
+            ui.interact(r, kid.with("tip"), Sense::hover()).on_hover_text(tf("Always for {}: {}-click or {}", &[project, cmd, always_keys]));
+        }
+        // "⌘↵ always" at the end of the line can be clicked too.
+        let mut always = false;
+        if let Some(link) = always_link(ui, rect, &title, &body, always_keys, sr.or(pr)) {
+            let resp = ui.interact(link, kid.with("always"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tf("Always for {}", &[project]));
+            if resp.hovered() {
+                ui.painter().hline(link.x_range(), link.bottom() - 1.0, Stroke::new(1.0, p.text_muted));
+            }
+            always = resp.clicked();
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("browser-always:{id}"), link);
+        }
+        #[cfg(debug_assertions)]
+        {
+            if let Some(r) = pr {
+                crate::devtest::record(format!("browser-allow:{id}"), r);
+            }
+            if let Some(r) = sr {
+                crate::devtest::record(format!("browser-block:{id}"), r);
+            }
+            crate::devtest::record(format!("browser-ask:{id}"), rect);
+        }
+        let held = ui.input(|i| i.modifiers.command);
+        let mut answer = None;
+        if out.primary {
+            answer = Some(if held { Answer::Always } else { Answer::Once });
+        }
+        if out.secondary {
+            answer = Some(Answer::Block);
+        }
+        if always {
+            answer = Some(Answer::Always);
+        }
+        if keys && !self.overlay_open() {
+            ui.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter) {
+                    answer = Some(Answer::Always);
+                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                    answer = Some(Answer::Once);
+                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                    answer = Some(Answer::Block);
+                }
+            });
+        }
+        if let Some(ans) = answer {
+            self.answer_site(id, ans);
+        }
+        kit::NOTICE_H
+    }
+
+    /// The find bar of a page, above it: the field (Enter: next, ⇧Enter: the one before, Esc:
+    /// done), how many matches, ↑ ↓ and ×. Returns its height.
+    fn page_find_bar(&mut self, ui: &mut Ui, id: PaneId, at: egui::Pos2, width: f32, f: &PageFind) -> f32 {
+        let p = style::pal(ui);
         let fid = egui::Id::new(("browser-find", id));
         let count = match f.count {
             _ if f.query.is_empty() => String::new(),
             None => String::new(),
-            Some(0) => t("No matches").to_string(),
+            Some(0) => t("No results").to_string(),
             Some(n) => tf("{} of {}", &[&f.index.to_string(), &n.to_string()]),
         };
-        let cg = painter.layout_no_wrap(count, style::mono(10.5), if f.count == Some(0) { p.err } else { p.text_faint });
-        let x_close = Rect::from_center_size(pos2(r.right() - 4.0 - 10.0, r.center().y), vec2(20.0, 20.0));
-        let down = Rect::from_center_size(pos2(x_close.left() - 2.0 - 10.0, r.center().y), vec2(20.0, 20.0));
-        let up = Rect::from_center_size(pos2(down.left() - 2.0 - 10.0, r.center().y), vec2(20.0, 20.0));
-        let sep_x = up.left() - 6.0;
-        painter.vline(sep_x, (r.center().y - 8.0)..=(r.center().y + 8.0), Stroke::new(1.0, p.border_strong));
-        painter.text(pos2(r.left() + 10.0 + 6.5, r.center().y), Align2::CENTER_CENTER, icons::MAGNIFYING_GLASS, style::icon_font(13.0), p.text_faint);
-        let cw = if r.width() >= 210.0 { cg.size().x } else { 0.0 };
-        if cw > 0.0 {
-            painter.galley(pos2(sep_x - 8.0 - cw, r.center().y - cg.size().y / 2.0), cg, p.text_faint);
-        }
-        let field_left = r.left() + 10.0 + 13.0 + 8.0;
-        let field_right = (sep_x - 8.0 - if cw > 0.0 { cw + 8.0 } else { 0.0 }).max(field_left + 20.0);
-        let field = Rect::from_min_max(pos2(field_left, r.top() + 4.0), pos2(field_right, r.bottom() - 4.0));
-        let mut text = f.query.clone();
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        let resp = child.add_sized(
-            field.size(),
-            egui::TextEdit::singleline(&mut text)
-                .id(fid)
-                .frame(egui::Frame::NONE)
-                .margin(egui::Margin::ZERO)
-                .font(egui::FontId::proportional(12.5))
-                .hint_text(egui::RichText::new(t("Find in page")).color(p.text_faint))
-                .vertical_align(egui::Align::Center),
+        let mut query = f.query.clone();
+        let out = find_card(
+            ui,
+            at,
+            width,
+            FindCard { id: fid, query: &mut query, hint: t("Find in page"), count, count_color: if f.count == Some(0) { p.err } else { p.text_muted }, field_w: 160.0, focus: f.focus, shadow: false },
+            !self.overlay_open(),
         );
         #[cfg(debug_assertions)]
-        crate::devtest::record(format!("browser-find:{id}"), field);
-        if f.focus {
-            resp.request_focus();
-            if let Some(b) = self.browsers.get_mut(&id)
-                && let Some(ff) = b.find.as_mut()
-            {
-                ff.focus = false;
-            }
+        crate::devtest::record(format!("browser-find:{id}"), out.field);
+        if f.focus
+            && let Some(ff) = self.browsers.get_mut(&id).and_then(|b| b.find.as_mut())
+        {
+            ff.focus = false;
         }
-        if resp.has_focus() {
-            ui.memory_mut(|m| m.set_focus_lock_filter(fid, egui::EventFilter { escape: true, horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
-        }
-        let mut step = None;
-        if resp.changed() {
+        let mut step = out.step;
+        if out.changed {
             if let Some(ff) = self.browsers.get_mut(&id).and_then(|b| b.find.as_mut()) {
-                ff.query = text.clone();
+                ff.query = query;
             }
             step = Some(0);
         }
-        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if enter {
-            step = Some(if ui.input(|i| i.modifiers.shift) { -1 } else { 1 });
-            resp.request_focus();
-        }
-        let clicked = |ui: &mut Ui, r: Rect, icon: &str, tip: &str| ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, 20.0)).inner.clicked();
-        if clicked(ui, up, icons::CARET_UP, t("Previous")) {
-            step = Some(-1);
-        }
-        if clicked(ui, down, icons::CARET_DOWN, t("Next")) {
-            step = Some(1);
-        }
-        let esc = !self.overlay_open()
-            && (resp.has_focus() || ui.memory(|m| m.had_focus_last_frame(fid)))
-            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        let close = clicked(ui, x_close, icons::X, t("Done")) || esc;
-        if close {
+        if out.close {
             self.close_page_find(id);
         } else if let Some(step) = step {
             self.find_in_page_step(id, step);
         }
+        FIND_H
     }
 
     /// A key of the app's pressed while a page had the keyboard (Windows, Linux, where the page's
@@ -735,44 +760,41 @@ impl App {
         self.browser_focus.filter(|id| self.browsers.contains_key(id))
     }
 
-    /// A page's dialog above it: who asks, the message, a field for a prompt, OK (and Cancel).
-    /// Enter answers OK, Esc Cancel. Returns its height.
-    fn dialog_bar(&mut self, ui: &mut Ui, id: PaneId, at: egui::Pos2, width: f32, d: &Dialog) -> f32 {
+    /// A page's dialog above it, in the Notice's look: who asks and what (all of it, up to 8
+    /// lines), a field for a prompt, OK (and Cancel). Enter answers OK, Esc Cancel. Returns its
+    /// height.
+    fn dialog_notice(&mut self, ui: &mut Ui, id: PaneId, at: egui::Pos2, width: f32, d: &Dialog) -> f32 {
         let p = style::pal(ui);
         let prompt = d.kind == DialogKind::Prompt;
-        // A card above the page: the icon, who asks and what, Cancel and OK at the right.
-        let card_l = at.x + 8.0;
-        let card_r = at.x + width - 8.0;
         let ok_w = kit::button_width(ui, None, t("OK"), Some("↵"), true);
         let cancel_w = if d.kind != DialogKind::Alert { kit::button_width(ui, None, t("Cancel"), None, true) + 6.0 } else { 0.0 };
-        let buttons_w = ok_w + cancel_w;
-        let x = card_l + 10.0 + 30.0 + 10.0;
-        let text_w = (card_r - 8.0 - buttons_w - 10.0 - x).max(60.0);
-        let mut job = egui::text::LayoutJob::simple(d.message.clone(), style::medium(12.5), p.text, text_w);
+        let tx = at.x + 38.0;
+        let text_w = (at.x + width - 8.0 - ok_w - cancel_w - 10.0 - tx).max(60.0);
+        let who = if prompt { tf("{} asks", &[&d.host]) } else { tf("{} says", &[&d.host]) };
+        let mut who_job = egui::text::LayoutJob::simple_singleline(who, style::medium(style::SMALL), p.text);
+        who_job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
+        let who_g = ui.painter().layout_job(who_job);
+        let mut job = egui::text::LayoutJob::simple(d.message.clone(), style::mono(style::DATA), p.text_muted, text_w);
         job.wrap.max_rows = 8;
         let msg = ui.painter().layout_job(job);
-        let who = if prompt { tf("{} asks", &[&d.host]) } else { tf("{} says", &[&d.host]) };
-        let content_h = 15.0 + 2.0 + msg.size().y + if prompt { 8.0 + 26.0 } else { 0.0 };
-        let card_h = (content_h + 16.0).max(52.0);
-        let r = Rect::from_min_max(pos2(card_l, at.y), pos2(card_r, at.y + card_h));
+        let field_h = 26.0;
+        let content_h = who_g.size().y + 2.0 + msg.size().y + if prompt { 8.0 + field_h } else { 0.0 };
+        let h = (content_h + 16.0).max(kit::NOTICE_H);
+        let r = Rect::from_min_size(at, vec2(width, h));
+        // The Notice, Neutral: the raised surface on a hairline.
         let painter = ui.painter_at(r.expand(1.0));
-        painter.rect(r, CornerRadius::same(10), p.menu, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-        kit::paint_highlight(&painter, r, 10, &p);
-        let icon = Rect::from_min_size(pos2(r.left() + 10.0, r.center().y - 15.0), vec2(30.0, 30.0));
-        painter.rect(icon, CornerRadius::same(8), p.hover, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
-        painter.text(icon.center(), Align2::CENTER_CENTER, icons::CHAT_CENTERED_TEXT, style::icon_font(15.0), p.text_muted);
+        painter.rect(r, CornerRadius::same(9), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
         let top = r.center().y - content_h / 2.0;
-        let mut who_job = egui::text::LayoutJob::simple_singleline(who, egui::FontId::proportional(11.0), p.text_faint);
-        who_job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
-        let who_g = painter.layout_job(who_job);
-        painter.galley(pos2(x, top), who_g, p.text_faint);
-        painter.galley(pos2(x, top + 17.0), msg.clone(), p.text);
+        let who_h = who_g.size().y;
+        painter.text(pos2(r.left() + 20.0, top + who_h / 2.0 + if h > kit::NOTICE_H { 0.0 } else { (content_h - who_h) / 2.0 }), Align2::CENTER_CENTER, icons::CHAT_CENTERED_TEXT, style::icon_font(16.0), kit::Tone::Neutral.color(&p));
+        painter.galley(pos2(tx, top), who_g, p.text);
+        painter.galley(pos2(tx, top + who_h + 2.0), msg.clone(), p.text_muted);
         let mut answer = None;
         let mut has_keys = false;
         let fid = egui::Id::new(("browser-dialog-field", id));
         let focus = std::mem::take(&mut self.dialog_focus) == Some(id);
         if prompt {
-            let field = Rect::from_min_size(pos2(x, top + 17.0 + msg.size().y + 8.0), vec2(text_w.min(360.0), 26.0));
+            let field = Rect::from_min_size(pos2(tx, top + who_h + 2.0 + msg.size().y + 8.0), vec2(text_w.min(360.0), field_h));
             let mut text = d.text.clone();
             let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(field), |ui| kit::field(ui, fid, &mut text, None, "", field.width(), true)).inner;
             if focus {
@@ -792,7 +814,7 @@ impl App {
                 answer = Some(true);
             }
         }
-        let row = Rect::from_min_max(pos2(card_r - 8.0 - buttons_w - 2.0, r.center().y - 12.0), pos2(card_r - 8.0, r.center().y + 12.0));
+        let row = Rect::from_min_max(pos2(r.right() - 8.0 - ok_w - cancel_w - 2.0, r.center().y - 12.0), pos2(r.right() - 8.0, r.center().y + 12.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let ok = kit::button_keys(ui, kit::Kind::Primary, None, t("OK"), Some("↵"), true);
@@ -809,7 +831,7 @@ impl App {
                 answer = Some(true);
             }
             if d.kind != DialogKind::Alert {
-                let cancel = kit::button_ex(ui, kit::Kind::Ghost, None, t("Cancel"), true);
+                let cancel = kit::button_ex(ui, kit::Kind::Secondary, None, t("Cancel"), true);
                 #[cfg(debug_assertions)]
                 crate::devtest::record(format!("browser-dialog-cancel:{id}"), cancel.rect);
                 if cancel.has_focus() {
@@ -821,7 +843,7 @@ impl App {
                 }
             }
         });
-        // Esc while the bar has the keyboard: Cancel (OK for an alert).
+        // Esc while the notice has the keyboard: Cancel (OK for an alert).
         if has_keys && !self.overlay_open() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             answer = Some(d.kind == DialogKind::Alert);
         }
@@ -830,7 +852,7 @@ impl App {
         if let Some(accept) = answer {
             self.answer_dialog(id, accept);
         }
-        card_h + 6.0
+        h
     }
 
     /// Answers a page's dialog (OK or Cancel; a prompt's field with OK). Returns whether one
@@ -841,199 +863,156 @@ impl App {
         true
     }
 
-    /// The list of what a page downloaded: newest first; a click opens the file, the magnifier
-    /// shows it in the Finder.
-    fn downloads_menu(&mut self, ui: &mut Ui, id: PaneId) {
+    /// The list of what a page downloaded (a popover 320 wide): newest first, each with its
+    /// file's icon, its name (a click opens it once it came), how it went, and Show in Finder
+    /// (came) or Retry (failed); Clear List.
+    fn downloads_list(&mut self, ui: &mut Ui, id: PaneId) {
         let p = style::pal(ui);
-        kit::menu_body(ui);
-        ui.set_min_width(280.0);
+        let w = 320.0 - 28.0;
+        ui.set_width(w);
+        ui.spacing_mut().item_spacing = vec2(8.0, 14.0);
         let Some(b) = self.browsers.get(&id) else { return };
         let list: Vec<crate::browser::Download> = b.downloads.iter().rev().cloned().collect();
-        kit::menu_header(ui, t("Downloads"));
         let mut clear = false;
-        for d in &list {
-            let name = d.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let meta = match d.done {
-                None => t("Downloading…").to_string(),
-                Some(false) => t("Download failed").to_string(),
-                Some(true) => {
-                    let size = d.size.unwrap_or(0);
-                    let at = std::time::SystemTime::now()
-                        .checked_sub(d.at.elapsed())
-                        .unwrap_or_else(std::time::SystemTime::now);
-                    format!("{} · {}", super::update_ui::human_size(size), super::dialogs::ago(at))
-                }
-            };
-            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                egui::Sides::new().spacing(8.0).shrink_left().show(
-                    ui,
-                    |ui| {
-                        let open = ui
-                            .add(
-                                egui::Label::new(egui::RichText::new(&name).font(style::medium(12.5)).color(p.text))
-                                    .truncate()
-                                    .sense(Sense::click()),
-                            )
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .on_hover_text(d.path.display().to_string());
-                        if open.clicked() && d.done == Some(true) {
-                            crate::platform::reveal(&d.path);
-                            ui.close();
-                        }
-                    },
-                    |ui| {
-                        let tip = if cfg!(target_os = "macos") { t("Show in Finder") } else { t("Show in Folder") };
-                        if kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS, tip, false, 22.0).clicked() {
-                            crate::platform::reveal_in_folder(&d.path);
-                            ui.close();
-                        }
-                    },
-                );
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(meta)
-                            .font(egui::FontId::proportional(style::SMALL))
-                            .color(if d.done == Some(false) { p.err } else { p.text_muted }),
-                    )
-                    .truncate(),
-                );
-            });
-        }
-        kit::menu_sep(ui);
-        if kit::menu_item(ui, Some(icons::TRASH), t("Clear List"), None, false).clicked() {
+        let mut retry = None;
+        let (head, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+        ui.painter().text(head.left_center(), Align2::LEFT_CENTER, t("Downloads"), style::semibold(style::HEADING), p.text);
+        let cg = ui.painter().layout_no_wrap(t("Clear list").to_string(), egui::FontId::proportional(style::SMALL), p.text_faint);
+        let cr = Rect::from_min_size(pos2(head.right() - cg.size().x, head.center().y - cg.size().y / 2.0), cg.size());
+        let cresp = ui.interact(cr.expand(2.0), egui::Id::new(("browser-downloads-clear", id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        ui.painter().galley(cr.min, cg, if cresp.hovered() { p.text } else { p.text_faint });
+        if cresp.clicked() {
             clear = true;
-            ui.close();
+        }
+        let reveal_tip = if cfg!(target_os = "macos") { t("Show in Finder") } else { t("Show in Folder") };
+        for (i, d) in list.iter().enumerate() {
+            let name = d.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let running = d.done.is_none();
+            let h = if running { 18.0 + 6.0 + 4.0 + 6.0 + 14.0 } else { 18.0 + 2.0 + 16.0 };
+            let (row, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+            let (icon, ic) = file_icon(&name, &p);
+            let name_y = row.top() + 9.0;
+            ui.painter().text(pos2(row.left() + 8.0, name_y), Align2::CENTER_CENTER, icon, style::icon_font(16.0), ic);
+            let tx = row.left() + 16.0 + 8.0;
+            let button = Rect::from_min_size(pos2(row.right() - ICON_S, if running { row.top() - 3.0 } else { row.center().y - ICON_S / 2.0 }), vec2(ICON_S, ICON_S));
+            let mut job = egui::text::LayoutJob::simple_singleline(name.clone(), egui::FontId::proportional(style::BODY), p.text);
+            job.wrap = egui::text::TextWrapping::truncate_at_width((button.left() - 8.0 - tx).max(20.0));
+            let g = ui.painter().layout_job(job);
+            let nr = Rect::from_min_size(pos2(tx, name_y - g.size().y / 2.0), g.size());
+            let open = ui.interact(nr, egui::Id::new(("browser-download-name", id, i)), Sense::click());
+            let open = if d.done == Some(true) { open.on_hover_cursor(egui::CursorIcon::PointingHand) } else { open };
+            open.clone().on_hover_text(d.path.display().to_string());
+            ui.painter().galley(nr.min, g, p.text);
+            if open.clicked() && d.done == Some(true) {
+                crate::platform::reveal(&d.path);
+                ui.close();
+            }
+            match d.done {
+                None => {
+                    // How far it is, as the system does not say: a segment running along.
+                    let track = Rect::from_min_size(pos2(tx, row.top() + 18.0 + 6.0), vec2(row.right() - tx, 4.0));
+                    ui.painter().rect_filled(track, CornerRadius::same(2), p.subtle);
+                    let seg = track.width() * 0.3;
+                    let x0 = track.left() + ((ui.input(|i| i.time) as f32 * 160.0) % (track.width() + seg)) - seg;
+                    ui.painter().with_clip_rect(track).rect_filled(Rect::from_min_size(pos2(x0, track.top()), vec2(seg, 4.0)), CornerRadius::same(2), p.accent);
+                    ui.ctx().request_repaint_after(Duration::from_millis(33));
+                    ui.painter().text(pos2(tx, track.bottom() + 6.0 + 7.0), Align2::LEFT_CENTER, t("Downloading…"), style::mono(style::DATA), p.text_faint);
+                }
+                Some(false) => {
+                    ui.painter().text(pos2(tx, row.bottom() - 8.0), Align2::LEFT_CENTER, t("Download failed"), egui::FontId::proportional(style::SMALL), p.err);
+                    let r = ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| kit::icon_button_ex(ui, icons::ARROW_CLOCKWISE, t("Retry"), false, ICON_S)).inner;
+                    if r.clicked() {
+                        retry = Some(d.url.clone());
+                    }
+                }
+                Some(true) => {
+                    let at = std::time::SystemTime::now().checked_sub(d.at.elapsed()).unwrap_or_else(std::time::SystemTime::now);
+                    let meta = format!("{} · {}", super::update_ui::human_size(d.size.unwrap_or(0)), super::dialogs::ago(at));
+                    ui.painter().text(pos2(tx, row.bottom() - 8.0), Align2::LEFT_CENTER, meta, style::mono(style::DATA), p.text_faint);
+                    let r = ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| kit::icon_button_ex(ui, icons::FOLDER_OPEN, reveal_tip, false, ICON_S)).inner;
+                    if r.clicked() {
+                        crate::platform::reveal_in_folder(&d.path);
+                        ui.close();
+                    }
+                }
+            }
+        }
+        if list.is_empty() {
+            ui.label(egui::RichText::new(t("Nothing downloaded yet.")).size(style::SMALL).color(p.text_faint));
         }
         if clear && let Some(b) = self.browsers.get_mut(&id) {
             b.downloads.retain(|d| d.done.is_none());
         }
-    }
-
-    /// The question about a site an agent's step would open: Allow Once, Always for the
-    /// project, Block.
-    fn ask_card(&mut self, ui: &mut Ui, id: PaneId, r: Rect, a: &Ask, who: &str, project: &str) {
-        let p = style::pal(ui);
-        let dark = ui.visuals().dark_mode;
-        // An amber card above the page: who wants to open what, why it asks, the three answers.
-        let card = Rect::from_min_max(pos2(r.left() + 8.0, r.top()), pos2(r.right() - 8.0, r.bottom() - 6.0));
-        let painter = ui.painter_at(card.expand(1.0));
-        painter.rect(card, CornerRadius::same(10), style::over(p.canvas, p.warn, 0.08), Stroke::new(1.0, style::soft(p.warn, 0.30)), egui::StrokeKind::Inside);
-        let x = card.left() + 14.0;
-        let mut y = card.top() + 14.0;
-        // Who: its logo, its name, what it wants.
-        let kind = self.browsers.get(&id).and_then(|b| b.driver.as_ref()).and_then(|d| self.panes.get(&d.pane)).and_then(|x| x.tracker.agent.or(x.last_agent));
-        let mut tx = x;
-        if let Some(k) = kind.filter(|k| super::agent_logo::has(*k)) {
-            super::agent_logo::paint(&painter, Rect::from_min_size(pos2(x, y + 1.0), vec2(14.0, 14.0)), k, p.text, false);
-            tx += 14.0 + 8.0;
-        }
-        let mut job = egui::text::LayoutJob::default();
-        job.append(who, 0.0, egui::TextFormat::simple(style::medium(12.5), p.text));
-        let wants = if a.click { t("’s click goes to") } else { t("wants to open") };
-        job.append(wants, if a.click { 0.0 } else { 4.0 }, egui::TextFormat::simple(egui::FontId::proportional(12.5), p.text));
-        job.wrap = egui::text::TextWrapping::truncate_at_width((card.right() - 14.0 - tx).max(40.0));
-        let g = painter.layout_job(job);
-        painter.galley(pos2(tx, y + 8.0 - g.size().y / 2.0), g, p.text);
-        y += 16.0 + 8.0;
-        // The site, in a well.
-        let site = Rect::from_min_max(pos2(x, y), pos2(card.right() - 14.0, y + 30.0));
-        painter.rect(site, CornerRadius::same(7), if dark { p.inset } else { egui::Color32::WHITE }, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
-        painter.text(pos2(site.left() + 10.0 + 6.5, site.center().y), Align2::CENTER_CENTER, icons::GLOBE_SIMPLE, style::icon_font(13.0), p.text_faint);
-        let (host, path) = crate::browser::split_url(&a.url);
-        let host = if host.is_empty() { a.host.clone() } else { host.to_string() };
-        let mut job = egui::text::LayoutJob::default();
-        job.append(&host, 0.0, egui::TextFormat::simple(style::mono(11.5), p.text));
-        job.append(&path, 0.0, egui::TextFormat::simple(style::mono(11.5), p.text_faint));
-        job.wrap = egui::text::TextWrapping::truncate_at_width((site.width() - 36.0).max(40.0));
-        let g = painter.layout_job(job);
-        painter.galley(pos2(site.left() + 10.0 + 13.0 + 6.0, site.center().y - g.size().y / 2.0), g, p.text);
-        y = site.bottom() + 8.0;
-        let mut job = egui::text::LayoutJob::simple_singleline(tf("{} · it isn’t on your list of sites agents may open.", &[project]), egui::FontId::proportional(11.5), p.text_faint);
-        job.wrap = egui::text::TextWrapping::truncate_at_width((card.right() - 14.0 - x).max(40.0));
-        let g = painter.layout_job(job);
-        painter.galley(pos2(x, y), g, p.text_faint);
-        y += 16.0 + 10.0;
-        let row = Rect::from_min_max(pos2(x, y), pos2(card.right() - 14.0, y + 24.0));
-        let mut answer = None;
-        let always_label = if row.width() < 290.0 { t("Always").to_string() } else { tf("Always for {}", &[project]) };
-        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-            ui.set_clip_rect(row.intersect(ui.clip_rect()));
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let buttons = [
-                (kit::Kind::Primary, t("Allow Once").to_string(), Answer::Once, "allow"),
-                (kit::Kind::Secondary, always_label, Answer::Always, "always"),
-            ];
-            for (kind, label, ans, name) in buttons {
-                let b = kit::button_ex(ui, kind, None, &label, true);
-                #[cfg(debug_assertions)]
-                crate::devtest::record(format!("browser-{name}:{id}"), b.rect);
-                let _ = name;
-                if b.clicked() {
-                    answer = Some(ans);
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let b = kit::button_ex(ui, kit::Kind::Danger, None, t("Block"), true);
-                #[cfg(debug_assertions)]
-                crate::devtest::record(format!("browser-block:{id}"), b.rect);
-                if b.clicked() {
-                    answer = Some(Answer::Block);
-                }
-            });
-        });
-        #[cfg(debug_assertions)]
-        crate::devtest::record(format!("browser-ask:{id}"), card);
-        if let Some(ans) = answer {
-            self.answer_site(id, ans);
+        // Retry: the page downloads it again (with its cookies, as a link with `download`).
+        if let Some(url) = retry
+            && let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref())
+        {
+            let js = format!("const a = document.createElement('a'); a.href = {}; a.download = ''; document.body.appendChild(a); a.click(); a.remove(); return '';", serde_json::to_string(&url).unwrap_or_default());
+            crate::browser::run_js(v, &js, |_| {});
         }
     }
 
     /// A browser pane's menu (⋯ in its toolbar, or a right-click on it).
     fn browser_menu(&mut self, ui: &mut Ui, id: PaneId) {
         kit::menu_body(ui);
-        let url = self.browsers.get(&id).map(|b| b.url.clone()).unwrap_or_default();
-        if ui.add_enabled_ui(!url.is_empty(), |ui| kit::menu_item(ui, Some(icons::COPY), t("Copy Address"), None, false)).inner.clicked() {
+        ui.set_min_width(238.0);
+        let mac = cfg!(target_os = "macos");
+        let Some(b) = self.browsers.get(&id) else { return };
+        let url = b.url.clone();
+        let has_downloads = !b.downloads.is_empty();
+        let served = b.served_by.filter(|pane| self.panes.contains_key(pane)).map(|pane| (pane, self.leaf_label(pane)));
+        if ui.add_enabled_ui(!url.is_empty(), |ui| kit::menu_item(ui, Some(icons::COPY), t("Copy address"), None, false)).inner.clicked() {
             ui.ctx().copy_text(url.clone());
             ui.close();
         }
-        if ui.add_enabled_ui(!url.is_empty(), |ui| kit::menu_item(ui, Some(icons::ARROW_SQUARE_OUT), t("Open in Default Browser"), None, false)).inner.clicked() {
+        if ui.add_enabled_ui(!url.is_empty(), |ui| kit::menu_item(ui, Some(icons::ARROW_SQUARE_OUT), t("Open in default browser"), None, false)).inner.clicked() {
             crate::platform::open_url(&url);
             ui.close();
         }
+        // The terminal whose dev server serves the page.
+        if let Some((pane, label)) = served
+            && kit::menu_item(ui, Some(icons::TERMINAL_WINDOW), &tf("Show terminal: {}", &[&label]), None, false).clicked()
+        {
+            self.actions.push(Action::FocusPane(pane));
+            ui.close();
+        }
         kit::menu_sep(ui);
-        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS), t("Find…"), kit::keys(&Action::Find), false).clicked() {
+        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS), t("Find…"), Some(if mac { "⌘F" } else { "Ctrl+F" }), false).clicked() {
             self.open_page_find(id);
             ui.close();
         }
-        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS_PLUS), t("Zoom In"), kit::keys(&Action::FontBigger), false).clicked() {
+        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS_PLUS), t("Zoom in"), Some(if mac { "⌘=" } else { "Ctrl+=" }), false).clicked() {
             self.zoom_page(id, 1);
             ui.close();
         }
-        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS_MINUS), t("Zoom Out"), kit::keys(&Action::FontSmaller), false).clicked() {
+        if kit::menu_item(ui, Some(icons::MAGNIFYING_GLASS_MINUS), t("Zoom out"), Some(if mac { "⌘-" } else { "Ctrl+-" }), false).clicked() {
             self.zoom_page(id, -1);
             ui.close();
         }
-        let reset_key = if cfg!(target_os = "macos") { None } else { Some("Ctrl+0") };
-        if kit::menu_item(ui, None, t("Actual Size"), reset_key, false).clicked() {
+        // ⌘0 is the Grid on macOS.
+        if kit::menu_item(ui, None, t("Actual size"), (!mac).then_some("Ctrl+0"), false).clicked() {
             self.zoom_page(id, 0);
             ui.close();
         }
         kit::menu_sep(ui);
-        if kit::menu_item(ui, Some(icons::CODE), t("Inspect Element"), None, false).clicked() {
+        if ui.add_enabled_ui(has_downloads, |ui| kit::menu_item(ui, Some(icons::TRAY_ARROW_DOWN), t("Downloads"), None, false)).inner.clicked() {
+            ui.data_mut(|d| d.insert_temp(egui::Id::new(("browser-downloads-list", id)).with("ask"), true));
+            ui.close();
+        }
+        if kit::menu_item(ui, Some(icons::CODE), t("Inspect element"), None, false).clicked() {
             if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
                 v.open_devtools();
             }
             ui.close();
         }
-        if kit::menu_item(ui, None, t("Print…"), None, false).clicked() {
+        if kit::menu_item(ui, Some(icons::PRINTER), t("Print…"), None, false).clicked() {
             if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
                 crate::browser::print(v);
             }
             ui.close();
         }
         kit::menu_sep(ui);
-        if kit::menu_item(ui, Some(icons::X), t("Close Page"), kit::keys(&Action::ClosePane), true).clicked() {
+        if kit::menu_item(ui, Some(icons::X), t("Close page"), kit::keys(&Action::ClosePane), true).clicked() {
             self.actions.push(Action::ClosePaneId(id));
             ui.close();
         }
@@ -1710,26 +1689,36 @@ pub enum WebButton {
 }
 
 /// The address field of a page's bar: a well (inset, 30 high) with the lock or globe, the
-/// address in the data font, its path quieter than its host while it is not being typed in.
-fn address_field(ui: &mut Ui, id: egui::Id, text: &mut String, icon: &str, rect: Rect, typing: bool) -> egui::Response {
+/// address in the data font, its path quieter than its host while it is not being typed in;
+/// ringed in the accent while it is; "Not secure" at its end for plain http off this machine.
+/// Returns the text field's response and whether the well around it was clicked.
+#[allow(clippy::too_many_arguments)]
+fn address_field(ui: &mut Ui, id: egui::Id, text: &mut String, icon: &str, rect: Rect, typing: bool, insecure: bool) -> (egui::Response, bool) {
     let p = style::pal(ui);
+    let dark = ui.visuals().dark_mode;
     let outer = ui.interact(rect, id.with("well"), Sense::click());
     if outer.clicked() {
         ui.ctx().memory_mut(|m| m.request_focus(id));
     }
     let painter = ui.painter();
-    let radius = CornerRadius::same(8);
     if typing {
-        painter.rect_stroke(rect.expand(3.0), CornerRadius::same(11), Stroke::new(3.0, p.accent_tint), egui::StrokeKind::Inside);
+        painter.rect_stroke(rect.expand(3.0), CornerRadius::same(11), Stroke::new(3.0, style::soft(p.accent, 0.25)), egui::StrokeKind::Inside);
     }
-    let fill = p.inset;
-    painter.rect(rect, radius, fill, Stroke::new(1.0, if typing { p.accent } else { p.border }), egui::StrokeKind::Inside);
+    painter.rect(rect, CornerRadius::same(8), p.inset, Stroke::new(1.0, if typing { p.accent } else { p.border_strong }), egui::StrokeKind::Inside);
     painter.text(pos2(rect.left() + 10.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), p.text_faint);
-    let inner = Rect::from_min_max(pos2(rect.left() + 10.0 + 13.0 + 7.0, rect.top() + 1.0), pos2(rect.right() - 10.0, rect.bottom() - 1.0));
-    let (host_c, path_c) = (p.text, p.text_ghost);
+    let mut right = rect.right() - 10.0;
+    if insecure && !typing {
+        let g = painter.layout_no_wrap(t("Not secure").to_string(), style::medium(style::SMALL), p.warn);
+        let pill = Rect::from_min_max(pos2(rect.right() - 6.0 - g.size().x - 12.0, rect.center().y - 9.0), pos2(rect.right() - 6.0, rect.center().y + 9.0));
+        painter.rect_filled(pill, CornerRadius::same(5), style::tint(p.warn, dark));
+        painter.galley(pill.center() - g.size() / 2.0, g, p.warn);
+        right = pill.left() - 8.0;
+    }
+    let inner = Rect::from_min_max(pos2(rect.left() + 10.0 + 13.0 + 8.0, rect.top() + 1.0), pos2(right.max(rect.left() + 60.0), rect.bottom() - 1.0));
+    let (host_c, path_c) = (p.text, p.text_faint);
     let mut layouter = move |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
         let s = buf.as_str();
-        let font = style::mono(11.5);
+        let font = style::mono(style::MONO);
         let mut job = egui::text::LayoutJob::default();
         // Host, then path (from the first "/" after the scheme) in a quieter ink.
         let start = s.find("://").map_or(0, |i| i + 3);
@@ -1743,15 +1732,244 @@ fn address_field(ui: &mut Ui, id: egui::Id, text: &mut String, icon: &str, rect:
         ui.fonts_mut(|f| f.layout_job(job))
     };
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    child.add_sized(
+    let resp = child.add_sized(
         inner.size(),
         egui::TextEdit::singleline(text)
             .id(id)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
-            .font(style::mono(11.5))
-            .hint_text(egui::RichText::new(t("Search or enter an address")).font(egui::FontId::proportional(12.0)).color(p.text_faint))
+            .font(style::mono(style::MONO))
+            .hint_text(egui::RichText::new(t("Search or enter an address")).font(egui::FontId::proportional(style::SMALL)).color(p.text_faint))
             .layouter(&mut layouter)
             .vertical_align(egui::Align::Center),
-    )
+    );
+    (resp, outer.clicked())
+}
+
+/// A chip of the page's toolbar (24 high, on a hairline): an icon in `color` (`filled`), and a
+/// count; `lit` while hovered or what it opens shows.
+fn paint_chip(ui: &Ui, r: Rect, lit: bool, icon: &str, filled: bool, color: Color32, count: Option<&str>) {
+    let p = style::pal(ui);
+    let painter = ui.painter();
+    painter.rect(r, CornerRadius::same(style::RADIUS), if lit { p.hover } else { Color32::TRANSPARENT }, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    let font = if filled { style::icon_fill(12.0) } else { style::icon_font(12.0) };
+    painter.text(pos2(r.left() + 7.0 + 6.0, r.center().y), Align2::CENTER_CENTER, icon, font, color);
+    if let Some(n) = count {
+        painter.text(pos2(r.left() + 7.0 + 12.0 + 5.0, r.center().y), Align2::LEFT_CENTER, n, style::mono(style::DATA), if lit { p.text } else { p.text_muted });
+    }
+}
+
+/// A notice that takes the keyboard when clicked (its buttons keep their own clicks: they are
+/// added after it). Returns whether it has the keyboard.
+fn notice_keys(ui: &mut Ui, rect: Rect, id: egui::Id) -> bool {
+    let resp = ui.interact(rect, id, Sense::click());
+    if resp.clicked() {
+        resp.request_focus();
+    }
+    if resp.has_focus() {
+        ui.memory_mut(|m| m.set_focus_lock_filter(id, egui::EventFilter { escape: true, ..Default::default() }));
+    }
+    resp.has_focus() || ui.memory(|m| m.had_focus_last_frame(id))
+}
+
+/// Where `kit::notice` in `rect` put its primary and secondary buttons (as it lays them out:
+/// from the right, a button dropped when the text would get too little room).
+fn notice_buttons(ui: &Ui, rect: Rect, primary: Option<(&str, Option<&str>)>, secondary: Option<&str>) -> (Option<Rect>, Option<Rect>) {
+    let cy = rect.center().y;
+    let text_left = rect.left() + 40.0;
+    let min_text = 160.0;
+    let mut right = rect.right() - 8.0;
+    let at = |right: f32, w: f32| Rect::from_min_max(pos2(right - w, cy - 12.0), pos2(right, cy + 12.0));
+    let mut pr = None;
+    if let Some((label, keys)) = primary {
+        let w = kit::button_width(ui, None, label, keys, true);
+        if right - w - text_left > min_text * 0.6 {
+            pr = Some(at(right, w));
+            right -= w + 6.0;
+        }
+    }
+    let mut sr = None;
+    if let Some(label) = secondary {
+        let w = kit::button_width(ui, None, label, None, true);
+        if right - w - text_left > min_text {
+            sr = Some(at(right, w));
+        }
+    }
+    (pr, sr)
+}
+
+/// Where the end of a notice's second line, from `keys` on ("⌘↵ always"), is drawn: a notice
+/// in `rect` with `title` and `body`, its leftmost button `button`. `None` while it is cut short.
+fn always_link(ui: &Ui, rect: Rect, title: &str, body: &str, keys: &str, button: Option<Rect>) -> Option<Rect> {
+    let w = |s: &str, f: egui::FontId| ui.painter().layout_no_wrap(s.to_string(), f, Color32::PLACEHOLDER).size();
+    let tx = rect.left() + 38.0;
+    let right = button.map_or(rect.right() - 8.0, |b| b.left() - 6.0);
+    let max_w = (right - tx - 8.0).max(20.0);
+    let font = style::mono(style::DATA);
+    let full = w(body, font.clone());
+    if full.x > max_w {
+        return None;
+    }
+    let at = body.rfind(keys)?;
+    let before = w(&body[..at], font.clone()).x;
+    let after = w(&body[at..], font).x;
+    let th = w(title, style::medium(style::SMALL)).y;
+    let top = rect.center().y - (th + 2.0 + full.y) / 2.0 + th + 2.0;
+    Some(Rect::from_min_size(pos2(tx + before, top), vec2(after, full.y)))
+}
+
+/// A find bar's parts: its field's id and text, the hint, how many matches (and in what
+/// colour), how wide its field is, whether it takes the keyboard now, and a shadow (floating
+/// over what it searches).
+pub(crate) struct FindCard<'a> {
+    pub id: egui::Id,
+    pub query: &'a mut String,
+    pub hint: &'a str,
+    pub count: String,
+    pub count_color: Color32,
+    pub field_w: f32,
+    pub focus: bool,
+    pub shadow: bool,
+}
+
+/// What the user did with a find bar this frame.
+pub(crate) struct FindOut {
+    pub changed: bool,
+    /// The next match (1) or the one before (-1).
+    pub step: Option<i32>,
+    pub close: bool,
+    /// Its field has the keyboard.
+    pub focused: bool,
+    pub field: Rect,
+}
+
+/// The find bar of pages and documents, as the terminals' (36 high, on the menu colour,
+/// radius 9): the magnifier, the field, how many matches ("2 of 5"), ↑ ↓ and ×, at `at`, at
+/// most `max_w` wide. Enter: the next match, ⇧Enter: the one before; Esc (`esc`): close.
+pub(crate) fn find_card(ui: &mut Ui, at: egui::Pos2, max_w: f32, c: FindCard, esc: bool) -> FindOut {
+    let p = style::pal(ui);
+    let cg = ui.painter().layout_no_wrap(c.count.clone(), style::mono(style::DATA), c.count_color);
+    let count_w = if c.count.is_empty() { 0.0 } else { cg.size().x.max(40.0) };
+    let field_w = c.field_w.min(max_w - FIND_FIXED - count_w).max(40.0);
+    let r = Rect::from_min_size(at, vec2((FIND_FIXED + field_w + count_w).min(max_w.max(120.0)), FIND_H));
+    let radius = CornerRadius::same(9);
+    if c.shadow {
+        ui.painter().add(ui.visuals().popup_shadow.as_shape(r, radius));
+    }
+    ui.painter().rect(r, radius, p.menu, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+    // Clicks on it stay with it (not what it floats over).
+    ui.interact(r, c.id.with("card"), Sense::click());
+    let cy = r.center().y;
+    let mut x = r.left() + 10.0;
+    ui.painter().text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, icons::MAGNIFYING_GLASS, style::icon_font(14.0), p.text_faint);
+    x += 14.0 + 6.0;
+    let field = Rect::from_min_max(pos2(x, r.top() + 4.0), pos2(x + field_w, r.bottom() - 4.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let resp = child.add_sized(
+        field.size(),
+        egui::TextEdit::singleline(c.query)
+            .id(c.id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .font(egui::FontId::proportional(style::BODY))
+            .hint_text(egui::RichText::new(c.hint).color(p.text_faint))
+            .vertical_align(egui::Align::Center),
+    );
+    x += field_w + 6.0;
+    if count_w > 0.0 {
+        ui.painter().galley(pos2(x + count_w - cg.size().x, cy - cg.size().y / 2.0), cg, c.count_color);
+    }
+    x += count_w + 6.0;
+    ui.painter().vline(x + 0.5, (cy - 8.0)..=(cy + 8.0), Stroke::new(1.0, p.border));
+    x += 1.0 + 6.0;
+    let mut out = FindOut { changed: resp.changed(), step: None, close: false, focused: false, field };
+    if c.focus {
+        resp.request_focus();
+        kit::select_text(ui.ctx(), c.id, 0, c.query.chars().count());
+    }
+    let focused = resp.has_focus() || c.focus;
+    if resp.has_focus() {
+        ui.memory_mut(|m| m.set_focus_lock_filter(c.id, egui::EventFilter { escape: true, horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
+    }
+    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        out.step = Some(if ui.input(|i| i.modifiers.shift) { -1 } else { 1 });
+        resp.request_focus();
+    }
+    let mut button = |ui: &mut Ui, icon: &str, tip: &str| {
+        let b = Rect::from_min_size(pos2(x, cy - ICON_S / 2.0), vec2(ICON_S, ICON_S));
+        x += ICON_S + 6.0;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(b), |ui| kit::icon_button_ex(ui, icon, tip, false, ICON_S)).inner.clicked()
+    };
+    if button(ui, icons::CARET_UP, t("Previous")) {
+        out.step = Some(-1);
+    }
+    if button(ui, icons::CARET_DOWN, t("Next")) {
+        out.step = Some(1);
+    }
+    out.close = button(ui, icons::X, t("Close"))
+        || (esc && (resp.has_focus() || ui.memory(|m| m.had_focus_last_frame(c.id))) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)));
+    out.focused = focused || out.step.is_some();
+    out
+}
+
+/// A find bar's width but its field's and its count's: the magnifier, the line, ↑ ↓ ×, with
+/// their gaps and the sides.
+const FIND_FIXED: f32 = 10.0 + 14.0 + 6.0 + 6.0 + 6.0 + 1.0 + 6.0 + 3.0 * ICON_S + 2.0 * 6.0 + 4.0;
+
+/// How wide [`find_card`] is with `count` and its field `field_w` wide.
+pub(crate) fn find_card_width(ui: &Ui, count: &str, field_w: f32) -> f32 {
+    let count_w = if count.is_empty() { 0.0 } else { ui.painter().layout_no_wrap(count.to_string(), style::mono(style::DATA), Color32::PLACEHOLDER).size().x.max(40.0) };
+    FIND_FIXED + field_w + count_w
+}
+
+/// How wide [`segment`] draws `icon` and `text`.
+pub(crate) fn segment_width(ui: &Ui, icon: Option<&str>, text: &str) -> f32 {
+    let w = ui.painter().layout_no_wrap(text.to_string(), style::medium(style::SMALL), Color32::PLACEHOLDER).size().x;
+    10.0 + icon.map_or(0.0, |_| 13.0 + 6.0) + w + 10.0
+}
+
+/// One segment standing alone (24 high): `on`, raised on a hairline; else quiet words that a
+/// hover lights (the console's All / Errors, a workbook's sheets).
+pub(crate) fn segment(ui: &mut Ui, rect: Rect, id: egui::Id, icon: Option<&str>, text: &str, on: bool) -> egui::Response {
+    let p = style::pal(ui);
+    let resp = ui.interact(rect, id, Sense::click());
+    if resp.hovered() && !on {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, text));
+    let painter = ui.painter();
+    let radius = CornerRadius::same(style::RADIUS);
+    if on {
+        painter.rect_filled(rect.translate(vec2(0.0, 1.0)), radius, Color32::from_black_alpha(if ui.visuals().dark_mode { 64 } else { 18 }));
+        painter.rect(rect, radius, p.surface, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    } else if resp.hovered() {
+        painter.rect_filled(rect, radius, p.hover);
+    }
+    let color = if on || resp.hovered() { p.text } else { p.text_muted };
+    let mut x = rect.left() + 10.0;
+    if let Some(i) = icon {
+        painter.text(pos2(x + 6.5, rect.center().y), Align2::CENTER_CENTER, i, style::icon_font(13.0), color);
+        x += 13.0 + 6.0;
+    }
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), style::medium(style::SMALL), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 10.0 - x).max(8.0));
+    let g = painter.layout_job(job);
+    painter.galley(pos2(x, rect.center().y - g.size().y / 2.0), g, color);
+    resp
+}
+
+/// A file's icon and its colour, by its name's extension (a download's row).
+fn file_icon(name: &str, p: &style::Palette) -> (&'static str, Color32) {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "csv" | "tsv" => (icons::FILE_CSV, p.ok),
+        "xls" | "xlsx" | "ods" => (icons::FILE_XLS, p.ok),
+        "pdf" => (icons::FILE_PDF, p.err),
+        "zip" | "gz" | "tgz" | "tar" | "7z" | "rar" | "dmg" => (icons::FILE_ZIP, p.text_faint),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" => (icons::FILE_IMAGE, p.accent_text),
+        "doc" | "docx" | "pages" => (icons::FILE_DOC, p.accent_text),
+        "ppt" | "pptx" | "key" => (icons::FILE_PPT, p.rate_limited),
+        "txt" | "md" | "log" => (icons::FILE_TEXT, p.text_faint),
+        _ => (icons::FILE, p.text_faint),
+    }
 }

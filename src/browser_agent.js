@@ -358,7 +358,8 @@ if (!window.__tc) window.__tc = (() => {
 
   // ----- what the user sees the agent do: its cursor going to the element, and a ring around
   // the element with what it does (both made of plain elements: no markup from strings, which
-  // a page's Trusted Types would refuse)
+  // a page's Trusted Types would refuse). Both in the app's accent (#2E6BE6), as the ring of
+  // the page's frame.
   let cursorTimer = 0;
   const cursor = (x, y) => {
     try {
@@ -373,10 +374,10 @@ if (!window.__tc) window.__tc = (() => {
         svg.setAttribute('height', '22');
         svg.setAttribute('viewBox', '0 0 24 24');
         const path = document.createElementNS(ns, 'path');
-        path.setAttribute('d', 'M4 2 L4 20 L9 15.2 L12.4 22 L15.6 20.5 L12.3 13.9 L19 13.9 Z');
-        path.setAttribute('fill', '#3b82f6');
+        path.setAttribute('d', 'M3 2 L3 19 L7.6 14.8 L10.6 21.6 L13.4 20.4 L10.4 13.8 L16.4 13.8 Z');
+        path.setAttribute('fill', '#2e6be6');
         path.setAttribute('stroke', '#fff');
-        path.setAttribute('stroke-width', '1.6');
+        path.setAttribute('stroke-width', '1.3');
         path.setAttribute('stroke-linejoin', 'round');
         svg.appendChild(path);
         c.appendChild(svg);
@@ -399,14 +400,15 @@ if (!window.__tc) window.__tc = (() => {
       if (!box) {
         box = document.createElement('div');
         box.id = '__tc_ring';
-        box.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #3b82f6;border-radius:6px;box-shadow:0 0 0 4px rgba(59,130,246,.25);transition:all .15s ease';
+        box.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;box-sizing:content-box;border:2px solid #2e6be6;border-radius:8px;box-shadow:0 0 0 4px rgba(46,107,230,.25);transition:all .15s ease';
         const tag = document.createElement('span');
-        tag.style.cssText = 'position:absolute;left:-2px;top:-22px;background:#3b82f6;color:#fff;font:600 11px -apple-system,system-ui,sans-serif;padding:2px 6px;border-radius:4px;white-space:nowrap';
+        tag.style.cssText = 'position:absolute;left:-2px;top:-22px;height:18px;line-height:18px;background:#2e6be6;color:#fff;font:400 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:0 6px;border-radius:5px;white-space:nowrap';
         box.appendChild(tag);
         document.documentElement.appendChild(box);
       }
+      // 4 px out from the element all round.
       const r = el.getBoundingClientRect();
-      Object.assign(box.style, { left: r.left - 3 + 'px', top: r.top - 3 + 'px', width: r.width + 2 + 'px', height: r.height + 2 + 'px', display: 'block' });
+      Object.assign(box.style, { left: r.left - 4 + 'px', top: r.top - 4 + 'px', width: r.width + 4 + 'px', height: r.height + 4 + 'px', display: 'block' });
       box.firstChild.textContent = label;
       clearTimeout(ringTimer);
       ringTimer = setTimeout(() => { box.style.display = 'none'; }, 1400);
