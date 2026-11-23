@@ -356,7 +356,6 @@ impl App {
             ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
                 ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                 ui.spacing_mut().item_spacing.x = 10.0;
-                self.ide_status(ui, &path);
                 if dirty {
                     let save = kit::button_keys(ui, kit::Kind::Primary, Some(icons::FLOPPY_DISK), t("Save"), kit::keys(&Action::SaveFile), true);
                     if save.clicked() {
@@ -364,6 +363,7 @@ impl App {
                     }
                     ui.label(RichText::new(t("Unsaved")).size(style::SMALL).color(p.warn));
                 }
+                self.ide_status(ui, &path);
             });
         }
     }
@@ -413,7 +413,8 @@ impl App {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        let r = kit::field(ui, find_id, &mut f.query, None, t("Find in file, or :line"), 220.0, true);
+                        let field_w = (ui.available_width() - 180.0).clamp(90.0, 220.0);
+                        let r = kit::field(ui, find_id, &mut f.query, None, t("Find in file, or :line"), field_w, true);
                         #[cfg(debug_assertions)]
                         crate::devtest::record("editor-find", r.rect);
                         if f.focus {
@@ -542,8 +543,8 @@ impl App {
             ui.painter().hline(line.x_range(), ui.cursor().top() - 0.5, Stroke::new(1.0, style::soft(p.warn, 0.3)));
             egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                     let label = if file.compare { t("Hide Differences") } else { t("Compare") };
                     if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::COLUMNS), label, true).clicked() {
                         file.compare = !file.compare;
@@ -720,6 +721,7 @@ impl App {
             if resp.changed() && !read_only {
                 file.rev += 1;
                 file.lines = crate::editor::count_lines(&file.text);
+                file.refresh_dirty();
                 file.compare_diff = None;
             }
             // Caret position (worked out only when it moved or the text changed).

@@ -21,8 +21,10 @@ pub const HIGHLIGHT_AT_MOST: usize = 1024 * 1024;
 pub struct OpenFile {
     pub path: PathBuf,
     pub text: String,
-    /// The text as loaded or last saved (dirty = `text != saved`).
+    /// The text as loaded or last saved.
     pub saved: String,
+    /// Cached `text != saved` flag so per-frame `dirty()` checks stay O(1) on multi-MB files.
+    pub dirty: bool,
     pub mtime: Option<SystemTime>,
     pub read_only: bool,
     pub truncated: bool,
@@ -66,7 +68,11 @@ pub struct OpenFile {
 
 impl OpenFile {
     pub fn dirty(&self) -> bool {
-        self.text != self.saved
+        self.dirty || self.text.len() != self.saved.len()
+    }
+
+    pub fn refresh_dirty(&mut self) {
+        self.dirty = self.text != self.saved;
     }
 
     pub fn name(&self) -> String {
@@ -267,6 +273,7 @@ pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
         path: path.to_path_buf(),
         saved: text.clone(),
         text,
+        dirty: false,
         mtime: Some(meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
         read_only: read_only || truncated || lossy,
         truncated,
@@ -301,6 +308,7 @@ impl OpenFile {
             path,
             text: String::new(),
             saved: String::new(),
+            dirty: false,
             read_only: true,
             truncated: false,
             conflict: false,
@@ -350,6 +358,7 @@ pub fn save(file: &mut OpenFile, force: bool) -> Result<(), SaveError> {
     let data = if file.crlf { to_crlf(&file.text) } else { std::borrow::Cow::Borrowed(file.text.as_str()) };
     write_atomic(&file.path, data.as_bytes()).map_err(|e| SaveError::Io(e.to_string()))?;
     file.saved = file.text.clone();
+    file.dirty = false;
     file.mtime = mtime(&file.path);
     file.conflict = false;
     file.compare = false;
@@ -401,6 +410,7 @@ pub fn on_disk_change(file: &mut OpenFile) -> bool {
         file.crlf = disk.contains("\r\n");
         file.text = disk.clone();
         file.saved = disk;
+        file.dirty = false;
         file.mtime = now;
     }
     true
@@ -415,6 +425,7 @@ fn load_again(file: &mut OpenFile) {
         file.rev += 1;
         file.text = fresh.text;
         file.saved = fresh.saved;
+        file.dirty = false;
         file.truncated = fresh.truncated;
         file.read_only = fresh.read_only;
         file.mtime = fresh.mtime;
@@ -431,6 +442,7 @@ pub fn reload(file: &mut OpenFile) {
         file.crlf = disk.contains("\r\n");
         file.text = disk.clone();
         file.saved = disk;
+        file.dirty = false;
         file.mtime = mtime(&file.path);
     }
     file.conflict = false;

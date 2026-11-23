@@ -42,6 +42,7 @@ impl App {
     pub fn drawer_shown(&self, project: ProjectId) -> bool {
         self.zen_mode
             || self.review.as_ref().is_some_and(|r| r.project == project && !r.expanded)
+            || self.history.as_ref().is_some_and(|h| h.project == project)
             || self.editors.get(&project).is_some_and(|e| e.visible)
     }
 
@@ -91,6 +92,9 @@ impl App {
         }
         if self.review.as_ref().is_some_and(|r| r.project == project && !r.expanded) {
             self.review = None;
+        }
+        if self.history.as_ref().is_some_and(|h| h.project == project) {
+            self.history = None;
         }
     }
 
@@ -142,7 +146,9 @@ impl App {
         if let Some(b) = self.browsers.get_mut(&id) {
             b.title = closed.title;
         }
+        self.active = Some(closed.project);
         self.show_page(closed.project, id);
+        self.show_focus();
     }
 
     /// An agent's terminal closed: its pages out of view and silent close with it; one in
@@ -328,7 +334,12 @@ impl App {
             let more = panel.pages.iter().copied().filter(|id| !shown.contains(id)).collect();
             (shown, more)
         };
-        let width = if shown.is_empty() { TAB_MIN } else { ((room - if more.is_empty() { 0.0 } else { 30.0 }) / shown.len() as f32 - TAB_GAP).clamp(TAB_MIN.min(room), TAB_MAX) };
+        let avail = (room - if more.is_empty() { 0.0 } else { 30.0 }).max(24.0);
+        let width = if shown.is_empty() {
+            TAB_MIN
+        } else {
+            (avail / shown.len() as f32 - TAB_GAP).clamp(24.0_f32.min(avail), TAB_MAX)
+        };
         let marks = self.page_marks(&panel.pages);
         let mut x = left;
         let mut front = None;

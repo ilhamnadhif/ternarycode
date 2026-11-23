@@ -41,6 +41,7 @@ impl App {
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         if !self.zen_mode {
             egui::Panel::bottom("status-bar")
+                .show_separator_line(false)
                 .frame(
                     egui::Frame::NONE
                         .fill(p.chrome)
@@ -55,6 +56,7 @@ impl App {
         // Windows: the title bar the app draws (the system's is off), across the window.
         if crate::platform::custom_caption() {
             egui::Panel::top("title-bar")
+                .show_separator_line(false)
                 .frame(egui::Frame::NONE.fill(p.chrome))
                 .exact_size(super::caption::TITLE_H)
                 .show(ui, |ui| {
@@ -65,6 +67,7 @@ impl App {
         // Narrow: project tiles only, its width fixed.
         if !self.zen_mode && self.settings.sidebar_compact && !self.settings.sidebar_hidden {
             egui::Panel::left("sidebar-compact")
+                .show_separator_line(false)
                 .resizable(false)
                 .exact_size(super::sidebar::COMPACT_W)
                 .frame(egui::Frame::NONE.fill(p.chrome))
@@ -77,6 +80,7 @@ impl App {
         if !self.zen_mode && !self.settings.sidebar_compact {
             let mut visible = !self.settings.sidebar_hidden;
             let response = egui::Panel::left("sidebar")
+                .show_separator_line(false)
                 .resizable(true)
                 .default_size(self.settings.sidebar_width)
                 .size_range(180.0..=420.0)
@@ -143,12 +147,8 @@ impl App {
     fn central(&mut self, ui: &mut Ui) {
         // Management views work even before the first project is added.
         match self.view {
-            tc_core::model::View::Profiles => {
+            tc_core::model::View::Profiles | tc_core::model::View::Monitor => {
                 self.profiles_view(ui);
-                return;
-            }
-            tc_core::model::View::Monitor => {
-                self.monitor_view(ui);
                 return;
             }
             tc_core::model::View::Pairing => {
@@ -184,12 +184,6 @@ impl App {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| self.welcome(ui));
                     });
             });
-            return;
-        }
-        // Review full screen takes the place of the panes (the sidebar stays); else it is in the
-        // Code editor stage.
-        if self.review_full() {
-            self.review_view(ui);
             return;
         }
         match self.view {
@@ -257,7 +251,9 @@ impl App {
         y += g.size().y + 24.0;
 
         // The drop zone, with Choose Folder…
-        let drop = egui::Rect::from_min_size(egui::pos2(col.left(), y), egui::vec2(w, 84.0));
+        let narrow_drop = w < 580.0;
+        let drop_h = if narrow_drop { 116.0 } else { 84.0 };
+        let drop = egui::Rect::from_min_size(egui::pos2(col.left(), y), egui::vec2(w, drop_h));
         let r = drop.shrink(0.75);
         let dash = egui::Stroke::new(1.5, p.border_heavy);
         for (a, b) in [(r.left_top() + egui::vec2(12.0, 0.0), r.right_top() - egui::vec2(12.0, 0.0)), (r.right_top() + egui::vec2(0.0, 12.0), r.right_bottom() - egui::vec2(0.0, 12.0)), (r.right_bottom() - egui::vec2(12.0, 0.0), r.left_bottom() + egui::vec2(12.0, 0.0)), (r.left_bottom() - egui::vec2(0.0, 12.0), r.left_top() + egui::vec2(0.0, 12.0))] {
@@ -270,42 +266,67 @@ impl App {
             }).collect();
             painter.add(egui::Shape::line(arc, dash));
         }
-        let ic = egui::Rect::from_min_size(egui::pos2(drop.left() + 22.0, drop.center().y - 22.0), egui::vec2(44.0, 44.0));
+        let bw = kit::button_width(ui, Some(icons::FOLDER_OPEN), t("Choose Folder…"), kit::keys(&crate::actions::Action::AddProject), false);
+        let top_cy = if narrow_drop { drop.top() + 38.0 } else { drop.center().y };
+        let ic = egui::Rect::from_min_size(egui::pos2(drop.left() + 22.0, top_cy - 22.0), egui::vec2(44.0, 44.0));
         painter.rect(ic, egui::CornerRadius::same(11), p.accent_tint, egui::Stroke::new(1.0, style::soft(p.accent, 0.28)), egui::StrokeKind::Inside);
         painter.text(ic.center(), egui::Align2::CENTER_CENTER, icons::FOLDER_SIMPLE_PLUS, style::icon_font(22.0), p.accent_text);
-        painter.text(egui::pos2(ic.right() + 18.0, drop.center().y - 9.0), egui::Align2::LEFT_CENTER, t("Drop a folder anywhere on this window"), style::medium(14.0), p.text);
-        painter.text(egui::pos2(ic.right() + 18.0, drop.center().y + 11.0), egui::Align2::LEFT_CENTER, t("A file works too: its folder is added."), egui::FontId::proportional(12.5), p.text_faint);
-        let bw = kit::button_width(ui, Some(icons::FOLDER_OPEN), t("Choose Folder…"), kit::keys(&crate::actions::Action::AddProject), false);
-        let br = egui::Rect::from_min_size(egui::pos2(drop.right() - 20.0 - bw, drop.center().y - 14.0), egui::vec2(bw, 28.0));
+        let text_max = if narrow_drop { (drop.right() - 20.0 - (ic.right() + 18.0)).max(60.0) } else { (drop.right() - 28.0 - bw - (ic.right() + 18.0)).max(60.0) };
+        let mut tj = egui::text::LayoutJob::simple_singleline(t("Drop a folder anywhere on this window").to_string(), style::medium(14.0), p.text);
+        tj.wrap = egui::text::TextWrapping::truncate_at_width(text_max);
+        let tg = painter.layout_job(tj);
+        painter.galley(egui::pos2(ic.right() + 18.0, top_cy - 9.0 - tg.size().y / 2.0), tg, p.text);
+        let mut sj = egui::text::LayoutJob::simple_singleline(t("A file works too: its folder is added.").to_string(), egui::FontId::proportional(12.5), p.text_faint);
+        sj.wrap = egui::text::TextWrapping::truncate_at_width(text_max);
+        let sg = painter.layout_job(sj);
+        painter.galley(egui::pos2(ic.right() + 18.0, top_cy + 11.0 - sg.size().y / 2.0), sg, p.text_faint);
+        let br = if narrow_drop {
+            egui::Rect::from_min_size(egui::pos2(drop.left() + 22.0, drop.bottom() - 40.0), egui::vec2(bw.min(drop.width() - 44.0), 28.0))
+        } else {
+            egui::Rect::from_min_size(egui::pos2(drop.right() - 20.0 - bw, drop.center().y - 14.0), egui::vec2(bw, 28.0))
+        };
         if ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| kit::button_keys(ui, kit::Kind::Primary, Some(icons::FOLDER_OPEN), t("Choose Folder…"), kit::keys(&crate::actions::Action::AddProject), false)).inner.clicked() {
             self.actions.push(crate::actions::Action::AddProject);
         }
-        y = drop.bottom() + 30.0;
+        y = drop.bottom() + 26.0;
 
-        // Two columns: the repositories found; the terminal command and the agents.
-        let right_w = 340.0_f32.min(w * 0.4);
-        let left = egui::Rect::from_min_max(egui::pos2(col.left(), y), egui::pos2(col.right() - right_w - 28.0, area.bottom() - 70.0));
-        let right = egui::Rect::from_min_max(egui::pos2(col.right() - right_w, y), egui::pos2(col.right(), area.bottom() - 70.0));
-        let section = |painter: &egui::Painter, at: egui::Pos2, title: &str, sub: Option<&str>| {
+        // Two columns when wide (`>= 680`), stacked vertically when narrow.
+        let stacked = w < 680.0;
+        let right_w = if stacked { w } else { 340.0_f32.min(w * 0.4) };
+        let left = egui::Rect::from_min_max(
+            egui::pos2(col.left(), y),
+            egui::pos2(if stacked { col.right() } else { col.right() - right_w - 28.0 }, area.bottom() - 70.0),
+        );
+        let section = |painter: &egui::Painter, at: egui::Pos2, max_right: f32, title: &str, sub: Option<&str>| {
             let g = painter.layout_no_wrap(title.to_string(), style::semibold(13.5), p.text);
             let gw = g.size().x;
             painter.galley(at, g, p.text);
             if let Some(sub) = sub {
-                painter.text(egui::pos2(at.x + gw + 10.0, at.y + 9.0), egui::Align2::LEFT_CENTER, sub, egui::FontId::proportional(12.0), p.text_faint);
+                let sub_room = (max_right - (at.x + gw + 14.0)).max(0.0);
+                if sub_room >= 40.0 {
+                    let mut job = egui::text::LayoutJob::simple_singleline(sub.to_string(), egui::FontId::proportional(12.0), p.text_faint);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(sub_room);
+                    let sg = painter.layout_job(job);
+                    painter.galley(egui::pos2(at.x + gw + 10.0, at.y + 9.0 - sg.size().y / 2.0), sg, p.text_faint);
+                }
             }
         };
         let roots = self.onboarding.found.as_ref().map(|f| f.roots.iter().take(2).map(|r| crate::paths::contract_tilde(r)).collect::<Vec<_>>().join(&format!(" {} ", t("and")))).unwrap_or_default();
         let sub = if roots.is_empty() { None } else { Some(tf("git repositories in {}", &[&roots])) };
-        section(&painter, left.min, if cfg!(target_os = "macos") { t("Found on this Mac") } else { t("Found on this computer") }, sub.as_deref());
-        let again = egui::Rect::from_min_size(egui::pos2(left.right() - kit::button_width(ui, Some(icons::ARROW_CLOCKWISE), t("Look Again"), None, true), left.top() - 4.0), egui::vec2(kit::button_width(ui, Some(icons::ARROW_CLOCKWISE), t("Look Again"), None, true), 24.0));
+        let again_w = kit::button_width(ui, Some(icons::ARROW_CLOCKWISE), t("Look Again"), None, true);
+        let again = egui::Rect::from_min_size(egui::pos2(left.right() - again_w, left.top() - 4.0), egui::vec2(again_w, 24.0));
+        section(&painter, left.min, again.left() - 6.0, if cfg!(target_os = "macos") { t("Found on this Mac") } else { t("Found on this computer") }, sub.as_deref());
         if ui.scope_builder(egui::UiBuilder::new().max_rect(again), |ui| kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_CLOCKWISE), t("Look Again"), true)).inner.clicked() {
             self.onboarding.found = None;
         }
         let card_top = left.top() + 28.0;
         let repos = self.onboarding.found.as_ref().map(|f| f.repos.clone());
-        let room_rows = (((left.bottom() - card_top - 48.0) / 50.0).floor().max(1.0)) as usize;
-        let rows_n = repos.as_ref().map_or(1, |r| r.len().clamp(1, room_rows));
-        let card = egui::Rect::from_min_size(egui::pos2(left.left(), card_top), egui::vec2(left.width(), rows_n as f32 * 50.0 + if repos.as_ref().is_some_and(|r| !r.is_empty()) { 46.0 } else { 0.0 }));
+        let max_list_h = if stacked { 200.0 } else { (left.bottom() - card_top - 48.0).clamp(100.0, 320.0) };
+        let list_h = repos.as_ref().map_or(50.0, |r| if r.is_empty() { 50.0 } else { (r.len() as f32 * 50.0).min(max_list_h) });
+        let card = egui::Rect::from_min_size(
+            egui::pos2(left.left(), card_top),
+            egui::vec2(left.width(), list_h + if repos.as_ref().is_some_and(|r| !r.is_empty()) { 46.0 } else { 0.0 }),
+        );
         painter.rect(card, egui::CornerRadius::same(10), p.surface, egui::Stroke::new(1.0, if dark { p.border } else { p.border_strong }), egui::StrokeKind::Inside);
         match &repos {
             None => {
@@ -316,58 +337,67 @@ impl App {
                 painter.text(egui::pos2(card.left() + 14.0, card.top() + 25.0), egui::Align2::LEFT_CENTER, t("No git repositories in the usual folders."), egui::FontId::proportional(12.5), p.text_muted);
             }
             Some(list) => {
-                for (i, repo) in list.iter().take(rows_n).enumerate() {
-                    let row = egui::Rect::from_min_size(egui::pos2(card.left(), card.top() + i as f32 * 50.0), egui::vec2(card.width(), 50.0));
-                    if i > 0 {
-                        painter.hline(row.x_range(), row.top() + 0.5, egui::Stroke::new(1.0, p.border));
-                    }
-                    let resp = ui.interact(row, egui::Id::new(("found-repo", i)), egui::Sense::click());
-                    let on = self.onboarding.picked.contains(&repo.path);
-                    if resp.clicked() {
-                        if on {
-                            self.onboarding.picked.remove(&repo.path);
-                        } else {
-                            self.onboarding.picked.insert(repo.path.clone());
+                let scroll_rect = egui::Rect::from_min_size(card.min, egui::vec2(card.width(), list_h));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(scroll_rect), |ui| {
+                    ui.set_clip_rect(scroll_rect.shrink(1.0));
+                    egui::ScrollArea::vertical().id_salt("welcome-repos").auto_shrink([false, false]).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for (i, repo) in list.iter().enumerate() {
+                            let (row, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 50.0), egui::Sense::click());
+                            if !ui.is_rect_visible(row) {
+                                continue;
+                            }
+                            let rp = ui.painter_at(row);
+                            if i > 0 {
+                                rp.hline(row.x_range(), row.top() + 0.5, egui::Stroke::new(1.0, p.border));
+                            }
+                            let on = self.onboarding.picked.contains(&repo.path);
+                            if resp.clicked() {
+                                if on {
+                                    self.onboarding.picked.remove(&repo.path);
+                                } else {
+                                    self.onboarding.picked.insert(repo.path.clone());
+                                }
+                            }
+                            if resp.hovered() {
+                                rp.rect_filled(row.shrink(1.0), egui::CornerRadius::same(9), p.hover);
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            let cy = row.center().y;
+                            let bx = egui::Rect::from_center_size(egui::pos2(row.left() + 14.0 + 8.0, cy), egui::vec2(16.0, 16.0));
+                            kit::paint_checkbox(&rp, bx, on, resp.hovered(), &p);
+                            let letters = repo.kind.letters().map(str::to_string).unwrap_or_else(|| crate::project::initials(&repo.name));
+                            let (cr, cg, cb) = crate::project::COLORS[i % crate::project::COLORS.len()];
+                            let tile = egui::Rect::from_min_size(egui::pos2(bx.right() + 12.0, cy - 12.0), egui::vec2(24.0, 24.0));
+                            kit::paint_project_tile(&rp, tile, &letters, egui::Color32::from_rgb(cr, cg, cb).gamma_multiply(if on { 1.0 } else { 0.55 }), dark);
+                            let x = tile.right() + 12.0;
+                            let age = repo.touched.map(|tt| tf("{} ago", &[&super::dialogs::ago(tt)])).unwrap_or_default();
+                            let ag = rp.layout_no_wrap(age, style::mono(10.5), p.text_ghost);
+                            let bgal = rp.layout_no_wrap(repo.branch.clone(), style::mono(10.5), p.text_faint);
+                            let rw = ag.size().x.max(bgal.size().x + 15.0);
+                            rp.galley(egui::pos2(row.right() - 14.0 - bgal.size().x, cy - 9.0 - bgal.size().y / 2.0), bgal.clone(), p.text_faint);
+                            rp.text(egui::pos2(row.right() - 14.0 - bgal.size().x - 4.0 - 5.5, cy - 9.0), egui::Align2::CENTER_CENTER, icons::GIT_BRANCH, style::icon_font(11.0), p.text_faint);
+                            rp.galley(egui::pos2(row.right() - 14.0 - ag.size().x, cy + 8.0 - ag.size().y / 2.0), ag, p.text_ghost);
+                            let room = (row.right() - 14.0 - rw - 12.0 - x).max(20.0);
+                            let mut job = egui::text::LayoutJob::default();
+                            job.append(&repo.name, 0.0, egui::TextFormat::simple(style::medium(13.0), if on { p.text } else { p.text_muted }));
+                            if !repo.kind.label().is_empty() {
+                                job.append(repo.kind.label(), 8.0, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.text_faint));
+                            }
+                            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+                            let g = rp.layout_job(job);
+                            rp.galley(egui::pos2(x, cy - 8.0 - g.size().y / 2.0), g, p.text);
+                            let mut job = egui::text::LayoutJob::simple_singleline(crate::paths::contract_tilde(&repo.path), style::mono(10.5), p.text_faint);
+                            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+                            let g = rp.layout_job(job);
+                            rp.galley(egui::pos2(x, cy + 9.0 - g.size().y / 2.0), g, p.text_faint);
                         }
-                    }
-                    if resp.hovered() {
-                        painter.rect_filled(row.shrink(1.0), egui::CornerRadius::same(9), p.hover);
-                    }
-                    let cy = row.center().y;
-                    let bx = egui::Rect::from_center_size(egui::pos2(row.left() + 14.0 + 8.0, cy), egui::vec2(16.0, 16.0));
-                    kit::paint_checkbox(&painter, bx, on, resp.hovered(), &p);
-                    let letters = repo.kind.letters().map(str::to_string).unwrap_or_else(|| crate::project::initials(&repo.name));
-                    let (cr, cg, cb) = crate::project::COLORS[i % crate::project::COLORS.len()];
-                    let tile = egui::Rect::from_min_size(egui::pos2(bx.right() + 12.0, cy - 12.0), egui::vec2(24.0, 24.0));
-                    kit::paint_project_tile(&painter, tile, &letters, egui::Color32::from_rgb(cr, cg, cb).gamma_multiply(if on { 1.0 } else { 0.55 }), dark);
-                    let x = tile.right() + 12.0;
-                    // At the right: the branch and how long ago.
-                    let age = repo.touched.map(|tt| tf("{} ago", &[&super::dialogs::ago(tt)])).unwrap_or_default();
-                    let ag = painter.layout_no_wrap(age, style::mono(10.5), p.text_ghost);
-                    let bgal = painter.layout_no_wrap(repo.branch.clone(), style::mono(10.5), p.text_faint);
-                    let rw = ag.size().x.max(bgal.size().x + 15.0);
-                    painter.galley(egui::pos2(row.right() - 14.0 - bgal.size().x, cy - 9.0 - bgal.size().y / 2.0), bgal.clone(), p.text_faint);
-                    painter.text(egui::pos2(row.right() - 14.0 - bgal.size().x - 4.0 - 5.5, cy - 9.0), egui::Align2::CENTER_CENTER, icons::GIT_BRANCH, style::icon_font(11.0), p.text_faint);
-                    painter.galley(egui::pos2(row.right() - 14.0 - ag.size().x, cy + 8.0 - ag.size().y / 2.0), ag, p.text_ghost);
-                    let room = row.right() - 14.0 - rw - 12.0 - x;
-                    let mut job = egui::text::LayoutJob::default();
-                    job.append(&repo.name, 0.0, egui::TextFormat::simple(style::medium(13.0), if on { p.text } else { p.text_muted }));
-                    if !repo.kind.label().is_empty() {
-                        job.append(repo.kind.label(), 8.0, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.text_faint));
-                    }
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(20.0));
-                    let g = painter.layout_job(job);
-                    painter.galley(egui::pos2(x, cy - 8.0 - g.size().y / 2.0), g, p.text);
-                    let mut job = egui::text::LayoutJob::simple_singleline(crate::paths::contract_tilde(&repo.path), style::mono(10.5), p.text_faint);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(20.0));
-                    let g = painter.layout_job(job);
-                    painter.galley(egui::pos2(x, cy + 9.0 - g.size().y / 2.0), g, p.text_faint);
-                }
+                    });
+                });
                 // The card's foot: how many are ticked, Select All, Add N Projects.
                 let foot = egui::Rect::from_min_max(egui::pos2(card.left(), card.bottom() - 46.0), card.max);
                 painter.hline(foot.x_range(), foot.top() + 0.5, egui::Stroke::new(1.0, p.border));
                 let n = self.onboarding.picked.len();
-                painter.text(egui::pos2(foot.left() + 14.0, foot.center().y), egui::Align2::LEFT_CENTER, tf("{} of {} selected", &[&n.to_string(), &list.len().to_string()]), egui::FontId::proportional(12.0), p.text_faint);
                 let add_label = crate::i18n::count(n, t("Add 1 Project"), t("Add {} Projects"));
                 let aw = kit::button_width(ui, Some(icons::PLUS), &add_label, None, true);
                 let ar = egui::Rect::from_min_size(egui::pos2(foot.right() - 10.0 - aw, foot.center().y - 12.0), egui::vec2(aw, 24.0));
@@ -382,11 +412,22 @@ impl App {
                 if ui.scope_builder(egui::UiBuilder::new().max_rect(sr), |ui| kit::button_ex(ui, kit::Kind::Ghost, None, t("Select All"), true)).inner.clicked() {
                     self.onboarding.picked = list.iter().map(|r| r.path.clone()).collect();
                 }
+                let sel_room = (sr.left() - 8.0 - (foot.left() + 14.0)).max(24.0);
+                let mut sel_job = egui::text::LayoutJob::simple_singleline(tf("{} of {} selected", &[&n.to_string(), &list.len().to_string()]), egui::FontId::proportional(12.0), p.text_faint);
+                sel_job.wrap = egui::text::TextWrapping::truncate_at_width(sel_room);
+                let sel_g = painter.layout_job(sel_job);
+                painter.galley(egui::pos2(foot.left() + 14.0, foot.center().y - sel_g.size().y / 2.0), sel_g, p.text_faint);
             }
         }
 
+        // Right column (or stacked below left column on narrow viewports).
+        let right_top = if stacked { card.bottom() + 24.0 } else { y };
+        let right = egui::Rect::from_min_max(
+            egui::pos2(if stacked { col.left() } else { col.right() - right_w }, right_top),
+            egui::pos2(col.right(), area.bottom() - 70.0),
+        );
         // From any terminal.
-        section(&painter, right.min, t("From any terminal"), None);
+        section(&painter, right.min, right.right(), t("From any terminal"), None);
         let code = egui::Rect::from_min_size(egui::pos2(right.left(), right.top() + 28.0), egui::vec2(right.width(), 38.0));
         if command_box(ui, code, "ternarycode .") {
             ui.ctx().copy_text("ternarycode .".into());
@@ -399,22 +440,21 @@ impl App {
         // The agents on this Mac.
         let ay = code.bottom() + 8.0 + g.size().y + 26.0;
         let os = if cfg!(target_os = "macos") { t("Agents on this Mac") } else { t("Agents on this computer") };
-        section(&painter, egui::pos2(right.left(), ay), os, None);
+        section(&painter, egui::pos2(right.left(), ay), right.right(), os, None);
         let agents = self.onboarding.found.as_ref().map(|f| f.agents.clone()).unwrap_or_default();
         let mut cy = ay + 28.0;
         let card_top = cy;
         let mut rows: Vec<(egui::Rect, crate::onboarding::FoundAgent)> = Vec::new();
-        // The install commands of missing agents, while they fit above the keys.
         let missing = agents.iter().filter(|a| !a.found).count() as f32;
-        let commands = card_top + agents.len() as f32 * 46.0 + missing * 42.0 <= area.bottom() - 70.0;
+        let commands = !stacked && card_top + agents.len() as f32 * 46.0 + missing * 42.0 <= area.bottom() - 70.0;
         for a in &agents {
             let h = if a.found || !commands { 46.0 } else { 46.0 + 42.0 };
             rows.push((egui::Rect::from_min_size(egui::pos2(right.left(), cy), egui::vec2(right.width(), h)), a.clone()));
             cy += h;
         }
         if !rows.is_empty() {
-            let card = egui::Rect::from_min_max(egui::pos2(right.left(), card_top), egui::pos2(right.right(), cy));
-            painter.rect(card, egui::CornerRadius::same(10), p.surface, egui::Stroke::new(1.0, if dark { p.border } else { p.border_strong }), egui::StrokeKind::Inside);
+            let acard = egui::Rect::from_min_max(egui::pos2(right.left(), card_top), egui::pos2(right.right(), cy));
+            painter.rect(acard, egui::CornerRadius::same(10), p.surface, egui::Stroke::new(1.0, if dark { p.border } else { p.border_strong }), egui::StrokeKind::Inside);
         }
         for (i, (row, a)) in rows.iter().enumerate() {
             if i > 0 {
@@ -424,20 +464,16 @@ impl App {
             let tile = egui::Rect::from_min_size(egui::pos2(row.left() + 12.0, ly - 14.0), egui::vec2(28.0, 28.0));
             painter.rect(tile, egui::CornerRadius::same(8), p.surface, egui::Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
             super::agent_logo::paint(&painter, egui::Rect::from_center_size(tile.center(), egui::vec2(15.0, 15.0)), a.agent, p.text, false);
-            let g = painter.layout_no_wrap(a.agent.label().to_string(), style::medium(13.0), if a.found { p.text } else { p.text_muted });
-            let gw = g.size().x;
-            painter.galley(egui::pos2(tile.right() + 11.0, ly - g.size().y / 2.0), g, p.text);
-            if let Some(v) = &a.version {
-                painter.text(egui::pos2(tile.right() + 11.0 + gw + 8.0, ly), egui::Align2::LEFT_CENTER, v, style::mono(10.5), p.text_faint);
-            }
-            if a.found {
+            let status_w = if a.found {
                 let g = painter.layout_no_wrap(t("Found").to_string(), style::medium(11.5), p.ok);
                 let fw = g.size().x;
                 painter.galley(egui::pos2(row.right() - 12.0 - fw, ly - g.size().y / 2.0), g, p.ok);
                 painter.text(egui::pos2(row.right() - 12.0 - fw - 4.0 - 6.0, ly), egui::Align2::CENTER_CENTER, icons::CHECK_CIRCLE, style::icon_fill(12.0), p.ok);
+                fw + 22.0
             } else {
                 let g = painter.layout_no_wrap(t("Not installed").to_string(), style::medium(11.5), p.warn);
-                painter.galley(egui::pos2(row.right() - 12.0 - g.size().x, ly - g.size().y / 2.0), g, p.warn);
+                let nw = g.size().x;
+                painter.galley(egui::pos2(row.right() - 12.0 - nw, ly - g.size().y / 2.0), g, p.warn);
                 if let Some(cmd) = tc_core::agent::install_command(a.agent).filter(|_| commands) {
                     let code = egui::Rect::from_min_size(egui::pos2(row.left() + 12.0, row.top() + 46.0), egui::vec2(row.width() - 24.0, 32.0));
                     if command_box(ui, code, cmd) {
@@ -445,22 +481,39 @@ impl App {
                         self.toast_ok(t("Install command copied.").into());
                     }
                 }
+                nw + 8.0
+            };
+            let name_room = (row.right() - 12.0 - status_w - 8.0 - (tile.right() + 11.0)).max(24.0);
+            let mut nj = egui::text::LayoutJob::default();
+            nj.append(a.agent.label(), 0.0, egui::TextFormat::simple(style::medium(13.0), if a.found { p.text } else { p.text_muted }));
+            if let Some(v) = &a.version {
+                nj.append(v, 8.0, egui::TextFormat::simple(style::mono(10.5), p.text_faint));
             }
+            nj.wrap = egui::text::TextWrapping::truncate_at_width(name_room);
+            let ng = painter.layout_job(nj);
+            painter.galley(egui::pos2(tile.right() + 11.0, ly - ng.size().y / 2.0), ng, p.text);
         }
 
-        // The keys worth learning first, at the bottom.
-        let keys = egui::Rect::from_min_max(egui::pos2(col.left(), area.bottom() - 60.0), egui::pos2(col.right(), area.bottom()));
+        // The keys worth learning first: always positioned below both columns and wrapped cleanly.
+        let keys_top = (area.bottom() - 60.0).max(card.bottom().max(cy) + 22.0);
+        let keys = egui::Rect::from_min_max(egui::pos2(col.left(), keys_top), egui::pos2(col.right(), keys_top + 64.0));
         painter.hline(keys.x_range(), keys.top() + 0.5, egui::Stroke::new(1.0, p.border));
         let mut x = keys.left();
-        let kcy = keys.top() + 30.0;
+        let mut kcy = keys.top() + 24.0;
         use crate::actions::Action;
         for (action, what) in [(Action::PickPreset, t("Run an agent")), (Action::NextAttention, t("Go to the agent that waits")), (Action::ToggleGrid, t("Every project at once")), (Action::Palette, t("Every command"))] {
             if let Some(k) = kit::keys(&action) {
-                x += kit::paint_kbd_text(&painter, egui::pos2(x, kcy), k, &p) + 8.0;
+                let kw = kit::kbd_width(&painter, k);
                 let g = painter.layout_no_wrap(what.to_string(), egui::FontId::proportional(12.0), p.text_faint);
+                let item_w = kw + 8.0 + g.size().x;
+                if x > keys.left() && x + item_w > keys.right() {
+                    x = keys.left();
+                    kcy += 24.0;
+                }
+                x += kit::paint_kbd_text(&painter, egui::pos2(x, kcy), k, &p) + 8.0;
                 let gw = g.size().x;
                 painter.galley(egui::pos2(x, kcy - g.size().y / 2.0), g, p.text_faint);
-                x += gw + 26.0;
+                x += gw + 22.0;
             }
         }
     }
@@ -473,7 +526,7 @@ fn command_box(ui: &mut Ui, rect: egui::Rect, cmd: &str) -> bool {
     let p = style::pal(ui);
     let dark = ui.visuals().dark_mode;
     let painter = ui.painter();
-    painter.rect(rect, egui::CornerRadius::same(9), if dark { p.inset } else { egui::Color32::from_rgb(0xf3, 0xf3, 0xf2) }, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    painter.rect(rect, egui::CornerRadius::same(9), if dark { p.inset } else { style::over(p.canvas, p.chrome, 0.35) }, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
     painter.text(egui::pos2(rect.left() + 12.0, rect.center().y), egui::Align2::LEFT_CENTER, "$", style::mono(12.0), p.text_faint);
     let mut job = egui::text::LayoutJob::simple_singleline(cmd.to_string(), style::mono(if rect.height() < 36.0 { 11.0 } else { 12.0 }), p.text);
     job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 12.0 - 10.0 - 10.0 - 30.0);

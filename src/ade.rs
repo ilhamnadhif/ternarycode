@@ -67,6 +67,7 @@ impl ProfileDraft {
             AgentKind::Custom => "agent",
         };
         let label = match agent {
+            AgentKind::Claude => "Claude",
             AgentKind::Codex => "ChatGPT / Codex",
             AgentKind::Antigravity => "Antigravity",
             _ => agent.label(),
@@ -135,7 +136,10 @@ impl ProfileDraft {
         for line in self.extra_env_text.lines() {
             if let Some((k, v)) = line.split_once('=') {
                 let k = k.trim();
-                if !k.is_empty() {
+                let valid_key = !k.is_empty()
+                    && !k.as_bytes()[0].is_ascii_digit()
+                    && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+                if valid_key {
                     extra_env.insert(k.to_string(), v.trim().to_string());
                 }
             }
@@ -151,9 +155,17 @@ impl ProfileDraft {
         let parse_cap = |s: &str| {
             let clean = s.trim().to_ascii_lowercase().replace([',', '_', ' '], "");
             if let Some(m) = clean.strip_suffix('m') {
-                m.parse::<f64>().ok().map(|v| (v * 1_000_000.0).round() as u64).filter(|&v| v > 0)
+                m.parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .map(|v| (v * 1_000_000.0).round() as u64)
+                    .filter(|&v| v > 0)
             } else if let Some(k) = clean.strip_suffix('k') {
-                k.parse::<f64>().ok().map(|v| (v * 1_000.0).round() as u64).filter(|&v| v > 0)
+                k.parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .map(|v| (v * 1_000.0).round() as u64)
+                    .filter(|&v| v > 0)
             } else {
                 clean.parse::<u64>().ok().filter(|&v| v > 0)
             }
@@ -207,6 +219,30 @@ impl App {
 
     pub fn profile_by_id(&self, id: &str) -> Option<AgentProfile> {
         self.effective_profiles().into_iter().find(|p| p.id == id)
+    }
+
+    /// Resolves the canonical active profile ID for `pane` running `agent`: uses `pane.active_profile`
+    /// when valid for `agent`, otherwise falls back to the enabled default-auth profile for `agent`
+    /// (never misattributing a manual `~/.claude` shell to an isolated profile like `claude2`).
+    pub fn resolved_pane_profile_id(
+        &self,
+        pane: &crate::pane::Pane,
+        agent: AgentKind,
+        profiles: &[AgentProfile],
+    ) -> Option<String> {
+        if !profiles::supports_multi_profile(agent) {
+            return None;
+        }
+        if let Some(id) = pane.active_profile.as_deref()
+            && profiles.iter().any(|p| p.id == id && p.agent == agent)
+        {
+            return Some(id.to_string());
+        }
+        profiles
+            .iter()
+            .find(|p| p.agent == agent && p.enabled && p.use_default_auth && !profiles::has_custom_config_dir(p))
+            .or_else(|| profiles.iter().find(|p| p.agent == agent && p.enabled))
+            .map(|p| p.id.clone())
     }
 
     /// Picks the highest-priority enabled healthy profile for `agent` (or first enabled profile).
@@ -367,13 +403,7 @@ impl App {
             let Some(agent) = pane.tracker.agent.filter(|a| profiles::supports_multi_profile(*a)) else {
                 continue;
             };
-            let pid = pane.active_profile.clone().or_else(|| {
-                profiles
-                    .iter()
-                    .find(|p| p.agent == agent && p.enabled && p.use_default_auth && !profiles::has_custom_config_dir(p))
-                    .map(|p| p.id.clone())
-            });
-            if let Some(prof_id) = pid {
+            if let Some(prof_id) = self.resolved_pane_profile_id(pane, agent, &profiles) {
                 active_by_profile.entry(prof_id).or_default().push((pane.id, pane.project, pane.tracker.status));
             }
         }
@@ -382,6 +412,9 @@ impl App {
         let mut wake_at = |d: Duration| {
             next_wake = Some(next_wake.map_or(d, |w| w.min(d)));
         };
+        let timer_visible = matches!(self.view, View::Profiles | View::Monitor)
+            || self.monitor_popover
+            || self.companion.is_some();
 
         for rt in self.profiles_rt.values_mut() {
             if let Some(reset_at) = rt.reset_at {
@@ -392,7 +425,8 @@ impl App {
                         rt.state = ProfileState::Idle;
                     }
                 } else {
-                    wake_at(reset_at.saturating_duration_since(now).min(Duration::from_secs(1)));
+                    let rem = reset_at.saturating_duration_since(now);
+                    wake_at(if timer_visible { rem.min(Duration::from_secs(1)) } else { rem });
                 }
             }
         }
@@ -470,9 +504,10 @@ impl App {
             self.handle_rate_limit(ctx, pane_id, hit);
         }
 
-        // 3. Background real token usage scan across every profile's config dir (every 20 s).
-        if self.usage_scan_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(20)) {
+        // 3. Background real token usage scan across every profile's config dir (every 20 s, bounded to 1 in-flight).
+        if !self.usage_scan_running && self.usage_scan_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(20)) {
             self.usage_scan_at = Some(now);
+            self.usage_scan_running = true;
             let home = paths::home_dir();
             let data = paths::data_dir().to_path_buf();
             let tx = self.app_tx.clone();
@@ -482,10 +517,19 @@ impl App {
                 .map(|p| (p.id.clone(), p.agent, profiles::resolved_config_dir(p, &home, &data)))
                 .collect();
             self.rt.spawn_blocking(move || {
+                // Deduplicate identical `(agent, canonical_root)` folders inside the background thread.
+                let mut cache: std::collections::HashMap<(AgentKind, std::path::PathBuf), tc_agent::sessions::ProfileUsageReport> =
+                    std::collections::HashMap::new();
+                let mut results = Vec::with_capacity(scan_list.len());
                 for (id, agent, root) in scan_list {
-                    let usage = tc_agent::sessions::profile_usage(agent, &root);
-                    let _ = tx.send(AppMsg::ProfileUsage(id, usage));
+                    let key = (agent, paths::canonical(&root));
+                    let usage = cache
+                        .entry(key)
+                        .or_insert_with(|| tc_agent::sessions::profile_usage(agent, &root))
+                        .clone();
+                    results.push((id, usage));
                 }
+                let _ = tx.send(AppMsg::ProfileUsages(results));
                 ctx.request_repaint();
             });
         }
@@ -704,16 +748,13 @@ impl App {
     pub fn handle_rate_limit(&mut self, ctx: &egui::Context, pane_id: PaneId, hit: RateLimitHit) {
         let now = Instant::now();
         let profiles = self.effective_profiles();
-        let Some((project_id, agent, from_profile, session_id)) = self.panes.get(&pane_id).map(|p| {
-            let agent = p.tracker.agent.or(p.last_agent).unwrap_or(AgentKind::Claude);
-            let prof = p.active_profile.clone().unwrap_or_else(|| {
-                profiles
-                    .iter()
-                    .find(|x| x.agent == agent && x.enabled && x.use_default_auth && !profiles::has_custom_config_dir(x))
-                    .map(|x| x.id.clone())
-                    .unwrap_or_else(|| agent.slug().to_string())
-            });
-            (p.project, agent, prof, p.agent_session.clone())
+        let Some((project_id, agent, from_profile, session_id)) = self.panes.get(&pane_id).and_then(|p| {
+            let agent = p.tracker.agent.or(p.last_agent)?;
+            if !profiles::supports_multi_profile(agent) {
+                return None;
+            }
+            let prof = self.resolved_pane_profile_id(p, agent, &profiles)?;
+            Some((p.project, agent, prof, p.agent_session.clone()))
         }) else {
             return;
         };
@@ -798,16 +839,19 @@ impl App {
         target_profile_id: &str,
         auto: bool,
     ) {
-        let Some(target) = self.profile_by_id(target_profile_id) else {
-            self.toast_err(tf("Profile {} not found.", &[target_profile_id]));
+        let Some(target) = self.profile_by_id(target_profile_id).filter(|p| p.enabled) else {
+            self.toast_err(tf("Profile {} not found or disabled.", &[target_profile_id]));
             return;
         };
         self.wake(ctx, pane_id);
+        let profiles = self.effective_profiles();
         let Some((project_id, project_path, from_profile_id, from_agent, session_id, task, tail, running)) =
             self.panes.get(&pane_id).map(|p| {
                 let path = self.project(p.project).map(|pr| pr.path.clone()).unwrap_or_else(|| p.cwd.clone());
                 let from_agent = p.tracker.agent.or(p.last_agent).unwrap_or(target.agent);
-                let from_id = p.active_profile.clone().unwrap_or_else(|| from_agent.slug().to_string());
+                let from_id = self
+                    .resolved_pane_profile_id(p, from_agent, &profiles)
+                    .unwrap_or_else(|| from_agent.slug().to_string());
                 let sid = p.agent_session.clone().or_else(|| p.rate_limit.as_ref().and_then(|b| b.session_id.clone()));
                 (
                     p.project,
@@ -947,14 +991,14 @@ impl App {
         session_id: String,
         profile_id: Option<String>,
     ) {
-        if self.project(project).is_none() {
+        if self.project(project).is_none() || session_id.starts_with("pane-") {
             return;
         }
         // Focus live pane immediately if already open.
         if let Some(live) = self
             .panes
             .values()
-            .find(|p| p.project == project && p.agent_session.as_deref() == Some(session_id.as_str()))
+            .find(|p| p.alive() && p.project == project && p.tracker.agent == Some(agent) && p.agent_session.as_deref() == Some(session_id.as_str()))
             .map(|p| p.id)
         {
             self.ensure_terminals_visible();
@@ -964,13 +1008,22 @@ impl App {
         self.active = Some(project);
         self.show_focus();
         self.ensure_terminals_visible();
-        if let Some(prof_id) = &profile_id
+        let valid_profile_id = if profiles::supports_multi_profile(agent) {
+            profile_id
+                .as_deref()
+                .and_then(|id| self.profile_by_id(id))
+                .filter(|p| p.enabled && p.agent == agent)
+                .map(|p| p.id)
+        } else {
+            None
+        };
+        if let Some(prof_id) = &valid_profile_id
             && let Some(p) = self.project_mut(project)
         {
             p.active_profile = Some(prof_id.clone());
         }
         let preset = self.preset_for_agent(agent);
-        self.run_agent_preset_with_profile(ctx, preset, Launch::Session(session_id), Some(0), profile_id);
+        self.run_agent_preset_with_profile(ctx, preset, Launch::Session(session_id), Some(0), valid_profile_id);
     }
 
     /// Starts a new session directly inside `project` with an optional chosen profile.
@@ -981,10 +1034,24 @@ impl App {
         self.active = Some(project);
         self.show_focus();
         self.ensure_terminals_visible();
+        let now = Instant::now();
+        let all = self.effective_profiles();
+        let proj_pref = self.project(project).and_then(|p| p.active_profile.clone());
         let profile = profile_id
             .as_deref()
-            .and_then(|id| self.profile_by_id(id))
-            .or_else(|| self.effective_profiles().into_iter().find(|p| p.enabled));
+            .and_then(|id| all.iter().find(|p| p.id == id && p.enabled))
+            .or_else(|| {
+                proj_pref.as_deref().and_then(|id| {
+                    all.iter().find(|p| {
+                        p.id == id && p.enabled && self.profiles_rt.get(&p.id).is_none_or(|rt| rt.is_healthy(now))
+                    })
+                })
+            })
+            .or_else(|| {
+                all.iter().find(|p| p.enabled && self.profiles_rt.get(&p.id).is_none_or(|rt| rt.is_healthy(now)))
+            })
+            .or_else(|| all.iter().find(|p| p.enabled))
+            .cloned();
         let agent = profile.as_ref().map(|p| p.agent).unwrap_or(AgentKind::Claude);
         let preset = self.preset_for_agent(agent);
         self.run_agent_preset_with_profile(ctx, preset, Launch::New, Some(0), profile.map(|p| p.id));
@@ -1177,6 +1244,7 @@ impl App {
             })
             .collect();
 
+        let now_unix = profiles::now_unix_secs();
         let mut panes: Vec<CompanionPane> = self
             .panes
             .values()
@@ -1192,17 +1260,23 @@ impl App {
                         CompanionRateLimit {
                             from_profile: b.from_profile.clone(),
                             reason: b.reason.clone(),
-                            reset_secs: secs,
+                            resets_at_unix: now_unix.saturating_add(secs as i64),
                         }
                     });
                 let output = profiles::redact_secrets(&p.screen_tail(45), &secrets);
+                let supports_profiles = p
+                    .tracker
+                    .agent
+                    .or(p.last_agent)
+                    .is_some_and(profiles::supports_multi_profile);
                 CompanionPane {
                     id: p.id,
                     project_id: p.project,
                     project_name: self.project_label(p.project),
                     label: p.label(),
                     branch: proj.and_then(|x| x.git.as_ref()).map(|g| g.branch.clone()),
-                    profile: p.active_profile.clone(),
+                    profile: supports_profiles.then(|| p.active_profile.clone()).flatten(),
+                    supports_profiles,
                     status: status_slug(p.tracker.status).into(),
                     status_label: crate::ui::status::text(p.tracker.status),
                     message: p.tracker.message.clone(),
@@ -1213,12 +1287,30 @@ impl App {
             .collect();
         panes.sort_by_key(|p| (p.rate_limit.is_none(), p.status != "needs_input", p.status != "running", p.id));
 
-        let now_unix = profiles::now_unix_secs();
         let profiles: Vec<CompanionProfile> = profiles_cfg
             .iter()
             .map(|prof| {
                 let rt = self.profiles_rt.get(&prof.id).cloned().unwrap_or_default();
                 let active_session = rt.active_panes.first().map(|(_, pid)| self.project_label(*pid));
+                let reset_unix_5h = rt
+                    .usage
+                    .window_5h
+                    .resets_at_unix
+                    .filter(|&r| r > now_unix)
+                    .or_else(|| rt.reset_remaining_secs(now).map(|s| now_unix.saturating_add(s as i64)));
+                let reset_unix_wk = rt.usage.window_weekly.resets_at_unix.filter(|&r| r > now_unix);
+                let window_5h = rt.has_window_5h(prof).then(|| crate::companion::CompanionWindowQuota {
+                    label: rt.window_5h_label(),
+                    used_pct: rt.quota_5h_used_pct(prof),
+                    tokens: rt.usage.window_5h.tokens.total(),
+                    resets_at_unix: reset_unix_5h,
+                });
+                let window_weekly = rt.has_window_weekly(prof).then(|| crate::companion::CompanionWindowQuota {
+                    label: rt.window_weekly_label(),
+                    used_pct: rt.quota_weekly_used_pct(prof),
+                    tokens: rt.usage.window_weekly.tokens.total(),
+                    resets_at_unix: reset_unix_wk,
+                });
                 CompanionProfile {
                     id: prof.id.clone(),
                     name: prof.name.clone(),
@@ -1230,20 +1322,10 @@ impl App {
                     enabled: prof.enabled,
                     tokens_in: rt.tokens_in,
                     tokens_out: rt.tokens_out,
-                    quota_pct: rt.quota_remaining_pct(prof.limit_5h_tokens.or(prof.daily_token_budget)),
-                    reset_secs: rt.reset_remaining_secs(now).unwrap_or(0),
-                    window_5h: crate::companion::CompanionWindowQuota {
-                        label: rt.window_5h_label(),
-                        used_pct: rt.quota_5h_used_pct(prof),
-                        tokens: rt.usage.window_5h.tokens.total(),
-                        reset_secs: rt.window_5h_reset_secs(now_unix, now).unwrap_or(0),
-                    },
-                    window_weekly: crate::companion::CompanionWindowQuota {
-                        label: rt.window_weekly_label(),
-                        used_pct: rt.quota_weekly_used_pct(prof),
-                        tokens: rt.usage.window_weekly.tokens.total(),
-                        reset_secs: rt.window_weekly_reset_secs(now_unix).unwrap_or(0),
-                    },
+                    quota_pct: rt.quota_remaining_pct(prof),
+                    resets_at_unix: rt.reset_remaining_secs(now).map(|s| now_unix.saturating_add(s as i64)),
+                    window_5h,
+                    window_weekly,
                     active_session,
                 }
             })
@@ -1284,35 +1366,14 @@ impl App {
         }
     }
 
-    /// Deduplicated total input/output tokens across enabled profiles (sharing a config dir counts once).
-    pub fn deduped_token_totals(&self) -> (u64, u64) {
+    /// Recomputes and caches deduplicated token/window totals across enabled profiles off-frame
+    /// (zero per-frame `fs::canonicalize` syscalls during UI rendering).
+    pub fn recompute_usage_totals(&mut self) {
         let home = paths::home_dir();
         let data = paths::data_dir();
         let mut seen_roots: HashSet<(AgentKind, std::path::PathBuf)> = HashSet::new();
         let mut total_in = 0u64;
         let mut total_out = 0u64;
-        for p in self.effective_profiles() {
-            if !p.enabled {
-                continue;
-            }
-            let dir = profiles::resolved_config_dir(&p, &home, data);
-            let canon = paths::canonical(&dir);
-            if !seen_roots.insert((p.agent, canon)) {
-                continue;
-            }
-            if let Some(rt) = self.profiles_rt.get(&p.id) {
-                total_in = total_in.saturating_add(rt.tokens_in);
-                total_out = total_out.saturating_add(rt.tokens_out);
-            }
-        }
-        (total_in, total_out)
-    }
-
-    /// Deduplicated total (5-hour, weekly) token consumption across enabled profiles.
-    pub fn deduped_window_totals(&self) -> (u64, u64) {
-        let home = paths::home_dir();
-        let data = paths::data_dir();
-        let mut seen_roots: HashSet<(AgentKind, std::path::PathBuf)> = HashSet::new();
         let mut total_5h = 0u64;
         let mut total_weekly = 0u64;
         for p in self.effective_profiles() {
@@ -1325,11 +1386,27 @@ impl App {
                 continue;
             }
             if let Some(rt) = self.profiles_rt.get(&p.id) {
-                total_5h = total_5h.saturating_add(rt.usage.window_5h.tokens.total());
-                total_weekly = total_weekly.saturating_add(rt.usage.window_weekly.tokens.total());
+                total_in = total_in.saturating_add(rt.tokens_in);
+                total_out = total_out.saturating_add(rt.tokens_out);
+                if rt.has_window_5h(&p) {
+                    total_5h = total_5h.saturating_add(rt.usage.window_5h.tokens.total());
+                }
+                if rt.has_window_weekly(&p) {
+                    total_weekly = total_weekly.saturating_add(rt.usage.window_weekly.tokens.total());
+                }
             }
         }
-        (total_5h, total_weekly)
+        self.cached_usage_totals = (total_in, total_out, total_5h, total_weekly);
+    }
+
+    /// Cached deduplicated 24h input/output tokens across enabled profiles (O(1), zero syscalls).
+    pub fn deduped_token_totals(&self) -> (u64, u64) {
+        (self.cached_usage_totals.0, self.cached_usage_totals.1)
+    }
+
+    /// Cached deduplicated (5-hour, weekly/long) token totals across enabled profiles (O(1)).
+    pub fn deduped_window_totals(&self) -> (u64, u64) {
+        (self.cached_usage_totals.2, self.cached_usage_totals.3)
     }
 
     /// Picks the best next healthy pre-registered account to one-click switch to from `pane_id`
@@ -1342,9 +1419,7 @@ impl App {
             return None;
         }
         let profiles = self.effective_profiles();
-        let active_id = pane.active_profile.clone().or_else(|| {
-            profiles.iter().find(|p| p.agent == agent && p.enabled).map(|p| p.id.clone())
-        })?;
+        let active_id = self.resolved_pane_profile_id(pane, agent, &profiles)?;
         let mut candidates: Vec<&AgentProfile> = profiles
             .iter()
             .filter(|p| p.enabled && p.id != active_id)
@@ -1385,8 +1460,10 @@ impl App {
             .values()
             .filter(|p| p.alive() && matches!(p.tracker.status, Status::Running | Status::NeedsInput) && p.tracker.agent.is_some())
             .count();
+        let (win_5h, _) = self.deduped_window_totals();
         let (tin, tout) = self.deduped_token_totals();
-        (running.max(active_panes), limited, errors, tin.saturating_add(tout))
+        let tokens = if win_5h > 0 { win_5h } else { tin.saturating_add(tout) };
+        (running.max(active_panes), limited, errors, tokens)
     }
 
     pub fn is_dock_right(&self) -> bool {

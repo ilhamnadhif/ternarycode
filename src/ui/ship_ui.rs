@@ -95,6 +95,7 @@ impl App {
         let loading = s.facts.is_none() || review_loading;
 
         let x = col.left() + PAD;
+        let _ = x;
         let w = col.width() - PAD * 2.0;
         let font_note = egui::FontId::proportional(11.5);
         let note_w = w - 20.0;
@@ -173,7 +174,7 @@ impl App {
         } else if loading {
             parts.push(note(ui, t("Reading the branch…"), "", p.text_faint));
         } else if let Some(plan) = &plan {
-            let commits = plan.has(&StepKind::Commit) || plan.blocked.is_some() || n_files > 0;
+            let commits = plan.has(&StepKind::Commit) || plan.pr_step().is_some() || plan.blocked.is_some() || n_files > 0;
             if commits {
                 let h = message_height(ui, &message, w - 42.0, &p);
                 parts.push(Part::Message(h));
@@ -215,7 +216,10 @@ impl App {
                 parts.push(Part::To);
                 if show_commands && plan.blocked.is_none() {
                     let req = self.ship_request(project, plan, &root, &paths, &message);
-                    parts.push(Part::Commands(req.preview_commands(0)));
+                    let cmds = req.preview_commands(0);
+                    if !cmds.is_empty() {
+                        parts.push(Part::Commands(cmds));
+                    }
                     req_for_go = Some(req);
                 }
             }
@@ -246,13 +250,23 @@ impl App {
         #[cfg(debug_assertions)]
         crate::devtest::record("ship-box", area);
 
-        // ----- drawn top-down ---------------------------------------------------------------
-        let mut y = area.top() + PAD;
+        // ----- drawn top-down (scrollable if the window is short) ----------------------------
         let plan_label = plan.as_ref().map(ship::label).unwrap_or_default();
-        for part in &parts {
-            let h = height(part);
-            let row = Rect::from_min_size(pos2(x, y), vec2(w, h));
-            match part {
+        let box_inner = area.shrink2(vec2(PAD - 4.0, PAD - 4.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(box_inner), |ui| {
+            ui.set_clip_rect(box_inner.intersect(ui.clip_rect()));
+            egui::ScrollArea::vertical()
+                .id_salt(("ship-box-scroll", project))
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                .show(ui, |ui| {
+                    egui::Frame::NONE.inner_margin(egui::Margin::same(4)).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = GAP;
+                        let painter = ui.painter().clone();
+                        for part in &parts {
+                            let h = height(part);
+                            let (row, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+                            match part {
                 Part::Title => {
                     let title = run.as_ref().map(|r| r.title.clone()).unwrap_or_default();
                     painter.text(pos2(row.left() + 6.0, row.center().y), Align2::CENTER_CENTER, icons::GIT_COMMIT, style::icon_font(12.0), p.text_faint);
@@ -460,8 +474,18 @@ impl App {
                                         let finish_label = if run_gitlab { t("Finish on GitLab") } else { t("Finish on GitHub") };
                                         btns.push((Act::new(kit::Kind::Primary, Some(icons::GLOBE), finish_label, "ship-act-web"), Ask::OpenPr(url)));
                                     }
-                                    let login_cmd = if run_gitlab { "glab auth login" } else { "gh auth login" };
-                                    btns.push((Act::new(kit::Kind::Ghost, Some(icons::TERMINAL_WINDOW), login_cmd, "ship-act-login"), Ask::Terminal(vec![login_cmd.to_string()])));
+                                    let login_cmd = match &run.req.web {
+                                        Some(w) if run_gitlab && w.host != "gitlab.com" => {
+                                            format!("glab auth login --hostname {}", ship::quote(&w.host))
+                                        }
+                                        Some(w) if !run_gitlab && w.host != "github.com" => {
+                                            format!("gh auth login --hostname {}", ship::quote(&w.host))
+                                        }
+                                        _ if run_gitlab => "glab auth login".to_string(),
+                                        _ => "gh auth login".to_string(),
+                                    };
+                                    let login_lbl = if run_gitlab { "glab auth login" } else { "gh auth login" };
+                                    btns.push((Act::new(kit::Kind::Ghost, Some(icons::TERMINAL_WINDOW), login_lbl, "ship-act-login"), Ask::Terminal(vec![login_cmd])));
                                 }
                                 Failure::Output(out) => {
                                     let commit = run.steps.get(i).is_some_and(|s| s.kind == StepKind::Commit);
@@ -520,8 +544,20 @@ impl App {
                         crate::devtest::record("ship-go", main.rect);
                         crate::devtest::record("ship-more", caret.rect);
                     }
-                    let tip = if !enabled && plan.has(&StepKind::Commit) && message.trim().is_empty() { t("Write a message first") } else { "" };
-                    let main = if tip.is_empty() { main } else { main.on_disabled_hover_text(tip) };
+                    let tip = if !enabled {
+                        if writing.is_some() {
+                            t("Writing the commit message…")
+                        } else if new_branch.as_deref().is_some_and(|b| !tc_git::worktree::valid_branch(b.trim())) {
+                            t("Enter a valid branch name")
+                        } else if plan.has(&StepKind::Commit) && message.trim().is_empty() {
+                            t("Write a message first")
+                        } else {
+                            ""
+                        }
+                    } else {
+                        ""
+                    };
+                    let main = if tip.is_empty() { main } else { main.on_hover_text(tip) };
                     if main.clicked() && enabled {
                         asks.push(Ask::Go);
                     }
@@ -564,7 +600,8 @@ impl App {
                             }
                         }
                         kit::menu_sep(ui);
-                        ui.add_enabled_ui(plan.blocked.is_none() && !plan.idle(), |ui| {
+                        let has_cmds = !self.ship_request(project, plan, &root, &paths, &message).preview_commands(0).is_empty();
+                        ui.add_enabled_ui(plan.blocked.is_none() && !plan.idle() && has_cmds, |ui| {
                             let item = kit::menu_item(ui, Some(icons::TERMINAL_WINDOW), t("Run in Terminal Instead"), None, false);
                             if item.clicked() {
                                 let req = self.ship_request(project, plan, &root, &paths, &message);
@@ -621,13 +658,18 @@ impl App {
                         painter.galley(lr.min, g, if resp.hovered() { p.text } else { p.text_faint });
                         #[cfg(debug_assertions)]
                         crate::devtest::record("ship-branch-link", lr);
-                        if resp.on_hover_text(t("Make a branch for a pull request, then commit there")).clicked() {
+                        let branch_tip = if is_gitlab {
+                            t("Make a branch for a merge request, then commit there")
+                        } else {
+                            t("Make a branch for a pull request, then commit there")
+                        };
+                        if resp.on_hover_text(branch_tip).clicked() {
                             asks.push(Ask::NewBranch);
                         }
                     }
                 }
                 Part::Commands(cmds) => {
-                    let fill = if dark { p.inset } else { Color32::from_rgb(0xf3, 0xf3, 0xf2) };
+                    let fill = if dark { p.inset } else { style::over(p.canvas, p.chrome, 0.35) };
                     painter.rect(row, CornerRadius::same(8), fill, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
                     let clip = row.shrink2(vec2(10.0, 7.0));
                     let pc = painter.with_clip_rect(clip);
@@ -646,8 +688,10 @@ impl App {
                     }
                 }
             }
-            y += h + GAP;
-        }
+                        }
+                    });
+                });
+        });
 
         // ----- what was asked -------------------------------------------------------------
         for ask in asks {
@@ -773,6 +817,7 @@ fn message_height(ui: &Ui, text: &str, width: f32, p: &style::Palette) -> f32 {
     (g.size().y + 14.0).clamp(52.0, MSG_MAX_H)
 }
 
+#[cfg(debug_assertions)]
 fn step_name(k: &StepKind) -> &'static str {
     match k {
         StepKind::Branch(_) => "branch",
@@ -879,6 +924,7 @@ struct Act {
     icon: Option<&'static str>,
     label: String,
     keys: Option<&'static str>,
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     name: &'static str,
 }
 

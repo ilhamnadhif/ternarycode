@@ -180,8 +180,15 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
             if b(ui, icons::ARROW_SQUARE_OUT, t("Open in Default App")).clicked() {
                 *ask = Some(Ask::OpenDefault);
             }
-            if view.kind == tc_doc::Kind::Csv && kit::button_ex(ui, kit::Kind::Ghost, Some(icons::CODE), t("Open as Text"), true).clicked() {
-                *ask = Some(Ask::EditAsText);
+            if view.kind == tc_doc::Kind::Csv {
+                let edit_clicked = if inner.width() < 380.0 {
+                    b(ui, icons::CODE, t("Open as Text")).clicked()
+                } else {
+                    kit::button_ex(ui, kit::Kind::Ghost, Some(icons::CODE), t("Open as Text"), true).clicked()
+                };
+                if edit_clicked {
+                    *ask = Some(Ask::EditAsText);
+                }
             }
             if matches!(view.state, State::Ready(_)) {
                 zoom_controls(ui, view);
@@ -192,7 +199,7 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
             ui.min_rect().left()
         })
         .inner;
-    let left = Rect::from_min_max(inner.min, pos2(left_end - 8.0, inner.bottom()));
+    let left = Rect::from_min_max(inner.min, pos2((left_end - 8.0).max(inner.left()), inner.bottom()));
     ui.scope_builder(egui::UiBuilder::new().max_rect(left).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
         ui.set_clip_rect(left.intersect(ui.clip_rect()));
         ui.spacing_mut().item_spacing.x = 4.0;
@@ -216,6 +223,7 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
             let r = kit::field(ui, id, &mut text, None, "", 40.0, true);
             ui.data_mut(|d| d.insert_temp(id, text.clone()));
             if r.lost_focus()
+                && !ui.input(|i| i.key_pressed(egui::Key::Escape))
                 && let Ok(n_typed) = text.trim().parse::<usize>()
             {
                 jump(view, n_typed.clamp(1, n) - 1);
@@ -276,13 +284,11 @@ fn zoom_controls(ui: &mut Ui, view: &mut DocView) {
 fn status_line(ui: &mut Ui, view: &DocView, rect: Rect) {
     let p = style::pal(ui);
     ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
-    let summary = ui.painter().text(
-        pos2(rect.left() + 14.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        view.summary(),
-        egui::FontId::proportional(11.0),
-        p.text_faint,
-    );
+    let mut sum_job = egui::text::LayoutJob::simple_singleline(view.summary(), egui::FontId::proportional(11.0), p.text_faint);
+    sum_job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 28.0).max(20.0));
+    let sum_g = ui.painter().layout_job(sum_job);
+    let summary = Rect::from_min_size(pos2(rect.left() + 14.0, rect.center().y - sum_g.size().y / 2.0), sum_g.size());
+    ui.painter().galley(summary.min, sum_g, p.text_faint);
     // A sheet: how to see a cell's whole text, at the right.
     let hint = matches!(view.state, State::Ready(Content::Sheet(_))).then(|| t("Click a cell to see all of its text."));
     let hint_w = hint.map_or(0.0, |h| {
@@ -352,7 +358,8 @@ fn find_bar(ui: &mut Ui, view: &mut DocView, rect: Rect, project: ProjectId, all
         egui::UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 5.0))).layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            let r = ui.add(egui::TextEdit::singleline(&mut f.query).id(id).hint_text(t("Find in document")).desired_width(240.0));
+            let field_w = (ui.available_width() - 170.0).clamp(90.0, 240.0);
+            let r = kit::field(ui, id, &mut f.query, Some(icons::MAGNIFYING_GLASS), t("Find in document"), field_w, true);
             #[cfg(debug_assertions)]
             crate::devtest::record("doc-find", r.rect);
             if f.focus {
@@ -528,8 +535,8 @@ fn char_boxes(galley: &Galley, start: usize, end: usize) -> Vec<Rect> {
 
 /// Highlight colours: every match, and the current one, as the editor's (the warn colour at
 /// 22% and 55%: readable on white pages and on both themes).
-fn match_colors() -> (Color32, Color32) {
-    let p = style::palette(true);
+fn match_colors(dark: bool) -> (Color32, Color32) {
+    let p = style::palette(dark);
     (style::soft(p.warn, 0.22), style::soft(p.warn, 0.55))
 }
 
@@ -582,7 +589,7 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
     {
         area = area.vertical_scroll_offset((top + y * k - rect.height() / 3.0).max(0.0));
     }
-    let (all, current) = match_colors();
+    let (all, current) = match_colors(ui.visuals().dark_mode);
     let current_match = view.find.as_ref().and_then(|f| f.current);
     let page_matches: Vec<(usize, Vec<[f32; 4]>, bool)> = view
         .find
@@ -1020,7 +1027,7 @@ fn rich_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
     let ctx = ui.ctx().clone();
     let mut wanted = Vec::new();
     let mut shown = HashSet::new();
-    let (all, current) = match_colors();
+    let (all, current) = match_colors(ui.visuals().dark_mode);
     let cur = view.find.as_ref().and_then(|f| f.current);
     let text_matches: Vec<(usize, usize, usize, bool)> = view
         .find
@@ -1150,7 +1157,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
     let font = style::mono(fs);
     // The header row (the sheet's first) stays in view under the column letters.
     let sticky = if sheet.rows > 1 { row_h } else { 0.0 };
-    let gutter = if dark { style::over(p.canvas, p.chrome, 0.25) } else { Color32::from_rgb(0xf6, 0xf6, 0xf5) };
+    let gutter = if dark { style::over(p.canvas, p.chrome, 0.25) } else { style::over(p.canvas, p.chrome, 0.35) };
 
     // The selected cell: its name in a well, its whole text, what it is in words (its column's
     // header, its row's first values); Copy at the right.
@@ -1158,7 +1165,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
     let name = view.cell.map_or_else(|| "—".to_string(), |(r, c)| cell_name(sheet, r, c));
     let ng = ui.painter().layout_no_wrap(name, style::mono(11.0), p.text_muted);
     let nr = Rect::from_min_size(pos2(bar.left() + 10.0, bar.center().y - 11.0), vec2((ng.size().x + 14.0).max(44.0), 22.0));
-    let well = if dark { p.inset } else { Color32::from_rgb(0xf1, 0xf1, 0xf0) };
+    let well = p.inset;
     ui.painter().rect(nr, CornerRadius::same(5), well, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
     ui.painter().galley(pos2(nr.center().x - ng.size().x / 2.0, nr.center().y - ng.size().y / 2.0), ng, p.text_muted);
     if let Some((r, c)) = view.cell {
@@ -1223,7 +1230,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
             let col0 = xs.partition_point(|x| *x <= vp.min.x - rn_w).saturating_sub(1);
             let col1 = xs.partition_point(|x| *x < vp.max.x - rn_w).min(widths.len());
             let grid = Stroke::new(1.0, style::soft(p.border, 0.9));
-            let (all, current) = match_colors();
+            let (all, current) = match_colors(ui.visuals().dark_mode);
             let cur = view.find.as_ref().and_then(|f| f.current);
             let hits: std::collections::HashMap<(usize, usize), bool> = view
                 .find
@@ -1351,14 +1358,14 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
             painter.vline(left + rn_w - 0.5, nums.y_range(), Stroke::new(1.0, p.border));
             painter.rect_filled(Rect::from_min_size(pos2(left, top), vec2(rn_w, head_h)), CornerRadius::ZERO, gutter);
             painter.hline(left..=left + rn_w, top + head_h - 0.5, Stroke::new(1.0, p.border));
-            // A click picks the cell under it; the arrows move from there.
+            // A click picks the cell under it (ignoring clicks on the sticky column letters or row numbers).
             if resp.clicked()
                 && let Some(pos) = resp.interact_pointer_pos()
             {
                 let (x, y) = (pos.x - o.x - rn_w, pos.y - o.y - head_h);
                 // On the header row kept in view: that row.
                 let on_sticky = sticky > 0.0 && pos.y >= sticky_y && pos.y < sticky_y + row_h;
-                if x >= 0.0 && y >= 0.0 {
+                if pos.x >= left + rn_w && pos.y >= top + head_h && x >= 0.0 && y >= 0.0 {
                     let row = if on_sticky { 0 } else { (y / row_h) as usize };
                     let col = xs.partition_point(|v| *v <= x).saturating_sub(1);
                     if row < sheet.rows && col < widths.len() {

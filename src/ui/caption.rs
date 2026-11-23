@@ -122,6 +122,7 @@ impl App {
                 Some((t("Switch Project…"), A::SwitchProject)),
                 Some((t("Show/Hide Sidebar"), A::ToggleSidebar)),
                 Some((t("Narrow Sidebar"), A::ToggleCompactSidebar)),
+                Some((t("Zen Mode"), A::ToggleZenMode)),
                 Some((t("Show/Hide Code"), A::ToggleEditor)),
                 Some((t("Show/Hide Terminal Panel"), A::ToggleDrawer)),
                 Some((t("Show/Hide Files"), A::ToggleFiles)),
@@ -133,7 +134,6 @@ impl App {
                 Some((t("Focus View"), A::SetView(View::Focus))),
                 Some((t("Grid of All Projects"), A::ToggleGrid)),
                 Some((t("Agent Profiles…"), A::OpenProfiles)),
-                Some((t("Usage & Status Monitor"), A::OpenMonitor)),
                 Some((t("Phone Pairing…"), A::OpenPhonePairing)),
                 None,
                 Some((t("Split Right"), A::SplitRight)),
@@ -150,6 +150,7 @@ impl App {
             chosen = menu_rows(ui, &[
                 Some((t("Run Agent…"), A::PickPreset)),
                 Some((t("Review Changes…"), A::Review)),
+                Some((t("Commit History"), A::History)),
                 Some((t("Commit…"), A::Commit)),
                 None,
                 Some((t("Go to Next Waiting Agent"), A::NextAttention)),

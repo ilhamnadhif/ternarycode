@@ -18,88 +18,119 @@ impl App {
     pub fn status_bar(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
         let queue = self.attention_queue();
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            // Left: the most urgent pane waiting for the user ("Next:" when that one is the pane
-            // in view: ⌘J goes past it), or that none is.
-            let here = if self.view == tc_core::model::View::Focus { self.current_pane() } else { None };
-            let next = queue.iter().find(|e| Some(e.pane) != here).or(queue.first());
-            match next.and_then(|e| self.panes.get(&e.pane).map(|pane| (e, pane))) {
-                Some((e, pane)) => {
-                    let s = pane.tracker.status;
-                    let project = self.project_label(pane.project);
-                    let skipped = queue.first().is_some_and(|f| f.pane != e.pane);
-                    let (who, what, code) = super::sidebar::attention_sentence(pane);
-                    let more = queue.len() - 1 - usize::from(skipped);
-                    let room = (ui.available_width() * 0.62).max(160.0);
-                    let r = lead(ui, &p, s, skipped, &project, &who, &what, code.as_deref(), more, room);
-                    #[cfg(debug_assertions)]
-                    crate::devtest::record("attention-summary", r.rect);
-                    let tip = format!("{}\n{}", status::described(&pane.tracker), t("Show everything that waits for you"));
-                    if r.on_hover_text(tip).clicked() {
-                        self.actions.push(Action::ToggleAttention);
+        let bar = ui.max_rect();
+        let wide = bar.width() >= 920.0;
+        // Right side laid out first so left items never collide or push it off-screen on narrow windows.
+        let right_used = ui
+            .scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(bar)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let key = kit::keys(&Action::Palette).unwrap_or_default();
+                    let commands = commands_item(ui, &p, key);
+                    if commands.on_hover_text(t("Everything TernaryCode can do, searchable")).clicked() {
+                        self.actions.push(Action::Palette);
                     }
-                }
-                None => {
-                    let r = item(ui, Some(icons::CHECK_CIRCLE), t("No agent is waiting for you."), p.text_faint, None, None, 400.0, true);
-                    if r.on_hover_text(t("Agents that need you show up here")).clicked() {
-                        self.actions.push(Action::ToggleAttention);
-                    }
-                }
-            }
-            // Agents that can't say when they need the user (started without the hooks).
-            let unconnected = self.unconnected_agents();
-            if !unconnected.is_empty() {
-                dot_sep(ui, &p);
-                let text = crate::i18n::count(unconnected.len(), t("1 agent not connected"), t("{} agents not connected"));
-                let r = item(ui, Some(icons::PLUGS_CONNECTED), &text, p.warn, None, None, 260.0, true);
-                #[cfg(debug_assertions)]
-                crate::devtest::record("unconnected", r.rect);
-                if r.on_hover_text(self.unconnected_tip(&unconnected)).clicked() {
-                    self.connect_agents(&unconnected);
-                }
-            }
-            // Right: commands, then what is running and the memory it takes.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                let key = kit::keys(&Action::Palette).unwrap_or_default();
-                let commands = commands_item(ui, &p, key);
-                if commands.on_hover_text(t("Everything TernaryCode can do, searchable")).clicked() {
-                    self.actions.push(Action::Palette);
-                }
-                dot_sep(ui, &p);
-                let now = Instant::now();
-                if self.mem_bytes.1.is_none_or(|t| now.duration_since(t) > Duration::from_secs(2)) {
-                    self.mem_bytes = (tc_agent::proc::own_resident_bytes(), Some(now));
-                    self.browser_bytes = self.browsers_resident_bytes();
-                }
-                let mut mem = self.mem_bytes.0.map(|b| format!(" · {} MB", b / (1024 * 1024))).unwrap_or_default();
-                // The pages' own processes (WebKit's), when there are any.
-                if let Some(b) = self.browser_bytes.filter(|b| *b > 0) {
-                    mem.push_str(&tf(" · pages {} MB", &[&(b / (1024 * 1024)).to_string()]));
-                }
-                let counts = format!(
-                    "{} · {}{mem}",
-                    crate::i18n::count(self.projects.iter().filter(|x| !x.is_worktree()).count(), t("1 project"), t("{} projects")),
-                    crate::i18n::count(self.panes.len(), t("1 pane"), t("{} panes")),
-                );
-                let g = ui.painter().layout_no_wrap(counts, style::mono(10.5), p.text_faint);
-                let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 8.0, 20.0), Sense::hover());
-                ui.painter().galley(pos2(r.left() + 4.0, r.center().y - g.size().y / 2.0), g, p.text_faint);
-                resp.on_hover_text(t("Memory TernaryCode uses (programs in the panes not counted)"));
-                if let Some(target) = self.keyboard_target() {
                     dot_sep(ui, &p);
-                    let keys = kit::keys(&Action::OpenGridTile);
-                    if item(ui, Some(icons::KEYBOARD), &target, p.accent_text, None, keys, 300.0, true)
-                        .on_hover_text(t("Where your typing goes. Click (or press the keys) to open it in Focus."))
-                        .clicked()
-                    {
-                        self.actions.push(Action::OpenGridTile);
+                    let now = Instant::now();
+                    if self.mem_bytes.1.is_none_or(|t| now.duration_since(t) > Duration::from_secs(2)) {
+                        self.mem_bytes = (tc_agent::proc::own_resident_bytes(), Some(now));
+                        self.browser_bytes = self.browsers_resident_bytes();
+                    }
+                    let mut mem = if wide {
+                        self.mem_bytes.0.map(|b| format!(" · {} MB", b / (1024 * 1024))).unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    // The pages' own processes (WebKit's), when there are any.
+                    if wide && let Some(b) = self.browser_bytes.filter(|b| *b > 0) {
+                        mem.push_str(&tf(" · pages {} MB", &[&(b / (1024 * 1024)).to_string()]));
+                    }
+                    let counts = format!(
+                        "{} · {}{mem}",
+                        crate::i18n::count(self.projects.iter().filter(|x| !x.is_worktree()).count(), t("1 project"), t("{} projects")),
+                        crate::i18n::count(self.panes.len(), t("1 pane"), t("{} panes")),
+                    );
+                    let g = ui.painter().layout_no_wrap(counts, style::mono(10.5), p.text_faint);
+                    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 8.0, 20.0), Sense::hover());
+                    ui.painter().galley(pos2(r.left() + 4.0, r.center().y - g.size().y / 2.0), g, p.text_faint);
+                    resp.on_hover_text(t("Memory TernaryCode uses (programs in the panes not counted)"));
+                    if let Some(target) = self.keyboard_target() {
+                        let avail = (ui.min_rect().left() - bar.left() - 160.0).max(0.0);
+                        if avail >= 90.0 {
+                            dot_sep(ui, &p);
+                            let keys = kit::keys(&Action::OpenGridTile);
+                            if item(ui, Some(icons::KEYBOARD), &target, p.accent_text, None, keys, avail.min(280.0), true)
+                                .on_hover_text(t("Where your typing goes. Click (or press the keys) to open it in Focus."))
+                                .clicked()
+                            {
+                                self.actions.push(Action::OpenGridTile);
+                            }
+                        }
+                    }
+                    self.update_status_item(ui);
+                    ui.min_rect()
+                },
+            )
+            .inner;
+
+        let left_max = (right_used.left() - 8.0).max(bar.left());
+        let left_rect = Rect::from_min_max(bar.min, pos2(left_max, bar.bottom()));
+        let unconnected = self.unconnected_agents();
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(left_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.set_clip_rect(left_rect.intersect(ui.clip_rect()));
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let left_w = left_rect.width();
+                let unc_reserve = if unconnected.is_empty() { 0.0 } else { 145.0_f32.min(left_w * 0.42) };
+                let lead_room = (left_w - unc_reserve).max(80.0);
+                // Left: the most urgent pane waiting for the user ("Next:" when that one is the pane
+                // in view: ⌘J goes past it), or that none is.
+                let here = if self.view == tc_core::model::View::Focus { self.current_pane() } else { None };
+                let next = queue.iter().find(|e| Some(e.pane) != here).or(queue.first());
+                match next.and_then(|e| self.panes.get(&e.pane).map(|pane| (e, pane))) {
+                    Some((e, pane)) => {
+                        let s = pane.tracker.status;
+                        let project = self.project_label(pane.project);
+                        let skipped = queue.first().is_some_and(|f| f.pane != e.pane);
+                        let (who, what, code) = super::sidebar::attention_sentence(pane);
+                        let more = queue.len() - 1 - usize::from(skipped);
+                        let r = lead(ui, &p, s, skipped, &project, &who, &what, code.as_deref(), more, lead_room);
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record("attention-summary", r.rect);
+                        let tip = format!("{}\n{}", status::described(&pane.tracker), t("Show everything that waits for you"));
+                        if r.on_hover_text(tip).clicked() {
+                            self.actions.push(Action::ToggleAttention);
+                        }
+                    }
+                    None => {
+                        let r = item(ui, Some(icons::CHECK_CIRCLE), t("No agent is waiting for you."), p.text_faint, None, None, lead_room.min(400.0), true);
+                        if r.on_hover_text(t("Agents that need you show up here")).clicked() {
+                            self.actions.push(Action::ToggleAttention);
+                        }
                     }
                 }
-                self.update_status_item(ui);
-            });
-        });
+                // Agents that can't say when they need the user (started without the hooks).
+                if !unconnected.is_empty() {
+                    let rem = (left_rect.right() - ui.cursor().min.x - 14.0).max(0.0);
+                    if rem >= 72.0 {
+                        dot_sep(ui, &p);
+                        let text = crate::i18n::count(unconnected.len(), t("1 agent not connected"), t("{} agents not connected"));
+                        let r = item(ui, Some(icons::PLUGS_CONNECTED), &text, p.warn, None, None, rem.min(260.0), true);
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record("unconnected", r.rect);
+                        if r.on_hover_text(self.unconnected_tip(&unconnected)).clicked() {
+                            self.connect_agents(&unconnected);
+                        }
+                    }
+                }
+            },
+        );
     }
 
     /// The attention list (⌥⌘J, or a click on the status bar's summary): everything that waits,
@@ -166,6 +197,7 @@ impl App {
         }
         let sel = self.attention_sel;
         let dark = ctx.global_style().visuals.dark_mode;
+        let list_w = (ctx.content_rect().width() - 32.0).clamp(320.0, LIST_W);
         let area = egui::Area::new(egui::Id::new("attention-panel")).anchor(Align2::CENTER_TOP, vec2(0.0, 96.0));
         let modal = egui::Modal::new(egui::Id::new("attention-modal"))
             .area(area)
@@ -173,12 +205,12 @@ impl App {
             .frame(super::dialogs::frame(ctx).inner_margin(egui::Margin::ZERO))
             .show(ctx, |ui| {
                 let p = style::pal(ui);
-                ui.set_width(LIST_W);
+                ui.set_width(list_w);
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 let top = ui.max_rect();
-                kit::paint_highlight(ui.painter(), Rect::from_min_size(top.min, vec2(LIST_W, 1.0)), style::RADIUS_DIALOG, &p);
+                kit::paint_highlight(ui.painter(), Rect::from_min_size(top.min, vec2(list_w, 1.0)), style::RADIUS_DIALOG, &p);
                 // Header: the bell, "Waiting for you", how many; at the right the order and the keys.
-                let (head, _) = ui.allocate_exact_size(vec2(LIST_W, 52.0), Sense::hover());
+                let (head, _) = ui.allocate_exact_size(vec2(list_w, 52.0), Sense::hover());
                 let painter = ui.painter();
                 let cy = head.center().y;
                 status::paint_glyph(painter, pos2(head.left() + 18.0 + 7.0, cy), Status::NeedsInput, &p, 14.0);
@@ -203,13 +235,15 @@ impl App {
                         self.actions.push(Action::MarkAllSeen);
                     }
                     rx = all.left() - 8.0;
-                    let g = ui.painter().layout_no_wrap(t("oldest first").to_string(), egui::FontId::proportional(11.5), p.text_faint);
-                    ui.painter().galley(pos2(rx - g.size().x, cy - g.size().y / 2.0), g.clone(), p.text_faint);
+                    if list_w >= 460.0 {
+                        let g = ui.painter().layout_no_wrap(t("oldest first").to_string(), egui::FontId::proportional(11.5), p.text_faint);
+                        ui.painter().galley(pos2(rx - g.size().x, cy - g.size().y / 2.0), g.clone(), p.text_faint);
+                    }
                 }
                 ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
                 ui.add_space(6.0);
                 if queue.is_empty() {
-                    let (r, _) = ui.allocate_exact_size(vec2(LIST_W, 40.0), Sense::hover());
+                    let (r, _) = ui.allocate_exact_size(vec2(list_w, 40.0), Sense::hover());
                     ui.painter().text(pos2(r.left() + 18.0, r.center().y), Align2::LEFT_CENTER, t("No agent is waiting for you."), egui::FontId::proportional(13.0), p.text_muted);
                 }
                 // Two groups, in the queue's order: what needs the user, what finished.
@@ -227,7 +261,7 @@ impl App {
                         group = Some(needs);
                         let count = queue.iter().filter(|x| matches!(x.status, Status::NeedsInput | Status::Failed(_)) == needs).count();
                         let name = if needs { t("Needs you") } else { t("Finished") };
-                        let (r, _) = ui.allocate_exact_size(vec2(LIST_W, 28.0), Sense::hover());
+                        let (r, _) = ui.allocate_exact_size(vec2(list_w, 28.0), Sense::hover());
                         let g = kit::section_galley(ui.painter(), name, p.text_faint);
                         let gw = g.size().x;
                         ui.painter().galley(pos2(r.left() + 18.0, r.bottom() - 6.0 - g.size().y), g, p.text_faint);
@@ -238,8 +272,8 @@ impl App {
                     let what = super::sidebar::attention_short(pane);
                     let agent = pane.tracker.agent.filter(|a| super::agent_logo::has(*a));
                     let selected = i == sel;
-                    let (full, _) = ui.allocate_exact_size(vec2(LIST_W, 52.0 + if selected { 36.0 } else { 0.0 }), Sense::hover());
-                    let rect = Rect::from_min_size(pos2(full.left() + 8.0, full.top()), vec2(LIST_W - 16.0, 52.0));
+                    let (full, _) = ui.allocate_exact_size(vec2(list_w, 52.0 + if selected { 36.0 } else { 0.0 }), Sense::hover());
+                    let rect = Rect::from_min_size(pos2(full.left() + 8.0, full.top()), vec2(list_w - 16.0, 52.0));
                     let resp = ui.interact(rect, egui::Id::new(("att-row", e.pane)), Sense::click());
                     #[cfg(debug_assertions)]
                     crate::devtest::record(format!("att:{}", e.pane), rect);
@@ -304,14 +338,20 @@ impl App {
                 });
                 // The keys.
                 ui.add_space(8.0);
-                let (foot, _) = ui.allocate_exact_size(vec2(LIST_W, 38.0), Sense::hover());
+                let (foot, _) = ui.allocate_exact_size(vec2(list_w, 38.0), Sense::hover());
                 ui.painter().hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
-                paint_key_hints(ui, Rect::from_min_max(pos2(foot.left() + 14.0, foot.top()), pos2(foot.right() - 14.0, foot.bottom())), &[
+                let foot_inner = Rect::from_min_max(pos2(foot.left() + 14.0, foot.top()), pos2(foot.right() - 14.0, foot.bottom()));
+                let mut hints: Vec<(&[&str], &str)> = vec![
                     (&["↑", "↓"], t("choose")),
                     (&["↵"], t("open")),
                     (&["R"], t("review")),
                     (&["⌫"], t("mark as seen")),
-                ], Some("esc"));
+                ];
+                let esc_reserve = 78.0;
+                while hints.len() > 1 && key_hints_width(ui, &hints) + esc_reserve > foot_inner.width() {
+                    hints.pop();
+                }
+                paint_key_hints(ui, foot_inner, &hints, Some("esc"));
             });
         if let Some(i) = chosen {
             self.attention_choose(&queue, i, &mut close);
@@ -351,6 +391,8 @@ impl App {
                     .inner_margin(egui::Margin { left: 12, right: if toast.action.is_some() { 8 } else { 14 }, top: 8, bottom: 8 })
                     .corner_radius(CornerRadius::same(11))
                     .show(ui, |ui| {
+                        let max_w = (screen.width() - 48.0).clamp(180.0, 520.0);
+                        ui.set_max_width(max_w);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 10.0;
                             let (icon, c, filled) = match toast.kind {
@@ -362,7 +404,7 @@ impl App {
                             };
                             let font = if filled { style::icon_fill(15.0) } else { style::icon_font(15.0) };
                             ui.label(RichText::new(icon).font(font).color(c));
-                            ui.add(egui::Label::new(RichText::new(&toast.text).size(12.5).color(p.text)).wrap_mode(egui::TextWrapMode::Extend));
+                            ui.add(egui::Label::new(RichText::new(&toast.text).size(12.5).color(p.text)).wrap());
                             if let Some((label, action)) = &toast.action
                                 && kit::button_ex(ui, kit::Kind::Ghost, None, label, true).clicked()
                             {

@@ -45,6 +45,8 @@ pub struct Handed {
     pub program_title: Option<String>,
     pub cwd: PathBuf,
     pub preset: Option<String>,
+    #[serde(default)]
+    pub active_profile: Option<String>,
     pub agent_session: Option<String>,
     pub last_agent: Option<AgentKind>,
     pub progress: Option<(u8, Option<u8>)>,

@@ -368,6 +368,7 @@ impl App {
                     file.text = text;
                     file.rev += 1;
                     file.lines = crate::editor::count_lines(&file.text);
+                    file.refresh_dirty();
                     let ix = LineIndex::new(&file.text);
                     let line = ix.line_of(at);
                     file.caret = (line + 1, at - ix.line_start(line) + 1);
@@ -737,8 +738,8 @@ impl App {
                             let icon = if k == 0 { icons::LIGHTNING } else { icons::PENCIL_SIMPLE };
                             let r = ui.add_enabled_ui(!disabled, |ui| {
                                 if i == menu.selected {
-                                    let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 26.0));
-                                    ui.painter().rect_filled(rect, CornerRadius::same(5), p.accent_soft);
+                                    let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 28.0));
+                                    ui.painter().rect_filled(rect, CornerRadius::same(6), p.accent_soft);
                                 }
                                 kit::menu_item(ui, Some(icon), &title, None, false)
                             }).inner;
@@ -903,11 +904,10 @@ impl App {
     /// warnings and notes, for this file or the whole project. A click goes there.
     pub fn problems_panel(&mut self, ui: &mut Ui, project: tc_core::ProjectId, rect: Rect) {
         let p = style::pal(ui);
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.chrome);
-        ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
         let root = self.project(project).map(|x| x.path.clone()).unwrap_or_default();
         let current = self.editors.get(&project).and_then(|e| e.file()).map(|f| f.path.clone());
-        let show_project = self.problems_project || current.is_none();
+        let has_file = current.is_some();
+        let show_project = self.problems_project || !has_file;
         // Where a problem starts as its server counts (a column in the server's encoding).
         type ServerAt = (lt::Position, tc_lsp::pos::Encoding);
         // Each: severity, message, file, line, and where it starts.
@@ -929,30 +929,31 @@ impl App {
         }
         rows.sort_by(|a, b| (a.0, &a.2, a.3).cmp(&(b.0, &b.2, b.3)));
         let counts = [0, 1, 2].map(|s| rows.iter().filter(|r| r.0 == s).count());
-        // Header.
-        let head = Rect::from_min_size(rect.min, vec2(rect.width(), 30.0));
-        let mut x = head.left() + 12.0;
-        let g = ui.painter().layout_no_wrap(t("Problems").to_string(), style::semibold(12.0), p.text);
-        let gw = g.size().x;
-        ui.painter().galley(pos2(x, head.center().y - g.size().y / 2.0), g, p.text);
-        x += gw + 8.0;
+        // Compact filter toolbar (title & close button already live in `secondary_drawer_bar`).
+        let head = Rect::from_min_size(rect.min, vec2(rect.width(), 34.0));
+        ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
         let dark = ui.visuals().dark_mode;
-        for (i, (icon, c)) in [(icons::X_CIRCLE, p.err), (icons::WARNING, p.warn), (icons::INFO, p.info)].into_iter().enumerate() {
-            let r = kit::paint_pill(ui.painter(), pos2(x, head.center().y), Some(icon), &counts[i].to_string(), c, style::tint(c, dark));
-            x = r.right() + 6.0;
-        }
-        let close = Rect::from_center_size(pos2(head.right() - 6.0 - 11.0, head.center().y), vec2(22.0, 22.0));
-        if ui.scope_builder(egui::UiBuilder::new().max_rect(close), |ui| kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0)).inner.clicked() {
-            self.problems_open = false;
-            if self.drawer_tab == tc_core::model::DrawerTab::Problems {
-                self.drawer_tab = tc_core::model::DrawerTab::Terminals;
-            }
-        }
-        let options = [kit::Seg::new(t("This file"), ""), kit::Seg::new(t("Project"), "")];
-        let sw = kit::segmented_width(ui, &options);
-        let seg = Rect::from_min_size(pos2(close.left() - 6.0 - sw, head.center().y - kit::SEGMENTED_H / 2.0), vec2(sw, kit::SEGMENTED_H));
-        if let Some(i) = kit::segmented_in(ui, seg, egui::Id::new("problems-scope"), &options, show_project as usize) {
+        let options = [
+            kit::Seg::new(t("This file"), if has_file { "" } else { t("Open a file first") }),
+            kit::Seg::new(t("Project"), ""),
+        ];
+        let sw = kit::segmented_width(ui, &options).min((head.width() - 24.0).max(120.0));
+        let seg = Rect::from_min_size(pos2(head.right() - 10.0 - sw, head.center().y - kit::SEGMENTED_H / 2.0), vec2(sw, kit::SEGMENTED_H));
+        if let Some(i) = ui
+            .add_enabled_ui(has_file || show_project, |ui| {
+                kit::segmented_in(ui, seg, egui::Id::new("problems-scope"), &options, show_project as usize)
+            })
+            .inner
+            && (i == 1 || has_file)
+        {
             self.problems_project = i == 1;
+        }
+        let pills_clip = Rect::from_min_max(pos2(head.left() + 10.0, head.top()), pos2((seg.left() - 8.0).max(head.left() + 10.0), head.bottom()));
+        let pp = ui.painter().with_clip_rect(pills_clip.intersect(ui.clip_rect()));
+        let mut x = pills_clip.left();
+        for (i, (icon, c)) in [(icons::X_CIRCLE, p.err), (icons::WARNING, p.warn), (icons::INFO, p.info)].into_iter().enumerate() {
+            let r = kit::paint_pill(&pp, pos2(x, head.center().y), Some(icon), &counts[i].to_string(), c, style::tint(c, dark));
+            x = r.right() + 6.0;
         }
         // Rows.
         let list = Rect::from_min_max(pos2(rect.left(), head.bottom()), rect.max);

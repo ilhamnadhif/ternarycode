@@ -35,8 +35,8 @@ pub struct LogPage {
 }
 
 /// Reads up to `limit` commits starting at `skip` (newest first).
-/// When `query` is non-empty, resolves an exact commit hash prefix if it matches one, otherwise
-/// searches commit messages case-insensitively (`--fixed-strings --regexp-ignore-case --grep`).
+/// When `query` is non-empty, searches commit messages (and falls back to author search on page 1),
+/// and prepends an exact commit hash match when `query` looks like a 7..=64 hex SHA prefix.
 pub fn log(
     root: &Path,
     limit: usize,
@@ -44,52 +44,102 @@ pub fn log(
     query: Option<&str>,
     remote: Option<&str>,
 ) -> Result<LogPage, String> {
+    const FMT: &str = "--format=tformat:%H%x00%h%x00%P%x00%an%x00%ae%x00%at%x00%D%x00%s%x00%b";
     let branch = super::worktree::current_branch(root);
     if rev_parse(root, "HEAD").is_none() {
         return Ok(LogPage { commits: Vec::new(), has_more: false, branch });
     }
     let unpushed = unpushed_hashes(root, remote);
     let q = query.map(str::trim).filter(|s| !s.is_empty());
-    // Exact commit hash lookup when query looks like a hex SHA prefix (4..=40 hex chars).
+
+    // Exact commit hash lookup when query looks like a 7..=64 hex SHA prefix (supports SHA-1 & SHA-256
+    // without hijacking short 4-letter English words like "dead" or "cafe").
+    let mut exact_sha: Option<CommitEntry> = None;
     if skip == 0
-        && let Some(hex) = q.filter(|s| (4..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        && let Some(hex) = q.filter(|s| (7..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit()))
         && let Some(full) = rev_parse(root, &format!("{hex}^{{commit}}"))
     {
         let mut cmd = git(root);
-        cmd.args([
-            "log",
-            "-n",
-            "1",
-            "--format=%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s%x1f%b%x1e",
-            &full,
-            "--",
-        ]);
-        let out = run(&mut cmd)?;
-        let commits = parse_log(&String::from_utf8_lossy(&out), &unpushed);
-        return Ok(LogPage { commits, has_more: false, branch });
+        cmd.args(["log", "-n", "1", "-z", FMT, &full, "--"]);
+        if let Ok(out) = run(&mut cmd) {
+            exact_sha = parse_log_nul(&String::from_utf8_lossy(&out), &unpushed).into_iter().next();
+        }
     }
+
     let fetch_n = limit.saturating_add(1).max(2);
     let mut cmd = git(root);
     cmd.args([
         "log",
+        "-z",
         &format!("--max-count={fetch_n}"),
         &format!("--skip={skip}"),
-        "--format=%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s%x1f%b%x1e",
+        FMT,
     ]);
     if let Some(q) = q {
         cmd.args(["--fixed-strings", "--regexp-ignore-case", &format!("--grep={q}")]);
     }
     cmd.arg("--");
     let out = run(&mut cmd)?;
-    let mut commits = parse_log(&String::from_utf8_lossy(&out), &unpushed);
+    let mut commits = parse_log_nul(&String::from_utf8_lossy(&out), &unpushed);
+
+    // If `--grep` returned nothing on page 1, also search by author name/email.
+    if commits.is_empty() && exact_sha.is_none() && skip == 0 && let Some(q) = q {
+        let mut acmd = git(root);
+        acmd.args([
+            "log",
+            "-z",
+            &format!("--max-count={fetch_n}"),
+            FMT,
+            "--fixed-strings",
+            "--regexp-ignore-case",
+            &format!("--author={q}"),
+            "--",
+        ]);
+        if let Ok(aout) = run(&mut acmd) {
+            commits = parse_log_nul(&String::from_utf8_lossy(&aout), &unpushed);
+        }
+    }
+
+    if let Some(exact) = exact_sha
+        && !commits.iter().any(|c| c.hash == exact.hash)
+    {
+        commits.insert(0, exact);
+    }
     let has_more = commits.len() > limit;
     commits.truncate(limit);
     Ok(LogPage { commits, has_more, branch })
 }
 
+/// Resolves the branch's configured remote (or `origin` / first remote) when caller passes `None`.
+fn resolve_remote(root: &Path, remote: Option<&str>) -> Option<String> {
+    if let Some(r) = remote.filter(|r| !r.is_empty() && !r.starts_with('-')) {
+        return Some(r.to_string());
+    }
+    if let Some(b) = super::worktree::current_branch(root)
+        && let Ok(out) = run(git(root).args(["config", "--get", &format!("branch.{b}.remote")]))
+    {
+        let s = String::from_utf8_lossy(&out).trim().to_string();
+        if !s.is_empty() && !s.starts_with('-') {
+            return Some(s);
+        }
+    }
+    let out = run(git(root).args(["remote"])).ok()?;
+    let names: Vec<String> = String::from_utf8_lossy(&out)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('-'))
+        .map(String::from)
+        .collect();
+    if names.iter().any(|n| n == "origin") {
+        Some("origin".into())
+    } else {
+        names.into_iter().next()
+    }
+}
+
 /// Full hashes of commits reachable from `HEAD` that `remote` does not have on any branch.
 fn unpushed_hashes(root: &Path, remote: Option<&str>) -> HashSet<String> {
-    let Some(remote) = remote.filter(|r| !r.is_empty() && !r.starts_with('-')) else {
+    let Some(remote) = resolve_remote(root, remote) else {
         return HashSet::new();
     };
     let Ok(out) = run(git(root).args([
@@ -109,8 +159,61 @@ fn unpushed_hashes(root: &Path, remote: Option<&str>) -> HashSet<String> {
         .collect()
 }
 
-/// Parses records formatted with `%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s%x1f%b%x1e`.
+fn valid_oid(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn split_refs(raw: &str) -> Vec<String> {
+    raw.split(", ")
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Parses NUL-delimited 9-field tuples produced by `git log -z --format=tformat:%H%x00...%b`.
+/// Immune to control characters (`\x1e`, `\x1f`) inside commit messages because Git forbids `\0`.
+fn parse_log_nul(raw: &str, unpushed: &HashSet<String>) -> Vec<CommitEntry> {
+    let mut parts = raw.split('\0');
+    let mut out = Vec::new();
+    while let Some(hash_raw) = parts.next() {
+        let hash = hash_raw.trim();
+        if hash.is_empty() {
+            continue;
+        }
+        let Some(short) = parts.next() else { break };
+        let Some(parents_s) = parts.next() else { break };
+        let Some(author) = parts.next() else { break };
+        let Some(email) = parts.next() else { break };
+        let Some(time_s) = parts.next() else { break };
+        let Some(refs_s) = parts.next() else { break };
+        let Some(subject) = parts.next() else { break };
+        let Some(body) = parts.next() else { break };
+        if !valid_oid(hash) {
+            continue;
+        }
+        out.push(CommitEntry {
+            hash: hash.to_string(),
+            short: short.trim().to_string(),
+            parents: parents_s.split_whitespace().map(String::from).collect(),
+            author: author.trim().to_string(),
+            email: email.trim().to_string(),
+            time: time_s.trim().parse::<i64>().unwrap_or(0),
+            refs: split_refs(refs_s),
+            subject: subject.trim().to_string(),
+            body: body.trim().to_string(),
+            unpushed: unpushed.contains(hash),
+        });
+    }
+    out
+}
+
+/// Parses records formatted with `%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s%x1f%b%x1e`
+/// (or NUL-delimited tuples if `\0` is present).
 pub fn parse_log(raw: &str, unpushed: &HashSet<String>) -> Vec<CommitEntry> {
+    if raw.contains('\0') {
+        return parse_log_nul(raw, unpushed);
+    }
     let mut out = Vec::new();
     for rec in raw.split('\x1e') {
         let rec = rec.trim_start_matches(['\r', '\n']);
@@ -118,7 +221,7 @@ pub fn parse_log(raw: &str, unpushed: &HashSet<String>) -> Vec<CommitEntry> {
             continue;
         }
         let mut fields = rec.splitn(9, '\x1f');
-        let Some(hash) = fields.next().map(str::trim).filter(|s| !s.is_empty()) else { continue };
+        let Some(hash) = fields.next().map(str::trim).filter(|s| valid_oid(s)) else { continue };
         let short = fields.next().unwrap_or("").trim().to_string();
         let parents: Vec<String> = fields
             .next()
@@ -129,14 +232,7 @@ pub fn parse_log(raw: &str, unpushed: &HashSet<String>) -> Vec<CommitEntry> {
         let author = fields.next().unwrap_or("").trim().to_string();
         let email = fields.next().unwrap_or("").trim().to_string();
         let time = fields.next().unwrap_or("0").trim().parse::<i64>().unwrap_or(0);
-        let refs: Vec<String> = fields
-            .next()
-            .unwrap_or("")
-            .split(',')
-            .map(str::trim)
-            .filter(|r| !r.is_empty())
-            .map(String::from)
-            .collect();
+        let refs = split_refs(fields.next().unwrap_or(""));
         let subject = fields.next().unwrap_or("").trim().to_string();
         let body = fields.next().unwrap_or("").trim().to_string();
         let is_unpushed = unpushed.contains(hash);

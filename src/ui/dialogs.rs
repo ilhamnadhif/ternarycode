@@ -123,7 +123,10 @@ fn text_field(ui: &mut Ui, text: &mut String, hint: &str, leave: f32) -> egui::R
 /// A field in the data font (a folder, a command), `w` wide.
 fn mono_field(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, w: f32) -> egui::Response {
     let p = style::pal(ui);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 30.0), egui::Sense::hover());
+    let (rect, outer) = ui.allocate_exact_size(egui::vec2(w, 30.0), egui::Sense::click());
+    if outer.clicked() {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
     let focused = ui.ctx().memory(|m| m.has_focus(id));
     if focused {
         ui.painter().rect_stroke(rect.expand(3.0), CornerRadius::same(10), Stroke::new(3.0, p.accent_tint), egui::StrokeKind::Inside);
@@ -214,10 +217,9 @@ pub fn footer_left(ui: &mut Ui, left: impl FnOnce(&mut Ui), buttons: impl FnOnce
     let p = style::pal(ui);
     let full = ui.max_rect();
     let y = ui.cursor().top();
-    let dark = ui.visuals().dark_mode;
     ui.painter().hline(full.x_range(), y, Stroke::new(1.0, p.border));
     egui::Frame::NONE
-        .fill(if dark { style::over(p.overlay, p.chrome, 0.35) } else { Color32::from_rgb(0xfa, 0xfa, 0xfa) })
+        .fill(style::over(p.overlay, p.chrome, 0.35))
         .corner_radius(CornerRadius {
             nw: 0,
             ne: 0,
@@ -256,7 +258,10 @@ fn busy_list(ui: &mut Ui, items: &[Busy]) {
                     let icon = if file { icons::FILE_TEXT } else { icons::TERMINAL_WINDOW };
                     ui.painter().text(egui::pos2(r.left() + 6.5, r.center().y), egui::Align2::CENTER_CENTER, icon, style::icon_font(13.0), if file { p.warn } else { p.text_faint });
                     let text = if file { tf("{} · not saved", &[&b.text]) } else { b.text.clone() };
-                    ui.painter().text(egui::pos2(r.left() + 13.0 + 8.0, r.center().y), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(12.5), p.text);
+                    let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(12.5), p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((r.width() - 24.0).max(20.0));
+                    let g = ui.painter().layout_job(job);
+                    ui.painter().galley(egui::pos2(r.left() + 13.0 + 8.0, r.center().y - g.size().y / 2.0), g, p.text);
                 }
             });
         });
@@ -300,7 +305,9 @@ impl App {
                             let w = (ui.available_width() - choose_w - 8.0).max(80.0);
                             let id = egui::Id::new("add-project-folder");
                             let r = mono_field(ui, id, path, "~/code/app", w);
-                            if path.is_empty() && !r.has_focus() && !r.lost_focus() {
+                            let init_id = egui::Id::new("add-project-init-focus");
+                            if !ui.data(|d| d.get_temp::<bool>(init_id).unwrap_or(false)) {
+                                ui.data_mut(|d| d.insert_temp(init_id, true));
                                 r.request_focus();
                             }
                             if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::FOLDER_OPEN), t("Choose…"), false).clicked()
@@ -317,8 +324,19 @@ impl App {
                         // What is at that folder (looked at again when the path changes): its
                         // kind and branch, in a quiet band under the name.
                         let typed = path.trim().to_string();
+                        let letters_id = egui::Id::new("add-project-letters");
                         if found.as_ref().is_none_or(|(checked, _)| *checked != typed) {
-                            *found = Some((typed.clone(), folder_summary(&typed)));
+                            let summary = folder_summary(&typed);
+                            let letters = if summary.is_some() {
+                                let dir = crate::app::absolute(&typed);
+                                let kind = crate::project::Kind::detect(&dir);
+                                let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                kind.letters().map(str::to_string).unwrap_or_else(|| crate::project::initials(&folder))
+                            } else {
+                                String::new()
+                            };
+                            ui.data_mut(|d| d.insert_temp(letters_id, (typed.clone(), letters)));
+                            *found = Some((typed.clone(), summary));
                         }
                         if let Some((_, Some(line))) = found.as_ref() {
                             ui.horizontal(|ui| {
@@ -326,12 +344,17 @@ impl App {
                                 let w = ui.available_width();
                                 let (r, _) = ui.allocate_exact_size(egui::vec2(w, 34.0), egui::Sense::hover());
                                 let dark = ui.visuals().dark_mode;
-                                ui.painter().rect_filled(r, CornerRadius::same(7), if dark { p.hover } else { Color32::from_rgb(0xf4, 0xf4, 0xf3) });
-                                let dir = crate::app::absolute(&typed);
-                                let kind = crate::project::Kind::detect(&dir);
+                                ui.painter().rect_filled(r, CornerRadius::same(7), p.hover);
+                                let letters = ui
+                                    .data(|d| d.get_temp::<(String, String)>(letters_id))
+                                    .filter(|(k, _)| k == &typed)
+                                    .map(|(_, l)| l)
+                                    .unwrap_or_else(|| {
+                                        let dir = crate::app::absolute(&typed);
+                                        let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                        crate::project::initials(&folder)
+                                    });
                                 let tile = egui::Rect::from_min_size(egui::pos2(r.left() + 9.0, r.center().y - 9.0), egui::vec2(18.0, 18.0));
-                                let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                                let letters = kind.letters().map(str::to_string).unwrap_or_else(|| crate::project::initials(&folder));
                                 kit::paint_project_tile(ui.painter(), tile, &letters, next_color, dark);
                                 let mut job = egui::text::LayoutJob::default();
                                 let parts: Vec<&str> = line.split(" · ").collect();
@@ -376,7 +399,7 @@ impl App {
                         if *then > 0
                             && let Some(preset) = presets.get(*then - 1)
                         {
-                            self.actions.push(Action::RunAgent(preset.id.clone(), crate::actions::Launch::New, 1));
+                            self.actions.push(Action::RunAgent(preset.id.clone(), crate::actions::Launch::New, 0));
                         }
                         keep = false;
                     }
@@ -631,7 +654,11 @@ impl App {
                         ui.painter().rect(r, CornerRadius::same(8), if dark { p.inset } else { Color32::WHITE }, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
                         kit::paint_lattice(ui.painter(), egui::pos2(r.left() + 12.0 + 5.0, r.center().y), 10.0, p.info, true);
                         let x = r.left() + 12.0 + 10.0 + 12.0;
-                        ui.painter().text(egui::pos2(x, r.top() + 9.0), egui::Align2::LEFT_TOP, what.as_str(), style::mono(12.0), p.text);
+                        let max_w = (r.right() - 12.0 - x).max(20.0);
+                        let mut job1 = egui::text::LayoutJob::simple_singleline(what.clone(), style::mono(12.0), p.text);
+                        job1.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
+                        let g1 = ui.painter().layout_job(job1);
+                        ui.painter().galley(egui::pos2(x, r.top() + 9.0), g1, p.text);
                         let mut parts = Vec::new();
                         if let Some(g) = pgid {
                             parts.push(tf("pid {}", &[&g.to_string()]));
@@ -642,7 +669,10 @@ impl App {
                         if let Some(n) = project {
                             parts.push(n);
                         }
-                        ui.painter().text(egui::pos2(x, r.bottom() - 9.0), egui::Align2::LEFT_BOTTOM, parts.join(" · "), style::mono(10.5), p.text_faint);
+                        let mut job2 = egui::text::LayoutJob::simple_singleline(parts.join(" · "), style::mono(10.5), p.text_faint);
+                        job2.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
+                        let g2 = ui.painter().layout_job(job2);
+                        ui.painter().galley(egui::pos2(x, r.bottom() - 9.0 - g2.size().y), g2, p.text_faint);
                     });
                     let (cancel, ok) = footer(ui, None, t("Close Pane"), Confirm::Danger, true);
                     if cancel {
@@ -682,7 +712,9 @@ impl App {
                     body(ui, |ui| {
                         field_label(ui, t("Name"));
                         let r = text_field(ui, name, "", 0.0);
-                        if !r.has_focus() && !r.lost_focus() {
+                        let init_id = egui::Id::new("rename-init-focus");
+                        if !ui.data(|d| d.get_temp::<bool>(init_id).unwrap_or(false)) {
+                            ui.data_mut(|d| d.insert_temp(init_id, true));
                             r.request_focus();
                         }
                     });
@@ -709,7 +741,9 @@ impl App {
                     }
                     body(ui, |ui| {
                         let r = text_field(ui, name, "", 0.0);
-                        if !r.has_focus() && !r.lost_focus() {
+                        let init_id = egui::Id::new("rename-pane-init-focus");
+                        if !ui.data(|d| d.get_temp::<bool>(init_id).unwrap_or(false)) {
+                            ui.data_mut(|d| d.insert_temp(init_id, true));
                             r.request_focus();
                         }
                     });
@@ -823,11 +857,21 @@ impl App {
         let install_confirmed = self.actions.contains(&Action::ConfirmInstall);
         if keep || install_confirmed {
             self.dialog = Some(dialog);
-        } else if let Some(back) = self.dialog_back.take() {
-            self.dialog = Some(back);
         } else {
-            // In the Grid, the tile typed into.
-            self.focus_request = self.target_pane().or_else(|| self.current_pane());
+            ctx.data_mut(|d| {
+                d.remove::<bool>(egui::Id::new("add-project-init-focus"));
+                d.remove::<bool>(egui::Id::new("rename-init-focus"));
+                d.remove::<bool>(egui::Id::new("rename-pane-init-focus"));
+            });
+            if matches!(dialog, Dialog::Settings(_)) {
+                self.settings_search.clear();
+            }
+            if let Some(back) = self.dialog_back.take() {
+                self.dialog = Some(back);
+            } else {
+                // In the Grid, the tile typed into.
+                self.focus_request = self.target_pane().or_else(|| self.current_pane());
+            }
         }
     }
 }
@@ -989,8 +1033,10 @@ impl App {
         let presets = self.presets();
         let here = self.idle_command_pane().is_some();
         let project = self.active_project().map(|x| (x.name.clone(), crate::paths::contract_tilde(&x.path), x.path.clone(), x.letters(), x.color32()));
-        ui.set_width(RUN_AGENT_W);
-        ui.set_max_width(RUN_AGENT_W);
+        let dlg_w = RUN_AGENT_W.min((ui.ctx().content_rect().width() - 32.0).max(520.0));
+        let list_w = RUN_AGENT_LIST_W.min((dlg_w * 0.34).round());
+        ui.set_width(dlg_w);
+        ui.set_max_width(dlg_w);
         let mut keep = true;
         if run_agent_header(ui, project.as_ref().map(|x| (x.0.as_str(), x.1.as_str(), x.3.as_str(), x.4))) {
             keep = false;
@@ -1089,66 +1135,69 @@ impl App {
         let columns = ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             // ----- the agents ---------------------------------------------------------------
-            egui::Frame::NONE.inner_margin(Margin::same(10)).show(ui, |ui| ui.vertical(|ui| {
-                ui.set_width(RUN_AGENT_LIST_W - 20.0);
-                ui.spacing_mut().item_spacing.y = 2.0;
-                for (i, preset) in presets.iter().enumerate() {
-                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 50.0), egui::Sense::click());
-                    #[cfg(debug_assertions)]
-                    crate::devtest::record(format!("agent:{}", preset.id), rect);
-                    let on = i == *selected;
-                    let painter = ui.painter();
-                    if on {
-                        painter.rect(rect, CornerRadius::same(9), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-                        kit::paint_highlight(painter, rect, 9, &p);
-                    } else if resp.hovered() {
-                        painter.rect_filled(rect, CornerRadius::same(9), p.hover);
+            egui::Frame::NONE.inner_margin(Margin::same(10)).show(ui, |ui| {
+                ui.set_width(list_w - 20.0);
+                egui::ScrollArea::vertical().id_salt("run-agent-presets").max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
+                    ui.set_width(list_w - 20.0);
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for (i, preset) in presets.iter().enumerate() {
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 50.0), egui::Sense::click());
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record(format!("agent:{}", preset.id), rect);
+                        let on = i == *selected;
+                        let painter = ui.painter();
+                        if on {
+                            painter.rect(rect, CornerRadius::same(9), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+                            kit::paint_highlight(painter, rect, 9, &p);
+                        } else if resp.hovered() {
+                            painter.rect_filled(rect, CornerRadius::same(9), p.hover);
+                        }
+                        let cy = rect.center().y;
+                        let tile = egui::Rect::from_center_size(egui::pos2(rect.left() + 8.0 + 16.0, cy), egui::vec2(32.0, 32.0));
+                        painter.rect(tile, CornerRadius::same(9), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+                        let logo = egui::Rect::from_center_size(tile.center(), egui::vec2(18.0, 18.0));
+                        if !preset.agent.is_some_and(|a| super::agent_logo::paint(painter, logo, a, p.text, false)) {
+                            painter.text(tile.center(), egui::Align2::CENTER_CENTER, initials(&preset.name), style::mono_semibold(11.0), p.text_muted);
+                        }
+                        let x = tile.right() + 11.0;
+                        let key = (i + 1).to_string();
+                        let kw = if i < 9 { kit::kbd_width(painter, &key) } else { 0.0 };
+                        let mut job = egui::text::LayoutJob::simple_singleline(preset.name.clone(), style::medium(13.0), p.text);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 10.0 - kw - 8.0 - x).max(20.0));
+                        let g = painter.layout_job(job);
+                        painter.galley(egui::pos2(x, cy - 8.0 - g.size().y / 2.0), g, p.text);
+                        let mut job = egui::text::LayoutJob::simple_singleline(preset.command.clone(), style::mono(10.5), p.text_faint);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 10.0 - kw - 8.0 - x).max(20.0));
+                        let g = painter.layout_job(job);
+                        painter.galley(egui::pos2(x, cy + 9.0 - g.size().y / 2.0), g, p.text_faint);
+                        if i < 9 {
+                            kit::paint_kbd_text(painter, egui::pos2(rect.right() - 10.0 - kw, cy), &key, &p);
+                        }
+                        if resp.clicked() && *selected != i {
+                            *selected = i;
+                            *session = 0;
+                        }
+                        if resp.double_clicked() {
+                            run = true;
+                        }
                     }
-                    let cy = rect.center().y;
-                    let tile = egui::Rect::from_center_size(egui::pos2(rect.left() + 8.0 + 16.0, cy), egui::vec2(32.0, 32.0));
-                    painter.rect(tile, CornerRadius::same(9), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-                    let logo = egui::Rect::from_center_size(tile.center(), egui::vec2(18.0, 18.0));
-                    if !preset.agent.is_some_and(|a| super::agent_logo::paint(painter, logo, a, p.text, false)) {
-                        painter.text(tile.center(), egui::Align2::CENTER_CENTER, initials(&preset.name), style::mono_semibold(11.0), p.text_muted);
+                    // A preset of your own: Settings → Agents.
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), egui::Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(rect, CornerRadius::same(9), p.hover);
                     }
-                    let x = tile.right() + 11.0;
-                    let key = (i + 1).to_string();
-                    let kw = if i < 9 { kit::kbd_width(painter, &key) } else { 0.0 };
-                    let mut job = egui::text::LayoutJob::simple_singleline(preset.name.clone(), style::medium(13.0), p.text);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 10.0 - kw - 8.0 - x).max(20.0));
-                    let g = painter.layout_job(job);
-                    painter.galley(egui::pos2(x, cy - 8.0 - g.size().y / 2.0), g, p.text);
-                    let mut job = egui::text::LayoutJob::simple_singleline(preset.command.clone(), style::mono(10.5), p.text_faint);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 10.0 - kw - 8.0 - x).max(20.0));
-                    let g = painter.layout_job(job);
-                    painter.galley(egui::pos2(x, cy + 9.0 - g.size().y / 2.0), g, p.text_faint);
-                    if i < 9 {
-                        kit::paint_kbd_text(painter, egui::pos2(rect.right() - 10.0 - kw, cy), &key, &p);
+                    let c = if resp.hovered() { p.text_muted } else { p.text_faint };
+                    ui.painter().text(egui::pos2(rect.left() + 14.0 + 7.0, rect.center().y), egui::Align2::CENTER_CENTER, icons::PLUS, style::icon_font(13.0), c);
+                    ui.painter().text(egui::pos2(rect.left() + 14.0 + 14.0 + 9.0, rect.center().y), egui::Align2::LEFT_CENTER, t("Add preset…"), egui::FontId::proportional(12.5), c);
+                    if resp.clicked() {
+                        self.actions.push(Action::Integrations);
+                        keep = false;
                     }
-                    if resp.clicked() && *selected != i {
-                        *selected = i;
-                        *session = 0;
-                    }
-                    if resp.double_clicked() {
-                        run = true;
-                    }
-                }
-                // A preset of your own: Settings → Agents.
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), egui::Sense::click());
-                if resp.hovered() {
-                    ui.painter().rect_filled(rect, CornerRadius::same(9), p.hover);
-                }
-                let c = if resp.hovered() { p.text_muted } else { p.text_faint };
-                ui.painter().text(egui::pos2(rect.left() + 14.0 + 7.0, rect.center().y), egui::Align2::CENTER_CENTER, icons::PLUS, style::icon_font(13.0), c);
-                ui.painter().text(egui::pos2(rect.left() + 14.0 + 14.0 + 9.0, rect.center().y), egui::Align2::LEFT_CENTER, t("Add preset…"), egui::FontId::proportional(12.5), c);
-                if resp.clicked() {
-                    self.actions.push(Action::Integrations);
-                    keep = false;
-                }
-            }));
+                });
+            });
             // ----- what to run ----------------------------------------------------------------
             egui::Frame::NONE.inner_margin(Margin { left: 20, right: 20, top: 8, bottom: 10 }).show(ui, |ui| ui.vertical(|ui| {
-                let w = RUN_AGENT_W - RUN_AGENT_LIST_W - 40.0;
+                let w = dlg_w - list_w - 40.0;
                 ui.set_width(w);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let mut first_row = true;
@@ -1327,17 +1376,27 @@ impl App {
         });
         // The agents' column: a shade of the base behind it, a line at its right.
         let cols = columns.response.rect;
-        let left = egui::Rect::from_min_max(cols.min, egui::pos2(cols.left() + RUN_AGENT_LIST_W, cols.bottom()));
-        let dark = ui.visuals().dark_mode;
-        ui.painter().set(left_bg, egui::Shape::rect_filled(left, CornerRadius::ZERO, if dark { style::over(p.overlay, p.chrome, 0.3) } else { Color32::from_rgb(0xfa, 0xfa, 0xfa) }));
+        let left = egui::Rect::from_min_max(cols.min, egui::pos2(cols.left() + list_w, cols.bottom()));
+        ui.painter().set(left_bg, egui::Shape::rect_filled(left, CornerRadius::ZERO, style::over(p.overlay, p.chrome, 0.35)));
         ui.painter().set(left_line, egui::Shape::vline(left.right(), left.y_range(), Stroke::new(1.0, p.border)));
         // What will be typed, exactly, and where.
         if let Some(preset) = &chosen {
             let base_cmd = match (&rows, *session, wt.on) {
+                (Rows::Sessions(v), k, false) if k > 0 => v
+                    .get(k - 1)
+                    .and_then(|s| agent.and_then(|a| tc_agent::sessions::resume_command(a, &preset.command, &s.id)))
+                    .unwrap_or_else(|| preset.command.clone()),
                 (Rows::Last(c), 1, false) => c.clone(),
                 _ => preset.command.clone(),
             };
-            let line = self.launch_command(preset, &base_cmd);
+            let mut line = self.launch_command(preset, &base_cmd);
+            if wt.on && let Some(r) = &root {
+                let setup_run = self.worktree_setup_of(r.0).run;
+                let setup_run = setup_run.trim();
+                if !setup_run.is_empty() {
+                    line = format!("{setup_run} && {line}");
+                }
+            }
             let whereto = if wt.on {
                 t("a new tab of the new worktree").to_string()
             } else {
@@ -1436,12 +1495,11 @@ fn run_agent_header(ui: &mut Ui, project: Option<(&str, &str, &str, Color32)>) -
 /// The line under Run Agent's columns: what will be typed (`$ claude --mcp-config …`) and where.
 fn run_command_bar(ui: &mut Ui, line: &str, whereto: &str) {
     let p = style::pal(ui);
-    let dark = ui.visuals().dark_mode;
     let full = ui.max_rect();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(full.width(), 34.0 + 14.0), egui::Sense::hover());
     let bar = egui::Rect::from_min_max(egui::pos2(rect.left() + 14.0, rect.top() + 2.0), egui::pos2(rect.right() - 14.0, rect.bottom() - 12.0));
     let painter = ui.painter_at(bar);
-    painter.rect(bar, CornerRadius::same(8), if dark { p.inset } else { Color32::from_rgb(0xf3, 0xf3, 0xf2) }, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    painter.rect(bar, CornerRadius::same(8), p.inset, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
     let cy = bar.center().y;
     painter.text(egui::pos2(bar.left() + 12.0 + 6.5, cy), egui::Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(13.0), p.text_faint);
     let where_g = painter.layout_no_wrap(whereto.to_string(), style::mono(10.5), p.text_ghost);

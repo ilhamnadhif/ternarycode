@@ -54,7 +54,7 @@ impl App {
         });
     }
 
-    /// Reusable Phone Pairing panel body (rendered in `View::Pairing` and accessible from Settings).
+    /// Phone Pairing panel body (rendered in `View::Pairing`).
     pub fn pairing_content(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
         let dark = ui.visuals().dark_mode;
@@ -141,9 +141,17 @@ impl App {
                         }
                     });
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(t("Secure Tunnel URL (optional — Cloudflare / Tailscale / ngrok)")).size(11.5).color(p.text_muted));
+                        let tunnel_w = ui.available_width().clamp(180.0, 360.0);
+                        ui.set_max_width(tunnel_w);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(t("Secure Tunnel URL (optional — Cloudflare / Tailscale / ngrok)"))
+                                    .size(11.5)
+                                    .color(p.text_muted),
+                            )
+                            .wrap(),
+                        );
                         let mut tunnel = self.settings.companion.tunnel_url.clone();
-                        let tunnel_w = (ui.available_width()).clamp(200.0, 360.0);
                         let r = kit::field(ui, ui.id().with("companion-tunnel"), &mut tunnel, Some(icons::GLOBE), "https://ade.example.com", tunnel_w, false);
                         if r.changed() {
                             self.settings.companion.tunnel_url = tunnel;
@@ -151,7 +159,7 @@ impl App {
                         }
                         let trimmed = self.settings.companion.tunnel_url.trim();
                         if !trimmed.is_empty() && !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
-                            ui.label(RichText::new(t("URL must start with https:// or http://")).size(10.5).color(p.err));
+                            ui.add(egui::Label::new(RichText::new(t("URL must start with https:// or http://")).size(10.5).color(p.err)).wrap());
                         }
                     });
                 });
@@ -282,10 +290,13 @@ impl App {
                 ui.set_width(ui.available_width());
                 if devices.is_empty() {
                     egui::Frame::NONE.inner_margin(egui::Margin::same(14)).show(ui, |ui| {
-                        ui.label(
-                            RichText::new(t("No smartphones paired yet. Enable the server above and scan the QR code."))
-                                .size(12.0)
-                                .color(p.text_faint),
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(t("No smartphones paired yet. Enable the server above and scan the QR code."))
+                                    .size(12.0)
+                                    .color(p.text_faint),
+                            )
+                            .wrap(),
                         );
                     });
                 } else {

@@ -274,11 +274,14 @@ fn button_impl(
         content_w + pad * 2.0
     };
     let (rect, resp) = ui.allocate_exact_size(vec2(width.max(height), height), Sense::click());
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, on, text));
     if ui.is_rect_visible(rect) {
         let hovered = enabled && resp.hovered();
         let pressed = enabled && resp.is_pointer_button_down_on();
-        let danger_fill = Color32::from_rgb(0xc4, 0x41, 0x3a);
+        let danger_fill = p.err;
         let (fill, stroke, lifted) = match kind {
             Kind::Primary => (
                 if !enabled {
@@ -413,6 +416,9 @@ pub fn icon_button_ex(ui: &mut Ui, icon: &str, tooltip: &str, on: bool, side: f3
         resp.on_hover_text(tooltip)
     };
     let enabled = ui.is_enabled();
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, on, tooltip));
     if ui.is_rect_visible(rect) {
         let hovered = enabled && resp.hovered();
@@ -574,6 +580,9 @@ fn paint_segmented(
         let resp = ui.interact(*r, id.with(("option", i)), Sense::click());
         let resp = if s.tip.is_empty() { resp } else { resp.on_hover_text(s.tip) };
         let selected = i == on;
+        if resp.hovered() && !selected {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
         resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, s.text));
         if selected {
             if dark {
@@ -642,6 +651,9 @@ pub fn tab_strip<T: PartialEq + Copy>(
                 );
                 let (rect, resp) =
                     ui.allocate_exact_size(vec2(galley.size().x + 2.0 * pad, 34.0), Sense::click());
+                if resp.hovered() && !selected {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
                 resp.widget_info(|| {
                     WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, *label)
                 });
@@ -1061,6 +1073,9 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
         resp.mark_changed();
     }
     let enabled = ui.is_enabled();
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     resp.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, enabled, *on, ""));
     if ui.is_rect_visible(rect) {
         let t = ui.ctx().animate_bool_with_time(resp.id, *on, 0.12);
@@ -1096,6 +1111,7 @@ pub fn stepper(ui: &mut Ui, text: &str) -> i32 {
         for (r, glyph, step, salt) in [(minus, super::icons::MINUS, -1, "minus"), (plus, super::icons::PLUS, 1, "plus")] {
             let b = ui.interact(r, resp.id.with(salt), Sense::click());
             if b.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 painter.rect_filled(r, CornerRadius::same(RADIUS - 1), p.hover);
             }
             painter.text(r.center(), Align2::CENTER_CENTER, glyph, style::icon_font(12.0), if b.hovered() { p.text } else { p.text_faint });
@@ -1199,6 +1215,9 @@ pub fn menu_item(ui: &mut Ui, icon: Option<&str>, label: &str, keys: Option<&str
     let keys_g = keys.filter(|k| !k.is_empty()).map(|k| keys_galley(ui.painter(), k, Color32::PLACEHOLDER));
     let want = 8.0 + 15.0 + 9.0 + label_g.size().x + keys_g.as_ref().map_or(0.0, |g| g.size().x + 18.0) + 8.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(want), 28.0), Sense::click());
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
     if ui.is_rect_visible(rect) {
         let hovered = enabled && resp.hovered();

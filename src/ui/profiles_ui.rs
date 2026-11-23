@@ -131,7 +131,7 @@ fn compact_window_summary(
 }
 
 impl App {
-    /// Dedicated Profiles & Accounts management page (`View::Profiles`).
+    /// Unified Agent Profiles, Failover & Live Usage page (`View::Profiles`).
     pub fn profiles_view(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
         let full = ui.max_rect();
@@ -140,11 +140,11 @@ impl App {
             full,
             |app, ui| {
                 app.nav_back_button(ui);
-                ui.label(RichText::new(t("Agent Profiles & Failover")).font(style::semibold(14.0)).color(p.text));
+                ui.label(RichText::new(t("Agent Profiles & Usage")).font(style::semibold(14.0)).color(p.text));
                 ui.add_space(6.0);
                 ui.add(
                     egui::Label::new(
-                        RichText::new(t("Multi-account credentials, isolated auth sessions, and rate-limit recovery"))
+                        RichText::new(t("Multi-account credentials, live usage quotas, active sessions, and failover"))
                             .size(12.0)
                             .color(p.text_faint),
                     )
@@ -167,6 +167,8 @@ impl App {
                         .inner_margin(egui::Margin::symmetric(24, 20))
                         .show(ui, |ui| {
                             ui.set_width((inner.width() - 48.0).max(320.0));
+                            self.usage_summary_strip(ui);
+                            ui.add_space(16.0);
                             self.profiles_policy_bar(ui);
                             ui.add_space(16.0);
                             if self.profile_draft.is_some() {
@@ -174,6 +176,8 @@ impl App {
                                 ui.add_space(16.0);
                             }
                             self.profiles_table(ui);
+                            ui.add_space(18.0);
+                            self.active_sessions_and_events(ui);
                         });
                 });
         });
@@ -195,37 +199,46 @@ impl App {
                     |ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
-                            ui.label(RichText::new(t("Failover Mode")).font(style::medium(12.5)).color(p.text));
-                            let modes = [
-                                kit::Seg::new(t("Auto-Resume"), t("Automatically fail over to the next healthy profile and continue")).icon(icons::LIGHTNING),
-                                kit::Seg::new(t("Manual Resume"), t("Pause with an inline banner to choose the fallback profile")).icon(icons::HAND_POINTING),
-                            ];
-                            let current = usize::from(self.settings.failover.mode == FailoverMode::Manual);
-                            if let Some(i) = kit::segmented(ui, &modes, current) {
-                                self.settings.failover.mode = if i == 0 { FailoverMode::Auto } else { FailoverMode::Manual };
-                                self.settings_changed();
-                                self.push_companion_now();
-                            }
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.label(RichText::new(t("Failover Mode")).font(style::medium(12.5)).color(p.text));
+                                let modes = [
+                                    kit::Seg::new(t("Auto-Resume"), t("Automatically fail over to the next healthy profile and continue")).icon(icons::LIGHTNING),
+                                    kit::Seg::new(t("Manual Resume"), t("Pause with an inline banner to choose the fallback profile")).icon(icons::HAND_POINTING),
+                                ];
+                                let current = usize::from(self.settings.failover.mode == FailoverMode::Manual);
+                                if let Some(i) = kit::segmented(ui, &modes, current) {
+                                    self.settings.failover.mode = if i == 0 { FailoverMode::Auto } else { FailoverMode::Manual };
+                                    self.settings_changed();
+                                    self.push_companion_now();
+                                }
+                            });
 
                             kit::vsep(ui);
-                            let mut cross = self.settings.failover.cross_provider;
-                            kit::switch(ui, &mut cross);
-                            if cross != self.settings.failover.cross_provider {
-                                self.settings.failover.cross_provider = cross;
-                                self.settings_changed();
-                            }
-                            ui.label(RichText::new(t("Cross-provider fallback")).size(12.0).color(p.text_muted))
-                                .on_hover_text(t("Fall back to another AI provider when all accounts of the active provider hit their limit"));
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                let mut cross = self.settings.failover.cross_provider;
+                                kit::switch(ui, &mut cross);
+                                if cross != self.settings.failover.cross_provider {
+                                    self.settings.failover.cross_provider = cross;
+                                    self.settings_changed();
+                                }
+                                ui.label(RichText::new(t("Cross-provider fallback")).size(12.0).color(p.text_muted))
+                                    .on_hover_text(t("Fall back to another AI provider when all accounts of the active provider hit their limit"));
+                            });
 
                             kit::vsep(ui);
-                            ui.label(RichText::new(t("Default cooldown")).size(12.0).color(p.text_muted));
-                            let opts = ["15m", "30m", "60m", "120m"];
-                            let mins = [15u32, 30, 60, 120];
-                            let cur_label = format!("{}m", self.settings.failover.default_cooldown_mins);
-                            if let Some(i) = kit::select(ui, "failover-cooldown", &cur_label, &opts, 76.0) {
-                                self.settings.failover.default_cooldown_mins = mins[i];
-                                self.settings_changed();
-                            }
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.label(RichText::new(t("Default cooldown")).size(12.0).color(p.text_muted));
+                                let opts = ["15m", "30m", "60m", "120m"];
+                                let mins = [15u32, 30, 60, 120];
+                                let cur_label = format!("{}m", self.settings.failover.default_cooldown_mins);
+                                if let Some(i) = kit::select(ui, "failover-cooldown", &cur_label, &opts, 76.0) {
+                                    self.settings.failover.default_cooldown_mins = mins[i];
+                                    self.settings_changed();
+                                }
+                            });
                         });
                     },
                     |ui| {
@@ -333,18 +346,16 @@ impl App {
                         ui.label(RichText::new(t("Weekly Token Limit (optional)")).size(11.5).color(p.text_muted));
                         kit::field(ui, egui::Id::new("prof-lim-wk"), &mut draft.limit_weekly_text, None, "5M / 20M", 150.0, false);
                     });
-                    ui.vertical(|ui| {
-                        ui.add_space(19.0);
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(t("Claude & ChatGPT / Codex report 5h & weekly % automatically; optionally set custom token caps."))
-                                    .size(11.0)
-                                    .color(p.text_faint),
-                            )
-                            .wrap(),
-                        );
-                    });
                 });
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(t("Claude & ChatGPT / Codex report 5h & weekly % automatically; optionally set custom token caps."))
+                            .size(11.0)
+                            .color(p.text_faint),
+                    )
+                    .wrap(),
+                );
 
                 ui.add_space(10.0);
                 let form_w = ui.available_width();
@@ -370,6 +381,14 @@ impl App {
                                 ui.ctx().memory_mut(|m| m.request_focus(id));
                             }
                             let focused = ui.ctx().memory(|m| m.has_focus(id));
+                            if focused {
+                                ui.painter().rect_stroke(
+                                    rect.expand(3.0),
+                                    CornerRadius::same(style::RADIUS + 3),
+                                    Stroke::new(3.0, p.accent_tint),
+                                    StrokeKind::Inside,
+                                );
+                            }
                             let fill = if dark { p.inset } else { Color32::WHITE };
                             ui.painter().rect(rect, CornerRadius::same(style::RADIUS), fill, Stroke::new(1.0, if focused { p.accent } else { p.border_strong }), StrokeKind::Inside);
                             let inner = rect.shrink2(vec2(10.0, 1.0));
@@ -380,10 +399,12 @@ impl App {
                                     .id(id)
                                     .password(!draft.reveal_key)
                                     .frame(egui::Frame::NONE)
+                                    .margin(egui::Margin::ZERO)
                                     .font(style::mono(12.0))
-                                    .hint_text(RichText::new("sk-…").color(p.text_ghost)),
+                                    .vertical_align(egui::Align::Center)
+                                    .hint_text(RichText::new("sk-…").color(p.text_faint)),
                             );
-                            if kit::icon_button_ex(ui, icons::EYE, t("Show/Hide Key"), draft.reveal_key, 28.0).clicked() {
+                            if kit::icon_button_ex(ui, icons::EYE, t("Show/Hide Key"), draft.reveal_key, 30.0).clicked() {
                                 draft.reveal_key = !draft.reveal_key;
                             }
                         });
@@ -393,32 +414,51 @@ impl App {
                 ui.add_space(10.0);
                 ui.vertical(|ui| {
                     ui.label(RichText::new(t("Extra Environment (KEY=VALUE per line, optional)")).size(11.5).color(p.text_muted));
+                    let env_id = egui::Id::new("prof-extra-env");
+                    let env_focused = ui.memory(|m| m.has_focus(env_id));
                     let env_w = ui.available_width().min(580.0);
-                    egui::Frame::NONE
+                    let env_frame = egui::Frame::NONE
                         .fill(if dark { p.inset } else { Color32::WHITE })
-                        .stroke(Stroke::new(1.0, p.border_strong))
+                        .stroke(Stroke::new(1.0, if env_focused { p.accent } else { p.border_strong }))
                         .corner_radius(CornerRadius::same(style::RADIUS))
-                        .inner_margin(egui::Margin::symmetric(8, 6))
+                        .inner_margin(egui::Margin::symmetric(10, 7))
                         .show(ui, |ui| {
                             ui.add(
                                 egui::TextEdit::multiline(&mut draft.extra_env_text)
-                                    .id(egui::Id::new("prof-extra-env"))
+                                    .id(env_id)
                                     .desired_rows(2)
-                                    .desired_width(env_w)
+                                    .desired_width((env_w - 20.0).max(120.0))
                                     .frame(egui::Frame::NONE)
+                                    .margin(egui::Margin::ZERO)
                                     .font(style::mono(11.5))
                                     .hint_text(RichText::new("ANTHROPIC_BASE_URL=https://…").color(p.text_ghost)),
                             );
                         });
+                    if env_focused {
+                        ui.painter().rect_stroke(
+                            env_frame.response.rect.expand(2.5),
+                            CornerRadius::same(style::RADIUS + 2),
+                            Stroke::new(2.5, p.accent_tint),
+                            StrokeKind::Inside,
+                        );
+                    } else if env_frame.response.interact(Sense::click()).clicked() {
+                        ui.memory_mut(|m| m.request_focus(env_id));
+                    }
                 });
 
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
-                    kit::switch(ui, &mut draft.use_default_auth);
-                    ui.label(RichText::new(t("Use system default auth folder (~/.claude, ~/.codex)")).size(12.0).color(p.text_muted));
-                    ui.add_space(14.0);
-                    kit::switch(ui, &mut draft.enabled);
-                    ui.label(RichText::new(t("Enabled in failover chain")).size(12.0).color(p.text_muted));
+                    ui.spacing_mut().item_spacing = vec2(16.0, 8.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        kit::switch(ui, &mut draft.use_default_auth);
+                        ui.label(RichText::new(t("Use system default auth folder (~/.claude, ~/.codex)")).size(12.0).color(p.text_muted));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        kit::switch(ui, &mut draft.enabled);
+                        ui.label(RichText::new(t("Enabled in failover chain")).size(12.0).color(p.text_muted));
+                    });
                 });
 
                 ui.add_space(10.0);
@@ -467,6 +507,14 @@ impl App {
                             proj.active_profile = Some(new_id.clone());
                         }
                     }
+                    for list in self.project_sessions.values_mut() {
+                        for item in list {
+                            if item.profile_id.as_deref() == Some(old_id.as_str()) {
+                                item.profile_id = Some(new_id.clone());
+                            }
+                        }
+                    }
+                    self.sessions_scan_at.clear();
                 }
             } else {
                 let new_prof = draft.into_profile(next_order);
@@ -474,6 +522,7 @@ impl App {
             }
             self.settings_changed();
             self.profile_draft = None;
+            self.recompute_usage_totals();
             self.usage_scan_at = None;
             self.push_companion_now();
             self.toast_ok(t("Profile saved.").into());
@@ -545,23 +594,16 @@ impl App {
                     let can_delete = profiles.len() > 1;
                     let needs_login = auth == AuthStatus::NotSignedIn;
                     let is_dragged = dragging == Some(idx);
-
-                    let row_rect_id = egui::Id::new(("profiles-row-rect", idx));
-                    if profiles.len() > 1
-                        && let Some(prev_r) = ui.data(|d| d.get_temp::<Rect>(row_rect_id))
-                    {
-                        let bg = ui.interact(prev_r, egui::Id::new(("profiles-bg-drag", idx)), Sense::drag());
-                        if bg.drag_started() {
-                            dragging = Some(idx);
-                            ui.data_mut(|d| d.insert_temp(drag_id, idx));
-                        }
-                        if bg.hovered() && dragging.is_none() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                        }
-                    }
+                    let row_radius = CornerRadius {
+                        nw: if idx == 0 { 8 } else { 0 },
+                        ne: if idx == 0 { 8 } else { 0 },
+                        sw: if idx + 1 == profiles.len() { 8 } else { 0 },
+                        se: if idx + 1 == profiles.len() { 8 } else { 0 },
+                    };
 
                     let row_frame = egui::Frame::NONE
                         .fill(if is_dragged { p.accent_tint } else { Color32::TRANSPARENT })
+                        .corner_radius(row_radius)
                         .inner_margin(egui::Margin::symmetric(14, 9))
                         .show(ui, |ui| {
                             let card_w = ui.available_width();
@@ -572,25 +614,38 @@ impl App {
                             let mut draw_identity = |ui: &mut Ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
-                                    // Tactile 6-dot drag grip handle for mouse drag-and-drop reordering.
-                                    let (grip_r, grip_resp) = ui.allocate_exact_size(vec2(14.0, 20.0), Sense::click_and_drag());
+                                    // Tactile 6-dot drag grip + rank handle confined strictly to its own rect.
+                                    let rank_text = format!("#{}", idx + 1);
+                                    let rank_g = ui.painter().layout_no_wrap(rank_text, style::mono_semibold(11.0), p.text_faint);
+                                    let handle_w = 14.0 + 4.0 + rank_g.size().x + 2.0;
+                                    let (handle_r, handle_resp) = ui.allocate_exact_size(vec2(handle_w, 20.0), Sense::drag());
+                                    let grip_r = Rect::from_min_size(handle_r.min, vec2(14.0, handle_r.height()));
                                     if profiles.len() > 1 {
-                                        let grip_c = if is_dragged || grip_resp.hovered() { p.text_muted } else { p.text_ghost };
+                                        let grip_c = if is_dragged || handle_resp.hovered() { p.text_muted } else { p.text_ghost };
                                         paint_drag_grip(ui.painter(), grip_r, grip_c);
-                                        if grip_resp.drag_started() {
+                                        if handle_resp.drag_started() {
                                             dragging = Some(idx);
                                             ui.data_mut(|d| d.insert_temp(drag_id, idx));
                                         }
                                         if is_dragged {
                                             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                                        } else if grip_resp.hovered() {
+                                        } else if handle_resp.hovered() {
                                             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                                         }
-                                        let _ = grip_resp.on_hover_text(t("Drag to reorder"));
+                                        ui.painter().galley(
+                                            pos2(grip_r.right() + 4.0, handle_r.center().y - rank_g.size().y / 2.0),
+                                            rank_g,
+                                            if is_dragged || handle_resp.hovered() { p.text_muted } else { p.text_faint },
+                                        );
+                                        let _ = handle_resp.on_hover_text(t("Drag to reorder"));
                                     } else {
                                         paint_drag_grip(ui.painter(), grip_r, p.border_heavy);
+                                        ui.painter().galley(
+                                            pos2(grip_r.right() + 4.0, handle_r.center().y - rank_g.size().y / 2.0),
+                                            rank_g,
+                                            p.text_faint,
+                                        );
                                     }
-                                    ui.label(RichText::new(format!("#{}", idx + 1)).font(style::mono_semibold(11.0)).color(p.text_faint));
                                     if ui.add_enabled_ui(idx > 0, |ui| kit::icon_button_ex(ui, icons::ARROW_UP, t("Move Up"), false, 20.0)).inner.clicked() {
                                         move_dir = Some((idx, -1));
                                     }
@@ -736,69 +791,80 @@ impl App {
                                 });
                             }
                         });
-                    ui.data_mut(|d| d.insert_temp(row_rect_id, row_frame.response.rect));
                     row_rects.push(row_frame.response.rect);
                 }
             });
 
         // Active mouse drag-and-drop overlay: live drop indicator line + floating ghost pill.
         if let Some(from) = dragging {
-            let pointer_pos = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
-            let still_down = ui.input(|i| i.pointer.primary_down());
-            if let Some(pos) = pointer_pos {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                let mut slot = row_rects.len();
-                for (i, r) in row_rects.iter().enumerate() {
-                    if pos.y < r.center().y {
-                        slot = i;
-                        break;
+            let cancel = !ui.input(|i| i.focused)
+                || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            if cancel {
+                ui.data_mut(|d| d.remove::<usize>(drag_id));
+            } else {
+                let pointer_pos = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
+                let still_down = ui.input(|i| i.pointer.primary_down());
+                if let Some(pos) = pointer_pos {
+                    let drop_zone = table_resp.response.rect.expand(40.0);
+                    let in_zone = drop_zone.contains(pos);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    let mut slot = row_rects.len();
+                    for (i, r) in row_rects.iter().enumerate() {
+                        if pos.y < r.center().y {
+                            slot = i;
+                            break;
+                        }
                     }
-                }
-                let line_y = if slot == 0 {
-                    row_rects.first().map_or(table_resp.response.rect.top(), |r| r.top())
-                } else if slot >= row_rects.len() {
-                    row_rects.last().map_or(table_resp.response.rect.bottom(), |r| r.bottom())
-                } else {
-                    row_rects[slot].top()
-                };
-                if slot != from && slot != from + 1 {
-                    let x0 = table_resp.response.rect.left() + 10.0;
-                    let x1 = table_resp.response.rect.right() - 10.0;
-                    let painter = ui.painter();
-                    painter.hline(x0..=x1, line_y, Stroke::new(2.0, p.accent));
-                    painter.circle_filled(pos2(x0, line_y), 3.5, p.accent);
-                    painter.circle_filled(pos2(x1, line_y), 3.5, p.accent);
-                }
-                if let Some(prof) = profiles.get(from) {
-                    egui::Area::new(egui::Id::new("profiles-drag-ghost"))
-                        .order(egui::Order::Tooltip)
-                        .interactable(false)
-                        .fixed_pos(pos + vec2(14.0, -14.0))
-                        .show(ui.ctx(), |ui| {
-                            egui::Frame::NONE
-                                .fill(p.overlay)
-                                .stroke(Stroke::new(1.0, p.accent))
-                                .corner_radius(CornerRadius::same(7))
-                                .inner_margin(egui::Margin::symmetric(10, 5))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 6.0;
-                                        let (mr, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
-                                        let _ = agent_logo::paint(ui.painter(), mr, prof.agent, p.text, false);
-                                        ui.label(RichText::new(&prof.id).font(style::mono_semibold(11.5)).color(p.text));
+                    let line_y = if slot == 0 {
+                        row_rects.first().map_or(table_resp.response.rect.top(), |r| r.top())
+                    } else if slot >= row_rects.len() {
+                        row_rects.last().map_or(table_resp.response.rect.bottom(), |r| r.bottom())
+                    } else {
+                        row_rects[slot].top()
+                    };
+                    if in_zone && slot != from && slot != from + 1 {
+                        let x0 = table_resp.response.rect.left() + 10.0;
+                        let x1 = table_resp.response.rect.right() - 10.0;
+                        let painter = ui.painter();
+                        painter.hline(x0..=x1, line_y, Stroke::new(2.0, p.accent));
+                        painter.circle_filled(pos2(x0, line_y), 3.5, p.accent);
+                        painter.circle_filled(pos2(x1, line_y), 3.5, p.accent);
+                    }
+                    if let Some(prof) = profiles.get(from) {
+                        egui::Area::new(egui::Id::new("profiles-drag-ghost"))
+                            .order(egui::Order::Tooltip)
+                            .interactable(false)
+                            .fixed_pos(pos + vec2(14.0, -14.0))
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame::NONE
+                                    .fill(p.overlay)
+                                    .stroke(Stroke::new(1.0, p.accent))
+                                    .corner_radius(CornerRadius::same(7))
+                                    .inner_margin(egui::Margin::symmetric(10, 5))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 6.0;
+                                            let (mr, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                                            if !agent_logo::paint(ui.painter(), mr, prof.agent, p.text, false) {
+                                                ui.painter().text(mr.center(), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(12.0), p.text_muted);
+                                            }
+                                            ui.label(RichText::new(&prof.id).font(style::mono_semibold(11.5)).color(p.text));
+                                        });
                                     });
-                                });
-                        });
-                }
-                if !still_down {
-                    let target = if slot > from { slot - 1 } else { slot };
-                    if target != from && target < profiles.len() {
-                        drag_reorder = Some((from, target));
+                            });
                     }
+                    if !still_down {
+                        if in_zone {
+                            let target = if slot > from { slot - 1 } else { slot };
+                            if target != from && target < profiles.len() {
+                                drag_reorder = Some((from, target));
+                            }
+                        }
+                        ui.data_mut(|d| d.remove::<usize>(drag_id));
+                    }
+                } else if !still_down {
                     ui.data_mut(|d| d.remove::<usize>(drag_id));
                 }
-            } else if !still_down {
-                ui.data_mut(|d| d.remove::<usize>(drag_id));
             }
         }
 
@@ -833,6 +899,7 @@ impl App {
             if let Some(slot) = self.settings.profiles.iter_mut().find(|x| x.id == id) {
                 slot.enabled = !slot.enabled;
                 self.settings_changed();
+                self.recompute_usage_totals();
                 self.push_companion_now();
             }
         }
@@ -854,10 +921,19 @@ impl App {
                         proj.active_profile = None;
                     }
                 }
+                for list in self.project_sessions.values_mut() {
+                    for item in list {
+                        if item.profile_id.as_deref() == Some(id.as_str()) {
+                            item.profile_id = None;
+                        }
+                    }
+                }
+                self.sessions_scan_at.clear();
                 if self.profile_draft.as_ref().and_then(|d| d.editing_id.as_deref()) == Some(id.as_str()) {
                     self.profile_draft = None;
                 }
                 self.settings_changed();
+                self.recompute_usage_totals();
                 self.push_companion_now();
                 self.toast(tf("Removed profile {}.", &[&id]));
             }
@@ -879,9 +955,7 @@ impl App {
             if !profiles::supports_multi_profile(agent) {
                 return None;
             }
-            let id = pane.active_profile.clone().or_else(|| {
-                profiles.iter().find(|x| x.agent == agent && x.enabled).map(|x| x.id.clone())
-            });
+            let id = self.resolved_pane_profile_id(pane, agent, &profiles);
             let live = pane.alive()
                 && pane.tracker.agent.is_some()
                 && !matches!(pane.tracker.fg, tc_core::status::Foreground::Shell | tc_core::status::Foreground::Gone);
@@ -1077,10 +1151,12 @@ impl App {
             }
         };
         let tx = rect.left() + 30.0;
-        let room = (right_edge - 8.0 - tx).max(20.0);
-        let mut job = egui::text::LayoutJob::simple_singleline(text, style::medium(12.0), p.text);
-        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-        let g = painter.layout_job(job);
-        painter.galley(pos2(tx, cy - g.size().y / 2.0), g, p.text);
+        let room = right_edge - 8.0 - tx;
+        if room >= 32.0 {
+            let mut job = egui::text::LayoutJob::simple_singleline(text, style::medium(12.0), p.text);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            let g = painter.layout_job(job);
+            painter.galley(pos2(tx, cy - g.size().y / 2.0), g, p.text);
+        }
     }
 }

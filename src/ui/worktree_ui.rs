@@ -149,7 +149,7 @@ impl App {
                         None => {
                             ui.label(RichText::new(t("branch")).size(style::SMALL).color(p.text_faint));
                             ui.add_space(4.0);
-                            ui.label(RichText::new(&branch).font(egui::FontId::monospace(11.5)).color(p.text_muted));
+                            ui.add(egui::Label::new(RichText::new(&branch).font(egui::FontId::monospace(11.5)).color(p.text_muted)).truncate());
                         }
                     }
                 });
@@ -171,7 +171,7 @@ impl App {
                         None if facts.is_none() => t("Reading the branches…").to_string(),
                         None => String::new(),
                     };
-                    ui.label(RichText::new(note).size(style::SMALL).color(p.text_faint));
+                    ui.add(egui::Label::new(RichText::new(note).size(style::SMALL).color(p.text_faint)).truncate());
                 });
                 // Where it goes.
                 ui.horizontal(|ui| {
@@ -185,7 +185,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     label(ui, t("Setup"));
-                    ui.label(RichText::new(&setup).size(style::SMALL).color(p.text));
+                    ui.add(egui::Label::new(RichText::new(&setup).size(style::SMALL).color(p.text)).truncate());
                     ui.add_space(8.0);
                     let link = ui.add(egui::Label::new(RichText::new(t("Edit…")).size(style::SMALL).color(p.accent_text)).sense(Sense::click()));
                     #[cfg(debug_assertions)]
@@ -274,7 +274,8 @@ impl App {
     /// changes not committed on either side).
     pub(super) fn merge_worktree_dialog(&mut self, ui: &mut Ui, id: ProjectId, enter: bool) -> bool {
         let p = style::pal(ui);
-        ui.set_width(480.0);
+        let w_cap = (ui.ctx().content_rect().width() - 32.0).clamp(320.0, 480.0);
+        ui.set_width(w_cap);
         let Some(w) = self.project(id) else { return false };
         let Some(wt) = w.worktree.clone() else { return false };
         let (name, git) = (w.name.clone(), w.git.clone());
@@ -328,7 +329,9 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 10.0;
                         ui.label(RichText::new("$").font(style::mono(12.0)).color(p.text_ghost));
-                        ui.label(RichText::new(format!("git merge --no-ff --no-edit {}", wt.branch)).font(style::mono(12.0)).color(p.text));
+                        let cmd = format!("git merge --no-ff --no-edit {}", wt.branch);
+                        ui.add(egui::Label::new(RichText::new(&cmd).font(style::mono(12.0)).color(p.text)).truncate())
+                            .on_hover_text(cmd);
                     });
                 });
             match parent_git.as_ref().map(|g| g.branch.clone()) {
@@ -372,7 +375,8 @@ impl App {
     /// named first, and its branch is kept unless chosen otherwise.
     pub(super) fn remove_worktree_dialog(&mut self, ui: &mut Ui, id: ProjectId, branch: &mut Option<bool>) -> bool {
         let p = style::pal(ui);
-        ui.set_width(500.0);
+        let w_cap = (ui.ctx().content_rect().width() - 32.0).clamp(320.0, 500.0);
+        ui.set_width(w_cap);
         let Some(w) = self.project(id) else { return false };
         let Some(wt) = w.worktree.clone() else { return false };
         let name = w.name.clone();
@@ -435,8 +439,14 @@ impl App {
                 }
             };
             let git_changes = self.project(id).and_then(|x| x.git.clone());
+            let max_list_h = (ui.ctx().content_rect().height() - 280.0).clamp(160.0, 380.0);
             body(ui, |ui| {
-                // What would be lost or left behind, in one list.
+                // What would be lost or left behind, in one scrollable list so short windows never clip the footer.
+                egui::ScrollArea::vertical()
+                    .id_salt(("remove-wt-scroll", id))
+                    .max_height(max_list_h)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
                 egui::Frame::NONE
                     .fill(p.canvas)
                     .stroke(Stroke::new(1.0, p.border_strong))
@@ -494,6 +504,7 @@ impl App {
                                 line(ui, ("", p.text_faint), r, false);
                             }
                         }
+                    });
                     });
                 ui.add_space(4.0);
                 switch_line(ui, delete, &tf("Delete the branch {} too", &[&wt.branch]), true);
@@ -588,14 +599,17 @@ impl App {
                 match adding {
                     Some(text) => {
                         let r = kit::field(ui, add_id, text, None, ".env.local", 140.0, true);
-                        typing = r.has_focus();
+                        typing = r.has_focus() || r.lost_focus();
                         if !r.has_focus() && !r.lost_focus() && text.is_empty() {
                             r.request_focus();
                         }
                         if r.lost_focus() {
-                            let item = text.trim().to_string();
-                            if !item.is_empty() && !copy.contains(&item) {
-                                copy.push(item);
+                            let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                            if !esc {
+                                let item = text.trim().to_string();
+                                if !item.is_empty() && !copy.contains(&item) {
+                                    copy.push(item);
+                                }
                             }
                             *adding = None;
                         }

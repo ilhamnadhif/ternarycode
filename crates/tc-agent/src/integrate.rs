@@ -938,36 +938,80 @@ pub fn diff(plan: &InstallPlan) -> String {
     diff_lines(before, &plan.after)
 }
 
-/// Lines prefixed `"  "`, `"+ "` or `"- "` (longest common subsequence; meant for files of a
-/// few thousand lines).
+/// Lines prefixed `"  "`, `"+ "` or `"- "` (longest common subsequence after stripping shared
+/// prefix/suffix, with a bounded fallback for huge files so it never OOMs).
 pub fn diff_lines(before: &str, after: &str) -> String {
     let before: Vec<&str> = before.lines().collect();
     let after: Vec<&str> = after.lines().collect();
-    // Longest common subsequence on lines (files are small).
-    let (n, m) = (before.len(), after.len());
-    let mut lcs = vec![vec![0u32; m + 1]; n + 1];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            lcs[i][j] = if before[i] == after[j] {
-                lcs[i + 1][j + 1] + 1
+    let mut pre = 0;
+    while pre < before.len() && pre < after.len() && before[pre] == after[pre] {
+        pre += 1;
+    }
+    let mut suf = 0;
+    while suf < before.len() - pre
+        && suf < after.len() - pre
+        && before[before.len() - 1 - suf] == after[after.len() - 1 - suf]
+    {
+        suf += 1;
+    }
+    let b_mid = &before[pre..before.len() - suf];
+    let a_mid = &after[pre..after.len() - suf];
+    let (n, m) = (b_mid.len(), a_mid.len());
+    let mut out = String::new();
+    for line in &before[..pre] {
+        out.push_str("  ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    // Cap DP matrix at ~4M cells (~16 MB) so giant files fall back cleanly instead of OOMing.
+    if n.saturating_mul(m) > 4_000_000 {
+        for line in b_mid {
+            out.push_str("- ");
+            out.push_str(line);
+            out.push('\n');
+        }
+        for line in a_mid {
+            out.push_str("+ ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    } else if n > 0 || m > 0 {
+        let mut lcs = vec![0u32; (n + 1) * (m + 1)];
+        let stride = m + 1;
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                lcs[i * stride + j] = if b_mid[i] == a_mid[j] {
+                    lcs[(i + 1) * stride + j + 1] + 1
+                } else {
+                    lcs[(i + 1) * stride + j].max(lcs[i * stride + j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < n || j < m {
+            if i < n && j < m && b_mid[i] == a_mid[j] {
+                out.push_str("  ");
+                out.push_str(b_mid[i]);
+                out.push('\n');
+                i += 1;
+                j += 1;
+            } else if j < m && (i == n || lcs[i * stride + j + 1] >= lcs[(i + 1) * stride + j]) {
+                out.push_str("+ ");
+                out.push_str(a_mid[j]);
+                out.push('\n');
+                j += 1;
             } else {
-                lcs[i + 1][j].max(lcs[i][j + 1])
-            };
+                out.push_str("- ");
+                out.push_str(b_mid[i]);
+                out.push('\n');
+                i += 1;
+            }
         }
     }
-    let (mut i, mut j, mut out) = (0, 0, String::new());
-    while i < n || j < m {
-        if i < n && j < m && before[i] == after[j] {
-            out.push_str(&format!("  {}\n", before[i]));
-            i += 1;
-            j += 1;
-        } else if j < m && (i == n || lcs[i][j + 1] >= lcs[i + 1][j]) {
-            out.push_str(&format!("+ {}\n", after[j]));
-            j += 1;
-        } else {
-            out.push_str(&format!("- {}\n", before[i]));
-            i += 1;
-        }
+    for line in &before[before.len() - suf..] {
+        out.push_str("  ");
+        out.push_str(line);
+        out.push('\n');
     }
     out
 }

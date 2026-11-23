@@ -89,6 +89,22 @@ const DRAWN: Flags = Flags::BOLD
 fn color(out: &mut String, c: Color, base: u8, bright: u8, ext: u8) {
     match c {
         Color::Named(n) => {
+            if ext == 58 {
+                let i = n as usize;
+                match n {
+                    NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::DimForeground | NamedColor::Background => {
+                        out.push_str(";59");
+                    }
+                    _ if i < 16 => {
+                        let _ = write!(out, ";58;5;{i}");
+                    }
+                    _ if (NamedColor::DimBlack as usize..=NamedColor::DimWhite as usize).contains(&i) => {
+                        let _ = write!(out, ";58;5;{}", i - NamedColor::DimBlack as usize);
+                    }
+                    _ => {}
+                }
+                return;
+            }
             let i = n as usize;
             let code = match n {
                 NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::DimForeground => 39,

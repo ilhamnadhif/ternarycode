@@ -72,9 +72,40 @@ impl App {
         if r.clicked() {
             self.actions.push(Action::ToggleCompactSidebar);
         }
-        let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - FOOT_H), full.max);
+        const COMPACT_FOOT_H: f32 = 104.0;
+        let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - COMPACT_FOOT_H), full.max);
         ui.painter().hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
-        let gear = Rect::from_center_size(foot.center(), vec2(28.0, 28.0));
+        let cx = foot.center().x;
+        let (_, limited, _, _) = self.telemetry_summary();
+        let prof_r = Rect::from_center_size(pos2(cx, foot.top() + 20.0), vec2(28.0, 28.0));
+        let pr_btn = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(prof_r), |ui| {
+                kit::icon_button_ex(ui, icons::USER, t("Agent Profiles"), self.view == View::Profiles, 28.0)
+            })
+            .inner;
+        #[cfg(debug_assertions)]
+        crate::devtest::record("sidebar-profiles", prof_r);
+        if limited > 0 {
+            ui.painter().circle_filled(pos2(prof_r.right() - 5.0, prof_r.top() + 5.0), 3.0, p.rate_limited);
+        }
+        if pr_btn.clicked() {
+            self.actions.push(Action::OpenProfiles);
+        }
+        let pair_r = Rect::from_center_size(pos2(cx, foot.top() + 52.0), vec2(28.0, 28.0));
+        let pair_btn = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(pair_r), |ui| {
+                kit::icon_button_ex(ui, icons::DEVICE_MOBILE, t("Phone Pairing"), self.view == View::Pairing, 28.0)
+            })
+            .inner;
+        #[cfg(debug_assertions)]
+        crate::devtest::record("sidebar-pairing", pair_r);
+        if self.companion.is_some() {
+            ui.painter().circle_filled(pos2(pair_r.right() - 5.0, pair_r.top() + 5.0), 3.0, p.ok);
+        }
+        if pair_btn.clicked() {
+            self.actions.push(Action::OpenPhonePairing);
+        }
+        let gear = Rect::from_center_size(pos2(cx, foot.top() + 84.0), vec2(28.0, 28.0));
         let g = ui
             .scope_builder(egui::UiBuilder::new().max_rect(gear), |ui| kit::icon_button_ex(ui, icons::GEAR_SIX, &kit::tip(t("Settings"), Action::Settings), false, 28.0))
             .inner;
@@ -524,6 +555,7 @@ impl App {
         // (Usage & Status Monitor lives exclusively in the top-right telemetry pill — zero duplicates.)
         let mut rx = rect.right() - PAD - 2.0;
         let mut nav_btn = |ui: &mut Ui, icon: &str, tip: &str, active: bool, dev_id: &str, dot: Option<egui::Color32>| -> bool {
+            let _ = dev_id;
             let r = Rect::from_center_size(pos2(rx - 13.0, rect.center().y), vec2(26.0, 26.0));
             rx -= 28.0;
             let resp = ui
@@ -575,17 +607,31 @@ impl App {
         if total == 0 {
             paint_count(ui, "0".into());
             // An empty list explains itself.
-            let card = Rect::from_min_size(pos2(area.left() + PAD, title.bottom() + 4.0), vec2(area.width() - 2.0 * PAD, 66.0));
-            ui.painter().rect(card, CornerRadius::same(8), egui::Color32::TRANSPARENT, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
-            ui.painter().text(pos2(card.left() + 12.0, card.top() + 22.0), Align2::LEFT_CENTER, t("No projects yet."), style::medium(12.5), p.text);
+            let card_w = (area.width() - 2.0 * PAD).max(60.0);
             let mut job = egui::text::LayoutJob::default();
             job.append(t("Drop a folder here, or press"), 0.0, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.text_muted));
-            job.wrap.max_width = card.width() - 24.0;
+            job.wrap.max_width = (card_w - 24.0).max(20.0);
             let g = ui.painter().layout_job(job);
-            let gw = g.size().x;
-            ui.painter().galley(pos2(card.left() + 12.0, card.top() + 36.0), g, p.text_muted);
-            if let Some(k) = kit::keys(&Action::AddProject) {
-                kit::paint_kbd_text(ui.painter(), pos2(card.left() + 12.0 + gw + 5.0, card.top() + 44.0), k, &p);
+            let key = kit::keys(&Action::AddProject);
+            let kw = key.map_or(0.0, |k| kit::kbd_width(ui.painter(), k));
+            let last_line_w = g.rows.last().map_or(0.0, |r| r.size.x);
+            let inline_key = key.is_some() && last_line_w + 6.0 + kw <= card_w - 24.0;
+            let extra_key_h = if key.is_some() && !inline_key { kit::KBD_H + 6.0 } else { 0.0 };
+            let card_h = (36.0 + g.size().y + extra_key_h + 14.0).max(66.0);
+            let card = Rect::from_min_size(pos2(area.left() + PAD, title.bottom() + 4.0), vec2(card_w, card_h));
+            let cp = ui.painter_at(card);
+            cp.rect(card, CornerRadius::same(8), egui::Color32::TRANSPARENT, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
+            cp.text(pos2(card.left() + 12.0, card.top() + 20.0), Align2::LEFT_CENTER, t("No projects yet."), style::medium(12.5), p.text);
+            let text_top = card.top() + 34.0;
+            let text_bottom = text_top + g.size().y;
+            let last_row_cy = g.rows.last().map_or(text_top + 8.0, |r| text_top + r.rect().center().y);
+            cp.galley(pos2(card.left() + 12.0, text_top), g, p.text_muted);
+            if let Some(k) = key {
+                if inline_key {
+                    kit::paint_kbd_text(&cp, pos2(card.left() + 12.0 + last_line_w + 5.0, last_row_cy), k, &p);
+                } else {
+                    kit::paint_kbd_text(&cp, pos2(card.left() + 12.0, text_bottom + 4.0 + kit::KBD_H / 2.0), k, &p);
+                }
             }
             return;
         }
@@ -905,7 +951,9 @@ impl App {
 
                             // Project-nested agent session history (ALWAYS allocated while expanded so scroll height is invariant).
                             if let Some(sessions) = sessions {
-                                self.paint_project_sessions(ui, id, &sessions, &p);
+                                let has_worktrees = !self.projects[*i].folded
+                                    && self.projects.iter().any(|x| x.parent == Some(id));
+                                self.paint_project_sessions(ui, id, &sessions, has_worktrees, &p);
                             }
                         });
                     }
@@ -1668,6 +1716,7 @@ impl App {
         ui: &mut Ui,
         project_id: tc_core::ProjectId,
         sessions: &[crate::profiles::ProjectSessionItem],
+        has_worktrees: bool,
         p: &style::Palette,
     ) {
         let dark = ui.visuals().dark_mode;
@@ -1682,7 +1731,8 @@ impl App {
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
             if ui.is_rect_visible(rect) {
                 let painter = ui.painter_at(rect);
-                painter.vline(rect.left() + 19.5, rect.top()..=rect.center().y, Stroke::new(1.0, p.border));
+                let end_y = if has_worktrees { rect.bottom() } else { rect.center().y };
+                painter.vline(rect.left() + 19.5, rect.top()..=end_y, Stroke::new(1.0, p.border));
                 painter.text(pos2(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, t("Loading sessions…"), egui::FontId::proportional(11.0), p.text_faint);
             }
             return;
@@ -1697,7 +1747,7 @@ impl App {
             ui.painter_at(gap_r).vline(gap_r.left() + 19.5, gap_r.y_range(), rail_stroke);
         }
         for (idx, item) in sessions.iter().take(shown).enumerate() {
-            let is_last = idx + 1 == shown && !has_toggle;
+            let is_last = idx + 1 == shown && !has_toggle && !has_worktrees;
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
             if !ui.is_rect_visible(rect) {
                 continue;
@@ -1787,7 +1837,10 @@ impl App {
             };
             if resp.on_hover_text(tip).clicked() {
                 if let Some(pane_id) = item.live_pane {
-                    self.settings.drawer_open = true;
+                    if !self.settings.drawer_open {
+                        self.settings.drawer_open = true;
+                        self.settings_changed();
+                    }
                     self.drawer_tab = tc_core::model::DrawerTab::Terminals;
                     self.actions.push(Action::FocusPane(pane_id));
                 } else {
@@ -1807,7 +1860,8 @@ impl App {
             if ui.is_rect_visible(toggle_r) {
                 let painter = ui.painter_at(toggle_r);
                 let guide_x = toggle_r.left() + 19.5;
-                painter.vline(guide_x, toggle_r.top()..=toggle_r.center().y, rail_stroke);
+                let end_y = if has_worktrees { toggle_r.bottom() } else { toggle_r.center().y };
+                painter.vline(guide_x, toggle_r.top()..=end_y, rail_stroke);
                 painter.hline(guide_x..=(guide_x + 4.5), toggle_r.center().y, rail_stroke);
                 let row_r = Rect::from_min_max(pos2(toggle_r.left() + 25.0, toggle_r.top() + 1.0), pos2(toggle_r.right(), toggle_r.bottom() - 1.0));
                 if toggle_resp.hovered() {
@@ -1828,7 +1882,10 @@ impl App {
             }
         }
         // Clean 4px breathing space between an expanded session tree and the next project.
-        let _ = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
+        let (tail_r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
+        if has_worktrees && ui.is_rect_visible(tail_r) {
+            ui.painter_at(tail_r).vline(tail_r.left() + 19.5, tail_r.y_range(), rail_stroke);
+        }
     }
 }
 

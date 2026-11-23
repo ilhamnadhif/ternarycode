@@ -555,7 +555,17 @@ impl RunReq {
 
     fn build_commands(&self, from: usize, write: bool) -> Vec<String> {
         let mut out = Vec::new();
-        let paths: Vec<String> = self.paths.iter().map(|p| quote(p)).collect();
+        let paths: Vec<String> = self
+            .paths
+            .iter()
+            .map(|p| {
+                if p.contains(['*', '?', '[', ':']) {
+                    quote(&format!(":(top,literal){p}"))
+                } else {
+                    quote(p)
+                }
+            })
+            .collect();
         for step in self.steps.iter().skip(from) {
             match step {
                 StepKind::Branch(name) => out.push(format!("git switch -c {}", quote(name))),
@@ -566,32 +576,42 @@ impl RunReq {
                     } else {
                         ".git/TC_COMMIT_MSG".to_string()
                     };
-                    out.push(format!("git commit -F {} -- {}", quote(&file), paths.join(" ")));
+                    out.push(format!("git commit --cleanup=whitespace -F {} -- {}", quote(&file), paths.join(" ")));
                 }
                 StepKind::Push => {
                     let remote = self.remote.clone().unwrap_or_else(|| "origin".into());
                     out.push(format!("git push{} {} {}", if self.set_upstream { " -u" } else { "" }, quote(&remote), quote(&self.branch)));
                 }
                 StepKind::PullRequest { gh: true } => {
-                    let (title, desc) = tc_git::ship::split_message(&self.message);
+                    let (mut title, desc) = tc_git::ship::split_message(&self.message);
+                    if title.is_empty() {
+                        title = self.branch.clone();
+                    }
+                    let body = if write {
+                        body_file(&self.root, &self.message).map(|p| p.display().to_string()).unwrap_or_default()
+                    } else {
+                        ".git/TC_PR_BODY".to_string()
+                    };
                     if self.web.as_ref().is_some_and(|w| w.forge == Forge::GitLab) {
                         let repo = self.web.as_ref().map(|w| w.glab_repo()).unwrap_or_default();
+                        let desc_arg = if desc.trim().is_empty() {
+                            "''".to_string()
+                        } else if cfg!(windows) {
+                            format!("(Get-Content -Raw {})", quote(&body))
+                        } else {
+                            format!("\"$(cat {})\"", quote(&body))
+                        };
                         out.push(format!(
-                            "glab mr create -R {} --source-branch {} --target-branch {} --title {}{} --description {} --yes",
+                            "glab mr create -R {} --source-branch {} --target-branch {} --title {}{} --description {} --no-editor --yes",
                             quote(&repo),
                             quote(&self.branch),
                             quote(self.base.as_deref().unwrap_or("main")),
                             quote(&title),
                             if self.draft { " --draft" } else { "" },
-                            quote(&desc)
+                            desc_arg
                         ));
                     } else {
                         let repo = self.web.as_ref().map(|w| w.gh_repo()).unwrap_or_default();
-                        let body = if write {
-                            body_file(&self.root, &self.message).map(|p| p.display().to_string()).unwrap_or_default()
-                        } else {
-                            ".git/TC_PR_BODY".to_string()
-                        };
                         out.push(format!(
                             "gh pr create -R {} --base {} --head {} --title {}{} --body-file {}",
                             quote(&repo),
@@ -737,7 +757,7 @@ impl App {
                     self.ship_checks_at.insert(project, Instant::now());
                 }
                 // Refresh open PRs/MRs in Commit History if it is open for this project.
-                if self.history.as_ref().is_some_and(|h| h.project == project && h.open_prs.is_empty() && !h.prs_loading) {
+                if self.history.as_ref().is_some_and(|h| h.project == project && !h.prs_loading) {
                     self.history_load_open_prs();
                 }
             }
@@ -805,6 +825,7 @@ impl App {
                 }
                 if self.history.as_ref().is_some_and(|h| h.project == project) {
                     self.history_reload(false);
+                    self.history_load_open_prs();
                 }
                 self.refresh_git(project);
                 // Told when not looking at it.
@@ -846,6 +867,7 @@ impl App {
         let tx = self.app_tx.clone();
         let ctx = self.ctx.clone();
         self.rt.spawn_blocking(move || {
+            let eff_path = req.path.clone().or_else(|| Some(tc_lsp::servers::user_path()));
             let send = |m: ShipMsg| {
                 let _ = tx.send(AppMsg::Ship(m));
                 ctx.request_repaint();
@@ -858,7 +880,7 @@ impl App {
                     StepKind::Commit => tc_git::ship::commit(&req.root, &req.paths, &req.message).map_err(|e| Failure::Output(last_lines(&e, 12))),
                     StepKind::Push => {
                         let remote = req.remote.clone().unwrap_or_else(|| "origin".into());
-                        tc_git::ship::push(&req.root, &remote, &req.branch, req.set_upstream, req.path.as_deref())
+                        tc_git::ship::push(&req.root, &remote, &req.branch, req.set_upstream, eff_path.as_deref())
                             .map(|_| format!("{remote}/{}", req.branch))
                             .map_err(|e| match e {
                                 PushError::Rejected(o) => Failure::Rejected(last_lines(&o, 6)),
@@ -867,11 +889,26 @@ impl App {
                             })
                     }
                     StepKind::PullRequest { gh } => {
-                        let (title, body) = tc_git::ship::split_message(&req.message);
+                        let (mut title, mut body) = tc_git::ship::split_message(&req.message);
+                        // When opening a PR/MR after changes were already committed (`n_files == 0`),
+                        // fall back to HEAD's commit message or branch name so `--title` is never empty.
+                        if title.trim().is_empty() {
+                            if let Ok(page) = tc_git::history::log(&req.root, 1, 0, None, None)
+                                && let Some(head) = page.commits.into_iter().next()
+                                && !head.subject.trim().is_empty()
+                            {
+                                title = head.subject;
+                                if body.is_empty() {
+                                    body = head.body;
+                                }
+                            } else {
+                                title = req.branch.clone();
+                            }
+                        }
                         let base = req.base.clone().unwrap_or_else(|| "main".into());
                         match (&req.web, gh, cli_for(req.web.as_ref(), &req.gh, &req.glab)) {
                             (Some(web), true, Some(bin)) => {
-                                match tc_git::ship::create_request(bin, &req.root, web, &base, &req.branch, &title, &body, req.draft, req.path.as_deref()) {
+                                match tc_git::ship::create_request(bin, &req.root, web, &base, &req.branch, &title, &body, req.draft, eff_path.as_deref()) {
                                     Ok(pr) => {
                                         let detail = if web.forge == Forge::GitLab {
                                             tf("!{} into {}", &[&pr.number.to_string(), &base])
@@ -950,7 +987,8 @@ impl App {
     /// git says something changed in the project (a commit made in the terminal, a pull): the
     /// box's facts are read again when it shows, at most every few seconds.
     pub fn ship_git_changed(&mut self, project: ProjectId) {
-        let shown = self.review.as_ref().is_some_and(|r| r.project == project);
+        let shown = self.review.as_ref().is_some_and(|r| r.project == project)
+            || self.history.as_ref().is_some_and(|h| h.project == project);
         let Some(s) = self.ship.get(&project) else { return };
         if !shown || s.loading || s.run.as_ref().is_some_and(|r| !r.finished) || s.loaded_at.is_some_and(|t| t.elapsed() < Duration::from_secs(3)) {
             return;
@@ -978,6 +1016,7 @@ impl App {
         let tx = self.app_tx.clone();
         let ctx = self.ctx.clone();
         self.rt.spawn_blocking(move || {
+            let path = path.or_else(|| Some(tc_lsp::servers::user_path()));
             if let Ok(pr) = tc_git::ship::find_request(&cli, &root, &web, &branch, path.as_deref()) {
                 let _ = tx.send(AppMsg::Ship(ShipMsg::PrState { project, branch, pr }));
                 ctx.request_repaint();

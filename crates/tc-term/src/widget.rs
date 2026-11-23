@@ -1205,12 +1205,15 @@ fn show_inner(
                     // The paste shortcut with no text on the clipboard (an image) sends no paste
                     // event, only this release: Ctrl+V goes to the program on Linux as usual;
                     // elsewhere the app passes it to an agent, which reads the clipboard itself.
-                    if key == Key::V && !pressed && modifiers.command && !std::mem::take(&mut view.pasted_since_v) && alive {
-                        let bytes = ctrl_key(Key::V, modifiers, modes);
-                        if cfg!(target_os = "linux") && !modifiers.shift {
-                            typed.extend(bytes);
-                        } else {
-                            out.paste_without_text = Some(bytes);
+                    if key == Key::V && !pressed {
+                        let had_paste = std::mem::take(&mut view.pasted_since_v);
+                        if modifiers.command && !had_paste && alive {
+                            let bytes = ctrl_key(Key::V, modifiers, modes);
+                            if cfg!(target_os = "linux") && !modifiers.shift {
+                                typed.extend(bytes);
+                            } else {
+                                out.paste_without_text = Some(bytes);
+                            }
                         }
                     }
                     // ⌘ combinations are the app's (macOS). On Windows and Linux Ctrl goes to the
@@ -1534,7 +1537,12 @@ fn show_inner(
                     }
                 }
             } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) && alive {
-                let seq: &[u8] = if lines > 0 { b"\x1bOA" } else { b"\x1bOB" };
+                let (up, down): (&[u8], &[u8]) = if mode.contains(TermMode::APP_CURSOR) {
+                    (b"\x1bOA", b"\x1bOB")
+                } else {
+                    (b"\x1b[A", b"\x1b[B")
+                };
+                let seq = if lines > 0 { up } else { down };
                 for _ in 0..lines.abs().min(10) {
                     out.input.extend_from_slice(seq);
                 }

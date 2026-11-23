@@ -140,6 +140,7 @@ impl Explorer {
 
     /// Starts typing the name of a new file or folder in `dir` (opened if it is closed).
     pub fn start_new(&mut self, dir: &Path, folder: bool) {
+        self.filter.clear();
         if dir != self.root {
             self.expanded.insert(dir.to_path_buf());
         }
@@ -154,6 +155,7 @@ impl Explorer {
 
     /// Starts renaming `path` in place.
     pub fn start_rename(&mut self, path: &Path) {
+        self.filter.clear();
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.edit = Some(Edit {
             dir: path.parent().unwrap_or(&self.root).to_path_buf(),

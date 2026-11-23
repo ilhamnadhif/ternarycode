@@ -415,13 +415,14 @@ impl App {
             if rest.height() > 4.0 {
                 let r = ui.interact(rest, egui::Id::new(("tree-blank", pid)), Sense::click());
                 r.context_menu(|ui| {
+                    kit::menu_body(ui);
                     new_items_menu(ui, &root, &mut menu_actions);
-                    ui.separator();
-                    if ui.button(t("Open in Terminal")).clicked() {
+                    kit::menu_sep(ui);
+                    if kit::menu_item(ui, Some(icons::TERMINAL_WINDOW), t("Open in Terminal"), None, false).clicked() {
                         menu_actions.push(Action::NewTabAt(root.clone()));
                         ui.close();
                     }
-                    if ui.button(reveal_label()).clicked() {
+                    if kit::menu_item(ui, Some(icons::FOLDER_OPEN), reveal_label(), None, false).clicked() {
                         menu_actions.push(Action::RevealPath(root.clone()));
                         ui.close();
                     }
@@ -454,12 +455,37 @@ impl App {
     /// Esc gives up.
     fn name_field(&mut self, ui: &mut Ui, pid: tc_core::ProjectId, rect: Rect, id: egui::Id) -> Option<EditOutcome> {
         let edit = self.explorers.get_mut(&pid)?.edit.as_mut()?;
-        let r = ui.put(
-            rect,
+        let p = style::pal(ui);
+        let dark = ui.visuals().dark_mode;
+        let box_rect = Rect::from_min_max(pos2(rect.left(), rect.top() + 1.0), pos2(rect.right(), rect.bottom() - 1.0));
+        let fill = if dark { p.inset } else { egui::Color32::WHITE };
+        ui.painter().rect_stroke(
+            box_rect.expand(1.5),
+            CornerRadius::same(6),
+            egui::Stroke::new(2.0, p.accent_tint),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().rect(
+            box_rect,
+            CornerRadius::same(5),
+            fill,
+            egui::Stroke::new(1.0, p.accent),
+            egui::StrokeKind::Inside,
+        );
+        let inner = box_rect.shrink2(vec2(6.0, 1.0));
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(inner)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let r = child.add_sized(
+            inner.size(),
             egui::TextEdit::singleline(&mut edit.text)
                 .id(id)
-                .font(egui::FontId::proportional(style::BODY - 0.5))
-                .margin(egui::Margin::symmetric(4, 1)),
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .font(egui::FontId::proportional(12.5))
+                .vertical_align(egui::Align::Center),
         );
         #[cfg(debug_assertions)]
         crate::devtest::record("tree-edit", r.rect);
@@ -521,19 +547,20 @@ fn reveal_label() -> &'static str {
 }
 
 fn new_items_menu(ui: &mut Ui, dir: &Path, out: &mut Vec<Action>) {
-    if ui.button(t("New File…")).clicked() {
+    if kit::menu_item(ui, Some(icons::PLUS), t("New File…"), None, false).clicked() {
         out.push(Action::NewFileIn(dir.to_path_buf()));
         ui.close();
     }
-    if ui.button(t("New Folder…")).clicked() {
+    if kit::menu_item(ui, Some(icons::FOLDER_PLUS), t("New Folder…"), None, false).clicked() {
         out.push(Action::NewFolderIn(dir.to_path_buf()));
         ui.close();
     }
 }
 
 fn tree_menu(ui: &mut Ui, entry: &Entry, root: &Path, out: &mut Vec<Action>) {
-    let mut item = |ui: &mut Ui, label: &str, action: Action| {
-        if ui.button(label).clicked() {
+    kit::menu_body(ui);
+    let mut item = |ui: &mut Ui, icon: Option<&str>, label: &str, action: Action, danger: bool| {
+        if kit::menu_item(ui, icon, label, None, danger).clicked() {
             out.push(action);
             ui.close();
         }
@@ -544,42 +571,36 @@ fn tree_menu(ui: &mut Ui, entry: &Entry, root: &Path, out: &mut Vec<Action>) {
         entry.path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf())
     };
     if entry.is_dir {
-        item(ui, t("New File…"), Action::NewFileIn(dir.clone()));
-        item(ui, t("New Folder…"), Action::NewFolderIn(dir.clone()));
-        item(ui, t("Open in Terminal"), Action::NewTabAt(dir));
+        item(ui, Some(icons::PLUS), t("New File…"), Action::NewFileIn(dir.clone()), false);
+        item(ui, Some(icons::FOLDER_PLUS), t("New Folder…"), Action::NewFolderIn(dir.clone()), false);
+        item(ui, Some(icons::TERMINAL_WINDOW), t("Open in Terminal"), Action::NewTabAt(dir), false);
     } else {
-        item(ui, t("Open in Editor"), Action::OpenFile(entry.path.clone(), None));
+        item(ui, Some(icons::CODE), t("Open in Editor"), Action::OpenFile(entry.path.clone(), None), false);
         if crate::platform::browser_file(&entry.path) {
-            item(ui, t("Open in Browser"), Action::OpenInBrowser(entry.path.clone()));
-            item(ui, t("Open in Default Browser"), Action::OpenInDefaultBrowser(entry.path.clone()));
+            item(ui, Some(icons::GLOBE), t("Open in Browser"), Action::OpenInBrowser(entry.path.clone()), false);
+            item(ui, Some(icons::ARROW_SQUARE_OUT), t("Open in Default Browser"), Action::OpenInDefaultBrowser(entry.path.clone()), false);
         }
-        item(ui, t("New File…"), Action::NewFileIn(dir.clone()));
-        item(ui, t("New Folder…"), Action::NewFolderIn(dir));
+        item(ui, Some(icons::PLUS), t("New File…"), Action::NewFileIn(dir.clone()), false);
+        item(ui, Some(icons::FOLDER_PLUS), t("New Folder…"), Action::NewFolderIn(dir), false);
     }
-    item(ui, t("Insert Path in Terminal"), Action::InsertPath(entry.path.clone()));
-    ui.separator();
-    item(ui, t("Rename…"), Action::RenamePath(entry.path.clone()));
+    item(ui, Some(icons::TERMINAL), t("Insert Path in Terminal"), Action::InsertPath(entry.path.clone()), false);
+    kit::menu_sep(ui);
+    item(ui, Some(icons::PENCIL_SIMPLE), t("Rename…"), Action::RenamePath(entry.path.clone()), false);
     if !entry.is_dir {
-        item(ui, t("Duplicate"), Action::DuplicatePath(entry.path.clone()));
+        item(ui, Some(icons::COPY), t("Duplicate"), Action::DuplicatePath(entry.path.clone()), false);
     }
-    item(ui, t("Move to Trash"), Action::TrashPath(entry.path.clone()));
-    ui.separator();
-    if ui.button(t("Copy Path")).clicked() {
+    item(ui, Some(icons::TRASH), t("Move to Trash"), Action::TrashPath(entry.path.clone()), true);
+    kit::menu_sep(ui);
+    if kit::menu_item(ui, Some(icons::COPY), t("Copy Path"), None, false).clicked() {
         ui.ctx().copy_text(entry.path.to_string_lossy().into_owned());
         ui.close();
     }
-    if ui.button(t("Copy Relative Path")).clicked() {
+    if kit::menu_item(ui, None, t("Copy Relative Path"), None, false).clicked() {
         let rel = entry.path.strip_prefix(root).unwrap_or(&entry.path);
         ui.ctx().copy_text(rel.to_string_lossy().into_owned());
         ui.close();
     }
-    let mut item = |ui: &mut Ui, label: &str, action: Action| {
-        if ui.button(label).clicked() {
-            out.push(action);
-            ui.close();
-        }
-    };
-    item(ui, reveal_label(), Action::RevealPath(entry.path.clone()));
+    item(ui, Some(icons::FOLDER_OPEN), reveal_label(), Action::RevealPath(entry.path.clone()), false);
 }
 
 /// The colour of a changed file's name and letter.

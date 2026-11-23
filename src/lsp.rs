@@ -1302,6 +1302,7 @@ impl App {
                                 f.text = text;
                                 f.rev += 1;
                                 f.lines = crate::editor::count_lines(&f.text);
+                                f.refresh_dirty();
                             }
                             Ok(_) => {}
                             Err(e) => failed = Some(e),
@@ -1586,6 +1587,7 @@ impl App {
                     f.text = after.clone();
                     f.rev += 1;
                     f.lines = crate::editor::count_lines(&f.text);
+                    f.refresh_dirty();
                     if was_clean {
                         let _ = crate::editor::save(f, false);
                     }
@@ -1619,6 +1621,7 @@ impl App {
                     f.text = before;
                     f.rev += 1;
                     f.lines = crate::editor::count_lines(&f.text);
+                    f.refresh_dirty();
                     if was_clean {
                         let _ = crate::editor::save(f, false);
                     }

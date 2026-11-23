@@ -206,6 +206,8 @@ pub struct Download {
     pub path: std::path::PathBuf,
     /// Ended: whether it worked; `None` while it runs.
     pub done: Option<bool>,
+    /// Cached file size once the download finishes (avoids per-frame `fs::metadata` on the UI thread).
+    pub size: Option<u64>,
     pub at: Instant,
 }
 
@@ -578,6 +580,10 @@ impl Browser {
         self.url = url.clone();
         self.address = url.clone();
         self.title.clear();
+        self.down = false;
+        self.probe_due = None;
+        self.probing = false;
+        *self.probe.lock() = None;
         if let Some(v) = &self.view {
             let _ = v.load_url(&url);
         }
@@ -613,7 +619,7 @@ impl Browser {
     pub fn note_download(&mut self, e: &Event) {
         match e {
             Event::DownloadStarted(url, path) => {
-                self.downloads.push(Download { url: url.clone(), path: path.clone(), done: None, at: Instant::now() });
+                self.downloads.push(Download { url: url.clone(), path: path.clone(), done: None, size: None, at: Instant::now() });
                 if self.downloads.len() > DOWNLOADS {
                     self.downloads.remove(0);
                 }
@@ -621,6 +627,9 @@ impl Browser {
             Event::DownloadDone(url, ok) => {
                 if let Some(d) = self.downloads.iter_mut().rev().find(|d| &d.url == url && d.done.is_none()) {
                     d.done = Some(*ok);
+                    if *ok {
+                        d.size = std::fs::metadata(&d.path).ok().map(|m| m.len());
+                    }
                 }
             }
             _ => {}
@@ -636,6 +645,10 @@ impl Browser {
         self.dimmed = false;
         self.still = None;
         self.covered_since = None;
+        self.down = false;
+        self.probe_due = None;
+        self.probing = false;
+        *self.probe.lock() = None;
         self.asleep = true;
         self.asleep_since = Some(Instant::now());
         self.state = PageState::default();
@@ -754,6 +767,10 @@ fn answers((host, port): &(String, u16)) -> bool {
 }
 
 /// Whether an address is on this machine (a dev server): http, not https, when typed bare.
+pub fn is_local_host(host: &str) -> bool {
+    local_host(host)
+}
+
 fn local_host(host: &str) -> bool {
     if let Some(v6) = host.strip_prefix('[') {
         return v6.starts_with("::1]");

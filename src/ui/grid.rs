@@ -547,7 +547,7 @@ impl App {
                 ui.interact(r, egui::Id::new(("tile-status", project_id)), Sense::hover()).on_hover_text(tip);
             }
         }
-        if let Some(agent) = unconnected {
+        if let Some(agent) = unconnected && right - 22.0 > header.left() + 120.0 {
             let r = Rect::from_center_size(pos2(right - 11.0, cy), vec2(22.0, 22.0));
             right -= 22.0 + 6.0;
             let resp = ui.interact(r, egui::Id::new(("tile-unconnected", project_id)), Sense::click());
@@ -555,6 +555,7 @@ impl App {
             crate::devtest::record(format!("tile-unconnected:{}", agent.0), r);
             if resp.hovered() {
                 ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), style::tint(p.warn, dark));
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
             ui.painter().text(r.center(), Align2::CENTER_CENTER, icons::WARNING, style::icon_font(13.0), p.warn);
             if resp.on_hover_text(self.unconnected_tip(&[agent])).clicked() {
@@ -568,51 +569,65 @@ impl App {
             let more = if servers.len() > 1 { format!(" +{}", servers.len() - 1) } else { String::new() };
             let g = ui.painter().layout_no_wrap(format!("{port}{more}"), style::mono(10.5), p.text_muted);
             let w = 6.0 + 5.0 + 6.0 + g.size().x + 6.0;
-            let r = Rect::from_center_size(pos2(right - w / 2.0, cy), vec2(w, 22.0));
-            right -= w + 6.0;
-            let resp = ui.interact(r, egui::Id::new(("tile-server", project_id)), Sense::click());
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("tile-server:{name}"), r);
-            if resp.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), p.hover);
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            ui.painter().circle_filled(pos2(r.left() + 6.0 + 2.5, cy), 5.0, style::soft(p.ok, 0.18));
-            ui.painter().circle_filled(pos2(r.left() + 6.0 + 2.5, cy), 2.5, p.ok);
-            ui.painter().galley(pos2(r.left() + 6.0 + 5.0 + 6.0, cy - g.size().y / 2.0), g, p.text_muted);
-            let tip = servers.iter().map(|(_, s)| tf("Open {} in the browser", &[&s.url])).collect::<Vec<_>>().join("\n");
-            if resp.on_hover_text(tip).clicked() {
-                self.actions.push(Action::OpenWeb(first.url.clone()));
+            if right - w > header.left() + 120.0 {
+                let r = Rect::from_center_size(pos2(right - w / 2.0, cy), vec2(w, 22.0));
+                right -= w + 6.0;
+                let resp = ui.interact(r, egui::Id::new(("tile-server", project_id)), Sense::click());
+                #[cfg(debug_assertions)]
+                crate::devtest::record(format!("tile-server:{name}"), r);
+                if resp.hovered() {
+                    ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), p.hover);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                ui.painter().circle_filled(pos2(r.left() + 6.0 + 2.5, cy), 5.0, style::soft(p.ok, 0.18));
+                ui.painter().circle_filled(pos2(r.left() + 6.0 + 2.5, cy), 2.5, p.ok);
+                ui.painter().galley(pos2(r.left() + 6.0 + 5.0 + 6.0, cy - g.size().y / 2.0), g, p.text_muted);
+                let tip = servers.iter().map(|(_, s)| tf("Open {} in the browser", &[&s.url])).collect::<Vec<_>>().join("\n");
+                if resp.on_hover_text(tip).clicked() {
+                    self.actions.push(Action::OpenWeb(first.url.clone()));
+                }
             }
         }
         // Its page shown smaller than in Focus: by how much (hover says why).
         if let Some((_, zoom)) = tile_page.filter(|(_, z)| *z < 0.995) {
             let g = ui.painter().layout_no_wrap(format!("{}%", (zoom * 100.0).round() as i32), style::mono(10.0), p.text_ghost);
             let wd = g.size().x + 8.0;
-            let r = Rect::from_center_size(pos2(right - wd / 2.0, cy), vec2(wd, 22.0));
-            right -= wd + 4.0;
-            let resp = ui.interact(r, egui::Id::new(("tile-zoom", project_id)), Sense::hover());
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("tile-zoom:{name}"), r);
-            ui.painter().galley(pos2(r.left() + 4.0, cy - g.size().y / 2.0), g, if resp.hovered() { p.text_muted } else { p.text_ghost });
-            resp.on_hover_text(tf("Shown at {}%, laid out as in Focus. Open in Focus to see it at 100%.", &[&((zoom * 100.0).round() as i32).to_string()]));
+            if right - wd > header.left() + 120.0 {
+                let r = Rect::from_center_size(pos2(right - wd / 2.0, cy), vec2(wd, 22.0));
+                right -= wd + 4.0;
+                let resp = ui.interact(r, egui::Id::new(("tile-zoom", project_id)), Sense::hover());
+                #[cfg(debug_assertions)]
+                crate::devtest::record(format!("tile-zoom:{name}"), r);
+                ui.painter().galley(pos2(r.left() + 4.0, cy - g.size().y / 2.0), g, if resp.hovered() { p.text_muted } else { p.text_ghost });
+                resp.on_hover_text(tf("Shown at {}%, laid out as in Focus. Open in Focus to see it at 100%.", &[&((zoom * 100.0).round() as i32).to_string()]));
+            }
         }
         // The browser an agent uses, on a tile too small for its picture: shows it in the tile.
         if let Some(w) = web.as_ref().filter(|_| web_small) {
             let g = ui.painter().layout_no_wrap(t("browser").to_string(), small.clone(), p.info);
             let wd = 6.0 + 13.0 + 4.0 + g.size().x + 6.0;
-            let r = Rect::from_center_size(pos2(right - wd / 2.0, cy), vec2(wd, 22.0));
-            right -= wd + 6.0;
-            let resp = ui.interact(r, egui::Id::new(("tile-web", project_id)), Sense::click());
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("tile-web-chip:{name}"), r);
-            let fill = style::tint(p.info, dark);
-            ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), if resp.hovered() { fill.gamma_multiply(1.6) } else { fill });
-            ui.painter().text(pos2(r.left() + 6.0 + 6.5, cy), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(12.0), p.info);
-            ui.painter().galley(pos2(r.left() + 6.0 + 13.0 + 4.0, cy - g.size().y / 2.0), g, p.info);
-            let tip = format!("{} · {}\n{}", w.address, w.who, t("Click: show the browser in this tile · ⌥-click: in Focus"));
-            if resp.on_hover_text(tip).clicked() {
-                self.show_tile_web(project_id, w, ui.input(|i| i.modifiers.alt) || !panel_fits);
+            if right - wd > header.left() + 120.0 {
+                let r = Rect::from_center_size(pos2(right - wd / 2.0, cy), vec2(wd, 22.0));
+                right -= wd + 6.0;
+                let resp = ui.interact(r, egui::Id::new(("tile-web", project_id)), Sense::click());
+                #[cfg(debug_assertions)]
+                crate::devtest::record(format!("tile-web-chip:{name}"), r);
+                let fill = style::tint(p.info, dark);
+                ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), if resp.hovered() { fill.gamma_multiply(1.6) } else { fill });
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                ui.painter().text(pos2(r.left() + 6.0 + 6.5, cy), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(12.0), p.info);
+                ui.painter().galley(pos2(r.left() + 6.0 + 13.0 + 4.0, cy - g.size().y / 2.0), g, p.info);
+                let click_hint = if cfg!(target_os = "macos") {
+                    t("Click: show the browser in this tile · ⌥-click: in Focus")
+                } else {
+                    t("Click: show the browser in this tile · Alt-click: in Focus")
+                };
+                let tip = format!("{} · {}\n{click_hint}", w.address, w.who);
+                if resp.on_hover_text(tip).clicked() {
+                    self.show_tile_web(project_id, w, ui.input(|i| i.modifiers.alt) || !panel_fits);
+                }
             }
         }
         let left_limit = right - 6.0;
@@ -855,7 +870,12 @@ impl App {
         painter.text(pos2(cap.right() - 12.0, cap.center().y), Align2::CENTER_CENTER, icons::ARROWS_OUT_SIMPLE, style::icon_font(12.0), if resp.hovered() { p.text } else { p.text_faint });
         // Ringed in the accent, as an agent's page is.
         painter.rect_stroke(r, CornerRadius::same(style::RADIUS_LG), Stroke::new(if resp.hovered() { 2.0 } else { 1.5 }, p.accent), egui::StrokeKind::Outside);
-        let tip = format!("{} · {}\n{}", web.address, web.who, t("Click: show the browser in this tile · ⌥-click: in Focus"));
+        let click_hint = if cfg!(target_os = "macos") {
+            t("Click: show the browser in this tile · ⌥-click: in Focus")
+        } else {
+            t("Click: show the browser in this tile · Alt-click: in Focus")
+        };
+        let tip = format!("{} · {}\n{click_hint}", web.address, web.who);
         if resp.on_hover_text(tip).clicked() {
             let alt = ui.input(|i| i.modifiers.alt);
             let fits = crate::ui::browser_panel::tile_fits_panel(body.width(), body.height());
@@ -991,7 +1011,7 @@ impl App {
 
     /// Status bar note in the Grid: which project the keyboard types into.
     pub fn keyboard_target(&self) -> Option<String> {
-        if self.view == View::Focus {
+        if self.view != View::Grid {
             return None;
         }
         let pane = self.grid_focus.and_then(|id| self.panes.get(&id))?;
@@ -1246,6 +1266,7 @@ impl App {
         open: &Action,
         name: &str,
     ) {
+        let _ = name;
         let p = style::pal(ui);
         let dark = ui.visuals().dark_mode;
         let (c, fill, line) = match kind {
@@ -1275,12 +1296,22 @@ impl App {
                         }
                     }
                     Foot::Done => {
+                        let commit_tip = if status == Status::Done {
+                            t("Commit what the agent changed")
+                        } else {
+                            t("Commit working tree changes")
+                        };
+                        let review_tip = if status == Status::Done {
+                            t("Review what the agent changed")
+                        } else {
+                            t("Review working tree changes")
+                        };
                         let c = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::GIT_PULL_REQUEST), t("Commit…"), true);
                         #[cfg(debug_assertions)]
                         if let Some(id) = review {
                             crate::devtest::record(format!("tile-commit:{id}"), c.rect);
                         }
-                        if c.on_hover_text(kit::tip(t("Commit what the agent changed"), Action::Commit)).clicked() {
+                        if c.on_hover_text(kit::tip(commit_tip, Action::Commit)).clicked() {
                             clicked = Some(4);
                         }
                         let r = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::GIT_DIFF), t("Review"), true);
@@ -1288,11 +1319,12 @@ impl App {
                         if let Some(id) = review {
                             crate::devtest::record(format!("tile-review:{id}"), r.rect);
                         }
-                        if r.on_hover_text(kit::tip(t("Review what the agent changed"), Action::Review)).clicked() {
+                        if r.on_hover_text(kit::tip(review_tip, Action::Review)).clicked() {
                             clicked = Some(1);
                         }
                     }
                     Foot::Resume(id) => {
+                        let _ = id;
                         let r = kit::button_ex(ui, kit::Kind::Secondary, None, t("Resume"), true);
                         let d = kit::button_ex(ui, kit::Kind::Ghost, None, t("Dismiss"), true);
                         #[cfg(debug_assertions)]

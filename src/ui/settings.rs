@@ -37,7 +37,7 @@ const NAV_W: f32 = 236.0;
 /// The pages, their icons, and the rows on each (for the search).
 fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 9] {
     [
-        (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Version", "Check for updates automatically", "Group active projects at the top", "Worktrees"]),
+        (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Group active projects at the top", "Worktrees"]),
         (SettingsPage::Appearance, icons::PAINT_BRUSH, "Appearance", &["Theme", "Language", "With the dark theme", "With the light theme", "Font", "Size", "Cursor", "Blinking cursor"]),
         (
             SettingsPage::Terminal,
@@ -267,13 +267,12 @@ impl App {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let mut keep = true;
         let p = style::pal(ui);
-        let dark = ui.visuals().dark_mode;
         let full = Rect::from_min_size(ui.max_rect().min, vec2(w, h));
         kit::paint_highlight(ui.painter(), Rect::from_min_size(full.min, vec2(w, 1.0)), style::RADIUS_DIALOG, &p);
 
         // ----- the pages at the left: "Settings", the search, the pages, the version ----------
         let nav = Rect::from_min_max(full.min, pos2(full.left() + nav_w, full.bottom()));
-        let nav_fill = if dark { style::over(p.overlay, p.chrome, 0.45) } else { Color32::from_rgb(0xf6, 0xf6, 0xf5) };
+        let nav_fill = style::over(p.overlay, p.chrome, 0.45);
         ui.painter().rect_filled(nav, CornerRadius { nw: style::RADIUS_DIALOG, ne: 0, sw: style::RADIUS_DIALOG, se: 0 }, nav_fill);
         ui.painter().vline(nav.right() - 0.5, nav.y_range(), Stroke::new(1.0, p.border));
         let mut job = egui::text::LayoutJob::default();
@@ -283,19 +282,28 @@ impl App {
         let g = ui.painter().layout_job(job);
         ui.painter().galley(pos2(nav.left() + 18.0, nav.top() + 18.0), g, p.text);
         let search_rect = Rect::from_min_size(pos2(nav.left() + 10.0, nav.top() + 18.0 + 22.0 + 10.0), vec2(nav_w - 20.0, 30.0));
+        let sid = egui::Id::new("settings-search");
+        if ui.memory(|m| m.has_focus(sid)) {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(sid, egui::EventFilter { escape: true, ..Default::default() });
+            });
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.settings_search.clear();
+                ui.memory_mut(|m| m.surrender_focus(sid));
+            }
+        }
         let mut search = self.settings_search.clone();
         ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect), |ui| {
-            kit::field(ui, egui::Id::new("settings-search"), &mut search, Some(icons::MAGNIFYING_GLASS), t("Search settings"), nav_w - 20.0, false)
+            kit::field(ui, sid, &mut search, Some(icons::MAGNIFYING_GLASS), t("Search settings"), nav_w - 20.0, false)
         });
         self.settings_search = search.clone();
         // ⌘F, at the right of the empty field.
-        let sid = egui::Id::new("settings-search");
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             ui.memory_mut(|m| m.request_focus(sid));
         }
-        if search.is_empty() && !ui.memory(|m| m.has_focus(sid)) {
+        if search.is_empty() && !ui.memory(|m| m.has_focus(sid)) && nav_w >= 210.0 {
             let keys = kit::keys(&Action::Find).unwrap_or("");
-            if !keys.is_empty() {
+            if !keys.is_empty() && keys.chars().count() <= 4 {
                 let w = kit::kbd_width(ui.painter(), keys);
                 kit::paint_kbd_text(ui.painter(), pos2(search_rect.right() - 8.0 - w, search_rect.center().y), keys, &p);
             }
@@ -305,12 +313,17 @@ impl App {
         ui.painter().hline(ver.x_range(), ver.top() + 0.5, Stroke::new(1.0, p.border));
         let logo = Rect::from_min_size(pos2(ver.left() + 8.0, ver.top() + 10.0), vec2(26.0, 26.0));
         paint_logo(ui.painter(), logo, &p);
-        ui.painter().text(pos2(logo.right() + 10.0, logo.top() + 1.0), Align2::LEFT_TOP, "TernaryCode", style::medium(12.0), p.text_muted);
+        let ver_x = logo.right() + 10.0;
+        let ver_room = (ver.right() - ver_x).max(20.0);
+        ui.painter().text(pos2(ver_x, logo.top() + 1.0), Align2::LEFT_TOP, "TernaryCode", style::medium(12.0), p.text_muted);
         let version = match self.updater.available_version() {
             Some(v) => format!("{} · {}", env!("CARGO_PKG_VERSION"), tf("{} is out", &[&v])),
             None => env!("CARGO_PKG_VERSION").to_string(),
         };
-        ui.painter().text(pos2(logo.right() + 10.0, logo.bottom() + 1.0), Align2::LEFT_BOTTOM, version, style::mono(10.5), p.text_faint);
+        let mut ver_job = egui::text::LayoutJob::simple_singleline(version, style::mono(10.5), p.text_faint);
+        ver_job.wrap = egui::text::TextWrapping::truncate_at_width(ver_room);
+        let ver_g = ui.painter().layout_job(ver_job);
+        ui.painter().galley(pos2(ver_x, logo.bottom() + 1.0 - ver_g.size().y), ver_g, p.text_faint);
 
         let nav_list = Rect::from_min_max(
             pos2(nav.left() + 10.0, search_rect.bottom() + 10.0),
@@ -466,7 +479,7 @@ impl App {
     fn general_page(&mut self, ui: &mut Ui, search: &str) {
         let p = style::pal(ui);
         page_head(ui, t("General"), t("The app itself."));
-        let labels = [(t("Command line"), ""), (t("Data folder"), ""), (t("Version"), ""), (t("Check for updates automatically"), ""), (t("Group active projects at the top"), "")];
+        let labels = [(t("Command line"), ""), (t("Data folder"), ""), (t("Group active projects at the top"), "")];
         card(ui, search, &labels, |c| {
             let cli_note = tf("{} in any terminal opens that folder here.", &["ternarycode ."]);
             c.row(t("Command line"), &cli_note, |ui| match crate::cli::installed() {
@@ -491,15 +504,6 @@ impl App {
                 if kit::button_ex(ui, kit::Kind::Secondary, None, t("Show"), true).clicked() {
                     crate::platform::reveal(crate::paths::data_dir());
                 }
-            });
-            let version = format!("TernaryCode {}", crate::update::CURRENT);
-            c.row(t("Version"), &version, |ui| {
-                if kit::button_ex(ui, kit::Kind::Secondary, None, t("Check for Updates"), true).clicked() {
-                    self.actions.push(Action::CheckForUpdates);
-                }
-            });
-            c.row(t("Check for updates automatically"), t("The only network connection TernaryCode makes."), |ui| {
-                kit::switch(ui, &mut self.settings.check_updates);
             });
             c.row(t("Group active projects at the top"), t("In the sidebar, projects where something runs or waits come first, under Active."), |ui| {
                 kit::switch(ui, &mut self.settings.group_active);
@@ -1256,9 +1260,7 @@ impl App {
                             });
                         } else if agent != AgentKind::Custom {
                             field_row(ui, t("Status signals"), &mut |ui| {
-                                ui.horizontal(|ui| {
-                                    self.hooks_controls(ui, agent);
-                                });
+                                self.hooks_controls(ui, agent);
                                 ui.add(egui::Label::new(RichText::new(hooks_note(agent)).size(11.5).color(p.text_faint).line_height(Some(17.0))).wrap());
                                 // What the hooks report, and the version they were checked with.
                                 health_strip(ui, &hooks, agent, &p);
@@ -1276,13 +1278,13 @@ impl App {
                                 let per_launch = self.settings.integration(agent) == Integration::PerLaunch;
                                 field_row(ui, t("Browser tools"), &mut |ui| {
                                     ui.add_space(4.0);
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
                                         let (fg, bg, label) = if per_launch { (p.accent_text, p.accent_tint, t("Added to each run")) } else { (p.text_muted, p.subtle, t("Not added")) };
                                         kit::pill(ui, Some(icons::GLOBE_SIMPLE), label, fg, bg);
                                         let n = tc_agent::mcp::tools().as_array().map_or(0, |a| a.len());
                                         let note = if per_launch { tf("{} tools, from presets started with Per launch", &[&n.to_string()]) } else { t("Browser tools come with Per launch.").to_string() };
-                                        ui.label(RichText::new(note).size(11.5).color(p.text_faint));
+                                        ui.add(egui::Label::new(RichText::new(note).size(11.5).color(p.text_faint)).wrap());
                                     });
                                 });
                             }
@@ -1361,28 +1363,41 @@ impl App {
         modes.push((Integration::Off, t("Off")));
         let options: Vec<kit::Seg> = modes.iter().map(|(_, l)| kit::Seg::new(l, "")).collect();
         let on = modes.iter().position(|(m, _)| *m == shown).unwrap_or(0);
-        if let Some(i) = kit::segmented(ui, &options, on) {
-            let m = modes[i].0;
-            if m == Integration::Installed && installed.is_none() {
-                self.actions.push(Action::PlanInstall(agent));
-            } else {
-                self.settings.integrations.insert(agent.slug().into(), m);
-            }
+        let ((seg_action, seg_mode), btn_action) = egui::Sides::new().spacing(8.0).wrap().show(
+            ui,
+            |ui| {
+                if let Some(i) = kit::segmented(ui, &options, on) {
+                    let m = modes[i].0;
+                    if m == Integration::Installed && installed.is_none() {
+                        (Some(Action::PlanInstall(agent)), None)
+                    } else {
+                        (None, Some(m))
+                    }
+                } else {
+                    (None, None)
+                }
+            },
+            |ui| {
+                if installed.is_some() {
+                    if kit::button_ex(ui, kit::Kind::Secondary, None, t("Uninstall"), true).clicked() {
+                        Some(Action::Uninstall(agent))
+                    } else {
+                        None
+                    }
+                } else {
+                    let r = kit::button_ex(ui, kit::Kind::Secondary, None, t("Install…"), true);
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record(format!("install:{}", agent.slug()), r.rect);
+                    if r.clicked() { Some(Action::PlanInstall(agent)) } else { None }
+                }
+            },
+        );
+        if let Some(m) = seg_mode {
+            self.settings.integrations.insert(agent.slug().into(), m);
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if installed.is_some() {
-                if kit::button_ex(ui, kit::Kind::Secondary, None, t("Uninstall"), true).clicked() {
-                    self.actions.push(Action::Uninstall(agent));
-                }
-            } else {
-                let r = kit::button_ex(ui, kit::Kind::Secondary, None, t("Install…"), true);
-                #[cfg(debug_assertions)]
-                crate::devtest::record(format!("install:{}", agent.slug()), r.rect);
-                if r.clicked() {
-                    self.actions.push(Action::PlanInstall(agent));
-                }
-            }
-        });
+        if let Some(a) = seg_action.or(btn_action) {
+            self.actions.push(a);
+        }
     }
 
     /// How an agent reports to TernaryCode as things are set, and in how many panes it runs with
@@ -1472,7 +1487,10 @@ fn well_field(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, multi: b
     let w = ui.available_width();
     let lines = if multi { text.lines().count().max(1) + usize::from(text.ends_with('\n')) } else { 1 };
     let h = 30.0 + (lines.saturating_sub(1)) as f32 * 17.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+    let (rect, outer) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+    if outer.clicked() {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
     let focused = ui.ctx().memory(|m| m.has_focus(id));
     if focused {
         ui.painter().rect_stroke(rect.expand(3.0), CornerRadius::same(10), Stroke::new(3.0, p.accent_tint), StrokeKind::Inside);

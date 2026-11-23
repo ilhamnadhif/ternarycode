@@ -81,6 +81,7 @@ pub struct CompanionPane {
     pub label: String,
     pub branch: Option<String>,
     pub profile: Option<String>,
+    pub supports_profiles: bool,
     pub status: String,
     pub status_label: String,
     pub message: Option<String>,
@@ -92,7 +93,7 @@ pub struct CompanionPane {
 pub struct CompanionRateLimit {
     pub from_profile: String,
     pub reason: String,
-    pub reset_secs: u64,
+    pub resets_at_unix: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -100,7 +101,7 @@ pub struct CompanionWindowQuota {
     pub label: String,
     pub used_pct: Option<f32>,
     pub tokens: u64,
-    pub reset_secs: u64,
+    pub resets_at_unix: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -116,9 +117,9 @@ pub struct CompanionProfile {
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub quota_pct: Option<f32>,
-    pub reset_secs: u64,
-    pub window_5h: CompanionWindowQuota,
-    pub window_weekly: CompanionWindowQuota,
+    pub resets_at_unix: Option<i64>,
+    pub window_5h: Option<CompanionWindowQuota>,
+    pub window_weekly: Option<CompanionWindowQuota>,
     pub active_session: Option<String>,
 }
 
@@ -188,8 +189,18 @@ impl CompanionHandle {
             tx,
             ctx,
         });
-        let std_listener = std::net::TcpListener::bind(("0.0.0.0", port))
-            .map_err(|e| format!("Could not bind companion port {port}: {e}"))?;
+        let mut attempts = 0u8;
+        let std_listener = loop {
+            match std::net::TcpListener::bind(("0.0.0.0", port)) {
+                Ok(l) => break l,
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempts < 5 => {
+                    // Previous server task may still be releasing its listener after a rapid toggle.
+                    attempts += 1;
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(e) => return Err(format!("Could not bind companion port {port}: {e}")),
+            }
+        };
         let bound_port = std_listener.local_addr().map(|a| a.port()).unwrap_or(port);
         std_listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let state = shared.clone();
@@ -711,7 +722,7 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
             let Some(agent) = AgentKind::from_slug(&req.agent) else {
                 return write_response(&mut stream, 400, "application/json", r#"{"error":"unknown agent"}"#).await;
             };
-            if !tc_agent::sessions::valid_session_id(&req.session_id) {
+            if !tc_agent::sessions::valid_session_id(&req.session_id) || req.session_id.starts_with("pane-") {
                 return write_response(&mut stream, 400, "application/json", r#"{"error":"invalid session id"}"#).await;
             }
             let _ = state.tx.send(AppMsg::Companion(CompanionCmd::ResumeSession {
@@ -777,7 +788,7 @@ async fn write_response(stream: &mut TcpStream, status: u16, content_type: &str,
         _ => "Error",
     };
     let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = tokio::time::timeout(IO_TIMEOUT, async {
@@ -790,6 +801,9 @@ async fn write_response(stream: &mut TcpStream, status: u16, content_type: &str,
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 

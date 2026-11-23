@@ -73,9 +73,10 @@ impl Web {
         if self.host == "github.com" { self.repo.clone() } else { format!("{}/{}", self.host, self.repo) }
     }
 
-    /// The repository as `glab -R` takes it: `group/repo`, or `host/group/repo` off gitlab.com.
+    /// The repository as `glab -R` takes it: `group/repo`, or full URL off gitlab.com so
+    /// self-hosted instances and dotted group names are never misparsed by `glrepo.FromFullName`.
     pub fn glab_repo(&self) -> String {
-        if self.host == "gitlab.com" { self.repo.clone() } else { format!("{}/{}", self.host, self.repo) }
+        if self.host == "gitlab.com" { self.repo.clone() } else { self.url() }
     }
 
     /// The repository identifier formatted for this forge's CLI (`gh` or `glab`).
@@ -277,7 +278,9 @@ pub fn commit(root: &Path, paths: &[String], message: &str) -> Result<String, St
     add.args(["add", "-A", "--"]).args(&specs);
     output_of(&mut add, None, None)?;
     let mut commit = git(root);
-    commit.args(["commit", "--cleanup=strip", "-F", "-", "--"]).args(&specs);
+    // `--cleanup=whitespace` preserves lines starting with `#` (e.g. `#123 Fix auth`), since GUI
+    // messages never include git's commented editor template.
+    commit.args(["commit", "--cleanup=whitespace", "-F", "-", "--"]).args(&specs);
     output_of(&mut commit, Some(message.as_bytes()), None)?;
     let out = run(git(root).args(["rev-parse", "--short", "HEAD"]))?;
     Ok(String::from_utf8_lossy(trim_line(&out)).into_owned())
@@ -480,22 +483,27 @@ pub struct RemotePr {
 
 /// The pull/merge request named by the last `…/pull/N` or `…/merge_requests/N` address in `text`.
 fn pr_from_url(text: &str, state: PrState) -> Option<Pr> {
-    let raw = text
-        .split_whitespace()
-        .rev()
-        .find(|w| (w.starts_with("https://") || w.starts_with("http://")) && (w.contains("/pull/") || w.contains("/merge_requests/")))?;
-    let url = raw.trim_end_matches(['.', ',', ')', ']', '>']);
-    let after = url
-        .rsplit_once("/pull/")
-        .or_else(|| url.rsplit_once("/merge_requests/"))?
-        .1;
-    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let number = digits.parse().ok()?;
-    let clean_url = url.split(['?', '#']).next().unwrap_or(url).to_string();
-    Some(Pr { number, url: clean_url, state, checks: Checks::None })
+    text.split_whitespace().rev().find_map(|raw| {
+        let trimmed = raw
+            .trim_start_matches(['(', '[', '<', '"', '\''])
+            .trim_end_matches(['.', ',', ')', ']', '>', '"', '\'']);
+        if !(trimmed.starts_with("https://") || trimmed.starts_with("http://"))
+            || !(trimmed.contains("/pull/") || trimmed.contains("/merge_requests/"))
+        {
+            return None;
+        }
+        let after = trimmed
+            .rsplit_once("/pull/")
+            .or_else(|| trimmed.rsplit_once("/merge_requests/"))?
+            .1;
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let number = digits.parse().ok()?;
+        let clean_url = trimmed.split(['?', '#']).next().unwrap_or(trimmed).to_string();
+        Some(Pr { number, url: clean_url, state, checks: Checks::None })
+    })
 }
 
-fn glab(glab_bin: &Path, root: &Path, path: Option<&OsStr>) -> Command {
+fn glab(glab_bin: &Path, root: &Path, web: &Web, path: Option<&OsStr>) -> Command {
     let mut cmd = Command::new(glab_bin);
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW
@@ -503,10 +511,16 @@ fn glab(glab_bin: &Path, root: &Path, path: Option<&OsStr>) -> Command {
         .stdin(Stdio::null())
         .env("GLAB_NO_PROMPT", "1")
         .env("NO_PROMPT", "1")
+        .env("PROMPT_DISABLED", "1")
+        .env("GLAB_CHECK_UPDATE", "false")
+        .env("GLAB_PAGER", "cat")
         .env("NO_COLOR", "1")
         .env("CLICOLOR", "0")
         .env("PAGER", "cat")
         .env("GIT_TERMINAL_PROMPT", "0");
+    if web.host != "gitlab.com" {
+        cmd.env("GITLAB_HOST", &web.host);
+    }
     if let Some(path) = path {
         cmd.env("PATH", path);
     }
@@ -519,6 +533,10 @@ fn glab_error(out: String) -> GhError {
         || l.contains("not logged in")
         || l.contains("no token found")
         || l.contains("401 unauthorized")
+        || l.contains("status code 401")
+        || l.contains("token is expired")
+        || l.contains("token has expired")
+        || l.contains("bad credentials")
         || l.contains("invalid_token")
         || l.contains("authentication required")
     {
@@ -541,13 +559,19 @@ pub fn classify_gitlab_pipeline(status: &str) -> Checks {
 
 /// The merge request whose source branch is `branch`, if there is one (`glab` at the path given).
 pub fn find_mr(glab_bin: &Path, root: &Path, web: &Web, branch: &str, path: Option<&OsStr>) -> Result<Option<Pr>, GhError> {
-    let mut cmd = glab(glab_bin, root, path);
+    let mut cmd = glab(glab_bin, root, web, path);
     cmd.args(["mr", "view", branch, "-R", &web.glab_repo(), "-F", "json"]);
     match output_of(&mut cmd, None, Some(NETWORK_TIMEOUT)) {
         Ok(out) => Ok(parse_glab_mr_json(&out)),
         Err(out) => {
+            if let GhError::SignedOut(e) = glab_error(out.clone()) {
+                return Err(GhError::SignedOut(e));
+            }
             let l = out.to_lowercase();
-            if l.contains("no open merge request") || l.contains("no merge request") || l.contains("not found") {
+            if l.contains("no open merge request")
+                || l.contains("no merge request")
+                || l.contains("merge request not found")
+            {
                 Ok(None)
             } else {
                 Err(glab_error(out))
@@ -569,7 +593,9 @@ pub fn create_mr(
     draft: bool,
     path: Option<&OsStr>,
 ) -> Result<Pr, GhError> {
-    let mut cmd = glab(glab_bin, root, path);
+    let mut cmd = glab(glab_bin, root, web, path);
+    // Avoid `glab` treating `--description "-"` as an interactive `$EDITOR` sentinel.
+    let safe_body = if body.trim() == "-" { "- " } else { body };
     cmd.args([
         "mr",
         "create",
@@ -582,7 +608,8 @@ pub fn create_mr(
         "--title",
         title,
         "--description",
-        body,
+        safe_body,
+        "--no-editor",
         "--yes",
     ]);
     if draft {
@@ -662,7 +689,7 @@ pub fn list_requests(
             }
         }
         Forge::GitLab => {
-            let mut cmd = glab(cli_bin, root, path);
+            let mut cmd = glab(cli_bin, root, web, path);
             cmd.args(["mr", "list", "-R", &web.glab_repo(), "--per-page", &lim, "-F", "json"]);
             match output_of(&mut cmd, None, Some(NETWORK_TIMEOUT)) {
                 Ok(out) => Ok(parse_glab_mr_list_json(&out)),
@@ -672,22 +699,46 @@ pub fn list_requests(
     }
 }
 
+/// Unescapes `jq @tsv` escape sequences (`\\`, `\t`, `\n`, `\r`).
+fn unescape_tsv(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('\\') => out.push('\\'),
+                Some('t') => out.push('\t'),
+                Some('n') => out.push(' '),
+                Some('r') => {}
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Parses TSV lines emitted by `PR_LIST_JQ`.
 pub fn parse_gh_pr_list(out: &str) -> Vec<RemotePr> {
     out.lines()
         .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() {
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.trim().is_empty() {
                 return None;
             }
             let mut parts = line.splitn(7, '\t');
             let number = parts.next()?.trim().parse().ok()?;
             let url = parts.next()?.trim().to_string();
             let draft = parts.next().unwrap_or("").trim() == "true";
-            let branch = parts.next().unwrap_or("").trim().to_string();
-            let author = parts.next().unwrap_or("").trim().to_string();
+            let branch = unescape_tsv(parts.next().unwrap_or("").trim());
+            let author = unescape_tsv(parts.next().unwrap_or("").trim());
             let checks = classify_checks(parts.next().unwrap_or("").trim());
-            let title = parts.next().unwrap_or("").trim().to_string();
+            let title = unescape_tsv(parts.next().unwrap_or("").trim());
             Some(RemotePr {
                 number,
                 title,
@@ -748,8 +799,8 @@ fn glab_obj_to_pr(obj: &JsonVal) -> Option<Pr> {
     };
     let pipe = obj
         .field("head_pipeline")
-        .or_else(|| obj.field("pipeline"))
         .and_then(|p| p.str_field("status"))
+        .or_else(|| obj.field("pipeline").and_then(|p| p.str_field("status")))
         .unwrap_or("");
     Some(Pr { number, url, state, checks: classify_gitlab_pipeline(pipe) })
 }
@@ -785,27 +836,40 @@ impl JsonVal {
     }
     fn u64_field(&self, key: &str) -> Option<u64> {
         match self.field(key)? {
-            JsonVal::Num(n) if *n >= 0.0 => Some(*n as u64),
+            JsonVal::Num(n) if n.is_finite() && *n >= 0.0 && n.fract() == 0.0 && *n <= (u64::MAX as f64) => Some(*n as u64),
             _ => None,
         }
     }
 }
 
+const JSON_MAX_DEPTH: usize = 128;
+
 fn parse_json(src: &str) -> Option<JsonVal> {
-    let mut p = JsonParser { bytes: src.as_bytes(), pos: 0 };
-    p.skip_ws();
-    // Some CLI builds print a warning line before JSON: seek to first `{` or `[` if needed.
-    if !matches!(p.peek(), Some(b'{') | Some(b'['))
-        && let Some(off) = src.find(['{', '['])
-    {
-        p.pos = off;
+    let mut p = JsonParser { bytes: src.as_bytes(), pos: 0, depth: 0 };
+    if let Some(v) = p.value() {
+        return Some(v);
     }
-    p.value()
+    // Some CLI builds print warning lines (like `[WARNING] ...`) before JSON: scan line starts
+    // that begin with `{` or `[` and return the first valid JSON value.
+    let mut offset = 0usize;
+    for line in src.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            let lead = line.len() - trimmed.len();
+            let mut p2 = JsonParser { bytes: src.as_bytes(), pos: offset + lead, depth: 0 };
+            if let Some(v) = p2.value() {
+                return Some(v);
+            }
+        }
+        offset += line.len();
+    }
+    None
 }
 
 struct JsonParser<'a> {
     bytes: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> JsonParser<'a> {
@@ -822,6 +886,9 @@ impl<'a> JsonParser<'a> {
         }
     }
     fn value(&mut self) -> Option<JsonVal> {
+        if self.depth >= JSON_MAX_DEPTH {
+            return None;
+        }
         self.skip_ws();
         match self.peek()? {
             b'{' => self.object(),
@@ -855,7 +922,13 @@ impl<'a> JsonParser<'a> {
             }
         }
         let s = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
-        s.parse::<f64>().ok().map(JsonVal::Num)
+        let n = s.parse::<f64>().ok()?;
+        n.is_finite().then_some(JsonVal::Num(n))
+    }
+    fn hex4(&mut self) -> Option<u16> {
+        let hex = std::str::from_utf8(self.bytes.get(self.pos..self.pos + 4)?).ok()?;
+        self.pos += 4;
+        u16::from_str_radix(hex, 16).ok()
     }
     fn string(&mut self) -> Option<String> {
         if self.peek() != Some(b'"') {
@@ -880,19 +953,35 @@ impl<'a> JsonParser<'a> {
                         b'r' => out.push('\r'),
                         b't' => out.push('\t'),
                         b'u' => {
-                            let hex = std::str::from_utf8(self.bytes.get(self.pos..self.pos + 4)?).ok()?;
-                            self.pos += 4;
-                            if let Ok(code) = u32::from_str_radix(hex, 16)
-                                && let Some(ch) = char::from_u32(code)
-                            {
+                            let code = self.hex4()?;
+                            if (0xD800..=0xDBFF).contains(&code) {
+                                // UTF-16 high surrogate: consume matching `\uXXXX` low surrogate if present.
+                                if self.bytes.get(self.pos..self.pos + 2) == Some(b"\\u") {
+                                    let saved = self.pos;
+                                    self.pos += 2;
+                                    if let Some(low) = self.hex4()
+                                        && (0xDC00..=0xDFFF).contains(&low)
+                                    {
+                                        let combined = 0x10000 + ((u32::from(code) - 0xD800) << 10) + (u32::from(low) - 0xDC00);
+                                        out.push(char::from_u32(combined).unwrap_or('\u{FFFD}'));
+                                    } else {
+                                        self.pos = saved;
+                                        out.push('\u{FFFD}');
+                                    }
+                                } else {
+                                    out.push('\u{FFFD}');
+                                }
+                            } else if (0xDC00..=0xDFFF).contains(&code) {
+                                out.push('\u{FFFD}');
+                            } else if let Some(ch) = char::from_u32(u32::from(code)) {
                                 out.push(ch);
                             }
                         }
-                        _ => out.push(esc as char),
+                        _ => return None,
                     }
                 }
                 _ => {
-                    // Preserve UTF-8 sequences directly.
+                    // Preserve UTF-8 sequences directly without skipping past invalid continuation bytes.
                     let start = self.pos - 1;
                     let width = if b < 0x80 {
                         1
@@ -900,8 +989,10 @@ impl<'a> JsonParser<'a> {
                         2
                     } else if b & 0xF0 == 0xE0 {
                         3
-                    } else {
+                    } else if b & 0xF8 == 0xF0 {
                         4
+                    } else {
+                        1
                     };
                     let end = (start + width).min(self.bytes.len());
                     if let Ok(s) = std::str::from_utf8(&self.bytes[start..end]) {
@@ -914,11 +1005,13 @@ impl<'a> JsonParser<'a> {
         None
     }
     fn array(&mut self) -> Option<JsonVal> {
+        self.depth += 1;
         self.pos += 1; // '['
         let mut items = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b']') {
             self.pos += 1;
+            self.depth -= 1;
             return Some(JsonVal::Arr(items));
         }
         loop {
@@ -928,6 +1021,7 @@ impl<'a> JsonParser<'a> {
                 b',' => self.pos += 1,
                 b']' => {
                     self.pos += 1;
+                    self.depth -= 1;
                     return Some(JsonVal::Arr(items));
                 }
                 _ => return None,
@@ -935,11 +1029,13 @@ impl<'a> JsonParser<'a> {
         }
     }
     fn object(&mut self) -> Option<JsonVal> {
+        self.depth += 1;
         self.pos += 1; // '{'
         let mut pairs = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
+            self.depth -= 1;
             return Some(JsonVal::Obj(pairs));
         }
         loop {
@@ -957,6 +1053,7 @@ impl<'a> JsonParser<'a> {
                 b',' => self.pos += 1,
                 b'}' => {
                     self.pos += 1;
+                    self.depth -= 1;
                     return Some(JsonVal::Obj(pairs));
                 }
                 _ => return None,
@@ -1007,44 +1104,79 @@ pub fn classify_checks(list: &str) -> Checks {
 /// `https://github.com/o/r`, `ssh://git@host:22/o/r.git`). `None` off GitHub and GitLab.
 pub fn parse_remote_url(url: &str) -> Option<Web> {
     let url = url.trim();
-    let rest = if let Some((scheme, rest)) = url.split_once("://") {
-        if !matches!(scheme, "https" | "http" | "ssh" | "git" | "git+ssh" | "ssh+git") {
+    let (scheme_low, rest) = if let Some((scheme, rest)) = url.split_once("://") {
+        let low = scheme.to_ascii_lowercase();
+        if !matches!(low.as_str(), "https" | "http" | "ssh" | "git" | "git+ssh" | "ssh+git") {
             return None;
         }
-        rest.to_string()
+        (Some(low), rest.to_string())
     } else if let Some((host, path)) = url.split_once(':') {
         // scp-like: [user@]host:path (not a Windows drive letter).
         if host.len() <= 1 || host.contains('/') {
             return None;
         }
-        format!("{host}/{path}")
+        (None, format!("{host}/{path}"))
     } else {
         return None;
     };
-    let (authority, path) = rest.split_once('/')?;
-    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = host.split(':').next()?.to_lowercase();
-    let repo = path.trim_matches('/');
-    let repo = repo.strip_suffix(".git").unwrap_or(repo).trim_matches('/').to_string();
-    if repo.split('/').filter(|p| !p.is_empty()).count() < 2 {
-        return None;
-    }
-    let forge = if host.contains("github") {
+    let (authority, raw_path) = rest.split_once('/')?;
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let (host_only, port) = match host_port.split_once(':') {
+        Some((h, p)) => (h.to_ascii_lowercase(), Some(p)),
+        None => (host_port.to_ascii_lowercase(), None),
+    };
+    let forge = if host_only.contains("github") {
         Forge::GitHub
-    } else if host.contains("gitlab") {
+    } else if host_only.contains("gitlab") {
         Forge::GitLab
     } else {
         return None;
     };
-    // An ssh host alias (`github-work`) is not where the pages are.
-    let host = if host.contains('.') {
-        host
+    // Strip query/fragment and GitLab `/-/...` web suffixes before removing `.git`.
+    let path_clean = raw_path.split(['?', '#']).next().unwrap_or(raw_path);
+    let path_clean = if forge == Forge::GitLab {
+        path_clean.split_once("/-/").map_or(path_clean, |(p, _)| p)
     } else {
-        match forge {
-            Forge::GitHub => "github.com".to_string(),
-            Forge::GitLab => "gitlab.com".to_string(),
-        }
+        path_clean
     };
+    let repo = path_clean.trim_matches('/');
+    let repo = repo.strip_suffix(".git").unwrap_or(repo).trim_matches('/').to_string();
+    if repo.split('/').filter(|p| !p.is_empty()).count() < 2 {
+        return None;
+    }
+    // Normalize SSH config aliases (`github-work`, `github.com-work`), `www.*`, and official alt SSH hosts.
+    let mut host = match forge {
+        Forge::GitHub
+            if !host_only.contains('.')
+                || host_only == "ssh.github.com"
+                || host_only == "www.github.com"
+                || host_only.starts_with("github.com-")
+                || host_only.starts_with("github.com_") =>
+        {
+            "github.com".to_string()
+        }
+        Forge::GitLab
+            if !host_only.contains('.')
+                || host_only == "altssh.gitlab.com"
+                || host_only == "www.gitlab.com"
+                || host_only.starts_with("gitlab.com-")
+                || host_only.starts_with("gitlab.com_") =>
+        {
+            "gitlab.com".to_string()
+        }
+        _ => host_only,
+    };
+    // Preserve explicit non-default HTTP/HTTPS ports on self-hosted instances.
+    if let (Some(sch), Some(p)) = (scheme_low.as_deref(), port)
+        && matches!(sch, "https" | "http")
+        && !p.is_empty()
+        && p.bytes().all(|b| b.is_ascii_digit())
+        && !(sch == "https" && p == "443")
+        && !(sch == "http" && p == "80")
+    {
+        host.push(':');
+        host.push_str(p);
+    }
     Some(Web { forge, host, repo })
 }
 

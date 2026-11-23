@@ -310,7 +310,6 @@ impl App {
             add(icons::ROWS, t("Dock Panel Bottom"), Action::SetDrawerDock(tc_core::model::DrawerDock::Bottom));
             add(icons::COLUMNS, t("Dock Panel Right"), Action::SetDrawerDock(tc_core::model::DrawerDock::Right));
             add(icons::USER, t("Agent Profiles…"), Action::OpenProfiles);
-            add(icons::TIMER, t("Usage & Status Monitor"), Action::OpenMonitor);
             add(icons::DEVICE_MOBILE, t("Phone Pairing…"), Action::OpenPhonePairing);
             add(icons::SIDEBAR_SIMPLE, t("Show/Hide Files"), Action::ToggleFiles);
             add(icons::PLUS, t("New Tab"), Action::NewTab);
@@ -330,6 +329,7 @@ impl App {
             add(icons::BROOM, t("Clear Scrollback"), Action::ClearScrollback);
             add(icons::SIDEBAR_SIMPLE, t("Show/Hide Sidebar"), Action::ToggleSidebar);
             add(icons::SIDEBAR_SIMPLE, t("Narrow Sidebar"), Action::ToggleCompactSidebar);
+            add(icons::ARROWS_OUT, t("Zen Mode"), Action::ToggleZenMode);
             add(icons::PLUGS_CONNECTED, t("Agent Integrations…"), Action::Integrations);
             add(icons::GEAR_SIX, t("Settings…"), Action::Settings);
             add(icons::ARROW_CIRCLE_UP, t("Check for Updates…"), Action::CheckForUpdates);
@@ -379,7 +379,7 @@ impl App {
         let p = style::pal(ui);
         let dark = ui.visuals().dark_mode;
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, CornerRadius::ZERO, if dark { style::over(p.overlay, p.chrome, 0.3) } else { Color32::from_rgb(0xfa, 0xfa, 0xfa) });
+        painter.rect_filled(rect, CornerRadius::ZERO, style::over(p.overlay, p.chrome, 0.35));
         painter.vline(rect.left(), rect.y_range(), Stroke::new(1.0, p.border));
         let inner = rect.shrink2(vec2(16.0, 14.0));
         let mut y = inner.top();
@@ -398,9 +398,6 @@ impl App {
             painter.rect(tile, CornerRadius::same(9), scheme.background, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
             let hcy = tile.top() + 16.0;
             kit::paint_project_tile(&painter, Rect::from_min_size(pos2(tile.left() + 10.0, hcy - 9.0), vec2(18.0, 18.0)), &pr.letters(), pr.color32(), dark);
-            let g = painter.layout_no_wrap(pr.name.clone(), style::semibold(13.0), p.text);
-            let nw = g.size().x;
-            painter.galley(pos2(tile.left() + 10.0 + 18.0 + 8.0, hcy - g.size().y / 2.0), g, p.text);
             let mut rx = tile.right() - 8.0;
             if let Some(x) = pane {
                 let s = x.tracker.status;
@@ -411,8 +408,14 @@ impl App {
                     rx = r.left() - 8.0;
                 }
             }
+            let name_x = tile.left() + 10.0 + 18.0 + 8.0;
+            let mut name_job = egui::text::LayoutJob::simple_singleline(pr.name.clone(), style::semibold(13.0), p.text);
+            name_job.wrap = egui::text::TextWrapping::truncate_at_width((rx - name_x).max(20.0));
+            let g = painter.layout_job(name_job);
+            let nw = g.size().x;
+            painter.galley(pos2(name_x, hcy - g.size().y / 2.0), g, p.text);
             if let Some(g) = &pr.git {
-                let bx = tile.left() + 10.0 + 18.0 + 8.0 + nw + 8.0;
+                let bx = name_x + nw + 8.0;
                 if rx - bx > 40.0 {
                     painter.text(pos2(bx + 5.5, hcy), Align2::CENTER_CENTER, icons::GIT_BRANCH, style::icon_font(11.0), p.text_faint);
                     let mut job = egui::text::LayoutJob::simple_singleline(g.branch.clone(), style::mono(10.5), p.text_faint);
@@ -608,6 +611,7 @@ impl App {
                     kit::paint_kbd_text(ui.painter(), pos2(row.right() - 16.0 - kw + 12.0, row.center().y), kbd, &p);
                 }
                 let field = Rect::from_min_max(pos2(fx, row.top()), pos2(row.right() - 16.0 - kw, row.bottom()));
+                let was_empty = pal.query.is_empty();
                 let r = ui
                     .scope_builder(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
                         ui.add_sized(
@@ -625,8 +629,8 @@ impl App {
                     r.request_focus();
                     pal.opened = false;
                 }
-                // Backspace in an empty field leaves the scope.
-                if token.is_some() && pal.query.is_empty() && r.has_focus() && ui.input(|i| i.key_pressed(Key::Backspace)) {
+                // Backspace in an already-empty field leaves the scope.
+                if token.is_some() && was_empty && pal.query.is_empty() && r.has_focus() && ui.input(|i| i.key_pressed(Key::Backspace)) {
                     scope = Some(PaletteMode::All);
                 }
                 // The selection is kept in view when the keyboard moves it (the wheel scrolls freely).
@@ -675,30 +679,47 @@ impl App {
                     let (chips, _) = ui.allocate_exact_size(vec2(width, 36.0), Sense::hover());
                     ui.painter().hline(chips.x_range(), chips.top() + 0.5, Stroke::new(1.0, p.border));
                     ui.painter().hline(chips.x_range(), chips.bottom() - 0.5, Stroke::new(1.0, p.border));
+                    let scope_meta: Vec<_> = SCOPES
+                        .into_iter()
+                        .map(|m| {
+                            let (label, keys) = match m {
+                                PaletteMode::All => (t("All"), None),
+                                PaletteMode::Projects => (t("Projects"), kit::keys(&Action::SwitchProject)),
+                                PaletteMode::Presets => (t("Agents"), kit::keys(&Action::PickPreset)),
+                                PaletteMode::Files => (t("Files"), kit::keys(&Action::QuickOpen)),
+                                PaletteMode::Search => (t("Output"), kit::keys(&Action::FindAll)),
+                                _ => (t("Commands"), None),
+                            };
+                            let on = m == pal.mode;
+                            let lg = ui.painter().layout_no_wrap(label.to_string(), style::medium(12.0), if on { p.text } else { p.text_faint });
+                            let kg = keys.map(|k| ui.painter().layout_no_wrap(k.to_string(), style::mono(10.0), p.text_ghost));
+                            (m, on, lg, kg)
+                        })
+                        .collect();
+                    let full_w: f32 = scope_meta
+                        .iter()
+                        .map(|(_, _, lg, kg)| 18.0 + lg.size().x + kg.as_ref().map_or(0.0, |g| g.size().x + 6.0) + 2.0)
+                        .sum();
+                    let show_keys = full_w <= chips.width() - 24.0;
+                    let cp = ui.painter().with_clip_rect(chips.intersect(ui.clip_rect()));
                     let mut x = chips.left() + 12.0;
                     let cy = chips.center().y;
-                    for m in SCOPES {
-                        let (label, keys) = match m {
-                            PaletteMode::All => (t("All"), None),
-                            PaletteMode::Projects => (t("Projects"), kit::keys(&Action::SwitchProject)),
-                            PaletteMode::Presets => (t("Agents"), kit::keys(&Action::PickPreset)),
-                            PaletteMode::Files => (t("Files"), kit::keys(&Action::QuickOpen)),
-                            PaletteMode::Search => (t("Output"), kit::keys(&Action::FindAll)),
-                            _ => (t("Commands"), None),
-                        };
-                        let on = m == pal.mode;
-                        let lg = ui.painter().layout_no_wrap(label.to_string(), style::medium(12.0), if on { p.text } else { p.text_faint });
-                        let kg = keys.map(|k| ui.painter().layout_no_wrap(k.to_string(), style::mono(10.0), p.text_ghost));
+                    for (m, on, lg, kg) in scope_meta {
+                        let kg = kg.filter(|_| show_keys);
                         let w = 9.0 + lg.size().x + kg.as_ref().map_or(0.0, |g| g.size().x + 6.0) + 9.0;
                         let rect = Rect::from_min_size(pos2(x, cy - 13.0), vec2(w, 26.0));
-                        let resp = ui.interact(rect, egui::Id::new(("scope", m as u8)), Sense::click());
+                        let clipped = rect.intersect(chips);
+                        let resp = ui.interact(clipped, egui::Id::new(("scope", m as u8)), Sense::click());
                         let fill = if on { p.subtle } else if resp.hovered() { p.hover } else { Color32::TRANSPARENT };
-                        ui.painter().rect_filled(rect, CornerRadius::same(7), fill);
+                        cp.rect_filled(rect, CornerRadius::same(7), fill);
                         let lw = lg.size().x;
                         let lc = if on || resp.hovered() { p.text } else { p.text_faint };
-                        ui.painter().galley(pos2(rect.left() + 9.0, cy - lg.size().y / 2.0), lg, lc);
+                        cp.galley(pos2(rect.left() + 9.0, cy - lg.size().y / 2.0), lg, lc);
                         if let Some(g) = kg {
-                            ui.painter().galley(pos2(rect.left() + 9.0 + lw + 6.0, cy - g.size().y / 2.0), g, p.text_ghost);
+                            cp.galley(pos2(rect.left() + 9.0 + lw + 6.0, cy - g.size().y / 2.0), g, p.text_ghost);
+                        }
+                        if resp.hovered() && !on {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
                         if resp.clicked() && !on {
                             scope = Some(m);
@@ -859,7 +880,7 @@ impl App {
                                 chosen = Some(action.clone());
                             }
                         } else {
-                            ui.painter().rect_filled(pr, CornerRadius { nw: 0, ne: 0, sw: 0, se: 0 }, if dark { style::over(p.overlay, p.chrome, 0.3) } else { Color32::from_rgb(0xfa, 0xfa, 0xfa) });
+                            ui.painter().rect_filled(pr, CornerRadius { nw: 0, ne: 0, sw: 0, se: 0 }, style::over(p.overlay, p.chrome, 0.35));
                         }
                     }
                 });

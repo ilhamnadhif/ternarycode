@@ -137,6 +137,7 @@ impl App {
 
     /// Right side of the top bar (added right to left): what acts on the active project.
     fn toolbar(&mut self, ui: &mut Ui) {
+        let compact = ui.available_width() < 760.0;
         if self.zen_mode {
             let exit = kit::button_keys(ui, kit::Kind::Secondary, Some(icons::ARROWS_IN), t("Exit Zen"), kit::keys(&Action::ToggleZenMode), true);
             #[cfg(debug_assertions)]
@@ -147,21 +148,17 @@ impl App {
             return;
         }
         if crate::ade::is_management_view(self.view) {
-            self.telemetry_pill(ui);
-            return;
-        }
-        if self.review_full() {
-            self.review_toolbar(ui);
+            self.telemetry_pill_sized(ui, compact);
             return;
         }
         if self.view == View::Grid && !self.projects.is_empty() {
             self.grid_toolbar(ui);
             kit::vsep(ui);
-            self.telemetry_pill(ui);
+            self.telemetry_pill_sized(ui, compact);
             return;
         }
         if self.view != View::Focus || self.active.is_none() {
-            self.telemetry_pill(ui);
+            self.telemetry_pill_sized(ui, compact);
             return;
         }
         let review_here = self.active.is_some_and(|pid| self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded));
@@ -184,12 +181,13 @@ impl App {
         }
         self.browser_button(ui);
         kit::vsep(ui);
-        self.telemetry_pill(ui);
+        self.telemetry_pill_sized(ui, compact);
         kit::vsep(ui);
-        let run = kit::button_keys(ui, kit::Kind::Primary, Some(icons::PLAY), t("Run Agent"), kit::keys(&Action::PickPreset), false);
+        let run_keys = (!compact).then(|| kit::keys(&Action::PickPreset)).flatten();
+        let run = kit::button_keys(ui, kit::Kind::Primary, Some(icons::PLAY), t("Run Agent"), run_keys, false);
         #[cfg(debug_assertions)]
         crate::devtest::record("run-agent", run.rect);
-        if run.on_hover_text(t("Start an agent in a new pane")).clicked() {
+        if run.on_hover_text(kit::tip(t("Start an agent in a new pane"), Action::PickPreset)).clicked() {
             self.actions.push(Action::PickPreset);
         }
     }
@@ -210,8 +208,13 @@ impl App {
             && !self.updater.dialog_open
             && !egui::Popup::is_any_open(ui.ctx())
             && !ui.ctx().egui_wants_keyboard_input();
+        let drag_id = egui::Id::new("profiles-drag-idx");
+        let profiles_dragging = self.view == View::Profiles
+            && ui.data(|d| d.get_temp::<usize>(drag_id).is_some());
         if !go_back && no_overlay && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            if self.view == View::Profiles && self.profile_draft.is_some() {
+            if profiles_dragging {
+                ui.data_mut(|d| d.remove::<usize>(drag_id));
+            } else if self.view == View::Profiles && self.profile_draft.is_some() {
                 self.profile_draft = None;
             } else {
                 go_back = true;
@@ -292,13 +295,17 @@ impl App {
             .filter(|pr| matches!(pr.state, tc_git::ship::PrState::Open | tc_git::ship::PrState::Draft));
         let body = self.top_bar(ui, full, |app, ui| {
             let dark = ui.visuals().dark_mode;
+            let bar_right = ui.max_rect().right();
+            let bar_w = ui.max_rect().width();
             // The project: its tile, its name, a caret; a click opens its menu.
             let title_text = match (&parent, &worktree) {
                 (Some(_), Some(_)) => None,
                 _ => Some(name.clone()),
             };
             if let Some(title_text) = title_text {
-                let g = ui.painter().layout_no_wrap(title_text.clone(), style::semibold(14.0), p.text);
+                let mut job = egui::text::LayoutJob::simple_singleline(title_text.clone(), style::semibold(14.0), p.text);
+                job.wrap = egui::text::TextWrapping::truncate_at_width((bar_w * 0.34).clamp(72.0, 220.0));
+                let g = ui.painter().layout_job(job);
                 let (rect, resp) = ui.allocate_exact_size(vec2(4.0 + 20.0 + 8.0 + g.size().x + 8.0 + 10.0 + 6.0, 30.0), Sense::click());
                 let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
                 if resp.hovered() || open {
@@ -326,7 +333,9 @@ impl App {
                     app.actions.push(Action::SelectProject(*parent_id));
                 }
                 ui.label(RichText::new(icons::CARET_RIGHT).font(style::icon_font(11.0)).color(p.text_faint));
-                let g = ui.painter().layout_no_wrap(name.clone(), style::semibold(14.0), p.text);
+                let mut job = egui::text::LayoutJob::simple_singleline(name.clone(), style::semibold(14.0), p.text);
+                job.wrap = egui::text::TextWrapping::truncate_at_width((bar_w * 0.28).clamp(64.0, 180.0));
+                let g = ui.painter().layout_job(job);
                 let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 12.0 + 10.0 + 4.0, 28.0), Sense::click());
                 let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
                 if resp.hovered() || open {
@@ -336,37 +345,40 @@ impl App {
                 ui.painter().text(pos2(rect.left() + 6.0 + g.size().x + 4.0 + 5.0, rect.center().y), Align2::CENTER_CENTER, icons::CARET_DOWN, style::icon_font(10.0), p.text_faint);
                 #[cfg(debug_assertions)]
                 crate::devtest::record("worktree-title", rect);
-                let resp = resp.on_hover_text(t("Worktree"));
+                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t("Worktree"));
                 egui::Popup::menu(&resp).align(egui::RectAlign::BOTTOM_START).show(|ui| {
                     ui.set_min_width(250.0);
                     ui.set_max_width(250.0);
                     app.worktree_menu(ui, pid);
                 });
-                if let Some(g) = &git {
-                    let r = worktree_chip(ui, &wt.branch, g.ahead, &wt.base);
+                if let Some(g) = &git
+                    && bar_right - ui.cursor().min.x > 260.0
+                {
+                    let r = worktree_chip(ui, &wt.branch, g.ahead, &wt.base, changed);
                     #[cfg(debug_assertions)]
                     crate::devtest::record("branch-chip", r.rect);
                     if r.on_hover_text(kit::tip(&tf("Review Against {}", &[&wt.base]), Action::Review)).clicked() {
                         app.actions.push(Action::Review);
                     }
                 }
-            } else if let Some(g) = &git {
-                let r = kit::chip(ui, Some(icons::GIT_BRANCH), &g.branch, true, None);
+            } else if let Some(g) = &git
+                && bar_right - ui.cursor().min.x > 220.0
+            {
+                let label = if changed > 0 {
+                    format!("{} · {}", g.branch, tf("{} changed", &[&changed.to_string()]))
+                } else {
+                    g.branch.clone()
+                };
+                let r = kit::chip(ui, Some(icons::GIT_BRANCH), &label, true, None);
                 #[cfg(debug_assertions)]
                 crate::devtest::record("branch-chip", r.rect);
                 if r.on_hover_text(kit::tip(t("Review Changes…"), Action::Review)).clicked() {
                     app.actions.push(Action::Review);
                 }
             }
-            if changed > 0 {
-                let r = kit::chip(ui, Some(icons::GIT_DIFF), &tf("{} changed", &[&changed.to_string()]), false, None);
-                #[cfg(debug_assertions)]
-                crate::devtest::record("changed-chip", r.rect);
-                if r.on_hover_text(kit::tip(t("Review Changes…"), Action::Review)).clicked() {
-                    app.actions.push(Action::Review);
-                }
-            }
-            if let Some(pr) = &pr {
+            if let Some(pr) = &pr
+                && bar_right - ui.cursor().min.x > 250.0
+            {
                 let r = pr_chip(ui, pr, pr_forge);
                 #[cfg(debug_assertions)]
                 crate::devtest::record("pr-chip", r.rect);
@@ -382,6 +394,7 @@ impl App {
                 }
             }
             if !servers.is_empty()
+                && bar_right - ui.cursor().min.x > 240.0
                 && let Some(url) = server_chip(ui, &servers)
             {
                 app.actions.push(Action::OpenWeb(url));
@@ -1053,18 +1066,35 @@ impl App {
         // Kept inside the pane, however narrow (else it covers the pane beside it, or leaves the
         // window): the field gives up width first.
         let field_w = (rect.width() - 200.0).clamp(60.0, 170.0);
+        let dark = ui.visuals().dark_mode;
         egui::Area::new(egui::Id::new("find-bar"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos2((rect.right() - 330.0).max(rect.left() + 6.0), rect.top() + 6.0))
             .constrain_to(rect)
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut search.query)
-                                .hint_text(t("Find in this pane"))
-                                .desired_width(field_w),
-                        );
+                egui::Frame::NONE
+                    .fill(p.overlay)
+                    .stroke(Stroke::new(1.0, p.border_strong))
+                    .corner_radius(CornerRadius::same(8))
+                    .shadow(egui::epaint::Shadow {
+                        offset: [0, 8],
+                        blur: 20,
+                        spread: 0,
+                        color: egui::Color32::from_black_alpha(if dark { 120 } else { 32 }),
+                    })
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let r = kit::field(
+                                ui,
+                                egui::Id::new("pane-find-input"),
+                                &mut search.query,
+                                Some(icons::MAGNIFYING_GLASS),
+                                t("Find in this pane"),
+                                field_w,
+                                true,
+                            );
                         if search.opened {
                             r.request_focus();
                             search.opened = false;
@@ -1178,14 +1208,17 @@ impl App {
             right = used_left - 8.0;
         }
         let painter = ui.painter_at(rect);
+        let min_right = rect.left() + 140.0;
         // How long it has been running, or waiting: "1:42".
-        if matches!(s, Status::Running | Status::NeedsInput) {
+        if matches!(s, Status::Running | Status::NeedsInput) && right > min_right + 36.0 {
             let secs = since.elapsed().as_secs();
             let text = if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) };
             let g = painter.layout_no_wrap(text, style::mono(10.5), p.text_muted);
-            right -= g.size().x;
-            painter.galley(pos2(right, cy - g.size().y / 2.0), g, p.text_muted);
-            right -= 10.0;
+            if right - g.size().x > min_right {
+                right -= g.size().x;
+                painter.galley(pos2(right, cy - g.size().y / 2.0), g, p.text_muted);
+                right -= 10.0;
+            }
             if s == Status::NeedsInput {
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
             }
@@ -1194,36 +1227,42 @@ impl App {
             let g = painter.layout_no_wrap(t("hooks").to_string(), style::mono(10.5), p.text_faint);
             let gw = g.size().x;
             let x = right - gw;
-            painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
-            painter.text(pos2(x - 4.0, cy), Align2::RIGHT_CENTER, icons::PLUGS_CONNECTED, style::icon_font(11.0), p.text_faint);
-            let r = Rect::from_min_max(pos2(x - 16.0, rect.top()), pos2(right, rect.bottom()));
-            ui.interact(r, egui::Id::new(("hooks", pane_id)), Sense::hover())
-                .on_hover_text(crate::i18n::tf("Status from {} hooks", &[&hooks_label]));
-            right = x - 16.0 - 10.0;
+            if x - 16.0 > min_right {
+                painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+                painter.text(pos2(x - 4.0, cy), Align2::RIGHT_CENTER, icons::PLUGS_CONNECTED, style::icon_font(11.0), p.text_faint);
+                let r = Rect::from_min_max(pos2(x - 16.0, rect.top()), pos2(right, rect.bottom()));
+                ui.interact(r, egui::Id::new(("hooks", pane_id)), Sense::hover())
+                    .on_hover_text(crate::i18n::tf("Status from {} hooks", &[&hooks_label]));
+                right = x - 16.0 - 10.0;
+            }
         } else if let Some(agent) = unconnected {
             // An agent without the hooks: it can't say when it needs the user. Click: Connect.
             let g = painter.layout_no_wrap(t("not connected").to_string(), style::mono(10.5), p.warn);
             let gw = g.size().x;
             let b = Rect::from_min_max(pos2(right - gw - 16.0 - 8.0, cy - 10.0), pos2(right + 2.0, cy + 10.0));
-            let r = ui.interact(b, egui::Id::new(("unconnected", pane_id)), Sense::click());
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("unconnected:{pane_id}"), b);
-            if r.hovered() {
-                painter.rect_filled(b, CornerRadius::same(5), style::tint(p.warn, ui.visuals().dark_mode));
+            if b.left() > min_right {
+                let r = ui.interact(b, egui::Id::new(("unconnected", pane_id)), Sense::click());
+                #[cfg(debug_assertions)]
+                crate::devtest::record(format!("unconnected:{pane_id}"), b);
+                if r.hovered() {
+                    painter.rect_filled(b, CornerRadius::same(5), style::tint(p.warn, ui.visuals().dark_mode));
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                painter.galley(pos2(b.right() - 4.0 - gw, cy - g.size().y / 2.0), g, p.warn);
+                painter.text(pos2(b.right() - 4.0 - gw - 4.0, cy), Align2::RIGHT_CENTER, icons::WARNING, style::icon_font(11.0), p.warn);
+                if r.on_hover_text(self.unconnected_tip(&[agent])).clicked() {
+                    self.actions.push(Action::PlanInstall(agent.1));
+                }
+                right = b.left() - 8.0;
             }
-            painter.galley(pos2(b.right() - 4.0 - gw, cy - g.size().y / 2.0), g, p.warn);
-            painter.text(pos2(b.right() - 4.0 - gw - 4.0, cy), Align2::RIGHT_CENTER, icons::WARNING, style::icon_font(11.0), p.warn);
-            if r.on_hover_text(self.unconnected_tip(&[agent])).clicked() {
-                self.actions.push(Action::PlanInstall(agent.1));
-            }
-            right = b.left() - 8.0;
         }
-        if let Some(place) = &place {
+        if let Some(place) = &place && right > min_right + 40.0 {
+            let max_place = ((right - rect.left()) * 0.35).min((right - min_right - 12.0).max(0.0));
             let mut job = egui::text::LayoutJob::simple_singleline(place.clone(), style::mono(10.5), p.text_faint);
-            job.wrap = egui::text::TextWrapping::truncate_at_width(((right - rect.left()) * 0.35).max(0.0));
+            job.wrap = egui::text::TextWrapping::truncate_at_width(max_place);
             let g = painter.layout_job(job);
             let w = g.size().x;
-            if w > 8.0 {
+            if w > 8.0 && right - w > min_right {
                 painter.galley(pos2(right - w, cy - g.size().y / 2.0), g, p.text_faint);
                 right -= w + 10.0;
             }
@@ -1300,6 +1339,7 @@ impl App {
     /// The banner over a restored pane whose agent can continue its last session (in Focus;
     /// a Grid tile says it in its foot): the agent's logo, what happened, Resume Session, ×.
     pub(super) fn resume_banner(&mut self, ui: &mut Ui, pane_id: PaneId, rect: Rect, tile: bool) {
+        let _ = tile;
         let p = style::pal(ui);
         let Some((agent, _)) = self.panes.get(&pane_id).and_then(|x| x.resume.clone()) else { return };
         let painter = ui.painter_at(rect.expand(1.0));
@@ -1374,6 +1414,7 @@ impl App {
         let inner = Rect::from_min_max(pos2(rect.left() + 12.0, rect.top()), pos2(rect.right() - 6.0, rect.bottom()));
         let (restart, close, left) = ui
             .scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                ui.set_clip_rect(inner.intersect(ui.clip_rect()));
                 ui.spacing_mut().item_spacing.x = 6.0;
                 if failed.is_some() {
                     let r = kit::button_keys(ui, kit::Kind::Secondary, None, t("Try Again"), Some("↵"), true);
@@ -1386,10 +1427,13 @@ impl App {
             })
             .inner;
         let text_x = rect.left() + 12.0 + 14.0 + 8.0;
-        let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(12.5), p.text_muted);
-        job.wrap = egui::text::TextWrapping::truncate_at_width((left - 10.0 - text_x).max(10.0));
-        let g = painter.layout_job(job);
-        painter.galley(pos2(text_x, cy - g.size().y / 2.0), g, p.text_muted);
+        let room = left - 10.0 - text_x;
+        if room >= 32.0 {
+            let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(12.5), p.text_muted);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            let g = painter.layout_job(job);
+            painter.galley(pos2(text_x, cy - g.size().y / 2.0), g, p.text_muted);
+        }
         if restart.clicked() {
             self.actions.push(Action::RestartShell(pane_id));
         }
@@ -1425,6 +1469,7 @@ impl App {
                     .max_rect(inner)
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 |ui| {
+                    ui.set_clip_rect(inner.intersect(ui.clip_rect()));
                     ui.spacing_mut().item_spacing.x = 5.0;
                     if kit::button_ex(ui, kit::Kind::Danger, Some(icons::X), t("Reject"), true).clicked()
                         && let Some(pane) = self.panes.get_mut(&pane_id)
@@ -1443,11 +1488,13 @@ impl App {
             .inner;
 
         let tx = rect.left() + 28.0;
-        let room = (right_edge - 8.0 - tx).max(20.0);
-        let mut job = egui::text::LayoutJob::simple_singleline(msg, egui::FontId::proportional(12.0), p.text);
-        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-        let g = painter.layout_job(job);
-        painter.galley(pos2(tx, cy - g.size().y / 2.0), g, p.text);
+        let room = right_edge - 8.0 - tx;
+        if room >= 32.0 {
+            let mut job = egui::text::LayoutJob::simple_singleline(msg, egui::FontId::proportional(12.0), p.text);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            let g = painter.layout_job(job);
+            painter.galley(pos2(tx, cy - g.size().y / 2.0), g, p.text);
+        }
     }
 
     /// Crisp 32 px header bar for the collapsible Secondary Drawer (`Terminals | Agent Logs | Problems`,
@@ -1625,13 +1672,13 @@ impl App {
                                 crate::profiles::LogLevel::Tool => p.info,
                                 crate::profiles::LogLevel::Info => p.text_muted,
                             };
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 8.0;
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(8.0, 2.0);
                                 ui.label(RichText::new(entry.at.format("%H:%M:%S").to_string()).font(style::mono(10.5)).color(p.text_ghost));
                                 if let Some(pr) = &entry.profile {
                                     ui.label(RichText::new(pr).font(style::mono_medium(10.5)).color(p.accent_text));
                                 }
-                                ui.label(RichText::new(&entry.message).font(style::mono(11.5)).color(c));
+                                ui.add(egui::Label::new(RichText::new(&entry.message).font(style::mono(11.5)).color(c)).wrap());
                             });
                         }
                     }
@@ -1665,7 +1712,37 @@ impl App {
         let p = style::pal(ui);
         let review = mode == 1;
         let history = mode == 2;
+        // From the right first so the segmented control never collides with close/expand/search on narrow panes.
+        let mut x = rect.right() - 8.0;
+        let mut button = |ui: &mut Ui, icon: &str, tip: &str| {
+            let r = Rect::from_center_size(pos2(x - 11.0, rect.center().y), vec2(22.0, 22.0));
+            x -= 24.0;
+            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, 22.0)).inner
+        };
+        let close_tip = if review { kit::tip(t("Close Review"), Action::ToggleEditor) } else { kit::tip(t("Close Code"), Action::ToggleEditor) };
+        let c = button(ui, icons::X, &close_tip);
+        #[cfg(debug_assertions)]
+        crate::devtest::record("editor-close", c.rect);
+        if c.clicked() {
+            if let Some(e) = self.editors.get_mut(&pid) {
+                e.visible = false;
+            }
+            if review {
+                self.review_close = true;
+            }
+            if history {
+                self.history = None;
+            }
+            self.drawer_maximized = false;
+            self.focus_request = self.current_pane();
+            self.mark_dirty();
+        }
+        if button(ui, icons::MAGNIFYING_GLASS, &kit::tip(t("Open File…"), Action::QuickOpen)).clicked() {
+            self.actions.push(Action::QuickOpen);
+        }
+
         let changed = self.project(pid).and_then(|x| x.git.as_ref()).map_or(0, |g| g.changes.len());
+        let avail = (x - 6.0 - (rect.left() + 8.0)).max(90.0);
         let mut options = vec![
             kit::Seg::new(t("Files"), "").icon(icons::FILES),
             kit::Seg::new(t("Changes"), "").icon(icons::GIT_DIFF),
@@ -1674,7 +1751,18 @@ impl App {
         if changed > 0 {
             options[1] = options[1].clone().count(changed, p.text_faint);
         }
-        let w = kit::segmented_width(ui, &options);
+        let mut w = kit::segmented_width(ui, &options);
+        if w > avail {
+            options = vec![
+                kit::Seg::new(t("Files"), t("Files")),
+                kit::Seg::new(t("Changes"), t("Changes")),
+                kit::Seg::new(t("History"), t("History")),
+            ];
+            if changed > 0 {
+                options[1] = options[1].clone().count(changed, p.text_faint);
+            }
+            w = kit::segmented_width(ui, &options).min(avail);
+        }
         let seg = Rect::from_min_size(pos2(rect.left() + 8.0, rect.center().y - kit::SEGMENTED_H / 2.0), vec2(w, kit::SEGMENTED_H));
         #[cfg(debug_assertions)]
         for (r, name) in kit::segment_rects(seg, 3).into_iter().zip(["files:files", "files:changes", "files:history"]) {
@@ -1695,39 +1783,6 @@ impl App {
                 self.open_history();
             }
             _ => {}
-        }
-        // From the right: close, full screen (the Review), search.
-        let mut x = rect.right() - 8.0;
-        let mut button = |ui: &mut Ui, icon: &str, tip: &str| {
-            let r = Rect::from_center_size(pos2(x - 11.0, rect.center().y), vec2(22.0, 22.0));
-            x -= 24.0;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, false, 22.0)).inner
-        };
-        let close_tip = if review { kit::tip(t("Close Review"), Action::ToggleEditor) } else { kit::tip(t("Close Code"), Action::ToggleEditor) };
-        let c = button(ui, icons::X, &close_tip);
-        #[cfg(debug_assertions)]
-        crate::devtest::record("editor-close", c.rect);
-        if c.clicked() {
-            if review {
-                self.review_close = true;
-            }
-            if history {
-                self.history = None;
-            }
-            self.actions.push(Action::ToggleEditor);
-        }
-        if review {
-            let e = button(ui, icons::ARROWS_OUT, &kit::tip(t("Full-Screen Review"), Action::Review));
-            #[cfg(debug_assertions)]
-            crate::devtest::record("review-expand", e.rect);
-            if e.clicked()
-                && let Some(r) = self.review.as_mut()
-            {
-                r.expanded = true;
-            }
-        }
-        if button(ui, icons::MAGNIFYING_GLASS, &kit::tip(t("Open File…"), Action::QuickOpen)).clicked() {
-            self.actions.push(Action::QuickOpen);
         }
     }
 
@@ -1809,20 +1864,28 @@ impl App {
             ui,
             full,
             |app, ui| {
+                let left_w = ui.available_width();
                 ui.add_space(4.0);
-                ui.label(RichText::new(t("All projects")).font(style::semibold(14.0)).color(p.text));
-                ui.add_space(4.0);
-                // Worktrees are counted on their own ("7 projects · 2 worktrees · …").
-                let worktrees = app_worktrees;
-                let mut parts = vec![crate::i18n::count(n - worktrees, t("1 project"), t("{} projects"))];
-                if worktrees > 0 {
-                    parts.push(crate::i18n::count(worktrees, t("1 worktree"), t("{} worktrees")));
+                if left_w > width + 110.0 {
+                    ui.label(RichText::new(t("All projects")).font(style::semibold(14.0)).color(p.text));
                 }
-                parts.push(tf("{} active", &[&active.to_string()]));
-                parts.push(tf("{} waiting", &[&waiting.to_string()]));
-                ui.label(RichText::new(parts.join(" · ")).font(style::mono(11.0)).color(p.text_faint));
-                ui.add_space(18.0);
-                let (rect, _) = ui.allocate_exact_size(vec2(width, kit::SEGMENTED_H), Sense::hover());
+                // Worktrees are counted on their own ("7 projects · 2 worktrees · …"); drop on narrow bars so filters never clip.
+                if left_w > width + 320.0 {
+                    ui.add_space(4.0);
+                    let worktrees = app_worktrees;
+                    let mut parts = vec![crate::i18n::count(n - worktrees, t("1 project"), t("{} projects"))];
+                    if worktrees > 0 {
+                        parts.push(crate::i18n::count(worktrees, t("1 worktree"), t("{} worktrees")));
+                    }
+                    parts.push(tf("{} active", &[&active.to_string()]));
+                    parts.push(tf("{} waiting", &[&waiting.to_string()]));
+                    ui.label(RichText::new(parts.join(" · ")).font(style::mono(11.0)).color(p.text_faint));
+                    ui.add_space(14.0);
+                } else if left_w > width + 110.0 {
+                    ui.add_space(8.0);
+                }
+                let seg_w = width.min((ui.available_width() - 4.0).max(120.0));
+                let (rect, _) = ui.allocate_exact_size(vec2(seg_w, kit::SEGMENTED_H), Sense::hover());
                 filter(app, ui, rect);
             },
             None,
@@ -1836,13 +1899,15 @@ impl App {
     /// The Grid's toolbar: Run Agent, and how many tiles a screen holds.
     fn grid_toolbar(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
+        let compact = ui.available_width() < 760.0;
         let label = match self.grid_columns {
             0 => t("Auto").to_string(),
             n => format!("{n} × {n}"),
         };
         // Added right to left: the tiles menu, then Run Agent.
-        let run = kit::button_keys(ui, kit::Kind::Primary, Some(icons::PLAY), t("Run Agent"), kit::keys(&Action::PickPreset), false);
-        if run.on_hover_text(t("Start an agent in a new pane")).clicked() {
+        let run_keys = (!compact).then(|| kit::keys(&Action::PickPreset)).flatten();
+        let run = kit::button_keys(ui, kit::Kind::Primary, Some(icons::PLAY), t("Run Agent"), run_keys, false);
+        if run.on_hover_text(kit::tip(t("Start an agent in a new pane"), Action::PickPreset)).clicked() {
             self.actions.push(Action::PickPreset);
         }
         kit::vsep(ui);
@@ -1924,25 +1989,26 @@ fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
 
 /// A worktree's branch in its project header: "⑂ tc/generics · 2 ahead of main". A click
 /// reviews it against its base.
-fn worktree_chip(ui: &mut Ui, branch: &str, ahead: usize, base: &str) -> egui::Response {
+fn worktree_chip(ui: &mut Ui, branch: &str, ahead: usize, base: &str, changed: usize) -> egui::Response {
     let p = style::pal(ui);
     let mut job = egui::text::LayoutJob::default();
     job.append(branch, 0.0, egui::TextFormat::simple(style::mono(11.5), p.text_muted));
     job.append("·", 6.0, egui::TextFormat::simple(style::mono(11.5), p.text_faint));
     job.append(&tf("{} ahead of {}", &[&ahead.to_string(), base]), 6.0, egui::TextFormat::simple(style::mono(11.5), p.text_faint));
+    if changed > 0 {
+        job.append("·", 6.0, egui::TextFormat::simple(style::mono(11.5), p.text_faint));
+        job.append(&tf("{} changed", &[&changed.to_string()]), 6.0, egui::TextFormat::simple(style::mono(11.5), p.text_muted));
+    }
     let g = ui.painter().layout_job(job);
-    let w = 8.0 + 13.0 + 6.0 + g.size().x + 6.0 + 10.0 + 8.0;
+    let w = 8.0 + 13.0 + 6.0 + g.size().x + 8.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
-    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
     ui.painter().rect_stroke(rect, CornerRadius::same(style::RADIUS), Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-    if resp.hovered() || open {
+    if resp.hovered() {
         ui.painter().rect_filled(rect, CornerRadius::same(style::RADIUS), p.hover);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     ui.painter().text(pos2(rect.left() + 8.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icons::GIT_FORK, style::icon_font(13.0), p.text_faint);
-    let gw = g.size().x;
     ui.painter().galley(pos2(rect.left() + 8.0 + 13.0 + 6.0, rect.center().y - g.size().y / 2.0), g, p.text_muted);
-    ui.painter().text(pos2(rect.left() + 8.0 + 13.0 + 6.0 + gw + 6.0 + 5.0, rect.center().y), Align2::CENTER_CENTER, icons::CARET_DOWN, style::icon_font(10.0), p.text_ghost);
     resp
 }
 

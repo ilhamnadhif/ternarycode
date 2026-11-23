@@ -207,75 +207,84 @@ impl Updater {
             self.started = true;
             toast = self.report_last_update();
         }
-        if let Some(rx) = &self.rx
-            && let Ok(msg) = rx.try_recv()
-        {
-            if !matches!(msg, Msg::Newer(_)) {
-                self.rx = None;
-            }
-            match msg {
-                Msg::Newer(release) => {
-                    if let State::Downloading(r) = &mut self.state {
-                        self.announced = Some(release.version.clone());
-                        *r = release;
+        if let Some(rx) = &self.rx {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    if !matches!(msg, Msg::Newer(_)) {
+                        self.rx = None;
                     }
-                }
-                Msg::Checked(result) => {
-                    // Someone is looking at "Checking for updates…" (whichever check it was).
-                    let manual =
-                        self.dialog_open && matches!(self.state, State::Idle | State::Checking);
-                    let at_launch = std::mem::take(&mut self.launch_check);
-                    settings.last_update_check = Some(now_secs());
-                    match result {
-                        Ok(Some(release)) => {
-                            let skipped = settings.skipped_version.as_deref()
-                                == Some(release.version.as_str());
-                            // A version already offered (or downloaded) is only replaced by a
-                            // newer one.
-                            let held = match &self.state {
-                                State::Available(r)
-                                | State::Downloading(r)
-                                | State::Ready(r, _) => Some(r.version.as_str()),
-                                _ => None,
-                            };
-                            let newer = held.is_none_or(|v| update::is_newer(&release.version, v));
-                            if newer && (manual || !skipped) {
-                                if let State::Ready(_, prepared) = &self.state {
-                                    let dir = prepared.dir.clone();
-                                    std::thread::spawn(move || std::fs::remove_dir_all(dir));
-                                }
-                                if self.announced.as_deref() != Some(&release.version) && !manual {
-                                    if at_launch {
-                                        self.popup = true;
-                                    } else if !self.dialog_open {
-                                        toast = Some(tf(
-                                            "TernaryCode {} is available: click Update in the status bar to install it.",
-                                            &[&release.version],
-                                        ));
-                                    }
-                                }
+                    match msg {
+                        Msg::Newer(release) => {
+                            if let State::Downloading(r) = &mut self.state {
                                 self.announced = Some(release.version.clone());
-                                self.state = State::Available(release);
+                                *r = release;
                             }
                         }
-                        Ok(None) if manual => self.state = State::UpToDate,
-                        Err(e) if manual => self.state = State::Error(e),
-                        // Automatic checks fail silently.
-                        Ok(None) | Err(_) => {}
+                        Msg::Checked(result) => {
+                            // Someone is looking at "Checking for updates…" (whichever check it was).
+                            let manual =
+                                self.dialog_open && matches!(self.state, State::Idle | State::Checking);
+                            let at_launch = std::mem::take(&mut self.launch_check);
+                            settings.last_update_check = Some(now_secs());
+                            match result {
+                                Ok(Some(release)) => {
+                                    let skipped = settings.skipped_version.as_deref()
+                                        == Some(release.version.as_str());
+                                    // A version already offered (or downloaded) is only replaced by a
+                                    // newer one.
+                                    let held = match &self.state {
+                                        State::Available(r)
+                                        | State::Downloading(r)
+                                        | State::Ready(r, _) => Some(r.version.as_str()),
+                                        _ => None,
+                                    };
+                                    let newer = held.is_none_or(|v| update::is_newer(&release.version, v));
+                                    if newer && (manual || !skipped) {
+                                        if let State::Ready(_, prepared) = &self.state {
+                                            let dir = prepared.dir.clone();
+                                            std::thread::spawn(move || std::fs::remove_dir_all(dir));
+                                        }
+                                        if self.announced.as_deref() != Some(&release.version) && !manual {
+                                            if at_launch {
+                                                self.popup = true;
+                                            } else if !self.dialog_open {
+                                                toast = Some(tf(
+                                                    "TernaryCode {} is available: click Update in the status bar to install it.",
+                                                    &[&release.version],
+                                                ));
+                                            }
+                                        }
+                                        self.announced = Some(release.version.clone());
+                                        self.state = State::Available(release);
+                                    }
+                                }
+                                Ok(None) if manual => self.state = State::UpToDate,
+                                Err(e) if manual => self.state = State::Error(e),
+                                // Automatic checks fail silently.
+                                Ok(None) | Err(_) => {}
+                            }
+                        }
+                        Msg::Downloaded(result) => {
+                            match (std::mem::replace(&mut self.state, State::Idle), result) {
+                                (State::Downloading(release), Ok(prepared)) => {
+                                    self.state = State::Ready(release, prepared);
+                                    self.dialog_open = true;
+                                }
+                                (_, Err(e)) => {
+                                    self.state =
+                                        State::Error(tf("The update could not be installed: {}", &[&e]));
+                                    self.dialog_open = true;
+                                }
+                                (other, Ok(_)) => self.state = other,
+                            }
+                        }
                     }
                 }
-                Msg::Downloaded(result) => {
-                    match (std::mem::replace(&mut self.state, State::Idle), result) {
-                        (State::Downloading(release), Ok(prepared)) => {
-                            self.state = State::Ready(release, prepared);
-                            self.dialog_open = true;
-                        }
-                        (_, Err(e)) => {
-                            self.state =
-                                State::Error(tf("The update could not be installed: {}", &[&e]));
-                            self.dialog_open = true;
-                        }
-                        (other, Ok(_)) => self.state = other,
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.rx = None;
+                    if matches!(self.state, State::Checking | State::Downloading(_)) {
+                        self.state = State::Error(t("The update task stopped unexpectedly.").to_string());
                     }
                 }
             }
@@ -387,9 +396,9 @@ impl Updater {
         let dark = ctx.global_style().visuals.dark_mode;
         let p = style::palette(dark);
         let width = if matches!(self.state, State::Available(_)) {
-            (screen.width() - 60.0).clamp(400.0, 560.0)
+            (screen.width() - 32.0).clamp(360.0, 560.0)
         } else {
-            440.0
+            (screen.width() - 32.0).clamp(340.0, 460.0)
         };
         // Enter answers only the dialog asked for (up to date). The others can open by
         // themselves (found at launch, downloaded, failed) while the user types into a
@@ -431,23 +440,26 @@ impl Updater {
                     }
                     State::Error(e) => {
                         let sub = format!("{}. {}", e.trim_end_matches('.'), t("Nothing was changed."));
-                        if dialogs::header(ui, icons::WARNING, p.err, t("The update could not be downloaded"), Some(&sub)) {
+                        if dialogs::header(ui, icons::WARNING, p.err, t("Software Update Failed"), Some(&sub)) {
                             close = true;
                         }
                         ui.add_space(12.0);
-                        dialogs::footer_with(ui, None, |ui| {
-                            if kit::button_ex(ui, kit::Kind::Primary, None, t("OK"), false).clicked() {
-                                close = true;
-                            }
-                            if kit::secondary(ui, None, t("Try Again")).clicked() {
-                                retry = true;
-                            }
-                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        dialogs::footer_left(
+                            ui,
+                            |ui| {
                                 if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_SQUARE_OUT), t("Open Releases Page"), false).clicked() {
                                     update::open_page(&format!("https://github.com/{}/releases/latest", update::REPO));
                                 }
-                            });
-                        });
+                            },
+                            |ui| {
+                                if kit::button_ex(ui, kit::Kind::Primary, None, t("OK"), false).clicked() {
+                                    close = true;
+                                }
+                                if kit::secondary(ui, None, t("Try Again")).clicked() {
+                                    retry = true;
+                                }
+                            },
+                        );
                     }
                     State::Available(release) => {
                         let mut sub = vec![tf("you have {}", &[CURRENT])];
@@ -474,7 +486,12 @@ impl Updater {
                                 ui.horizontal_top(|ui| {
                                     ui.spacing_mut().item_spacing.x = 8.0;
                                     ui.label(RichText::new(icons::SHIELD_CHECK).font(style::icon_fill(13.0)).color(p.ok));
-                                    ui.add(egui::Label::new(RichText::new(t("Downloaded from GitHub, then its size, SHA-256 and code signature are checked before anything is replaced.")).size(12.0).color(p.text_faint)).wrap());
+                                    let note = if cfg!(target_os = "macos") {
+                                        t("Downloaded from GitHub, then its size, SHA-256 and code signature are checked before anything is replaced.")
+                                    } else {
+                                        t("Downloaded from GitHub, then its size and SHA-256 are checked before anything is replaced.")
+                                    };
+                                    ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint)).wrap());
                                 });
                             }
                             ui.add_space(10.0);
@@ -483,6 +500,7 @@ impl Updater {
                                 let skip = kit::switch(ui, &mut self.skip_ticked);
                                 #[cfg(debug_assertions)]
                                 crate::devtest::record("update-skip", skip.rect);
+                                let _ = skip;
                                 ui.label(RichText::new(tf("Don’t remind me about {}", &[&release.version])).size(style::SMALL).color(p.text_muted));
                             });
                         });
@@ -550,8 +568,18 @@ impl Updater {
                             };
                             let pct = format!("{}%", (fraction * 100.0).round() as i32);
                             step(ui, if verifying { 2 } else { 1 }, &text, if verifying { "" } else { &pct });
-                            step(ui, if verifying { 1 } else { 0 }, t("Verify size, SHA-256, signature"), "");
-                            step(ui, 0, t("Restart in place"), "");
+                            let verify_label = if cfg!(target_os = "macos") {
+                                t("Verify size, SHA-256, signature")
+                            } else {
+                                t("Verify size and SHA-256")
+                            };
+                            step(ui, if verifying { 1 } else { 0 }, verify_label, "");
+                            let finish_label = if update::restarts_in_place() {
+                                t("Restart in place")
+                            } else {
+                                t("Install and reopen")
+                            };
+                            step(ui, 0, finish_label, "");
                         });
                         dialogs::footer_with(ui, Some(t("It keeps going in the background.")), |ui| {
                             if kit::secondary(ui, None, t("Hide")).clicked() {
@@ -560,12 +588,17 @@ impl Updater {
                         });
                     }
                     State::Ready(release, _) => {
+                        let ready_sub = if update::restarts_in_place() {
+                            t("TernaryCode restarts in place: your projects, tabs and running agents stay open.")
+                        } else {
+                            t("TernaryCode restarts with your projects and tabs. Agents that support it can be resumed.")
+                        };
                         if dialogs::header(
                             ui,
                             icons::CHECK_CIRCLE,
                             p.ok,
                             &tf("TernaryCode {} is ready", &[&release.version]),
-                            Some(t("TernaryCode restarts with your projects and tabs. Agents that support it can be resumed.")),
+                            Some(ready_sub),
                         ) {
                             close = true;
                         }

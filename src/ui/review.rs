@@ -36,17 +36,8 @@ pub struct BranchView {
     pub commits: Vec<tc_git::worktree::Commit>,
     pub by_file: HashMap<String, String>,
     pub uncommitted: HashSet<String>,
-    /// The commit it branched at (short id) and when that was made (Unix seconds).
+    /// The commit it branched at (short id).
     pub fork: String,
-    pub fork_time: Option<i64>,
-}
-
-/// One part of a worktree's work picked in full-screen Review: what is not committed, or one
-/// of its commits (by short id). None: all of it since it branched.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Pick {
-    Uncommitted,
-    Commit(String),
 }
 
 pub struct Review {
@@ -74,7 +65,7 @@ pub struct Review {
     /// Which load and which diff the answers must belong to (an older, slower one is dropped).
     load: u64,
     diff_load: u64,
-    /// Drawn over the panes (full screen) instead of in the Code drawer.
+    /// Kept false (Changes always lives inside the docked Code stage; never duplicates as a modal overlay).
     pub expanded: bool,
     /// Opened from an agent's finished run (its Review button, the waiting list): shows what
     /// that run changed, when it changed something.
@@ -89,8 +80,6 @@ pub struct Review {
     pub new_dirs: Vec<(String, usize)>,
     pub dir_of: Vec<Option<usize>>,
     pub folded: HashSet<usize>,
-    /// A worktree's commit (or what is not committed) shown instead of all of its work.
-    pub pick: Option<Pick>,
     /// Files that differ from the last commit: the ones the commit box can take.
     pub uncommitted: HashSet<String>,
 }
@@ -118,8 +107,6 @@ pub enum ReviewMsg {
         uncommitted: Vec<String>,
     },
     Diff(u64, usize, Result<FileDiff, String>),
-    /// The files of a picked commit (or of what is not committed), and the trees compared.
-    Picked { load: u64, from: String, to: String, files: Result<Vec<FileChange>, String> },
 }
 
 impl App {
@@ -160,15 +147,13 @@ impl App {
                 .map(|(tree, at, agent)| (agent.label().to_string(), *at, tree.clone()))
         });
         let worktree = project.worktree.as_ref().map(|w| (w.branch.clone(), w.base.clone()));
-        // Full screen stays full screen; the Grid has no drawer to show it in.
-        let expanded = self.view == tc_core::model::View::Grid
-            || self.review.as_ref().is_some_and(|r| r.project == project_id && r.expanded);
-        if !expanded {
-            // The drawer opens as ⌘E opens it (a first time at its usual width).
-            self.history = None;
-            self.drawer_maximized = false;
-            self.editors.entry(project_id).or_insert_with(|| crate::editor::Editor { width: 0.54, ..Default::default() }).visible = true;
+        if self.view != tc_core::model::View::Focus {
+            self.show_focus();
         }
+        // Always open docked inside the Code stage (`Files | Changes | History`).
+        self.history = None;
+        self.drawer_maximized = false;
+        self.editors.entry(project_id).or_insert_with(|| crate::editor::Editor { width: 0.54, ..Default::default() }).visible = true;
         let load = next_work();
         self.review_close = false;
         self.review = Some(Review {
@@ -189,14 +174,13 @@ impl App {
             error: None,
             diff_error: None,
             want: None,
-            expanded,
+            expanded: false,
             from_agent,
             counts: Vec::new(),
             fell_back: false,
             new_dirs: Vec::new(),
             dir_of: Vec::new(),
             folded: HashSet::new(),
-            pick: None,
             uncommitted: HashSet::new(),
         });
         let tx = self.app_tx.clone();
@@ -224,10 +208,9 @@ impl App {
                 if let Some((wt_branch, wt_base)) = worktree.clone() {
                     let fork_commit = tc_git::worktree::merge_base(root, &wt_base, "HEAD")?;
                     let (ahead, behind) = tc_git::worktree::ahead_behind(root, &wt_base, "HEAD").unwrap_or((0, 0));
-                    let (fork_short, fork_time) = tc_git::worktree::commit_line(root, &fork_commit).map_or((String::new(), None), |(s, t)| (s, Some(t)));
+                    let (fork_short, _) = tc_git::worktree::commit_line(root, &fork_commit).unwrap_or_default();
                     branch = Some(BranchView {
                         fork: fork_short,
-                        fork_time,
                         branch: wt_branch,
                         base: wt_base.clone(),
                         ahead,
@@ -301,55 +284,7 @@ impl App {
         });
     }
 
-    /// Shows one part of a worktree's work (full screen): what is not committed, or one of its
-    /// commits; `None`: all of it again.
-    pub fn review_pick(&mut self, pick: Option<Pick>) {
-        let Some(r) = self.review.as_mut() else { return };
-        let Some(pick) = pick else {
-            self.review_hunk = 0;
-            self.open_review(Some(Base::Branch));
-            return;
-        };
-        let load = next_work();
-        r.load = load;
-        r.loading = true;
-        r.pick = Some(pick.clone());
-        r.files.clear();
-        r.diff = None;
-        r.selected = 0;
-        self.review_hunk = 0;
-        let root = r.root.clone();
-        let tx = self.app_tx.clone();
-        let ctx = self.ctx.clone();
-        self.rt.spawn_blocking(move || {
-            let result = (|| {
-                let (from, to) = match &pick {
-                    Pick::Uncommitted => {
-                        let (head, now) = tc_git::worktree_vs_head(&root)?;
-                        (match head {
-                            Some(h) => h,
-                            None => tc_git::empty_tree(&root)?,
-                        }, now)
-                    }
-                    Pick::Commit(c) => {
-                        // Its parent's tree (none for a first commit: the empty tree), its own.
-                        let from = tc_git::worktree::tree_of(&root, &format!("{c}^")).or_else(|_| tc_git::empty_tree(&root))?;
-                        (from, tc_git::worktree::tree_of(&root, c)?)
-                    }
-                };
-                let files = tc_git::changes(&root, &from, &to)?;
-                Ok::<_, String>((from, to, files))
-            })();
-            let msg = match result {
-                Ok((from, to, files)) => ReviewMsg::Picked { load, from, to, files: Ok(files) },
-                Err(e) => ReviewMsg::Picked { load, from: String::new(), to: String::new(), files: Err(e) },
-            };
-            let _ = tx.send(AppMsg::Review(msg));
-            ctx.request_repaint();
-        });
-    }
-
-    /// Review covers the panes (full screen): the panes are not what the user looks at.
+    /// Review always runs docked inside the Code stage (no duplicate full-screen overlay).
     pub fn review_full(&self) -> bool {
         self.review.as_ref().is_some_and(|r| r.expanded)
     }
@@ -391,28 +326,6 @@ impl App {
                         let first = r.selected;
                         if !r.files.is_empty() {
                             self.load_review_diff(first);
-                        }
-                    }
-                    Err(e) => r.error = Some(e),
-                }
-            }
-            ReviewMsg::Picked { load, from, to, files } => {
-                if load != r.load {
-                    return;
-                }
-                r.loading = false;
-                r.error = None;
-                r.diff = None;
-                r.diff_error = None;
-                match files {
-                    Ok(f) => {
-                        r.files = f;
-                        r.from = Some(from);
-                        r.to = Some(to);
-                        r.selected = 0;
-                        group_new_folders(r, &new_folders);
-                        if !r.files.is_empty() {
-                            self.load_review_diff(0);
                         }
                     }
                     Err(e) => r.error = Some(e),
@@ -470,120 +383,33 @@ impl App {
         out
     }
 
-    /// Review over the panes (full screen; the sidebar stays): the bases in the top bar, the
-    /// file list and the selected file's diff. Esc goes back to the Code drawer.
-    pub fn review_view(&mut self, ui: &mut Ui) {
-        let Some(r) = self.review.as_ref() else { return };
-        let p = style::pal(ui);
-        let dark = ui.visuals().dark_mode;
-        let full = ui.max_rect();
-        // Where: the project (a worktree: its project, then the worktree).
-        let (name, letters, color, parent) = match self.project(r.project) {
-            Some(x) => (x.name.clone(), x.letters(), x.color32(), x.parent.and_then(|id| self.project(id)).map(|pp| (pp.name.clone(), pp.letters(), pp.color32()))),
-            None => (String::new(), String::new(), p.text_faint, None),
-        };
-        let base = r.base;
-        let bases = self.review_bases();
-        let (scope_icon, scope_label) = match bases.iter().find(|(b, ..)| *b == base) {
-            Some((Base::Branch, long, ..)) => (icons::GIT_BRANCH, long.clone()),
-            Some((Base::Run, long, ..)) => (icons::SPARKLE, long.clone()),
-            Some((_, long, ..)) => (icons::GIT_COMMIT, long.clone()),
-            None => (icons::GIT_COMMIT, t("Since last commit").to_string()),
-        };
-        let back = if self.view == tc_core::model::View::Focus { t("Back to the Code drawer") } else { t("Back") };
-        let body = self.top_bar(
-            ui,
-            full,
-            |app, ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                if kit::icon_button_ex(ui, icons::ARROW_LEFT, &format!("{back}   Esc"), false, 24.0).clicked() {
-                    app.review_close = true;
-                }
-                ui.label(RichText::new(t("Review")).font(style::semibold(14.0)).color(p.text));
-                ui.add_space(6.0);
-                // The project's tile and name; a worktree's project › the worktree.
-                let (tile_letters, tile_color, first) = match &parent {
-                    Some((pn, pl, pc)) => (pl.clone(), *pc, pn.clone()),
-                    None => (letters.clone(), color, name.clone()),
-                };
-                let (tr, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
-                kit::paint_project_tile(ui.painter(), tr, &tile_letters, tile_color, dark);
-                ui.label(RichText::new(&first).size(12.5).color(p.text_muted));
-                if parent.is_some() {
-                    ui.label(RichText::new(icons::CARET_RIGHT).font(style::icon_font(10.0)).color(p.text_ghost));
-                    ui.label(RichText::new(icons::GIT_FORK).font(style::icon_font(12.0)).color(p.text_faint));
-                    ui.label(RichText::new(&name).font(style::medium(12.5)).color(p.text));
-                }
-                kit::vsep(ui);
-                // What it is compared with, as a chip: a click lists the others with their counts.
-                let chip = kit::chip(ui, Some(scope_icon), &scope_label, false, Some(icons::CARET_DOWN));
-                #[cfg(debug_assertions)]
-                crate::devtest::record("review-scope-chip", chip.rect);
-                egui::Popup::menu(&chip).align(egui::RectAlign::BOTTOM_START).width(280.0).show(|ui| {
-                    kit::menu_body(ui);
-                    for (b, long, _, n) in &bases {
-                        let icon = match b {
-                            Base::Branch => icons::GIT_BRANCH,
-                            Base::Run => icons::SPARKLE,
-                            Base::Head => icons::GIT_COMMIT,
-                        };
-                        let count = n.map(|n| n.to_string());
-                        let icon = if *b == base { icons::CHECK } else { icon };
-                        let item = kit::menu_item(ui, Some(icon), long, count.as_deref(), false);
-                        #[cfg(debug_assertions)]
-                        crate::devtest::record(format!("review-base:{b:?}"), item.rect);
-                        if item.clicked() {
-                            if *b != base {
-                                app.review_switch = Some(*b);
-                            }
-                            ui.close();
-                        }
-                    }
-                });
-            },
-            None,
-        );
-        let area = super::focus::sheets_area(body, self.settings.sidebar_hidden);
-        super::focus::paint_sheet(ui.painter(), area, &p, super::focus::SheetLook::Plain);
-        self.review_body(ui, area.shrink(1.0), false);
-    }
-
-    /// Review in the Code drawer, beside the terminals: Files | Changes and the bases above the
-    /// file list, the selected file's diff at its right. Its keys work once it is clicked.
+    /// Review in the Code stage, beside Files and History: bases above the file list,
+    /// the selected file's diff at its right, and the Ship commit box at the bottom.
+    /// j / k change file, n / p hunk, ↵ opens it in the editor, ⇥ switches the base, Esc returns to terminal.
     pub fn review_drawer(&mut self, ui: &mut Ui) {
-        let area = ui.max_rect();
-        self.review_body(ui, area, true);
-    }
-
-    /// The file list and the diff, in `body`: full screen (`drawer` false) or in the drawer.
-    /// j / k change file, n / p hunk, ↵ opens it in the editor, ⇥ switches the base, Esc goes
-    /// back (to the drawer from full screen, to the terminal from the drawer).
-    fn review_body(&mut self, ui: &mut Ui, body: Rect, drawer: bool) {
+        let body = ui.max_rect();
         let Some(r) = self.review.as_ref() else { return };
         let p = style::pal(ui);
         let who = r.run.as_ref().map(|(agent, _, _)| agent.clone());
         let run_age = r.run.as_ref().map(|(_, at, _)| super::status::age(*at));
         let base = r.base;
-        let has_branch = r.worktree.is_some();
         let branch = r.branch.clone();
         let bases = self.review_bases();
         let nfiles = r.files.len();
         let head_count = bases.iter().find(|(b, ..)| *b == Base::Head).and_then(|(.., n)| *n).unwrap_or(0);
         let mut switch = None;
-        let files_w = if drawer { (body.width() * 0.42).clamp(240.0, 320.0) } else { FILES_W };
+        let files_w = (body.width() * 0.42).clamp(240.0, 320.0).min(body.width() * 0.48);
 
-        // ----- keys: full screen always; in the drawer once it was clicked ----------------------
+        // ----- keys: active once the Changes panel is clicked ----------------------------------
         let keys_id = egui::Id::new("review-keys");
-        if drawer {
-            let resp = ui.interact(body, keys_id, Sense::click());
-            let filter_area = ui.data(|d| d.get_temp::<Rect>(egui::Id::new("review-filter-rect"))).unwrap_or(Rect::NOTHING);
-            let ship_area = ui.data(|d| d.get_temp::<Rect>(egui::Id::new("ship-box-rect"))).unwrap_or(Rect::NOTHING);
-            let pressed_here = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| body.contains(pos) && !filter_area.contains(pos) && !ship_area.contains(pos)));
-            if resp.clicked() || pressed_here {
-                ui.memory_mut(|m| m.request_focus(keys_id));
-            }
+        let resp = ui.interact(body, keys_id, Sense::click());
+        let filter_area = ui.data(|d| d.get_temp::<Rect>(egui::Id::new("review-filter-rect"))).unwrap_or(Rect::NOTHING);
+        let ship_area = ui.data(|d| d.get_temp::<Rect>(egui::Id::new("ship-box-rect"))).unwrap_or(Rect::NOTHING);
+        let pressed_here = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| body.contains(pos) && !filter_area.contains(pos) && !ship_area.contains(pos)));
+        if resp.clicked() || pressed_here {
+            ui.memory_mut(|m| m.request_focus(keys_id));
         }
-        let has_keys = !drawer || ui.memory(|m| m.has_focus(keys_id));
+        let has_keys = ui.memory(|m| m.has_focus(keys_id));
         let filter_focused = ui.ctx().memory(|m| m.focused().is_some_and(|f| f == egui::Id::new("review-filter")));
         // Typing in the commit box: Review's keys leave it alone (Esc too).
         let ship_typing = ui.ctx().memory(|m| m.focused().is_some_and(|f| f == App::ship_message_id(r.project) || f == egui::Id::new(("ship-branch", r.project))));
@@ -604,11 +430,7 @@ impl App {
                 .collect();
             ui.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::NONE, Key::Escape) {
-                    if drawer {
-                        to_terminal = true;
-                    } else {
-                        close = true;
-                    }
+                    to_terminal = true;
                 }
                 if filter_focused {
                     return;
@@ -653,23 +475,18 @@ impl App {
         // ----- body ---------------------------------------------------------------------------
         let Some(r) = self.review.as_ref() else { return };
         let dark = ui.visuals().dark_mode;
-        let pick = r.pick.clone();
         let run_kind = who.as_deref().and_then(|w| tc_core::agent::AgentKind::ALL.iter().copied().find(|k| k.label() == w));
-        // Full screen, a worktree: its foot (the branch, Merge, Remove) under both columns.
-        let wt_foot = (!drawer && has_branch && branch.is_some() && base == Base::Branch).then(|| Rect::from_min_max(pos2(body.left(), body.bottom() - WT_FOOT_H), body.max));
-        let main = Rect::from_min_max(body.min, pos2(body.right(), wt_foot.map_or(body.bottom(), |f| f.top())));
-        let files_rect = Rect::from_min_max(main.min, pos2(main.left() + files_w, main.bottom()));
-        let diff_rect = Rect::from_min_max(pos2(files_rect.right(), main.top()), main.max);
+        let files_rect = Rect::from_min_max(body.min, pos2(body.left() + files_w, body.bottom()));
+        let diff_rect = Rect::from_min_max(pos2(files_rect.right(), body.top()), body.max);
         ui.painter().vline(files_rect.right() - 0.5, files_rect.y_range(), Stroke::new(1.0, p.border));
         let mut list_top = files_rect.top() + 8.0;
 
-        // In the drawer: what the changes are counted since (the agent's start, the branch, the
-        // last commit), each with how many files; a click shows it.
-        if drawer && bases.len() > 1 {
+        // What the changes are counted since (the agent's start, the branch, the last commit).
+        if bases.len() > 1 {
             let opts: Vec<&(Base, String, String, Option<usize>)> = [Base::Run, Base::Branch, Base::Head].iter().filter_map(|b| bases.iter().find(|x| x.0 == *b)).collect();
             let n = opts.len() as f32;
             let scope = Rect::from_min_size(pos2(files_rect.left() + 8.0, list_top), vec2(files_w - 16.0, 6.0 + n * SCOPE_ROW_H + (n - 1.0) * 2.0));
-            let well = if dark { p.inset } else { Color32::from_rgb(0xf0, 0xf0, 0xef) };
+            let well = p.inset;
             ui.painter().rect(scope, CornerRadius::same(9), well, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
             let mut y = scope.top() + 3.0;
             for (b, _, short, count) in opts {
@@ -695,7 +512,6 @@ impl App {
             centered(ui, diff_rect, e, p.err);
         } else if r.files.is_empty() {
             match base {
-                _ if pick.is_some() => centered(ui, diff_rect, t("Nothing changed."), p.text_muted),
                 Base::Run => {
                     let title = tf("{} hasn’t changed any files since it started, {} ago.", &[who.as_deref().unwrap_or(""), run_age.as_deref().unwrap_or("")]);
                     let sub = if head_count > 0 {
@@ -716,115 +532,11 @@ impl App {
             switch = Some(Base::Head);
         }
 
-        // A worktree's branch. In the drawer: where it goes, ahead / behind, its last commits.
-        // Full screen: its commits as a line (what is not committed on top, then each commit,
-        // then where it branched); a click shows that one alone, All all of them.
-        let mut pick_click: Option<Option<Pick>> = None;
+        // A worktree's branch summary above its files: where it goes, ahead / behind, its last commits.
         if base == Base::Branch
             && let Some(b) = &branch
         {
-            if drawer {
-                list_top = branch_summary(ui, files_rect, list_top, b, &p);
-            } else {
-                let loose = b.uncommitted.len();
-                let head = Rect::from_min_size(pos2(files_rect.left(), list_top - 8.0), vec2(files_w, SECTION_H));
-                let n = if loose > 0 { tf("{} + not committed", &[&b.commits.len().to_string()]) } else { b.commits.len().to_string() };
-                let all = paint_section_head(ui, head, t("Commits"), &n, pick.is_some().then_some(t("All")), &p);
-                #[cfg(debug_assertions)]
-                if let Some(a) = &all {
-                    crate::devtest::record("review-commits-all", a.rect);
-                }
-                if all.is_some_and(|a| a.clicked()) {
-                    pick_click = Some(None);
-                }
-                // Rows: (pick, title, sub, kind) — kind 0: not committed, 1: a commit, 2: the base.
-                let mut rows: Vec<(Option<Pick>, String, String, u8)> = Vec::new();
-                if loose > 0 {
-                    let mut first: Vec<&String> = b.uncommitted.iter().collect();
-                    first.sort();
-                    let name = first.first().map(|f| f.rsplit('/').next().unwrap_or(f).to_string()).unwrap_or_default();
-                    let files = crate::i18n::count(loose, t("1 file"), t("{} files"));
-                    rows.push((Some(Pick::Uncommitted), t("Not committed").to_string(), if loose == 1 { format!("{files} · {name}") } else { files }, 0));
-                }
-                for c in &b.commits {
-                    let mut sub = c.short.clone();
-                    if !c.author.is_empty() {
-                        sub.push_str(&format!(" · {}", c.author));
-                    }
-                    if c.time > 0 {
-                        sub.push_str(&format!(" · {}", unix_age(c.time)));
-                    }
-                    rows.push((Some(Pick::Commit(c.short.clone())), c.subject.clone(), sub, 1));
-                }
-                let mut fork = tf("branched from {} at {}", &[&b.base, &b.fork]);
-                if let Some(t0) = b.fork_time {
-                    fork.push_str(&format!(" · {}", unix_age(t0)));
-                }
-                rows.push((None, fork, String::new(), 2));
-                let rows_h: f32 = rows.iter().map(|r| if r.3 == 2 { 32.0 } else { 44.0 }).sum::<f32>() + 6.0;
-                let max_h = (files_rect.height() * 0.42).max(120.0);
-                let area = Rect::from_min_size(pos2(files_rect.left() + 6.0, head.bottom() + 2.0), vec2(files_w - 12.0, rows_h.min(max_h)));
-                ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                    ui.set_clip_rect(area);
-                    egui::ScrollArea::vertical().id_salt("review-commits").auto_shrink([false, false]).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        let last = rows.len().saturating_sub(1);
-                        for (i, (rp, title, sub, kind)) in rows.iter().enumerate() {
-                            let h = if *kind == 2 { 32.0 } else { 44.0 };
-                            let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), if rp.is_some() { Sense::click() } else { Sense::hover() });
-                            let painter = ui.painter();
-                            let on = rp.is_some() && *rp == pick;
-                            if on {
-                                painter.rect(row, CornerRadius::same(7), p.accent_tint, Stroke::new(1.0, style::soft(p.accent, 0.28)), egui::StrokeKind::Inside);
-                            } else if resp.hovered() && rp.is_some() {
-                                painter.rect_filled(row, CornerRadius::same(7), p.hover);
-                            }
-                            // The line through the dots, then the dot.
-                            let dx = row.left() + 10.0 + 4.5;
-                            let top = if i == 0 { row.center().y } else { row.top() };
-                            let bottom = if i == last { row.center().y } else { row.bottom() };
-                            painter.vline(dx, top..=bottom, Stroke::new(1.0, p.border_heavy));
-                            if *kind == 2 {
-                                painter.circle_filled(pos2(dx, row.center().y), 3.5, p.text_ghost);
-                            } else {
-                                let ring = if *kind == 0 { p.accent_text } else { p.text_faint };
-                                painter.circle(pos2(dx, row.center().y), 4.5, p.canvas, Stroke::new(2.0, ring));
-                            }
-                            let x = dx + 4.5 + 12.0;
-                            let w = (row.right() - 8.0 - x).max(20.0);
-                            if *kind == 2 {
-                                let mut job = egui::text::LayoutJob::simple_singleline(title.clone(), egui::FontId::proportional(11.5), p.text_faint);
-                                job.wrap = egui::text::TextWrapping::truncate_at_width(w);
-                                let g = painter.layout_job(job);
-                                painter.galley(pos2(x, row.center().y - g.size().y / 2.0), g, p.text_faint);
-                            } else {
-                                let (font, color) = if *kind == 0 { (style::medium(12.5), p.accent_text) } else { (egui::FontId::proportional(12.5), p.text) };
-                                let mut job = egui::text::LayoutJob::simple_singleline(title.clone(), font, color);
-                                job.wrap = egui::text::TextWrapping::truncate_at_width(w);
-                                let g = painter.layout_job(job);
-                                let gh = g.size().y;
-                                painter.galley(pos2(x, row.center().y - gh - 0.5), g, color);
-                                let mut job = egui::text::LayoutJob::simple_singleline(sub.clone(), egui::FontId::proportional(11.0), p.text_faint);
-                                job.wrap = egui::text::TextWrapping::truncate_at_width(w);
-                                let g = painter.layout_job(job);
-                                painter.galley(pos2(x, row.center().y + 1.5), g, p.text_faint);
-                            }
-                            #[cfg(debug_assertions)]
-                            if let Some(rp) = rp {
-                                crate::devtest::record(format!("review-commit:{}", match rp { Pick::Uncommitted => "uncommitted", Pick::Commit(c) => c.as_str() }), row);
-                            }
-                            if resp.clicked()
-                                && let Some(rp) = rp
-                            {
-                                pick_click = Some(if on { None } else { Some(rp.clone()) });
-                            }
-                        }
-                    });
-                });
-                let fh = Rect::from_min_size(pos2(files_rect.left(), area.bottom() + 6.0), vec2(files_w, SECTION_H));
-                paint_section_head(ui, fh, t("Files"), &nfiles.to_string(), None, &p);
-                list_top = fh.bottom() + 2.0;
-            }
+            list_top = branch_summary(ui, files_rect, list_top, b, &p);
         }
 
         // Many files: a filter over them.
@@ -848,7 +560,7 @@ impl App {
         let has_box = r.error.is_none();
         let fell_back = r.fell_back;
         let foot_top = if has_box {
-            let col_bottom = if base == Base::Branch && branch.is_some() && drawer { self.review_branch_actions(ui, files_rect, branch.as_ref()).top() } else { files_rect.bottom() };
+            let col_bottom = if base == Base::Branch && branch.is_some() { self.review_branch_actions(ui, files_rect, branch.as_ref()).top() } else { files_rect.bottom() };
             let top = self.ship_box(ui, Rect::from_min_max(files_rect.min, pos2(files_rect.right(), col_bottom)));
             // The agent's run changed nothing: why these are the changes since the last commit.
             if fell_back {
@@ -862,7 +574,7 @@ impl App {
                 top
             }
         } else if base == Base::Branch && branch.is_some() {
-            if drawer { self.review_branch_actions(ui, files_rect, branch.as_ref()).top() } else { files_rect.bottom() }
+            self.review_branch_actions(ui, files_rect, branch.as_ref()).top()
         } else {
             let note = match base {
                 _ if self.review.as_ref().is_some_and(|r| r.fell_back) => String::new(),
@@ -897,7 +609,7 @@ impl App {
 
         // The files: their change, name and folder, who changed them, + and −.
         let Some(r) = self.review.as_ref() else { return };
-        let list_rect = Rect::from_min_max(pos2(files_rect.left() + 6.0, list_top), pos2(files_rect.right() - 6.0, foot_top));
+        let list_rect = Rect::from_min_max(pos2(files_rect.left() + 6.0, list_top), pos2(files_rect.right() - 6.0, foot_top.max(list_top)));
         let filtering = !filter.trim().is_empty();
         let shown: Vec<usize> = r
             .files
@@ -933,8 +645,11 @@ impl App {
                         let painter = ui.painter();
                         painter.text(pos2(rect.left() + 6.0 + 7.0, rect.center().y), Align2::CENTER_CENTER, if folded { icons::CARET_RIGHT } else { icons::CARET_DOWN }, style::icon_font(10.0), p.text_faint);
                         painter.text(pos2(rect.left() + 28.0 + 7.0, rect.center().y), Align2::CENTER_CENTER, if folded { icons::FOLDER } else { icons::FOLDER_OPEN }, style::icon_font(14.0), p.folder);
-                        let g = painter.layout_no_wrap(format!("{name}/"), egui::FontId::proportional(12.5), p.text);
-                        let nw = g.size().x.min(rect.width() - 90.0);
+                        let max_name_w = (rect.width() - 96.0).max(20.0);
+                        let mut nj = egui::text::LayoutJob::simple_singleline(format!("{name}/"), egui::FontId::proportional(12.5), p.text);
+                        nj.wrap = egui::text::TextWrapping::truncate_at_width(max_name_w);
+                        let g = painter.layout_job(nj);
+                        let nw = g.size().x;
                         painter.galley(pos2(rect.left() + 48.0, rect.center().y - g.size().y / 2.0), g, p.text);
                         painter.text(pos2(rect.left() + 48.0 + nw + 6.0, rect.center().y), Align2::LEFT_CENTER, count.to_string(), style::mono(10.5), p.text_faint);
                         painter.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, "A", style::mono_semibold(10.5), p.ok);
@@ -1035,26 +750,21 @@ impl App {
                 }
             });
         });
-        let next_file = shown.iter().position(|i| *i == r.selected).and_then(|at| shown.get(at + 1)).copied();
-
         // The diff: the file's header (change, path, + −, where it is from, Unified | Split,
-        // Open in Editor), the hunks, then the keys (drawer) or the next file (full screen).
+        // Open in Editor), the hunks, then the keyboard hints.
         if let Some(f) = r.files.get(r.selected).filter(|_| !r.loading && r.error.is_none()) {
             let deleted = f.kind == ChangeKind::Deleted;
             let hunks = r.diff.as_ref().map_or(0, |d| d.hunks.len());
             let cur_hunk = self.review_hunk.min(hunks.saturating_sub(1));
-            // Two columns need room: in a narrow drawer only one.
-            let split_ok = !drawer || diff_rect.width() >= SPLIT_MIN_W;
+            // Two columns need room: in a narrow pane only one.
+            let split_ok = diff_rect.width() >= SPLIT_MIN_W;
             let split = self.review_split && split_ok;
             let head = Rect::from_min_size(diff_rect.min, vec2(diff_rect.width(), DIFF_HEAD_H));
-            let foot_h = if drawer { STATUS_H } else if next_file.is_some() { NEXT_H } else { 0.0 };
-            let foot = Rect::from_min_max(pos2(diff_rect.left(), diff_rect.bottom() - foot_h), diff_rect.max);
+            let foot = Rect::from_min_max(pos2(diff_rect.left(), diff_rect.bottom() - STATUS_H), diff_rect.max);
             let sides = Rect::from_min_size(pos2(diff_rect.left(), head.bottom()), vec2(diff_rect.width(), if split { SIDES_H } else { 0.0 }));
             let lines_rect = Rect::from_min_max(pos2(diff_rect.left(), sides.bottom()), pos2(diff_rect.right(), foot.top()));
             ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.border));
             let cy = head.center().y;
-            // Right, from the right: Open in Editor; in the drawer Unified | Split and the hunk;
-            // a worktree's file: the commit it is from.
             let inner = Rect::from_min_max(pos2(head.left() + 14.0, head.top()), pos2(head.right() - 8.0, head.bottom()));
             let mut split_pick = None;
             let left_end = ui
@@ -1065,7 +775,7 @@ impl App {
                     if !deleted && kit::button_keys(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), if narrow { t("Open") } else { t("Open in Editor") }, Some("↵"), true).clicked() {
                         open = true;
                     }
-                    if drawer && split_ok {
+                    if split_ok {
                         let options = [kit::Seg::new(t("Unified"), ""), kit::Seg::new(t("Split"), "")];
                         let w = kit::segmented_width(ui, &options);
                         let (sr, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
@@ -1075,19 +785,16 @@ impl App {
                         }
                         split_pick = kit::segmented_in(ui, sr, egui::Id::new("review-split-drawer"), &options, self.review_split as usize);
                     }
-                    if drawer && hunks > 1 {
+                    if hunks > 1 {
                         ui.label(RichText::new(tf("hunk {} of {}", &[&(cur_hunk + 1).to_string(), &hunks.to_string()])).font(style::mono(10.5)).color(p.text_faint));
                     }
                     if base == Base::Branch
                         && !narrow
                         && let Some(b) = &branch
                     {
-                        if b.uncommitted.contains(&f.path) && !matches!(pick, Some(Pick::Commit(_))) {
+                        if b.uncommitted.contains(&f.path) {
                             ui.label(RichText::new(t("not committed")).size(11.5).color(p.warn));
-                        } else if let Some(c) = match &pick {
-                            Some(Pick::Commit(c)) => Some(c),
-                            _ => b.by_file.get(&f.path),
-                        } {
+                        } else if let Some(c) = b.by_file.get(&f.path) {
                             ui.label(RichText::new(tf("in {}", &[c])).font(style::mono(10.5)).color(p.text_faint));
                         }
                     }
@@ -1118,20 +825,27 @@ impl App {
                 Some(old) => format!("{old} → {}", f.path),
                 None => f.path.clone(),
             };
+            let avail_head = (left_end - 12.0 - x).max(0.0);
+            let show_bars = !f.binary && avail_head >= cw + bars_w + 80.0;
+            let show_counts = avail_head >= cw + 60.0;
+            let reserved = if show_bars { cw + 8.0 + bars_w } else if show_counts { cw + 8.0 } else { 0.0 };
             let mut job = egui::text::LayoutJob::simple_singleline(path, style::medium(12.5), p.text);
-            job.wrap = egui::text::TextWrapping::truncate_at_width((left_end - 12.0 - x - cw - 8.0 - bars_w).max(20.0));
+            job.wrap = egui::text::TextWrapping::truncate_at_width((avail_head - reserved).max(16.0));
             let g = painter.layout_job(job);
             let gw = g.size().x;
-            painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
-            painter.galley(pos2(x + gw + 8.0, cy - counts.size().y / 2.0), counts, p.text_faint);
-            if !f.binary {
-                paint_bars(painter, pos2(x + gw + 8.0 + cw + 8.0, cy), a, d, &p);
+            let head_clip = painter.with_clip_rect(Rect::from_min_max(pos2(x, head.top()), pos2(left_end.max(x), head.bottom())));
+            head_clip.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
+            if show_counts {
+                head_clip.galley(pos2(x + gw + 8.0, cy - counts.size().y / 2.0), counts, p.text_faint);
+            }
+            if show_bars {
+                paint_bars(&head_clip, pos2(x + gw + 8.0 + cw + 8.0, cy), a, d, &p);
             }
 
             // Split: what each side is.
             if split {
                 let half = (sides.width() / 2.0).floor();
-                let (l, rt) = side_names(base, &pick, branch.as_ref(), who.as_deref());
+                let (l, rt) = side_names(base, branch.as_ref(), who.as_deref());
                 painter.hline(sides.x_range(), sides.bottom() - 0.5, Stroke::new(1.0, p.border));
                 painter.vline(sides.left() + half, sides.y_range(), Stroke::new(1.0, p.border));
                 painter.text(pos2(sides.left() + 14.0, sides.center().y), Align2::LEFT_CENTER, l, style::mono(10.5), p.text_faint);
@@ -1139,7 +853,7 @@ impl App {
             }
 
             let syntax = crate::editor::syntax_for(std::path::Path::new(&f.path));
-            let (line_h, font) = if drawer && !split { (20.0, 11.0) } else { (21.0, 11.5) };
+            let (line_h, font) = if !split { (20.0, 11.0) } else { (21.0, 11.5) };
             match (&r.diff, &r.diff_error) {
                 (_, Some(e)) => {
                     ui.painter().text(lines_rect.center(), Align2::CENTER_CENTER, e, egui::FontId::proportional(13.0), p.err);
@@ -1152,12 +866,27 @@ impl App {
                 }
                 (Some(d), None) => {
                     let scroll_to = std::mem::take(&mut self.review_scroll).then_some(cur_hunk);
-                    let look = LineLook { h: line_h, font, num_w: if drawer { 36.0 } else { 40.0 } };
+                    let look = LineLook { h: line_h, font, num_w: 36.0 };
+                    let max_cols = if split {
+                        0
+                    } else {
+                        d.hunks
+                            .iter()
+                            .flat_map(|hk| hk.lines.iter())
+                            .map(|l| l.text.chars().count())
+                            .max()
+                            .unwrap_or(0)
+                    };
+                    let content_w = if split {
+                        lines_rect.width()
+                    } else {
+                        lines_rect.width().max(look.num_w * 2.0 + 48.0 + max_cols as f32 * (look.font * 0.62))
+                    };
                     ui.scope_builder(egui::UiBuilder::new().max_rect(lines_rect), |ui| {
                         ui.set_clip_rect(lines_rect);
                         egui::ScrollArea::both().id_salt(("review-diff", r.selected)).auto_shrink([false, false]).show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
-                            let w = ui.available_width().max(lines_rect.width());
+                            let w = ui.available_width().max(content_w);
                             for (hi, h) in d.hunks.iter().enumerate() {
                                 let (hr, _) = ui.allocate_exact_size(vec2(w, HUNK_H), Sense::hover());
                                 if scroll_to == Some(hi) {
@@ -1186,70 +915,20 @@ impl App {
                     });
                 }
             }
-            if drawer {
-                // The keys, as many as the drawer has room for.
-                ui.painter().hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
-                let w = diff_rect.width();
-                let full_key = kit::keys(&Action::Review).unwrap_or_default();
-                let mut hints: Vec<(&[&str], &str)> = vec![(&["j", "k"], t("file"))];
-                if w >= 420.0 {
-                    hints.push((&["n", "p"], t("hunk")));
-                }
-                if w >= 560.0 {
-                    hints.push((&["↵"], t("open in editor")));
-                }
-                let full_keys = [full_key];
-                if w >= 700.0 {
-                    hints.push((&full_keys, t("full window")));
-                }
-                if w >= 820.0 && bases.len() > 1 {
-                    hints.push((&["⇥"], t("since")));
-                }
-                super::statusbar::paint_key_hints(ui, Rect::from_min_max(pos2(foot.left() + 14.0, foot.top()), pos2(foot.right() - 14.0, foot.bottom())), &hints, None);
-            } else if let Some(n) = next_file.and_then(|i| r.files.get(i).map(|f| (i, f))) {
-                // The next file, a key away.
-                let (ni, nf) = n;
-                let resp = ui.interact(foot, egui::Id::new("review-next"), Sense::click());
-                #[cfg(debug_assertions)]
-                crate::devtest::record("review-next", foot);
-                let painter = ui.painter();
-                if resp.hovered() {
-                    painter.rect_filled(foot.shrink2(vec2(0.0, 1.0)), CornerRadius::ZERO, p.hover);
-                }
-                painter.hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
-                let cy = foot.center().y;
-                let (letter, lcolor) = change_letter(nf.kind, &p);
-                painter.text(pos2(foot.left() + 14.0 + 7.0, cy), Align2::CENTER_CENTER, letter, style::mono_semibold(10.5), lcolor);
-                let hint_g = painter.layout_no_wrap(t("next file").to_string(), egui::FontId::proportional(11.5), p.text_faint);
-                let hw = hint_g.size().x;
-                painter.galley(pos2(foot.right() - 14.0 - hw, cy - hint_g.size().y / 2.0), hint_g, p.text_faint);
-                let kw = kit::kbd_width(painter, "j");
-                kit::paint_kbd_text(painter, pos2(foot.right() - 14.0 - hw - 5.0 - kw, cy), "j", &p);
-                let x = foot.left() + 14.0 + 14.0 + 8.0;
-                let a = nf.additions.unwrap_or(0);
-                let d = nf.deletions.unwrap_or(0);
-                let mut cjob = egui::text::LayoutJob::default();
-                if a > 0 {
-                    cjob.append(&format!("+{a}"), 0.0, egui::TextFormat::simple(style::mono(11.0), p.ok));
-                }
-                if d > 0 {
-                    cjob.append(&format!("−{d}"), if a > 0 { 6.0 } else { 0.0 }, egui::TextFormat::simple(style::mono(11.0), p.err));
-                }
-                let counts = painter.layout_job(cjob);
-                let cw = counts.size().x;
-                let mut job = egui::text::LayoutJob::simple_singleline(nf.path.clone(), style::medium(12.5), p.text);
-                job.wrap = egui::text::TextWrapping::truncate_at_width((foot.right() - 14.0 - hw - kw - 24.0 - x - cw - BARS_W - 16.0).max(20.0));
-                let g = painter.layout_job(job);
-                let gw = g.size().x;
-                painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
-                painter.galley(pos2(x + gw + 8.0, cy - counts.size().y / 2.0), counts, p.text_faint);
-                if !nf.binary {
-                    paint_bars(painter, pos2(x + gw + 8.0 + cw + 8.0, cy), a, d, &p);
-                }
-                if resp.clicked() {
-                    select = Some(ni);
-                }
+            // The keys, as many as the pane has room for.
+            ui.painter().hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
+            let w = diff_rect.width();
+            let mut hints: Vec<(&[&str], &str)> = vec![(&["j", "k"], t("file"))];
+            if w >= 420.0 {
+                hints.push((&["n", "p"], t("hunk")));
             }
+            if w >= 560.0 {
+                hints.push((&["↵"], t("open in editor")));
+            }
+            if w >= 700.0 && bases.len() > 1 {
+                hints.push((&["⇥"], t("since")));
+            }
+            super::statusbar::paint_key_hints(ui, Rect::from_min_max(pos2(foot.left() + 14.0, foot.top()), pos2(foot.right() - 14.0, foot.bottom())), &hints, None);
             if hunk_step != 0 && hunks > 0 {
                 self.review_hunk = (cur_hunk as i32 + hunk_step).clamp(0, hunks as i32 - 1) as usize;
                 self.review_scroll = true;
@@ -1263,13 +942,6 @@ impl App {
             }
         }
 
-        // Full screen, a worktree: the branch, how it stands beside its base, Merge and Remove.
-        if let (Some(fr), Some(b)) = (wt_foot, branch.as_ref()) {
-            self.review_worktree_foot(ui, fr, b);
-        }
-        if let Some(pc) = pick_click {
-            self.review_pick(pc);
-        }
         if let Some(d) = fold
             && let Some(r) = self.review.as_mut()
             && !r.folded.remove(&d)
@@ -1305,15 +977,8 @@ impl App {
             self.focus_request = self.current_pane();
         }
         if close {
-            // Full screen opened from the Focus view goes back to the drawer; else Review ends.
-            let back_to_drawer = !drawer && self.view == tc_core::model::View::Focus;
-            match self.review.as_mut() {
-                Some(r) if back_to_drawer => r.expanded = false,
-                _ => {
-                    self.review = None;
-                    self.focus_request = self.current_pane();
-                }
-            }
+            self.review = None;
+            self.focus_request = self.current_pane();
         }
     }
 
@@ -1351,117 +1016,22 @@ impl App {
         });
         rect
     }
-
-    /// Full-screen Review of a worktree, at the foot: its branch, how it stands beside its base
-    /// and what is not committed, then Remove and Merge (each opens its dialog).
-    fn review_worktree_foot(&mut self, ui: &mut Ui, fr: Rect, b: &BranchView) {
-        let p = style::pal(ui);
-        let corner = style::RADIUS_LG.saturating_sub(1);
-        let painter = ui.painter();
-        painter.rect_filled(fr, CornerRadius { nw: 0, ne: 0, sw: corner, se: corner }, style::over(p.canvas, p.chrome, 0.25));
-        painter.hline(fr.x_range(), fr.top() + 0.5, Stroke::new(1.0, p.border));
-        let cy = fr.center().y;
-        let x = fr.left() + 16.0;
-        painter.text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, icons::GIT_FORK, style::icon_font(14.0), p.text_faint);
-        let x = x + 14.0 + 9.0;
-        let id = self.active;
-        let buttons = Rect::from_min_max(pos2(x, fr.top()), pos2(fr.right() - 10.0, fr.bottom()));
-        let right_end = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(buttons).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let merge = kit::button_ex(ui, kit::Kind::Primary, Some(icons::GIT_MERGE), &tf("Merge into {}…", &[&b.base]), false);
-                #[cfg(debug_assertions)]
-                crate::devtest::record("review-merge", merge.rect);
-                if merge.clicked()
-                    && let Some(id) = id
-                {
-                    self.actions.push(Action::MergeWorktree(id));
-                }
-                let remove = kit::button_ex(ui, kit::Kind::Danger, Some(icons::TRASH), t("Remove Worktree…"), false);
-                #[cfg(debug_assertions)]
-                crate::devtest::record("review-remove", remove.rect);
-                if remove.clicked()
-                    && let Some(id) = id
-                {
-                    self.actions.push(Action::RemoveWorktree(id));
-                }
-                ui.min_rect().left()
-            })
-            .inner;
-        let small = egui::FontId::proportional(12.0);
-        let mut job = egui::text::LayoutJob::default();
-        job.append(&b.branch, 0.0, egui::TextFormat::simple(style::mono(11.0), p.text));
-        job.append(&crate::i18n::count(b.ahead, t("1 commit ahead of"), t("{} commits ahead of")), 9.0, egui::TextFormat::simple(small.clone(), p.text_faint));
-        job.append(&b.base, 4.0, egui::TextFormat::simple(style::mono(11.0), p.text_faint));
-        if b.behind == 0 {
-            job.append(&format!(", {}", t("nothing new on")), 0.0, egui::TextFormat::simple(small.clone(), p.text_faint));
-        } else {
-            job.append(&format!(", {}", crate::i18n::count(b.behind, t("1 new commit on"), t("{} new commits on"))), 0.0, egui::TextFormat::simple(small.clone(), p.text_faint));
-        }
-        job.append(&b.base, 4.0, egui::TextFormat::simple(style::mono(11.0), p.text_faint));
-        let loose = b.uncommitted.len();
-        if loose > 0 {
-            job.append(&format!(", {}", crate::i18n::count(loose, t("1 file not committed"), t("{} files not committed"))), 0.0, egui::TextFormat::simple(small, p.warn));
-        }
-        job.wrap = egui::text::TextWrapping::truncate_at_width((right_end - 12.0 - x).max(20.0));
-        let g = ui.painter().layout_job(job);
-        ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
-    }
-
-    /// The Review's toolbar: how much changed, Unified | Split, Close.
-    pub fn review_toolbar(&mut self, ui: &mut Ui) {
-        let Some(r) = self.review.as_ref() else { return };
-        let p = style::pal(ui);
-        ui.spacing_mut().item_spacing.x = 6.0;
-        if kit::button_keys(ui, kit::Kind::Ghost, None, t("Close"), Some("esc"), true).clicked() {
-            self.review_close = true;
-        }
-        kit::vsep(ui);
-        let options = [kit::Seg::new(t("Unified"), ""), kit::Seg::new(t("Split"), "")];
-        let w = kit::segmented_width(ui, &options);
-        let (sr, _) = ui.allocate_exact_size(vec2(w, kit::SEGMENTED_H), Sense::hover());
-        #[cfg(debug_assertions)]
-        for (r, name) in kit::segment_rects(sr, 2).into_iter().zip(["review-unified", "review-split"]) {
-            crate::devtest::record(name, r);
-        }
-        if let Some(i) = kit::segmented_in(ui, sr, egui::Id::new("review-split-full"), &options, self.review_split as usize) {
-            self.review_split = i == 1;
-        }
-        ui.add_space(6.0);
-        if !r.files.is_empty() {
-            let (adds, dels): (u32, u32) = r.files.iter().fold((0, 0), |(a, d), f| (a + f.additions.unwrap_or(0), d + f.deletions.unwrap_or(0)));
-            let mut job = egui::text::LayoutJob::default();
-            let mono = style::mono(11.0);
-            job.append(&crate::i18n::count(r.files.len(), t("1 file"), t("{} files")), 0.0, egui::TextFormat::simple(mono.clone(), p.text_faint));
-            job.append(" · ", 0.0, egui::TextFormat::simple(mono.clone(), p.text_faint));
-            job.append(&format!("+{adds}"), 0.0, egui::TextFormat::simple(mono.clone(), p.ok));
-            job.append(&format!("−{dels}"), 6.0, egui::TextFormat::simple(mono, p.err));
-            ui.label(job);
-        }
-    }
 }
 
-/// Width of the Review's file list (full screen).
-const FILES_W: f32 = 300.0;
-/// A choice of what the changes are counted since (two lines), in the drawer.
+/// A choice of what the changes are counted since (two lines).
 const SCOPE_ROW_H: f32 = 44.0;
-/// A section's head in the full-screen column (Commits, Files).
-const SECTION_H: f32 = 30.0;
 /// From this many changed files on, a filter over them.
 const FILTER_FROM: usize = 12;
 /// The file list's foot (how much changed), a file's row, the diff's head.
 const COL_FOOT_H: f32 = 30.0;
 const FILE_ROW_H: f32 = 40.0;
 const DIFF_HEAD_H: f32 = 42.0;
-/// The keys under the diff (drawer), the next file (full screen), the names of Split's sides.
+/// The keys under the diff, and the names of Split's sides.
 const STATUS_H: f32 = 28.0;
-const NEXT_H: f32 = 40.0;
 const SIDES_H: f32 = 28.0;
-/// The narrowest diff (in the drawer) shown side by side.
+/// The narrowest diff shown side by side.
 const SPLIT_MIN_W: f32 = 560.0;
 pub(super) const HUNK_H: f32 = 30.0;
-/// A worktree's foot in full screen (its branch, Merge, Remove).
-const WT_FOOT_H: f32 = 52.0;
 /// The five boxes that show the share of added and removed lines.
 pub(super) const BARS_W: f32 = 5.0 * 6.0 + 4.0 * 2.0;
 
@@ -1536,26 +1106,6 @@ fn paint_scope_row(ui: &Ui, row: Rect, b: Base, short: &str, count: Option<usize
     painter.galley(pos2(x, row.top() + 7.0 + gh + 2.0), g, p.text_faint);
 }
 
-/// A section's head in Review's full-screen column ("Commits 2 + not committed", "Files 5"),
-/// with a link at its right; returns the link's response.
-fn paint_section_head(ui: &mut Ui, rect: Rect, title: &str, n: &str, link: Option<&str>, p: &style::Palette) -> Option<egui::Response> {
-    let painter = ui.painter();
-    let g = painter.layout_no_wrap(title.to_string(), style::medium(11.5), p.text_faint);
-    let gw = g.size().x;
-    painter.galley(pos2(rect.left() + 14.0, rect.center().y - g.size().y / 2.0), g, p.text_faint);
-    painter.text(pos2(rect.left() + 14.0 + gw + 6.0, rect.center().y), Align2::LEFT_CENTER, n, style::mono_medium(10.5), p.text_ghost);
-    let link = link?;
-    let lg = painter.layout_no_wrap(link.to_string(), egui::FontId::proportional(11.5), p.text_muted);
-    let lr = Rect::from_min_max(pos2(rect.right() - 14.0 - lg.size().x - 6.0, rect.center().y - 10.0), pos2(rect.right() - 8.0, rect.center().y + 10.0));
-    let resp = ui.interact(lr, egui::Id::new(("review-section-link", title)), Sense::click());
-    let c = if resp.hovered() { p.text } else { p.text_muted };
-    if resp.hovered() {
-        ui.painter().rect_filled(lr, CornerRadius::same(5), p.hover);
-    }
-    ui.painter().galley(pos2(lr.left() + 3.0, lr.center().y - lg.size().y / 2.0), lg, c);
-    Some(resp.on_hover_cursor(egui::CursorIcon::PointingHand))
-}
-
 /// The five boxes' width, and the boxes, for others (the Merge dialog).
 pub const SHARE_W: f32 = BARS_W;
 pub fn paint_share(painter: &egui::Painter, left_center: egui::Pos2, a: u32, d: u32, p: &style::Palette) {
@@ -1581,17 +1131,15 @@ pub(super) fn paint_bars(painter: &egui::Painter, left_center: egui::Pos2, a: u3
 }
 
 /// What the two sides of Split are.
-fn side_names(base: Base, pick: &Option<Pick>, branch: Option<&BranchView>, who: Option<&str>) -> (String, String) {
-    match (pick, base) {
-        (Some(Pick::Commit(c)), _) => (format!("{c}^"), c.clone()),
-        (Some(Pick::Uncommitted), _) => ("HEAD".to_string(), t("not committed").to_string()),
-        (None, Base::Branch) => match branch {
+fn side_names(base: Base, branch: Option<&BranchView>, who: Option<&str>) -> (String, String) {
+    match base {
+        Base::Branch => match branch {
             Some(b) if !b.fork.is_empty() => (format!("{} · {}", b.base, b.fork), b.branch.clone()),
             Some(b) => (b.base.clone(), b.branch.clone()),
             None => ("HEAD".to_string(), t("not committed").to_string()),
         },
-        (None, Base::Run) => (tf("when {} started", &[who.unwrap_or("")]), t("now").to_string()),
-        (None, Base::Head) => ("HEAD".to_string(), t("not committed").to_string()),
+        Base::Run => (tf("when {} started", &[who.unwrap_or("")]), t("now").to_string()),
+        Base::Head => ("HEAD".to_string(), t("not committed").to_string()),
     }
 }
 
@@ -1810,7 +1358,7 @@ pub(super) fn paint_hunk_header(ui: &Ui, r: Rect, header: &str, p: &style::Palet
 /// on a stronger tint.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_line(ui: &Ui, r: Rect, kind: LineKind, old: Option<u32>, new: Option<u32>, text: &str, syntax: &str, dark: bool, p: &style::Palette, both: bool, hl: Option<std::ops::Range<usize>>, look: &LineLook) {
-    let painter = ui.painter();
+    let painter = ui.painter_at(r.intersect(ui.clip_rect()));
     let (bg, hl_bg, sign, sc, num_c) = match kind {
         LineKind::Added => (style::soft(p.ok, if dark { 0.10 } else { 0.08 }), style::soft(p.ok, if dark { 0.28 } else { 0.20 }), "+", p.ok, style::soft(p.ok, 0.6)),
         LineKind::Removed => (style::soft(p.err, if dark { 0.10 } else { 0.07 }), style::soft(p.err, if dark { 0.28 } else { 0.20 }), "−", p.err, style::soft(p.err, 0.6)),

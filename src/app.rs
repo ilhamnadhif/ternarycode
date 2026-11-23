@@ -78,8 +78,8 @@ pub enum AppMsg {
     History(crate::history::HistoryMsg),
     /// Async CLI / auth readiness check for a multi-account agent profile.
     ProfileTest(String, Result<String, String>),
-    /// Multi-window (5h + weekly + 24h) token usage & server quota telemetry parsed from a profile.
-    ProfileUsage(String, tc_agent::sessions::ProfileUsageReport),
+    /// Multi-window (5h + weekly + 24h) token usage & server quota telemetry parsed from a profile batch.
+    ProfileUsages(Vec<(String, tc_agent::sessions::ProfileUsageReport)>),
     /// Aggregated historical sessions for a project across all configured profiles.
     ProjectSessions(ProjectId, Vec<crate::profiles::ProjectSessionItem>),
     /// Remote command received from a paired smartphone via the Mobile Companion server.
@@ -493,6 +493,9 @@ pub struct App {
     pub sessions_scan_at: HashMap<ProjectId, Instant>,
     pub sessions_running: HashSet<ProjectId>,
     pub usage_scan_at: Option<Instant>,
+    pub usage_scan_running: bool,
+    /// Cached deduplicated token totals `(24h_in, 24h_out, win_5h, win_weekly)` updated off-frame.
+    pub cached_usage_totals: (u64, u64, u64, u64),
     /// Structured chronological event log (hooks, tools, rate limits, failovers) for the Logs drawer.
     pub agent_logs: std::collections::VecDeque<crate::profiles::AgentLogEntry>,
     /// Active tab in the secondary workspace drawer (`Terminals` | `Logs` | `Problems`).
@@ -792,6 +795,8 @@ impl App {
             sessions_scan_at: HashMap::new(),
             sessions_running: HashSet::new(),
             usage_scan_at: None,
+            usage_scan_running: false,
+            cached_usage_totals: (0, 0, 0, 0),
             agent_logs: std::collections::VecDeque::with_capacity(64),
             drawer_tab: tc_core::model::DrawerTab::Terminals,
             drawer_maximized: false,
@@ -1077,8 +1082,12 @@ impl App {
             }
         }
         let presets = self.settings.presets();
+        let valid_profiles = self.effective_profiles();
         for saved in ws.projects {
             let mut project = Project::from_save(&saved);
+            project.active_profile = project
+                .active_profile
+                .filter(|id| valid_profiles.iter().any(|p| p.id == *id));
             // A worktree deleted outside TernaryCode says so in the sidebar.
             project.missing = !saved.path.is_dir();
             let pane_info: HashMap<PaneId, PaneSave> =
@@ -1094,7 +1103,12 @@ impl App {
                     let mut pane = Pane::new(id, saved.id, cwd, size, &self.spawn_ctx(ctx, None), false);
                     pane.title = info.title.clone();
                     pane.preset = info.preset.clone();
-                    pane.active_profile = info.profile.clone();
+                    pane.active_profile = info.profile.clone().filter(|id| {
+                        info.agent.is_none_or(crate::profiles::supports_multi_profile)
+                            && valid_profiles
+                                .iter()
+                                .any(|p| p.id == *id && info.agent.is_none_or(|a| p.agent == a))
+                    });
                     if let Some(agent) = info.agent {
                         let preset = info
                             .preset
@@ -1403,6 +1417,7 @@ impl App {
             || self.palette.is_some()
             || self.attention_open
             || self.monitor_popover
+            || self.updater.dialog_open
     }
 
     /// Exits Zen Mode and ensures the Secondary Drawer is open on the Terminals tab.
@@ -1749,6 +1764,7 @@ impl App {
                     }
                     self.offer_merged_removal(id);
                     self.ship_git_changed(id);
+                    self.history_git_changed(id);
                     self.git_running.remove(&id);
                     if self.git_again.remove(&id) {
                         self.refresh_git(id);
@@ -1819,14 +1835,19 @@ impl App {
                         });
                     }
                 }
-                AppMsg::ProfileUsage(id, report) => {
-                    if self.effective_profiles().iter().any(|p| p.id == id) {
-                        let rt = self.profiles_rt.entry(id).or_default();
-                        rt.tokens_in = report.recent_24h.input;
-                        rt.tokens_out = report.recent_24h.output;
-                        rt.usage = report;
-                        rt.usage_updated = Some(now);
+                AppMsg::ProfileUsages(reports) => {
+                    self.usage_scan_running = false;
+                    let valid = self.effective_profiles();
+                    for (id, report) in reports {
+                        if valid.iter().any(|p| p.id == id) {
+                            let rt = self.profiles_rt.entry(id).or_default();
+                            rt.tokens_in = report.recent_24h.input;
+                            rt.tokens_out = report.recent_24h.output;
+                            rt.usage = report;
+                            rt.usage_updated = Some(now);
+                        }
                     }
+                    self.recompute_usage_totals();
                 }
                 AppMsg::ProjectSessions(pid, list) => {
                     self.sessions_running.remove(&pid);
@@ -2506,7 +2527,11 @@ impl App {
         // A session already open in a pane: go there (two agents on one session would write
         // over each other).
         if let crate::actions::Launch::Session(id) = &launch
-            && let Some(pane) = self.panes.values().find(|p| p.agent_session.as_deref() == Some(id.as_str())).map(|p| p.id)
+            && let Some(pane) = self
+                .panes
+                .values()
+                .find(|p| p.alive() && p.agent_session.as_deref() == Some(id.as_str()))
+                .map(|p| p.id)
         {
             self.ensure_terminals_visible();
             self.focus_pane(pane);
@@ -2549,10 +2574,16 @@ impl App {
             self.last_agent_place = place.unwrap_or(0);
         }
         let proj_id = self.panes.get(&pane).map(|p| p.project);
-        let profile = explicit_profile
-            .as_deref()
-            .and_then(|id| self.profile_by_id(id))
-            .or_else(|| preset.agent.and_then(|a| self.preferred_profile_for(a, proj_id)));
+        let profile = preset
+            .agent
+            .filter(|a| crate::profiles::supports_multi_profile(*a))
+            .and_then(|a| {
+                explicit_profile
+                    .as_deref()
+                    .and_then(|id| self.profile_by_id(id))
+                    .filter(|p| p.enabled && p.agent == a)
+                    .or_else(|| self.preferred_profile_for(a, proj_id))
+            });
         let command = self.launch_command_for_profile(&preset, &base, profile.as_ref());
         let mut project = None;
         if let Some(p) = self.panes.get_mut(&pane) {
@@ -2671,10 +2702,15 @@ impl App {
             .or_else(|| presets.iter().find(|x| x.agent == Some(agent)))
             .cloned()
             .unwrap_or_else(|| self.preset_for_agent(agent));
-        let profile = pane_profile
-            .as_deref()
-            .and_then(|id| self.profile_by_id(id))
-            .or_else(|| self.preferred_profile_for(agent, Some(proj_id)));
+        let profile = if crate::profiles::supports_multi_profile(agent) {
+            pane_profile
+                .as_deref()
+                .and_then(|id| self.profile_by_id(id))
+                .filter(|p| p.enabled && p.agent == agent)
+                .or_else(|| self.preferred_profile_for(agent, Some(proj_id)))
+        } else {
+            None
+        };
         let typed = self.launch_command_for_profile(&preset, &command, profile.as_ref());
         if let Some(p) = self.panes.get_mut(&pane) {
             p.resume = None;
@@ -3303,6 +3339,12 @@ impl App {
                     self.monitor_popover = false;
                     self.palette = None;
                     self.dialog = None;
+                    ctx.memory_mut(|m| {
+                        if let Some(f) = m.focused() {
+                            m.surrender_focus(f);
+                        }
+                    });
+                    self.release_page_keyboard();
                 }
                 self.attention_sel = 0;
                 self.inbox_scroll = 0;
@@ -3639,8 +3681,14 @@ impl App {
                 let folder = matches!(action, Action::NewFolderIn(_));
                 let dir = dir.clone();
                 if let Some(pid) = self.active {
+                    self.show_focus();
+                    self.review = None;
+                    self.history = None;
+                    self.ensure_editor_for_project(pid, 0.0);
+                    if let Some(e) = self.editors.get_mut(&pid) {
+                        e.visible = true;
+                    }
                     self.settings.files_hidden = false;
-                    self.settings.sidebar_hidden = false;
                     if let Some(ex) = self.explorer_mut(pid) {
                         ex.start_new(&dir, folder);
                     }
@@ -3747,11 +3795,19 @@ impl App {
                 }
             }
             Action::FindAll => self.open_palette(PaletteMode::Search),
-            // Again while Review is in the drawer: full screen, and back.
-            Action::Review => match self.review.as_mut().filter(|r| Some(r.project) == self.active) {
-                Some(r) if self.view == View::Focus => r.expanded = !r.expanded,
-                _ => self.open_review(None),
-            },
+            // Toggle Changes in the docked Code drawer (no duplicate full-screen overlay).
+            Action::Review => {
+                if self.view == View::Focus && self.review.as_ref().is_some_and(|r| Some(r.project) == self.active) {
+                    self.review = None;
+                    if let Some(e) = self.editor_mut() {
+                        e.visible = false;
+                    }
+                    self.focus_request = self.current_pane();
+                    self.mark_dirty();
+                } else {
+                    self.open_review(None);
+                }
+            }
             Action::History => self.open_history(),
             Action::ReviewAgent => self.open_review_with(None, true),
             Action::Commit => self.ship_open(),
@@ -3826,6 +3882,11 @@ impl App {
             Action::FontSmaller if self.page_with_keys().is_some() => {
                 if let Some(id) = self.page_with_keys() {
                     self.zoom_page(id, -1);
+                }
+            }
+            Action::FontReset if self.page_with_keys().is_some() => {
+                if let Some(id) = self.page_with_keys() {
+                    self.zoom_page(id, 0);
                 }
             }
             Action::Copy if self.page_has_keys("copy") => {}
@@ -3957,7 +4018,7 @@ impl App {
                 self.settings.drawer_open = true;
                 self.settings_changed();
             }
-            Action::OpenProfiles => {
+            Action::OpenProfiles | Action::OpenMonitor => {
                 self.exit_zen_mode();
                 self.drawer_maximized = false;
                 self.monitor_popover = false;
@@ -3967,18 +4028,6 @@ impl App {
                     self.prev_view = self.view;
                 }
                 self.view = View::Profiles;
-                self.mark_dirty();
-            }
-            Action::OpenMonitor => {
-                self.exit_zen_mode();
-                self.drawer_maximized = false;
-                self.monitor_popover = false;
-                self.attention_open = false;
-                self.palette = None;
-                if !crate::ade::is_management_view(self.view) {
-                    self.prev_view = self.view;
-                }
-                self.view = View::Monitor;
                 self.mark_dirty();
             }
             Action::OpenPhonePairing => {
@@ -4013,29 +4062,36 @@ impl App {
                 self.new_project_session(ctx, project, profile_id);
             }
             Action::SetPaneProfile(pane, profile_id) => {
-                // If an agent is actively running OR paused on a rate limit in this pane, perform a
-                // real live account switch + seamless session resume (zero logout/re-login dance!).
+                let Some(prof) = self.profile_by_id(&profile_id).filter(|p| p.enabled) else {
+                    self.toast_err(tf("Profile {} not found.", &[&profile_id]));
+                    return;
+                };
+                // If an agent with multi-profile support is actively running OR paused on a rate
+                // limit in this pane, perform a live account switch + seamless session resume.
                 let should_live_switch = self.panes.get(&pane).is_some_and(|p| {
                     let is_limited = p.rate_limit.as_ref().is_some_and(|b| b.auto_switched_to.is_none());
                     let is_running_agent = p.alive()
-                        && p.tracker.agent.is_some()
+                        && p.tracker.agent.is_some_and(crate::profiles::supports_multi_profile)
                         && !matches!(p.tracker.fg, tc_core::status::Foreground::Shell | tc_core::status::Foreground::Gone);
                     is_limited || is_running_agent
                 });
                 if should_live_switch {
-                    self.switch_pane_profile_and_resume(ctx, pane, &profile_id, false);
+                    self.switch_pane_profile_and_resume(ctx, pane, &prof.id, false);
                 } else {
                     let mut proj = None;
                     if let Some(p) = self.panes.get_mut(&pane) {
-                        p.active_profile = Some(profile_id.clone());
+                        if p.resume.as_ref().is_some_and(|(a, _)| *a != prof.agent) {
+                            p.resume = None;
+                        }
+                        p.active_profile = Some(prof.id.clone());
                         proj = Some(p.project);
                     }
                     if let Some(pid) = proj
                         && let Some(pr) = self.project_mut(pid)
                     {
-                        pr.active_profile = Some(profile_id.clone());
+                        pr.active_profile = Some(prof.id.clone());
                     }
-                    self.toast(tf("Active profile set to {}.", &[&profile_id]));
+                    self.toast(tf("Active profile set to {}.", &[&prof.id]));
                     self.mark_dirty();
                     self.push_companion_now();
                 }
@@ -4060,7 +4116,8 @@ impl App {
                 for pane in self.panes.values_mut() {
                     if pane.rate_limit.as_ref().is_some_and(|b| b.from_profile == id) {
                         pane.rate_limit = None;
-                        pane.last_limit_sig = None;
+                        // Keep `last_limit_sig` intact so stale rate-limit lines still on screen do
+                        // not immediately re-trigger `RateLimited` on the next 1.2s scan.
                     }
                 }
                 self.toast_ok(tf("Cleared cooldown for {}.", &[&id]));

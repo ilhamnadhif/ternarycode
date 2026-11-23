@@ -3,6 +3,7 @@
 //! and live open Pull Request / Merge Request listing via `gh` and `glab`.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use tc_core::ProjectId;
 use tc_git::history::{CommitEntry, LogPage};
@@ -51,6 +52,8 @@ pub struct History {
     pub open_prs: Vec<RemotePr>,
     pub prs_loading: bool,
     pub prs_expanded: bool,
+    pub prs_signed_out: bool,
+    pub loaded_at: Option<Instant>,
     load: u64,
     files_load: u64,
     diff_load: u64,
@@ -84,6 +87,8 @@ impl History {
             open_prs: Vec::new(),
             prs_loading: false,
             prs_expanded: false,
+            prs_signed_out: false,
+            loaded_at: None,
             load: 0,
             files_load: 0,
             diff_load: 0,
@@ -111,6 +116,7 @@ pub enum HistoryMsg {
     },
     Fetched {
         project: ProjectId,
+        remote: String,
         result: Result<(), PushError>,
     },
     OpenPrs {
@@ -124,10 +130,9 @@ impl App {
     pub fn open_history(&mut self) {
         let Some(pid) = self.active else { return };
         let Some(folder) = self.project(pid).map(|p| p.path.clone()) else { return };
-        // Close inline drawer Review (full-screen review is left untouched if active, or exit to Focus).
-        if self.review.as_ref().is_some_and(|r| !r.expanded) {
-            self.review = None;
-        }
+        // Close any active Review (inline or full-screen) so History is always visible.
+        self.review = None;
+        self.review_close = false;
         self.drawer_maximized = false;
         self.ensure_editor_for_project(pid, 0.0);
         if let Some(e) = self.editors.get_mut(&pid) {
@@ -142,6 +147,19 @@ impl App {
         }
         self.history_reload(false);
         self.history_load_open_prs();
+    }
+
+    /// Refreshes open Commit History when terminal git operations change the repository (throttled).
+    pub fn history_git_changed(&mut self, project: ProjectId) {
+        let should_reload = self.history.as_ref().is_some_and(|h| {
+            h.project == project
+                && !h.loading
+                && !h.loading_more
+                && h.loaded_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(2))
+        });
+        if should_reload {
+            self.history_reload(false);
+        }
     }
 
     /// Keeps Commit History synced with whichever project is active in Focus view.
@@ -170,11 +188,16 @@ impl App {
             .and_then(|f| f.remote.as_ref())
             .map(|r| r.name.clone());
         let Some(h) = self.history.as_mut() else { return };
+        if append && (h.loading || h.loading_more) {
+            return;
+        }
         let skip = if append { h.commits.len() } else { 0 };
-        let query = h.query.trim().to_string();
+        let query = if append { h.active_query.clone() } else { h.query.trim().to_string() };
         let load = next_work();
         h.load = load;
-        h.active_query = query.clone();
+        if !append {
+            h.active_query = query.clone();
+        }
         if append {
             h.loading_more = true;
         } else {
@@ -276,7 +299,7 @@ impl App {
         self.rt.spawn_blocking(move || {
             let path = path.or_else(|| Some(tc_lsp::servers::user_path()));
             let result = tc_git::history::fetch(&root, &remote, path.as_deref());
-            let _ = tx.send(AppMsg::History(HistoryMsg::Fetched { project, result }));
+            let _ = tx.send(AppMsg::History(HistoryMsg::Fetched { project, remote, result }));
             ctx.request_repaint();
         });
     }
@@ -318,6 +341,7 @@ impl App {
                 h.root = root;
                 h.loading = false;
                 h.loading_more = false;
+                h.loaded_at = Some(Instant::now());
                 match result {
                     Ok(page) => {
                         h.error = None;
@@ -327,16 +351,30 @@ impl App {
                             h.commits.extend(page.commits);
                         } else {
                             let prev_hash = h.commits.get(h.selected).map(|c| c.hash.clone());
+                            let had_files = !h.files.is_empty() && h.files_error.is_none();
                             h.commits = page.commits;
                             let next_sel = prev_hash
+                                .as_deref()
                                 .and_then(|hash| h.commits.iter().position(|c| c.hash == hash))
                                 .unwrap_or(0);
                             if !h.commits.is_empty() {
-                                self.history_select_commit(next_sel);
+                                let same_commit = prev_hash.as_deref() == Some(h.commits[next_sel].hash.as_str());
+                                if same_commit && had_files {
+                                    h.selected = next_sel;
+                                } else {
+                                    self.history_select_commit(next_sel);
+                                }
                             } else {
                                 h.selected = 0;
+                                h.files_load = 0;
+                                h.diff_load = 0;
+                                h.from = None;
+                                h.to = None;
                                 h.files.clear();
+                                h.selected_file = 0;
+                                h.files_error = None;
                                 h.diff = None;
+                                h.diff_error = None;
                                 h.files_loading = false;
                             }
                         }
@@ -344,8 +382,17 @@ impl App {
                     Err(e) => {
                         if !append {
                             h.commits.clear();
+                            h.selected = 0;
+                            h.files_load = 0;
+                            h.diff_load = 0;
+                            h.from = None;
+                            h.to = None;
                             h.files.clear();
+                            h.selected_file = 0;
+                            h.files_error = None;
                             h.diff = None;
+                            h.diff_error = None;
+                            h.files_loading = false;
                         }
                         h.error = Some(e);
                     }
@@ -388,7 +435,7 @@ impl App {
                     }
                 }
             }
-            HistoryMsg::Fetched { project, result } => {
+            HistoryMsg::Fetched { project, remote, result } => {
                 if let Some(h) = self.history.as_mut().filter(|h| h.project == project) {
                     h.fetching = false;
                 }
@@ -403,10 +450,11 @@ impl App {
                         }
                     }
                     Err(PushError::Credentials(_)) => {
+                        let cmd = format!("git fetch --prune {}", crate::ship::quote(&remote));
                         self.toast_with(
                             crate::app::ToastKind::Warn,
                             t("Fetch needs credentials — run git fetch in a terminal.").to_string(),
-                            Some((t("Run in Terminal").to_string(), Action::TypeInTerminal("git fetch --prune".into()))),
+                            Some((t("Run in Terminal").to_string(), Action::TypeInTerminal(cmd))),
                         );
                     }
                     Err(e) => {
@@ -420,8 +468,18 @@ impl App {
                     return;
                 }
                 h.prs_loading = false;
-                if let Ok(prs) = result {
-                    h.open_prs = prs;
+                match result {
+                    Ok(prs) => {
+                        h.open_prs = prs;
+                        h.prs_signed_out = false;
+                    }
+                    Err(GhError::SignedOut(_)) => {
+                        h.open_prs.clear();
+                        h.prs_signed_out = true;
+                    }
+                    Err(GhError::Failed(_)) => {
+                        h.prs_signed_out = false;
+                    }
                 }
             }
         }

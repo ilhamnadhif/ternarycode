@@ -479,6 +479,13 @@ impl Pane {
         self.tracker = Tracker::new(Instant::now());
         self.tracker.long_command = spawn.long_command;
         self.program_title = None;
+        self.progress = None;
+        self.servers.clear();
+        self.servers_probe_at = None;
+        self.active_profile = None;
+        self.rate_limit = None;
+        self.last_limit_sig = None;
+        self.limit_ignore_until = None;
         match LocalPty::spawn(&opts) {
             Ok(pty) => self.attach(pty, spawn),
             Err(e) => self.fail_to_start(&e.to_string()),
@@ -589,6 +596,7 @@ impl Pane {
             program_title: self.program_title.clone(),
             cwd: self.cwd.clone(),
             preset: self.preset.clone(),
+            active_profile: self.active_profile.clone(),
             agent_session: self.agent_session.clone(),
             last_agent: self.last_agent,
             progress: self.progress,
@@ -643,6 +651,7 @@ impl Pane {
         self.program_title = h.program_title;
         self.cwd = h.cwd;
         self.preset = h.preset;
+        self.active_profile = h.active_profile;
         self.agent_session = h.agent_session;
         self.last_agent = h.last_agent;
         self.resume = None;
@@ -861,6 +870,13 @@ impl Pane {
                 self.exit = Some(info);
                 self.session = None;
                 self.program_title = None;
+                self.progress = None;
+                self.servers.clear();
+                self.servers_probe_at = None;
+                self.active_profile = None;
+                self.rate_limit = None;
+                self.last_limit_sig = None;
+                self.limit_ignore_until = None;
                 let code = match info {
                     _ if self.closing => Some(0),
                     ExitInfo::Code(c) => Some(c),
@@ -1032,11 +1048,14 @@ impl Pane {
             self.progress = None;
             self.servers.clear();
         }
-        if fg == Foreground::Shell && self.tracker.agent.is_some() {
-            // The agent was quit: nothing to resume later.
+        if fg == Foreground::Shell && self.tracker.agent.is_some() && self.pending_command.is_none() {
+            // The agent was quit (and no failover relaunch is queued): clear agent & profile state.
             self.last_agent = None;
             self.preset = None;
             self.agent_session = None;
+            self.active_profile = None;
+            self.rate_limit = None;
+            self.last_limit_sig = None;
         }
         self.tracker.apply(Event::Foreground(fg), now)
     }

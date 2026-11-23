@@ -158,14 +158,14 @@ impl ProfileRuntime {
     }
 
     /// Remaining quota percentage if a budget or server quota is known (or `Some(0.0)` while rate-limited).
-    pub fn quota_remaining_pct(&self, budget: Option<u64>) -> Option<f32> {
+    pub fn quota_remaining_pct(&self, prof: &AgentProfile) -> Option<f32> {
         if self.state == ProfileState::RateLimited {
             return Some(0.0);
         }
-        if let Some(used) = self.usage.window_5h.used_percent {
+        if let Some(used) = self.quota_5h_used_pct(prof).or_else(|| self.quota_weekly_used_pct(prof)) {
             return Some((100.0 - used).clamp(0.0, 100.0));
         }
-        let budget = budget.filter(|&b| b > 0)?;
+        let budget = prof.daily_token_budget.filter(|&b| b > 0)?;
         let used = self.tokens_in.saturating_add(self.tokens_out);
         let pct = 100.0 * (1.0 - (used as f64 / budget as f64)).clamp(0.0, 1.0);
         Some(pct as f32)
@@ -507,7 +507,7 @@ pub fn redact_secrets(text: &str, known_secrets: &[String]) -> String {
 /// Interactive login command for signing into an isolated profile inside a terminal pane.
 pub fn login_command(agent: AgentKind) -> &'static str {
     match agent {
-        AgentKind::Claude => "claude /login",
+        AgentKind::Claude => "claude auth login",
         AgentKind::Codex => "codex login",
         AgentKind::Gemini => "gemini",
         AgentKind::OpenCode => "opencode auth login",
@@ -671,14 +671,22 @@ pub fn parse_retry_duration(lower: &str) -> Option<Duration> {
     parse_wall_clock_reset(slice)
 }
 
-/// Parses wall-clock reset times like `"5pm"`, `"3:30am"`, or `"14:00"` into a relative duration.
+/// Parses wall-clock reset times like `"5pm"`, `"5:00 pm"`, `"3:30am"`, or `"14:00"` into a relative duration.
 fn parse_wall_clock_reset(slice: &str) -> Option<Duration> {
     use chrono::Timelike;
-    let token = slice.split_whitespace().next()?.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':');
+    let mut words = slice.split_whitespace();
+    let token = words.next()?.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':');
+    let next_word = words
+        .next()
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphabetic()).to_ascii_lowercase());
     let (time_part, ampm) = if let Some(t) = token.strip_suffix("am") {
         (t, Some(false))
     } else if let Some(t) = token.strip_suffix("pm") {
         (t, Some(true))
+    } else if next_word.as_deref() == Some("am") {
+        (token, Some(false))
+    } else if next_word.as_deref() == Some("pm") {
+        (token, Some(true))
     } else {
         (token, None)
     };
@@ -835,8 +843,10 @@ pub fn test_profile_connection(
     }
     if has_key {
         Ok(format!("`{program}` ready · API key configured"))
-    } else if has_files {
+    } else if tc_agent::sessions::is_signed_in(profile.agent, &dir) == Some(true) {
         Ok(format!("`{program}` ready · auth session found"))
+    } else if tc_agent::sessions::is_signed_in(profile.agent, &dir).is_none() && has_files {
+        Ok(format!("`{program}` ready · system keyring configured"))
     } else {
         Ok(format!("`{program}` found · sign in via Auth Login"))
     }

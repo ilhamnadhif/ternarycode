@@ -135,10 +135,10 @@ impl AppMenu {
         let files = item(t("Show/Hide Files"), Action::ToggleFiles);
         let sidebar = item(t("Show/Hide Sidebar"), Action::ToggleSidebar);
         let compact = item(t("Narrow Sidebar"), Action::ToggleCompactSidebar);
+        let zen = item(t("Zen Mode"), Action::ToggleZenMode);
         let focus = item(t("Focus View"), Action::SetView(View::Focus));
         let grid = item(t("Grid of All Projects"), Action::ToggleGrid);
         let profiles = item(t("Agent Profiles…"), Action::OpenProfiles);
-        let monitor = item(t("Usage & Status Monitor"), Action::OpenMonitor);
         let pairing = item(t("Phone Pairing…"), Action::OpenPhonePairing);
         let split_right = item(t("Split Right"), Action::SplitRight);
         let split_down = item(t("Split Down"), Action::SplitDown);
@@ -155,6 +155,7 @@ impl AppMenu {
                 &switch,
                 &sidebar,
                 &compact,
+                &zen,
                 &editor,
                 &drawer,
                 &files,
@@ -166,7 +167,6 @@ impl AppMenu {
                 &focus,
                 &grid,
                 &profiles,
-                &monitor,
                 &pairing,
                 &PredefinedMenuItem::separator(),
                 &split_right,
@@ -187,6 +187,7 @@ impl AppMenu {
         let next_attention = item(t("Go to Next Waiting Agent"), Action::NextAttention);
         let back = item(t("Back to Where I Was"), Action::BackAttention);
         let review = item(t("Review Changes…"), Action::Review);
+        let history = item(t("Commit History"), Action::History);
         let commit = item(t("Commit…"), Action::Commit);
         let attention = item(t("Show Attention List"), Action::ToggleAttention);
         let agent_menu = Submenu::with_items(
@@ -195,6 +196,7 @@ impl AppMenu {
             &[
                 &run_agent,
                 &review,
+                &history,
                 &commit,
                 &PredefinedMenuItem::separator(),
                 &next_attention,

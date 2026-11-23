@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b0c0e">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -11,7 +11,7 @@
 :root{
   --bg:#0b0c0e;--canvas:#111215;--surface:#181a1f;--inset:#090a0c;
   --border:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.14);
-  --text:#ececef;--muted:#9b9da6;--faint:#686a73;
+  --text:#ececef;--muted:#9b9da6;--faint:#848794;
   --accent:#3b82f6;--ok:#34d399;--warn:#f59e0b;--err:#ef4444;--info:#60a5fa;
   --sans:-apple-system,BlinkMacSystemFont,"Inter","SF Pro Text",system-ui,sans-serif;
   --mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;
@@ -165,6 +165,8 @@ async function startLive(){
     render();
     connectSse();
   }catch(_){
+    connected = false;
+    renderHeaderOnly();
     if(token) scheduleReconnect();
   }
 }
@@ -267,7 +269,7 @@ function renderLive(){
   if(!panes.length) return `<div class="empty">No active panes in desktop workspace.</div>`;
   const pane = panes.find(p=>p.id===selectedPane) || panes[0];
   const healthy = (state.profiles||[]).filter(
-    p=>p.enabled && p.state!=="rate_limited" && p.state!=="cooldown" && p.state!=="error" && p.id!==pane.profile
+    p=>p.enabled && p.signed_in !== false && p.state!=="rate_limited" && p.state!=="cooldown" && p.state!=="error" && p.id!==pane.profile
   );
   let html = `<div class="chips">` + panes.map(p=>{
     const cls = p.id===pane.id ? "chip active" : "chip";
@@ -279,14 +281,15 @@ function renderLive(){
     <div class="row">
       <div style="min-width:0">
         <div class="title">${esc(pane.project_name)} / ${esc(pane.label)}</div>
-        <div class="sub mono">${esc(pane.profile||"default")}${pane.branch?` · ${esc(pane.branch)}`:""}</div>
+        <div class="sub mono">${esc(pane.profile||(pane.supports_profiles?"default":pane.label))}${pane.branch?` · ${esc(pane.branch)}`:""}</div>
       </div>
       <span class="badge ${esc(pane.rate_limit?"rate_limited":pane.status)}">${esc(pane.rate_limit?"Rate-Limited":pane.status_label)}</span>
     </div>`;
 
   if(pane.rate_limit){
+    const rlSecs = secsUntil(pane.rate_limit.resets_at_unix);
     html += `<div class="banner">
-      <div class="banner-title">${esc(pane.rate_limit.from_profile)} hit usage limit${pane.rate_limit.reset_secs?` · resets in ${fmtSec(pane.rate_limit.reset_secs)}`:""}</div>
+      <div class="banner-title">${esc(pane.rate_limit.from_profile)} hit usage limit${rlSecs?` · resets in ${fmtReset(rlSecs)}`:""}</div>
       <div class="sub">${esc(pane.rate_limit.reason)}</div>
       <div class="actions">` +
       (healthy.length ? healthy.map(pr=>`<button class="btn primary" data-act="switch" data-pane="${pane.id}" data-profile="${esc(pr.id)}">Resume on ${esc(pr.id)}</button>`).join("") : `<span class="sub">No healthy fallback profile available</span>`)
@@ -309,7 +312,7 @@ function renderLive(){
     <button class="btn primary" data-act="send-prompt" data-pane="${pane.id}">Send</button>
   </div>`;
 
-  if(healthy.length && !pane.rate_limit){
+  if(pane.supports_profiles && healthy.length && !pane.rate_limit){
     html += `<div class="row" style="border-top:1px solid var(--border)">
       <span class="sub">Switch account</span>
       <div style="display:flex;gap:5px;flex-wrap:wrap">` +
@@ -340,6 +343,11 @@ function renderProjects(){
   }).join("");
 }
 
+function secsUntil(unixTs){
+  if(!unixTs) return 0;
+  return Math.max(0, Math.round(unixTs - Date.now() / 1000));
+}
+
 function fmtReset(s){
   if(!s) return "";
   if(s >= 86400) return `${Math.floor(s/86400)}d ${Math.floor((s%86400)/3600)}h`;
@@ -351,7 +359,8 @@ function renderWinBar(w){
   const pct = w.used_pct != null ? Math.round(w.used_pct) : null;
   const col = pct==null ? "var(--faint)" : pct>=90 ? "var(--err)" : pct>=70 ? "var(--warn)" : "var(--ok)";
   const val = pct!=null ? `${pct}%${w.tokens?` · ${fmtTok(w.tokens)}`:""}` : `${fmtTok(w.tokens||0)} tok`;
-  const rst = w.reset_secs ? ` · ↻ ${fmtReset(w.reset_secs)}` : "";
+  const rem = secsUntil(w.resets_at_unix);
+  const rst = rem ? ` · ↻ ${fmtReset(rem)}` : "";
   return `<div style="display:flex;flex-direction:column;gap:3px;margin-top:3px">
     <div style="display:flex;justify-content:space-between;font-size:11px" class="mono">
       <span class="sub">${esc(w.label)}</span>
@@ -378,7 +387,10 @@ function renderProfiles(){
       ${renderWinBar(p.window_weekly)}
       ${p.active_session?`<div class="sub mono" style="margin-top:2px">Active in ${esc(p.active_session)}</div>`:""}
     </div>`;
-  }).join("") + `</div>`;
+  }).join("") + `</div>
+  <div class="actions" style="justify-content:flex-end;margin-top:12px">
+    <button class="btn danger" data-act="unpair">Unpair This Device</button>
+  </div>`;
 }
 
 function renderAlerts(){
@@ -395,12 +407,34 @@ function renderAlerts(){
 }
 
 function render(){
-  if(!token){ renderPair(); return; }
-  if(!state){ root.innerHTML = `<div class="empty">Connecting to desktop ADE…</div>`; return; }
+  if(!token || (urlPair && pairError && !state)){ renderPair(); return; }
+  if(!state){
+    root.innerHTML = `<div class="pair-wrap"><div class="pair-box" style="text-align:center">
+      <h1>Connecting to desktop…</h1>
+      <p>Waiting for TernaryCode Companion server to respond.</p>
+      <div class="actions" style="justify-content:center;margin-top:14px">
+        <button class="btn" data-act="retry">Retry</button>
+        <button class="btn danger" data-act="unpair">Unpair / Change Token</button>
+      </div>
+    </div></div>`;
+    return;
+  }
 
-  // Preserve active input value, focus, selection, and scroll positions across live SSE renders.
+  // While user is actively typing in `#prompt-input` on the same pane, patch terminal output in
+  // place so virtual keyboard / IME composition is never disrupted by DOM replacement.
   const prevInput = document.getElementById("prompt-input");
   const samePane = prevInput && Number(prevInput.dataset.pane) === selectedPane;
+  if(tab === "live" && samePane && document.activeElement === prevInput){
+    const pane = (state.panes||[]).find(p=>p.id===selectedPane);
+    const termBox = document.getElementById("term-box");
+    if(pane && termBox){
+      const nearBot = (termBox.scrollHeight - termBox.scrollTop - termBox.clientHeight) < 36;
+      termBox.textContent = pane.output || "(no output yet)";
+      if(nearBot) termBox.scrollTop = termBox.scrollHeight;
+      renderHeaderOnly();
+      return;
+    }
+  }
   const savedInput = samePane ? {
     val: prevInput.value,
     focused: document.activeElement === prevInput,
@@ -478,6 +512,10 @@ root.addEventListener("click", (ev)=>{
     sendPrompt(Number(el.dataset.pane));
   } else if(act === "resume-session"){
     resumeSession(el.dataset.project, el.dataset.agent, el.dataset.session, el.dataset.profile);
+  } else if(act === "unpair"){
+    clearAuth();
+  } else if(act === "retry"){
+    startLive();
   }
 });
 
