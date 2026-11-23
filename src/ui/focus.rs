@@ -1469,8 +1469,9 @@ impl App {
         }
     }
 
-    /// An agent that finished its turn, at the foot of its pane: what its run changed (or its
-    /// last words), then Review, Commit… and Dismiss. Typing in the pane also puts it away.
+    /// An agent that finished its turn, at the foot of its pane: informational summary (what its
+    /// run changed or its last words) and Dismiss — no Review/Commit buttons outside the agent.
+    /// Typing in the pane also puts it away.
     fn done_notice(&mut self, ui: &mut Ui, pane_id: PaneId, rect: Rect) {
         let Some(pane) = self.panes.get(&pane_id) else { return };
         let who = pane.tracker.agent.map_or_else(|| t("The agent").to_string(), |a| a.label().to_string());
@@ -1487,8 +1488,8 @@ impl App {
                     None,
                     &tf("{} finished its turn", &[&who]),
                     (!body.is_empty()).then_some(body.as_str()),
-                    Some((t("Commit…"), None)),
-                    Some(t("Review")),
+                    None,
+                    None,
                     true,
                 )
             })
@@ -1497,12 +1498,6 @@ impl App {
         crate::devtest::record(format!("done:{pane_id}"), out.rect);
         if out.dismissed {
             self.actions.push(Action::DismissNotice(pane_id));
-        }
-        if out.primary {
-            self.actions.push(Action::Commit);
-        }
-        if out.secondary {
-            self.actions.push(Action::Review);
         }
     }
 

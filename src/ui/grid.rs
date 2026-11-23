@@ -1307,7 +1307,7 @@ impl App {
         }
         let (message, label, status) = said.unwrap_or((None, String::new(), Status::Idle));
         let who = pane.and_then(|id| self.panes.get(&id)).and_then(|x| x.tracker.agent.or(x.last_agent)).map_or_else(|| label.clone(), |a| a.label().to_string());
-        // What it says: tone, title, second line, the main button (and its key), the other one.
+        // What it says: tone, title, second line, optional primary/secondary buttons.
         let (tone, title, body, primary, secondary) = match kind {
             Foot::Wait => {
                 use super::focus::Ask;
@@ -1320,7 +1320,7 @@ impl App {
                     Ask::Confirm(said) => (tf("{} needs your confirmation", &[&who]), said),
                 };
                 // Open the pane so the user answers directly inside the agent's own UI.
-                (kit::Tone::Input, title, body, (t("Open"), None), None)
+                (kit::Tone::Input, title, body, Some((t("Open"), None)), None)
             }
             Foot::Done => {
                 let title = if status == Status::CommandDone { tf("{} finished", &[&label]) } else { tf("{} finished its turn", &[&who]) };
@@ -1336,7 +1336,8 @@ impl App {
                     }
                     None => message.filter(|_| status == Status::Done),
                 };
-                (kit::Tone::Done, title, body, (t("Commit…"), None), Some(t("Review")))
+                // Informational only: no Review/Commit buttons outside the agent's own flow.
+                (kit::Tone::Done, title, body, None, None)
             }
             Foot::Fail => {
                 let what = message.or_else(|| pane.and_then(|id| self.panes.get(&id)).and_then(|x| x.program_title.clone())).unwrap_or_else(|| label.clone());
@@ -1345,7 +1346,7 @@ impl App {
                     _ => 1,
                 };
                 let ago = since.map(|s| tf("{} ago", &[&status::age(s)]));
-                (kit::Tone::Failed, tf("{} exited with code {}", &[&what, &code.to_string()]), ago, (t("Open"), None), None)
+                (kit::Tone::Failed, tf("{} exited with code {}", &[&what, &code.to_string()]), ago, Some((t("Open"), None)), None)
             }
             Foot::Resume(_) => return area.bottom(),
         };
@@ -1353,19 +1354,15 @@ impl App {
         let rect = Rect::from_min_max(pos2(area.left(), area.bottom() - h), area.max);
         let out = ui
             .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                kit::notice(ui, rect.width(), tone, None, &title, body.as_deref(), Some(primary), secondary, true)
+                kit::notice(ui, rect.width(), tone, None, &title, body.as_deref(), primary, secondary, true)
             })
             .inner;
         #[cfg(debug_assertions)]
         {
             crate::devtest::record(format!("tile-foot:{name}"), out.rect);
-            let (dismiss_r, first, second) = notice_buttons(ui, out.rect, Some(primary), secondary, true);
+            let (dismiss_r, first, second) = notice_buttons(ui, out.rect, primary, secondary, true);
             if let Some(id) = review.or(pane) {
                 dismiss_r.into_iter().for_each(|r| crate::devtest::record(format!("tile-dismiss:{id}"), r));
-            }
-            if let Some(id) = review.filter(|_| kind == Foot::Done) {
-                first.into_iter().for_each(|r| crate::devtest::record(format!("tile-commit:{id}"), r));
-                second.into_iter().for_each(|r| crate::devtest::record(format!("tile-review:{id}"), r));
             }
             if kind == Foot::Wait {
                 first.into_iter().for_each(|r| crate::devtest::record(format!("tile-foot-primary:{name}"), r));
@@ -1377,26 +1374,8 @@ impl App {
         {
             self.actions.push(Action::DismissNotice(id));
         }
-        match kind {
-            Foot::Wait | Foot::Fail => {
-                if out.primary {
-                    self.actions.push(open.clone());
-                }
-            }
-            Foot::Done => {
-                if let Some(id) = review.or(pane) {
-                    if out.primary {
-                        self.actions.push(Action::FocusPane(id));
-                        self.actions.push(Action::SetView(View::Focus));
-                        self.actions.push(Action::Commit);
-                    }
-                    if out.secondary {
-                        self.actions.push(Action::FocusPane(id));
-                        self.actions.push(Action::ReviewAgent);
-                    }
-                }
-            }
-            Foot::Resume(_) => {}
+        if matches!(kind, Foot::Wait | Foot::Fail) && out.primary {
+            self.actions.push(open.clone());
         }
         note_foot(ui, rect);
         rect.top()
