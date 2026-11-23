@@ -4,7 +4,8 @@
 //! Steps (separated by `;;`; the ones with an argument format are explained where they run):
 //! - input: `sleep MS`, `key SPEC`, `keys TEXT`, `click NAME`, `mouse down|drag|up NAME[@FX,FY]`,
 //!   `scroll NAME[@FX,FY] DY`, `focus-pane N`, `action NAME [ARG]`, `goto PATH LINE COL`,
-//!   `open-file PATH[:LINE]`, `close-window`, `clear-line`, `free-editor`, `shot NAME`, `quit`;
+//!   `open-file PATH[:LINE]`, `close-window`, `clear-line`, `free-editor`, `toast KIND TEXT`,
+//!   `shot NAME`, `quit`;
 //! - files: `write-file PATH TEXT`, `rm-file PATH`, `expect-file PATH TEXT`,
 //!   `expect-not-file PATH TEXT`;
 //! - waits (until true, or fail after a while): `wait-screen TEXT`, `wait-status STATUS`,
@@ -211,7 +212,7 @@ impl App {
                 Some(self.attention_queue().len().to_string() == arg.trim()).filter(|ok| *ok)
             }
             "wait-toast" => {
-                Some(self.toast.as_ref().is_some_and(|t| arg.trim().split('|').any(|w| t.text.contains(w)))).filter(|ok| *ok)
+                Some(self.toasts.iter().any(|t| arg.trim().split('|').any(|w| t.text.contains(w) || t.body.as_deref().is_some_and(|b| b.contains(w))))).filter(|ok| *ok)
             }
             "wait-editor" => {
                 let text = self.active.and_then(|id| self.editors.get(&id)).and_then(|e| e.file()).map(|f| f.text.clone()).unwrap_or_default();
@@ -778,6 +779,24 @@ impl App {
                     }
                     None => self.devtest.check(false, "hook-latency: no pane with a hook environment"),
                 }
+            }
+            // `toast ok|info|warn|err|worktree TITLE[\nBODY][|ACTION]`: a toast, as the app shows
+            // them (the action goes to the next waiting agent).
+            "toast" => {
+                let (kind, rest) = arg.trim().split_once(' ').unwrap_or(("info", arg.trim()));
+                let kind = match kind {
+                    "ok" => crate::app::ToastKind::Ok,
+                    "warn" => crate::app::ToastKind::Warn,
+                    "err" => crate::app::ToastKind::Err,
+                    "worktree" => crate::app::ToastKind::Worktree,
+                    _ => crate::app::ToastKind::Info,
+                };
+                let text = devtest::unescape(rest);
+                let (text, action) = match text.split_once('|') {
+                    Some((t, a)) => (t.to_string(), Some((a.to_string(), Action::NextAttention))),
+                    None => (text, None),
+                };
+                self.toast_with(kind, text, action);
             }
             "hook" => {
                 // `hook PANE AGENT EVENT [KIND [MESSAGE…]]`: the real hook program, for any pane

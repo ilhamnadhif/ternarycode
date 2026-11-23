@@ -1,7 +1,7 @@
 //! The first run's help: git repositories found in the usual folders (`~/code`,
 //! `~/Developments`, …) to add as projects in one click, and which agents are installed (with
 //! their versions). Looked for only while the welcome screen shows, once, on a thread of its own
-//! (and again on "Look Again"); nothing is read outside those folders, two levels deep.
+//! (and again on "Look again"); nothing is read outside those folders, two levels deep.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

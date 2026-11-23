@@ -172,14 +172,19 @@ fn hook_program() -> Hooks {
 /// Set when the language changes (the native menu bar is then built again).
 static MENU_STALE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// What a toast says and how: its kind's icon, its text, maybe one action.
+/// What a toast says and how: its kind's icon, its title, maybe a line under it and one action.
 #[derive(Clone)]
 pub struct Toast {
     pub text: String,
+    /// The quieter line under the title (the part after a line break of what was said).
+    pub body: Option<String>,
     pub kind: ToastKind,
     pub action: Option<(String, Action)>,
     pub at: Instant,
 }
+
+/// Toasts shown at once (older ones go first).
+pub const TOASTS_AT_ONCE: usize = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
@@ -214,7 +219,8 @@ pub struct Palette {
 pub enum PaletteMode {
     All,
     Projects,
-    Presets,
+    /// Agent sessions of every project: the live ones, then the ones to resume.
+    Sessions,
     Files,
     Search,
     Locations,
@@ -290,7 +296,8 @@ pub struct App {
     menu: Option<(ui::menu::AppMenu, Receiver<muda::MenuEvent>)>,
     instance_rx: Option<Receiver<Vec<String>>>,
     pub allow_close: bool,
-    pub toast: Option<Toast>,
+    /// The toasts shown, oldest first (at most `TOASTS_AT_ONCE`).
+    pub toasts: Vec<Toast>,
     /// Each project's commit box (Review's Changes): its branch, message and run.
     pub ship: HashMap<ProjectId, crate::ship::Ship>,
     /// When each project's pull request checks were read last (read again while they run).
@@ -690,7 +697,7 @@ impl App {
             menu,
             instance_rx: inbox.map(|i| i.attach(ctx)),
             allow_close: false,
-            toast: None,
+            toasts: Vec::new(),
             ship: HashMap::new(),
             ship_checks_at: HashMap::new(),
             ship_focus: false,
@@ -2789,9 +2796,18 @@ impl App {
         self.toast_with(ToastKind::Err, text, None);
     }
 
-    /// A message with an icon of its kind and, maybe, one action (Undo, Show…).
+    /// A message with an icon of its kind and, maybe, one action (Undo, Show…). A line break
+    /// splits it into a title and a quieter line under it. The same message again replaces the
+    /// one shown; more than three at once, the oldest goes.
     pub fn toast_with(&mut self, kind: ToastKind, text: String, action: Option<(String, Action)>) {
-        self.toast = Some(Toast { text, kind, action, at: Instant::now() });
+        let (text, body) = match text.split_once('\n') {
+            Some((title, body)) => (title.trim_end().to_string(), Some(body.trim().to_string()).filter(|b| !b.is_empty())),
+            None => (text, None),
+        };
+        self.toasts.retain(|t| t.text != text || t.body != body);
+        self.toasts.push(Toast { text, body, kind, action, at: Instant::now() });
+        let over = self.toasts.len().saturating_sub(TOASTS_AT_ONCE);
+        self.toasts.drain(..over);
     }
 
     /// Editor files with changes not saved ("main.rs · not saved"), of one project or all.

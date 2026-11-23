@@ -269,8 +269,10 @@ impl App {
             // Where the rows end on screen (the blank below them has the folder's menu).
             let mut rows_end = None;
             if count == 0 {
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(t("This folder is empty.")).size(style::SMALL).color(p.text_faint));
+                let new_file = kit::empty_state_at(ui, tree, icons::FOLDER_SIMPLE, t("This folder is empty"), t("Create a file, or let an agent."), Some((Some(icons::PLUS), t("New file"), None)));
+                if new_file.is_some_and(|r| r.clicked()) {
+                    menu_actions.push(Action::NewFileIn(root.clone()));
+                }
             } else {
                 let mut area = egui::ScrollArea::vertical().id_salt(("files", pid)).auto_shrink([false, false]);
                 if let Some(y) = scroll_to {

@@ -767,6 +767,33 @@ pub fn paint_kbd_sized(painter: &egui::Painter, left_center: egui::Pos2, keys: &
     rect.width()
 }
 
+/// Key hints in a row, each a key cap and its word (`↑↓ choose   ↵ open`): the word Small in
+/// the tertiary text, 6 after its key, 14 between hints. Returns how wide they are.
+pub fn paint_hints(painter: &egui::Painter, left_center: egui::Pos2, hints: &[(&str, &str)], p: &style::Palette) -> f32 {
+    let cy = left_center.y;
+    let mut x = left_center.x;
+    for (i, (keys, word)) in hints.iter().enumerate() {
+        if i > 0 {
+            x += 14.0;
+        }
+        x += paint_kbd_text(painter, egui::pos2(x, cy), keys, p) + 6.0;
+        let g = painter.layout_no_wrap(word.to_string(), FontId::proportional(style::SMALL), p.text_faint);
+        let w = g.size().x;
+        painter.galley(egui::pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+        x += w;
+    }
+    x - left_center.x
+}
+
+/// How wide [`paint_hints`] draws `hints`.
+pub fn hints_width(painter: &egui::Painter, hints: &[(&str, &str)]) -> f32 {
+    hints
+        .iter()
+        .map(|(keys, word)| kbd_width(painter, keys) + 6.0 + painter.layout_no_wrap(word.to_string(), FontId::proportional(style::SMALL), Color32::PLACEHOLDER).size().x)
+        .sum::<f32>()
+        + 14.0 * hints.len().saturating_sub(1) as f32
+}
+
 /// The key cap behind a shortcut hint: a faint fill and a hairline.
 pub fn paint_kbd(painter: &egui::Painter, rect: Rect, p: &style::Palette) {
     painter.rect(
@@ -834,8 +861,21 @@ pub fn icon_badge(ui: &mut Ui, icon: &str, color: Color32, diameter: f32) -> Res
     resp
 }
 
-/// A centered empty state: an icon in a soft circle, a title, a line of explanation, then
-/// whatever `actions` adds (buttons, shortcut hints).
+/// Widest an empty state's sentence runs.
+const EMPTY_TEXT_W: f32 = 340.0;
+/// Room between an empty state's parts (tile, title, sentence, action).
+const EMPTY_GAP: f32 = 10.0;
+
+/// An empty state's icon tile: 48 square, rounded 12, the hover fill and a hairline, the icon
+/// in the secondary text.
+fn paint_empty_tile(painter: &egui::Painter, rect: Rect, icon: &str, p: &style::Palette) {
+    painter.rect(rect, CornerRadius::same(12), p.hover, Stroke::new(1.0, p.border), StrokeKind::Inside);
+    painter.text(rect.center(), Align2::CENTER_CENTER, icon, style::icon_font(22.0), p.text_muted);
+}
+
+/// A centered empty state, the same shape everywhere: a quiet icon tile, a title, one sentence,
+/// then whatever `actions` adds (at most one button). Centered in the height left (by the
+/// height it took the frame before).
 pub fn empty_state(
     ui: &mut Ui,
     icon: &str,
@@ -844,22 +884,65 @@ pub fn empty_state(
     actions: impl FnOnce(&mut Ui),
 ) {
     let p = style::pal(ui);
+    let id = ui.id().with(("empty-state-h", title));
+    let last_h: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(150.0);
     ui.vertical_centered(|ui| {
-        ui.add_space((ui.available_height() * 0.22).clamp(12.0, 140.0));
-        // A quiet icon tile, a title, one sentence, at most one action (Slate empty state).
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.add_space(((ui.available_height() - last_h) / 2.0).max(12.0));
+        let top = ui.cursor().top();
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
-        ui.painter().rect(rect, CornerRadius::same(12), p.hover, Stroke::new(1.0, p.border), StrokeKind::Inside);
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, style::icon_font(22.0), p.text_muted);
-        ui.add_space(10.0);
-        ui.label(RichText::new(title).font(style::semibold(style::HEADING)).color(p.text));
-        ui.add_space(2.0);
+        paint_empty_tile(ui.painter(), rect, icon, &p);
+        ui.add_space(EMPTY_GAP);
         ui.scope(|ui| {
-            ui.set_max_width(420.0);
-            ui.label(RichText::new(body).font(egui::FontId::proportional(style::SMALL)).color(p.text_muted));
+            ui.set_max_width(EMPTY_TEXT_W);
+            ui.add(egui::Label::new(RichText::new(title).font(style::semibold(style::HEADING)).color(p.text)).wrap());
+            if !body.is_empty() {
+                ui.add_space(EMPTY_GAP);
+                ui.add(egui::Label::new(RichText::new(body).font(egui::FontId::proportional(style::SMALL)).color(p.text_muted)).wrap());
+            }
         });
-        ui.add_space(12.0);
+        ui.add_space(EMPTY_GAP);
         actions(ui);
+        let h = ui.min_rect().bottom() - top;
+        if (h - last_h).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(id, h));
+            ui.ctx().request_repaint();
+        }
     });
+}
+
+/// An empty state's one action: a Secondary S button (its icon, label and key hint).
+pub type EmptyAction<'a> = (Option<&'a str>, &'a str, Option<&'a str>);
+
+/// [`empty_state`] centered in `rect`, with at most one action; returns the action's button.
+pub fn empty_state_at(ui: &mut Ui, rect: Rect, icon: &str, title: &str, body: &str, action: Option<EmptyAction>) -> Option<Response> {
+    let p = style::pal(ui);
+    let w = (rect.width() - 48.0).clamp(120.0, EMPTY_TEXT_W);
+    let title_h = ui.painter().layout(title.to_string(), style::semibold(style::HEADING), p.text, w).size().y;
+    let body_h = if body.is_empty() { 0.0 } else { EMPTY_GAP + ui.painter().layout(body.to_string(), egui::FontId::proportional(style::SMALL), p.text_muted, w).size().y };
+    let h = 48.0 + EMPTY_GAP + title_h + body_h + if action.is_some() { EMPTY_GAP + 24.0 } else { 0.0 };
+    let top = (rect.center().y - h / 2.0).max(rect.top() + 12.0);
+    let col = Rect::from_min_max(egui::pos2(rect.center().x - w / 2.0, top), egui::pos2(rect.center().x + w / 2.0, rect.bottom().max(top + h)));
+    let mut button = None;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(col).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let (tile, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
+        paint_empty_tile(ui.painter(), tile, icon, &p);
+        ui.add_space(EMPTY_GAP);
+        ui.add(egui::Label::new(RichText::new(title).font(style::semibold(style::HEADING)).color(p.text)).wrap());
+        if !body.is_empty() {
+            ui.add_space(EMPTY_GAP);
+            ui.add(egui::Label::new(RichText::new(body).font(egui::FontId::proportional(style::SMALL)).color(p.text_muted)).wrap());
+        }
+        if let Some((icon, label, keys)) = action {
+            ui.add_space(EMPTY_GAP);
+            let r = button_keys(ui, Kind::Secondary, icon, label, keys, true);
+            #[cfg(debug_assertions)]
+            crate::devtest::record("empty-action", r.rect);
+            button = Some(r);
+        }
+    });
+    button
 }
 
 /// `ScrollArea::show_rows` for rows of exactly `row_h` laid out edge to edge. egui places the
@@ -937,6 +1020,22 @@ pub fn paint_agent_avatar(painter: &egui::Painter, rect: Rect, agent: Option<tc_
         return;
     }
     painter.text(rect.center(), egui::Align2::CENTER_CENTER, super::icons::TERMINAL_WINDOW, style::icon_font(rect.height() - 2.0), p.text_faint);
+}
+
+/// The Agent avatar: the agent's mark on a quiet tile (`fill/active`), `rect` square (S 16 ·
+/// M 20 · L 28, rounded 4 · 5 · 7, the mark 68% of it); a shell (no agent, or one without a
+/// mark) shows a terminal glyph.
+pub fn paint_agent_tile(painter: &egui::Painter, rect: Rect, agent: Option<tc_core::agent::AgentKind>, p: &style::Palette) {
+    let s = rect.width();
+    let r = if s >= 26.0 { 7 } else if s >= 19.0 { 5 } else { 4 };
+    painter.rect_filled(rect, CornerRadius::same(r), p.subtle);
+    let mark = Rect::from_center_size(rect.center(), Vec2::splat((s * 0.68).round()));
+    if let Some(a) = agent
+        && super::agent_logo::paint(painter, mark, a, p.text, false)
+    {
+        return;
+    }
+    painter.text(rect.center(), Align2::CENTER_CENTER, super::icons::TERMINAL, style::icon_font((s * 0.72).round()), p.text_muted);
 }
 
 pub fn state_pill_width(painter: &egui::Painter, s: tc_core::status::Status, text: &str) -> f32 {

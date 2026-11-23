@@ -360,12 +360,10 @@ impl App {
                 paint_centered_wrapped(ui.painter(), list_rect, t("Loading commit history…"), p.text_muted);
             } else if let Some(err) = &h.error {
                 paint_centered_wrapped(ui.painter(), list_rect, err, p.err);
+            } else if h.commits.is_empty() && h.active_query.is_empty() && q_trim.is_empty() {
+                kit::empty_state_at(ui, list_rect, icons::GIT_COMMIT, t("No commits yet"), t("Make the first one from Changes."), None);
             } else if visible_commits.is_empty() {
-                let msg = if h.commits.is_empty() && h.active_query.is_empty() {
-                    t("No commits yet.")
-                } else {
-                    t("No matching commits.")
-                };
+                let msg = t("No matching commits.");
                 ui.vertical_centered(|ui| {
                     ui.add_space(((list_rect.height() - 48.0) / 2.0).max(16.0));
                     ui.label(RichText::new(msg).size(12.5).color(p.text_muted));
