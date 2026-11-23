@@ -603,7 +603,7 @@ assert bearer and paired["device_id"], "missing device_token"
 # Authorized state request returns projects + profiles.
 req = urllib.request.Request(base + "/api/state", headers={"Authorization": f"Bearer {bearer}"})
 state = json.loads(urllib.request.urlopen(req).read().decode())
-assert len(state["profiles"]) >= 3, f"expected profiles, got {state}"
+assert len(state["profiles"]) >= 2, f"expected profiles, got {state}"
 assert any(p["name"] == "alpha" for p in state["projects"]), f"expected alpha project, got {state}"
 open(info_path + ".ok", "w").write("PASS\n")
 PY

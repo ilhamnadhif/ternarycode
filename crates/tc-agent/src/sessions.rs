@@ -706,15 +706,22 @@ fn non_empty_file(p: &Path) -> bool {
     fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() > 2)
 }
 
-fn apply_codex_window(report: &mut ProfileUsageReport, obj: &Value) {
+fn apply_codex_window(report: &mut ProfileUsageReport, obj: &Value, now_unix: i64) {
     if !obj.is_object() {
         return;
     }
-    let used = obj["used_percent"].as_f64().map(|v| (v as f32).clamp(0.0, 100.0));
+    let mut used = obj["used_percent"].as_f64().map(|v| (v as f32).clamp(0.0, 100.0));
     let mins = obj["window_minutes"].as_u64().and_then(|v| u32::try_from(v).ok());
-    let resets = obj["resets_at"].as_i64();
+    let mut resets = obj["resets_at"].as_i64();
     if used.is_none() && resets.is_none() {
         return;
+    }
+    // If the provider window already rolled past its reset time, report 0% and clear stale reset.
+    if let Some(r) = resets
+        && r <= now_unix
+    {
+        used = Some(0.0);
+        resets = None;
     }
     let target = if mins.is_some_and(|m| m <= 720) {
         &mut report.window_5h
@@ -732,28 +739,168 @@ fn apply_codex_window(report: &mut ProfileUsageReport, obj: &Value) {
     }
 }
 
-/// Scans real multi-window usage (5-hour rolling, 24-hour, and 7-day weekly), provider-reported
-/// server rate-limit quotas (Codex `rate_limits.primary`/`secondary`), and local sign-in status
-/// under `root` for `agent`.
+/// Applies Claude Code's server-reported `cachedUsageUtilization` & `oauthAccount` plan tier
+/// from `<CLAUDE_CONFIG_DIR>/.claude.json` (or `~/.claude.json` for default `~/.claude`).
+/// Returns `(win_5h_start_unix, win_weekly_start_unix)` aligned to Anthropic's real billing windows.
+fn read_claude_account_state(root: &Path, now_unix: i64, report: &mut ProfileUsageReport) -> (Option<i64>, Option<i64>) {
+    let mut candidates = vec![root.join(".claude.json")];
+    if root.file_name().is_some_and(|n| n == ".claude")
+        && let Some(parent) = root.parent()
+    {
+        candidates.push(parent.join(".claude.json"));
+    }
+    let Some(raw) = candidates.into_iter().find_map(|p| fs::read_to_string(&p).ok()) else {
+        return (None, None);
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&raw) else {
+        return (None, None);
+    };
+
+    // Real subscription tier badge (`Ultra`, `Max`, `Pro`, `Team`, `Free`, ...).
+    let oa = &v["oauthAccount"];
+    if oa.is_object() {
+        if let Some(plan) = oa["planDisplayName"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            report.plan_type = Some(plan.to_string());
+        } else if let Some(tier) = oa["organizationRateLimitTier"]
+            .as_str()
+            .or_else(|| oa["userRateLimitTier"].as_str())
+        {
+            let lower = tier.to_ascii_lowercase();
+            let label = if lower.contains("max_20x") {
+                Some("Max 20x")
+            } else if lower.contains("max_5x") {
+                Some("Max 5x")
+            } else if lower.contains("max") {
+                Some("Max")
+            } else if lower.contains("ultra") {
+                Some("Ultra")
+            } else if lower.contains("pro") {
+                Some("Pro")
+            } else if lower.contains("team") {
+                Some("Team")
+            } else {
+                None
+            };
+            if let Some(l) = label {
+                report.plan_type = Some(l.to_string());
+            }
+        }
+    }
+
+    let util = &v["cachedUsageUtilization"]["utilization"];
+    if !util.is_object() {
+        return (None, None);
+    }
+
+    let parse_slot = |obj: &Value, default_mins: u32| -> (Option<f32>, Option<i64>, Option<i64>) {
+        if !obj.is_object() {
+            return (None, None, None);
+        }
+        let mut pct = obj["utilization"]
+            .as_f64()
+            .or_else(|| obj["percent"].as_f64())
+            .map(|x| (x as f32).clamp(0.0, 100.0));
+        let mut resets = obj["resets_at"].as_str().and_then(parse_iso_unix);
+        let span_secs = i64::from(default_mins) * 60;
+        let window_start = resets.map(|r| r - span_secs);
+        if let Some(r) = resets
+            && r <= now_unix
+        {
+            // Cached utilization belongs to a window that already reset.
+            pct = Some(0.0);
+            resets = None;
+        }
+        (pct, resets, window_start)
+    };
+
+    let (mut p5, mut r5, mut s5) = parse_slot(&util["five_hour"], 300);
+    let (mut p7, mut r7, mut s7) = parse_slot(&util["seven_day"], 10_080);
+
+    // Fallback to `limits[]` array (`kind: "session"` / `"weekly_all"`) if top-level keys are absent.
+    if let Some(limits) = util["limits"].as_array() {
+        for item in limits {
+            match item["kind"].as_str() {
+                Some("session") if p5.is_none() && r5.is_none() => {
+                    let (p, r, s) = parse_slot(item, 300);
+                    p5 = p;
+                    r5 = r;
+                    s5 = s;
+                }
+                Some("weekly_all") if p7.is_none() && r7.is_none() => {
+                    let (p, r, s) = parse_slot(item, 10_080);
+                    p7 = p;
+                    r7 = r;
+                    s7 = s;
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(ws) = util["seven_day_breakdown"]["window_started_at"].as_str().and_then(parse_iso_unix) {
+        s7 = Some(ws);
+    }
+
+    if p5.is_some() || r5.is_some() {
+        report.window_5h.used_percent = p5;
+        report.window_5h.window_minutes = Some(300);
+        report.window_5h.resets_at_unix = r5;
+    }
+    if p7.is_some() || r7.is_some() {
+        report.window_weekly.used_percent = p7;
+        report.window_weekly.window_minutes = Some(10_080);
+        report.window_weekly.resets_at_unix = r7;
+    }
+
+    (s5, s7)
+}
+
+/// Streams JSONL lines containing `"usage"` from a Claude session file (reading the full file up
+/// to 8 MB so middle turns are never dropped, falling back to head+tail edges on huge files).
+fn claude_usage_lines(path: &Path) -> Vec<String> {
+    const MAX_FULL: u64 = 8 * 1024 * 1024;
+    if fs::metadata(path).is_ok_and(|m| m.len() <= MAX_FULL)
+        && let Ok(f) = File::open(path)
+    {
+        let mut lines = Vec::new();
+        let mut reader = BufReader::new(f);
+        let mut buf = String::new();
+        while reader.read_line(&mut buf).unwrap_or(0) > 0 {
+            if buf.contains("\"usage\"") {
+                lines.push(buf.trim_end_matches(['\r', '\n']).to_string());
+            }
+            buf.clear();
+        }
+        return lines;
+    }
+    let (head, tail) = edges(path, 128 * 1024, 512 * 1024);
+    head.into_iter().chain(tail).filter(|l| l.contains("\"usage\"")).collect()
+}
+
+/// Scans real multi-window usage (5-hour rolling, 24-hour, and 7-day weekly / 30-day),
+/// provider-reported server quotas (Claude `cachedUsageUtilization` & Codex `rate_limits`),
+/// and local sign-in status under `root` for `agent`.
 pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
     const WIN_5H: i64 = 5 * 3_600;
     const WIN_24H: i64 = 24 * 3_600;
     const WIN_7D: i64 = 7 * 86_400;
+    const WIN_30D: i64 = 30 * 86_400;
 
     let now_unix = unix_secs(SystemTime::now());
-    let cut_5h = now_unix - WIN_5H;
     let cut_24h = now_unix - WIN_24H;
-    let cut_7d = now_unix - WIN_7D;
     let cutoff_7d_st = SystemTime::now()
         .checked_sub(std::time::Duration::from_secs(WIN_7D as u64))
         .unwrap_or(SystemTime::UNIX_EPOCH);
+    let cutoff_30d_st = SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(WIN_30D as u64))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
 
     let mut report = ProfileUsageReport::default();
-    report.window_5h.window_minutes = Some(300);
-    report.window_weekly.window_minutes = Some(10_080);
 
     match agent {
         AgentKind::Claude => {
+            report.window_5h.window_minutes = Some(300);
+            report.window_weekly.window_minutes = Some(10_080);
+
             let parent_claude_json = root
                 .file_name()
                 .is_some_and(|n| n == ".claude")
@@ -767,6 +914,17 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                 || parent_claude_json.as_deref().is_some_and(non_empty_file);
             report.signed_in = Some(has_auth);
 
+            // Read Anthropic's real server-reported utilization %, exact reset timestamps, and plan tier.
+            let (srv_5h_start, srv_7d_start) = read_claude_account_state(root, now_unix, &mut report);
+            let cut_5h = srv_5h_start.unwrap_or(now_unix - WIN_5H);
+            let cut_7d = srv_7d_start.unwrap_or(now_unix - WIN_7D);
+            let min_cut_unix = cut_7d.min(cut_24h).min(cut_5h);
+            let min_cut_st = if min_cut_unix > 0 {
+                SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(min_cut_unix as u64)
+            } else {
+                cutoff_7d_st
+            };
+
             let mut files: Vec<(SystemTime, PathBuf)> = fs::read_dir(root.join("projects"))
                 .ok()
                 .into_iter()
@@ -779,24 +937,17 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                 .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
                 .filter_map(|p| {
                     let m = modified(&p);
-                    (m >= cutoff_7d_st).then_some((m, p))
+                    (m >= min_cut_st).then_some((m, p))
                 })
                 .collect();
             files.sort_by_key(|f| std::cmp::Reverse(f.0));
 
-            let mut oldest_5h: Option<i64> = None;
-            let mut oldest_7d: Option<i64> = None;
-
-            for (mtime, path) in files.into_iter().take(48) {
+            for (mtime, path) in files.into_iter().take(64) {
                 let fallback_ts = unix_secs(mtime);
-                let (head, tail) = edges(&path, 64 * 1024, 256 * 1024);
                 let mut by_id: std::collections::HashMap<String, (TokenUsage, i64)> = std::collections::HashMap::new();
                 let mut anons: Vec<(TokenUsage, i64)> = Vec::new();
-                for line in head.iter().chain(tail.iter()) {
-                    if !line.contains("\"usage\"") {
-                        continue;
-                    }
-                    let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+                for line in claude_usage_lines(&path) {
+                    let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
                     let msg = &v["message"];
                     let u = if msg["usage"].is_object() { &msg["usage"] } else { &v["usage"] };
                     if !u.is_object() {
@@ -824,7 +975,6 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                     if ts >= cut_7d {
                         report.window_weekly.tokens.add_assign(u);
                         report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
-                        oldest_7d = Some(oldest_7d.map_or(ts, |o| o.min(ts)));
                     }
                     if ts >= cut_24h {
                         report.recent_24h.add_assign(u);
@@ -832,15 +982,8 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                     if ts >= cut_5h {
                         report.window_5h.tokens.add_assign(u);
                         report.window_5h.turns = report.window_5h.turns.saturating_add(1);
-                        oldest_5h = Some(oldest_5h.map_or(ts, |o| o.min(ts)));
                     }
                 }
-            }
-            if let Some(o) = oldest_5h {
-                report.window_5h.resets_at_unix = Some(o + WIN_5H);
-            }
-            if let Some(o) = oldest_7d {
-                report.window_weekly.resets_at_unix = Some(o + WIN_7D);
             }
         }
         AgentKind::Codex => {
@@ -859,7 +1002,7 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                                 break 'days;
                             }
                             let m = modified(&file);
-                            if m < cutoff_7d_st {
+                            if m < cutoff_30d_st {
                                 continue;
                             }
                             files.push((m, file));
@@ -870,13 +1013,13 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
             files.sort_by_key(|f| std::cmp::Reverse(f.0));
 
             let mut got_rate_limits = false;
-            let mut oldest_5h: Option<i64> = None;
-            let mut oldest_7d: Option<i64> = None;
             let mut server_5h = WindowQuota::default();
             let mut server_weekly = WindowQuota::default();
+            // Store per-session token totals with their actual timestamp so we align with server windows.
+            let mut session_tokens: Vec<(i64, TokenUsage)> = Vec::new();
 
-            for (mtime, path) in files.into_iter().take(48) {
-                let ts = unix_secs(mtime);
+            for (mtime, path) in files.into_iter().take(64) {
+                let fallback_ts = unix_secs(mtime);
                 let (_, tail) = edges(&path, 0, 128 * 1024);
                 let mut got_tokens = false;
                 for line in tail.iter().rev() {
@@ -891,9 +1034,13 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                             report.plan_type = Some(pt.to_string());
                         }
                         let mut tmp = ProfileUsageReport::default();
-                        apply_codex_window(&mut tmp, &rl["primary"]);
-                        apply_codex_window(&mut tmp, &rl["secondary"]);
-                        if tmp.window_5h.used_percent.is_some() || tmp.window_weekly.used_percent.is_some() {
+                        apply_codex_window(&mut tmp, &rl["primary"], now_unix);
+                        apply_codex_window(&mut tmp, &rl["secondary"], now_unix);
+                        if tmp.window_5h.used_percent.is_some()
+                            || tmp.window_weekly.used_percent.is_some()
+                            || tmp.window_5h.resets_at_unix.is_some()
+                            || tmp.window_weekly.resets_at_unix.is_some()
+                        {
                             server_5h = tmp.window_5h;
                             server_weekly = tmp.window_weekly;
                             got_rate_limits = true;
@@ -902,23 +1049,12 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                     if !got_tokens {
                         let tu = &payload["info"]["total_token_usage"];
                         if tu.is_object() {
+                            let ev_ts = v["timestamp"].as_str().and_then(parse_iso_unix).unwrap_or(fallback_ts);
                             let u = TokenUsage {
                                 input: tu["input_tokens"].as_u64().unwrap_or(0),
                                 output: tu["output_tokens"].as_u64().unwrap_or(0),
                             };
-                            if ts >= cut_7d {
-                                report.window_weekly.tokens.add_assign(u);
-                                report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
-                                oldest_7d = Some(oldest_7d.map_or(ts, |o| o.min(ts)));
-                            }
-                            if ts >= cut_24h {
-                                report.recent_24h.add_assign(u);
-                            }
-                            if ts >= cut_5h {
-                                report.window_5h.tokens.add_assign(u);
-                                report.window_5h.turns = report.window_5h.turns.saturating_add(1);
-                                oldest_5h = Some(oldest_5h.map_or(ts, |o| o.min(ts)));
-                            }
+                            session_tokens.push((ev_ts, u));
                             got_tokens = true;
                         }
                     }
@@ -927,22 +1063,57 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                     }
                 }
             }
-            if server_5h.used_percent.is_some() || server_5h.resets_at_unix.is_some() {
+
+            // Apply ONLY the real windows reported by OpenAI / Codex (e.g. Free plan has 30d only,
+            // Plus/Pro plans have 5h + Weekly). Never fabricate a fake reset timer.
+            let has_srv_5h = server_5h.used_percent.is_some() || server_5h.resets_at_unix.is_some();
+            let has_srv_long = server_weekly.used_percent.is_some() || server_weekly.resets_at_unix.is_some();
+            if has_srv_5h {
                 report.window_5h.used_percent = server_5h.used_percent;
                 report.window_5h.window_minutes = server_5h.window_minutes.or(Some(300));
                 report.window_5h.resets_at_unix = server_5h.resets_at_unix;
-            } else if let Some(o) = oldest_5h {
-                report.window_5h.resets_at_unix = Some(o + WIN_5H);
+            } else if !has_srv_long {
+                // No rate_limits observed yet (fresh account): keep default 5h/Weekly labels.
+                report.window_5h.window_minutes = Some(300);
             }
-            if server_weekly.used_percent.is_some() || server_weekly.resets_at_unix.is_some() {
+            if has_srv_long {
                 report.window_weekly.used_percent = server_weekly.used_percent;
                 report.window_weekly.window_minutes = server_weekly.window_minutes.or(Some(10_080));
                 report.window_weekly.resets_at_unix = server_weekly.resets_at_unix;
-            } else if let Some(o) = oldest_7d {
-                report.window_weekly.resets_at_unix = Some(o + WIN_7D);
+            } else if !has_srv_5h {
+                report.window_weekly.window_minutes = Some(10_080);
+            }
+
+            let span_5h = i64::from(report.window_5h.window_minutes.unwrap_or(300)) * 60;
+            let span_long = i64::from(report.window_weekly.window_minutes.unwrap_or(10_080)) * 60;
+            let cut_5h = report
+                .window_5h
+                .resets_at_unix
+                .map(|r| r - span_5h)
+                .unwrap_or(now_unix - span_5h);
+            let cut_long = report
+                .window_weekly
+                .resets_at_unix
+                .map(|r| r - span_long)
+                .unwrap_or(now_unix - span_long);
+
+            for (ts, u) in session_tokens {
+                if ts >= cut_long {
+                    report.window_weekly.tokens.add_assign(u);
+                    report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
+                }
+                if ts >= cut_24h {
+                    report.recent_24h.add_assign(u);
+                }
+                if ts >= cut_5h {
+                    report.window_5h.tokens.add_assign(u);
+                    report.window_5h.turns = report.window_5h.turns.saturating_add(1);
+                }
             }
         }
         AgentKind::Gemini => {
+            let cut_5h = now_unix - WIN_5H;
+            let cut_7d = now_unix - WIN_7D;
             let state_root = gemini_state_root(root);
             let has_auth = non_empty_file(&state_root.join("oauth_creds.json"))
                 || non_empty_file(&state_root.join("gemini-credentials.json"))
@@ -1007,6 +1178,8 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
             }
         }
         AgentKind::Antigravity => {
+            let cut_5h = now_unix - WIN_5H;
+            let cut_7d = now_unix - WIN_7D;
             let hist = antigravity_history(root);
             let has_auth = non_empty_file(&root.join("settings.json"))
                 || non_empty_file(&root.join("installation_id"))
@@ -1270,6 +1443,50 @@ mod tests {
         let empty_codex = dir.path().join("codex-empty");
         fs::create_dir_all(&empty_codex).unwrap();
         assert_eq!(profile_usage(AgentKind::Codex, &empty_codex).signed_in, Some(false));
+
+        // Codex Free plan (30d primary only, secondary: null): does NOT fabricate a 5h window.
+        let codex_free = dir.path().join("codex-free");
+        write(&codex_free.join("auth.json"), "{\"access_token\":\"ok\"}");
+        write(
+            &codex_free.join("sessions/2026/11/23/rollout-free.jsonl"),
+            &format!(
+                concat!(
+                    "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":1000,\"output_tokens\":500}}}},",
+                    "\"rate_limits\":{{\"plan_type\":\"free\",\"primary\":{{\"used_percent\":7.0,\"window_minutes\":43200,\"resets_at\":{}}},\"secondary\":null}}}}}}\n"
+                ),
+                now + 20 * 86_400
+            ),
+        );
+        let free_rep = profile_usage(AgentKind::Codex, &codex_free);
+        assert_eq!(free_rep.plan_type.as_deref(), Some("free"));
+        assert_eq!(free_rep.window_5h.used_percent, None);
+        assert_eq!(free_rep.window_5h.window_minutes, None);
+        assert_eq!(free_rep.window_5h.resets_at_unix, None);
+        assert_eq!(free_rep.window_weekly.used_percent, Some(7.0));
+        assert_eq!(free_rep.window_weekly.window_minutes, Some(43200));
+
+        // Claude Code: reads real `cachedUsageUtilization` & `oauthAccount.planDisplayName` from `.claude.json`.
+        let claude_home = dir.path().join("claude-home");
+        let claude_root = claude_home.join(".claude");
+        fs::create_dir_all(&claude_root).unwrap();
+        write(
+            &claude_home.join(".claude.json"),
+            concat!(
+                "{",
+                "\"oauthAccount\":{\"planDisplayName\":\"Ultra\"},",
+                "\"cachedUsageUtilization\":{\"utilization\":{",
+                "\"five_hour\":{\"utilization\":12,\"resets_at\":\"2099-01-01T06:00:00+00:00\"},",
+                "\"seven_day\":{\"utilization\":4,\"resets_at\":\"2099-01-07T16:00:00+00:00\"}",
+                "}}}"
+            ),
+        );
+        let claude_rep = profile_usage(AgentKind::Claude, &claude_root);
+        assert_eq!(claude_rep.signed_in, Some(true));
+        assert_eq!(claude_rep.plan_type.as_deref(), Some("Ultra"));
+        assert_eq!(claude_rep.window_5h.used_percent, Some(12.0));
+        assert!(claude_rep.window_5h.resets_at_unix.is_some());
+        assert_eq!(claude_rep.window_weekly.used_percent, Some(4.0));
+        assert!(claude_rep.window_weekly.resets_at_unix.is_some());
 
         // ISO timestamp parser sanity check.
         assert_eq!(parse_iso_unix("1970-01-01T00:00:00Z"), Some(0));

@@ -14,17 +14,47 @@ use std::time::{Duration, Instant};
 
 use super::{git, git_dir_path, literal_pathspec, rev_parse, run, trim_line};
 
-/// How long a push or a `gh` call may take before it is given up (a server that never answers).
-const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long a push, fetch, `gh`, or `glab` call may take before it is given up.
+pub(crate) const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The site a remote lives on, for its pull request form and `gh`.
+/// The site a remote lives on, for its pull/merge request form, `gh`, and `glab`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Forge {
     GitHub,
     GitLab,
 }
 
-/// Where a repository's pages are: `github.com` and `owner/repo`.
+impl Forge {
+    pub fn label(self) -> &'static str {
+        match self {
+            Forge::GitHub => "GitHub",
+            Forge::GitLab => "GitLab",
+        }
+    }
+
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Forge::GitHub => "gh",
+            Forge::GitLab => "glab",
+        }
+    }
+
+    pub fn request_short(self) -> &'static str {
+        match self {
+            Forge::GitHub => "PR",
+            Forge::GitLab => "MR",
+        }
+    }
+
+    pub fn request_prefix(self) -> &'static str {
+        match self {
+            Forge::GitHub => "#",
+            Forge::GitLab => "!",
+        }
+    }
+}
+
+/// Where a repository's pages are: `github.com` / `gitlab.com` and `owner/repo`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Web {
     pub forge: Forge,
@@ -41,6 +71,51 @@ impl Web {
     /// The repository as `gh -R` takes it: `owner/repo`, or `host/owner/repo` off github.com.
     pub fn gh_repo(&self) -> String {
         if self.host == "github.com" { self.repo.clone() } else { format!("{}/{}", self.host, self.repo) }
+    }
+
+    /// The repository as `glab -R` takes it: `group/repo`, or `host/group/repo` off gitlab.com.
+    pub fn glab_repo(&self) -> String {
+        if self.host == "gitlab.com" { self.repo.clone() } else { format!("{}/{}", self.host, self.repo) }
+    }
+
+    /// The repository identifier formatted for this forge's CLI (`gh` or `glab`).
+    pub fn cli_repo(&self) -> String {
+        match self.forge {
+            Forge::GitHub => self.gh_repo(),
+            Forge::GitLab => self.glab_repo(),
+        }
+    }
+
+    /// Web page for viewing one commit on GitHub or GitLab.
+    pub fn commit_url(&self, hash: &str) -> String {
+        match self.forge {
+            Forge::GitHub => format!("{}/commit/{}", self.url(), encode(hash, false)),
+            Forge::GitLab => format!("{}/-/commit/{}", self.url(), encode(hash, false)),
+        }
+    }
+
+    /// Web page for browsing a branch on GitHub or GitLab.
+    pub fn branch_url(&self, branch: &str) -> String {
+        match self.forge {
+            Forge::GitHub => format!("{}/tree/{}", self.url(), encode(branch, true)),
+            Forge::GitLab => format!("{}/-/tree/{}", self.url(), encode(branch, true)),
+        }
+    }
+
+    /// Web page listing Pull Requests (GitHub) or Merge Requests (GitLab).
+    pub fn prs_url(&self) -> String {
+        match self.forge {
+            Forge::GitHub => format!("{}/pulls", self.url()),
+            Forge::GitLab => format!("{}/-/merge_requests", self.url()),
+        }
+    }
+
+    /// Web page for GitHub Actions or GitLab CI/CD Pipelines.
+    pub fn actions_url(&self) -> String {
+        match self.forge {
+            Forge::GitHub => format!("{}/actions", self.url()),
+            Forge::GitLab => format!("{}/-/pipelines", self.url()),
+        }
     }
 
     /// The site's form for a new pull (merge) request from `branch` into `base`, filled in.
@@ -258,7 +333,7 @@ pub fn push(root: &Path, remote: &str, branch: &str, set_upstream: bool, path: O
 
 /// git without prompts: none of its own, none of ssh's (unless the user set their own ssh
 /// command, which is left alone), none of Git Credential Manager's.
-fn no_prompts(cmd: &mut Command, root: &Path) {
+pub(crate) fn no_prompts(cmd: &mut Command, root: &Path) {
     cmd.env("GIT_TERMINAL_PROMPT", "0").env("GCM_INTERACTIVE", "never");
     if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() && config(root, "core.sshCommand").is_none() {
         cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
@@ -391,12 +466,503 @@ pub fn create_pr(gh_bin: &Path, root: &Path, web: &Web, base: &str, branch: &str
     }
 }
 
-/// The pull request named by the last `…/pull/N` address in `text`.
+/// An open pull request (GitHub) or merge request (GitLab) listed from the remote forge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemotePr {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub branch: String,
+    pub author: String,
+    pub state: PrState,
+    pub checks: Checks,
+}
+
+/// The pull/merge request named by the last `…/pull/N` or `…/merge_requests/N` address in `text`.
 fn pr_from_url(text: &str, state: PrState) -> Option<Pr> {
-    let url = text.split_whitespace().rev().find(|w| w.starts_with("https://") && (w.contains("/pull/") || w.contains("/merge_requests/")))?;
-    let url = url.trim_end_matches(['.', ',', ')']).to_string();
-    let number = url.rsplit('/').next()?.parse().ok()?;
-    Some(Pr { number, url, state, checks: Checks::None })
+    let raw = text
+        .split_whitespace()
+        .rev()
+        .find(|w| (w.starts_with("https://") || w.starts_with("http://")) && (w.contains("/pull/") || w.contains("/merge_requests/")))?;
+    let url = raw.trim_end_matches(['.', ',', ')', ']', '>']);
+    let after = url
+        .rsplit_once("/pull/")
+        .or_else(|| url.rsplit_once("/merge_requests/"))?
+        .1;
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let number = digits.parse().ok()?;
+    let clean_url = url.split(['?', '#']).next().unwrap_or(url).to_string();
+    Some(Pr { number, url: clean_url, state, checks: Checks::None })
+}
+
+fn glab(glab_bin: &Path, root: &Path, path: Option<&OsStr>) -> Command {
+    let mut cmd = Command::new(glab_bin);
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW
+    cmd.current_dir(root)
+        .stdin(Stdio::null())
+        .env("GLAB_NO_PROMPT", "1")
+        .env("NO_PROMPT", "1")
+        .env("NO_COLOR", "1")
+        .env("CLICOLOR", "0")
+        .env("PAGER", "cat")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    if let Some(path) = path {
+        cmd.env("PATH", path);
+    }
+    cmd
+}
+
+fn glab_error(out: String) -> GhError {
+    let l = out.to_lowercase();
+    if l.contains("glab auth login")
+        || l.contains("not logged in")
+        || l.contains("no token found")
+        || l.contains("401 unauthorized")
+        || l.contains("invalid_token")
+        || l.contains("authentication required")
+    {
+        GhError::SignedOut(out)
+    } else {
+        GhError::Failed(out)
+    }
+}
+
+/// Maps GitLab pipeline status strings (`success`, `failed`, `running`, `pending`, …) to [`Checks`].
+pub fn classify_gitlab_pipeline(status: &str) -> Checks {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "" => Checks::None,
+        "success" => Checks::Passed,
+        "failed" | "canceled" | "cancelled" => Checks::Failed,
+        "running" | "pending" | "created" | "waiting_for_resource" | "preparing" | "scheduled" => Checks::Pending,
+        _ => Checks::None,
+    }
+}
+
+/// The merge request whose source branch is `branch`, if there is one (`glab` at the path given).
+pub fn find_mr(glab_bin: &Path, root: &Path, web: &Web, branch: &str, path: Option<&OsStr>) -> Result<Option<Pr>, GhError> {
+    let mut cmd = glab(glab_bin, root, path);
+    cmd.args(["mr", "view", branch, "-R", &web.glab_repo(), "-F", "json"]);
+    match output_of(&mut cmd, None, Some(NETWORK_TIMEOUT)) {
+        Ok(out) => Ok(parse_glab_mr_json(&out)),
+        Err(out) => {
+            let l = out.to_lowercase();
+            if l.contains("no open merge request") || l.contains("no merge request") || l.contains("not found") {
+                Ok(None)
+            } else {
+                Err(glab_error(out))
+            }
+        }
+    }
+}
+
+/// Opens a GitLab merge request from `branch` into `base` with `glab mr create`.
+#[allow(clippy::too_many_arguments)]
+pub fn create_mr(
+    glab_bin: &Path,
+    root: &Path,
+    web: &Web,
+    base: &str,
+    branch: &str,
+    title: &str,
+    body: &str,
+    draft: bool,
+    path: Option<&OsStr>,
+) -> Result<Pr, GhError> {
+    let mut cmd = glab(glab_bin, root, path);
+    cmd.args([
+        "mr",
+        "create",
+        "-R",
+        &web.glab_repo(),
+        "--source-branch",
+        branch,
+        "--target-branch",
+        base,
+        "--title",
+        title,
+        "--description",
+        body,
+        "--yes",
+    ]);
+    if draft {
+        cmd.arg("--draft");
+    }
+    let state = if draft { PrState::Draft } else { PrState::Open };
+    match output_of(&mut cmd, None, Some(NETWORK_TIMEOUT)) {
+        Ok(out) => pr_from_url(&out, state).ok_or(GhError::Failed(out)),
+        Err(out) if out.to_lowercase().contains("already exists") => {
+            pr_from_url(&out, PrState::Open)
+                .or_else(|| find_mr(glab_bin, root, web, branch, path).ok().flatten())
+                .ok_or(GhError::Failed(out))
+        }
+        Err(out) => Err(glab_error(out)),
+    }
+}
+
+/// Finds the open/closed PR (GitHub) or MR (GitLab) for `branch` using the forge's CLI.
+pub fn find_request(cli_bin: &Path, root: &Path, web: &Web, branch: &str, path: Option<&OsStr>) -> Result<Option<Pr>, GhError> {
+    match web.forge {
+        Forge::GitHub => find_pr(cli_bin, root, web, branch, path),
+        Forge::GitLab => find_mr(cli_bin, root, web, branch, path),
+    }
+}
+
+/// Creates a PR (GitHub) or MR (GitLab) using the forge's CLI.
+#[allow(clippy::too_many_arguments)]
+pub fn create_request(
+    cli_bin: &Path,
+    root: &Path,
+    web: &Web,
+    base: &str,
+    branch: &str,
+    title: &str,
+    body: &str,
+    draft: bool,
+    path: Option<&OsStr>,
+) -> Result<Pr, GhError> {
+    match web.forge {
+        Forge::GitHub => create_pr(cli_bin, root, web, base, branch, title, body, draft, path),
+        Forge::GitLab => create_mr(cli_bin, root, web, base, branch, title, body, draft, path),
+    }
+}
+
+/// `gh pr list --jq` output: tab-separated open PR summaries.
+const PR_LIST_JQ: &str = r#".[] | [.number, .url, .isDraft, .headRefName, (.author.login // ""), ([.statusCheckRollup[]? | (if (.conclusion // "") != "" then .conclusion elif (.state // "") != "" then .state else (.status // "") end)] | join(",")), (.title | gsub("[\t\r\n]+"; " "))] | @tsv"#;
+
+/// Lists open Pull Requests (GitHub via `gh`) or Merge Requests (GitLab via `glab`).
+pub fn list_requests(
+    cli_bin: &Path,
+    root: &Path,
+    web: &Web,
+    limit: usize,
+    path: Option<&OsStr>,
+) -> Result<Vec<RemotePr>, GhError> {
+    let lim = limit.clamp(1, 30).to_string();
+    match web.forge {
+        Forge::GitHub => {
+            let mut cmd = gh(cli_bin, root, path);
+            cmd.args([
+                "pr",
+                "list",
+                "-R",
+                &web.gh_repo(),
+                "--state",
+                "open",
+                "--limit",
+                &lim,
+                "--json",
+                "number,title,url,headRefName,author,isDraft,statusCheckRollup",
+                "--jq",
+                PR_LIST_JQ,
+            ]);
+            match output_of(&mut cmd, None, Some(NETWORK_TIMEOUT)) {
+                Ok(out) => Ok(parse_gh_pr_list(&out)),
+                Err(out) => Err(gh_error(out)),
+            }
+        }
+        Forge::GitLab => {
+            let mut cmd = glab(cli_bin, root, path);
+            cmd.args(["mr", "list", "-R", &web.glab_repo(), "--per-page", &lim, "-F", "json"]);
+            match output_of(&mut cmd, None, Some(NETWORK_TIMEOUT)) {
+                Ok(out) => Ok(parse_glab_mr_list_json(&out)),
+                Err(out) => Err(glab_error(out)),
+            }
+        }
+    }
+}
+
+/// Parses TSV lines emitted by `PR_LIST_JQ`.
+pub fn parse_gh_pr_list(out: &str) -> Vec<RemotePr> {
+    out.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            let mut parts = line.splitn(7, '\t');
+            let number = parts.next()?.trim().parse().ok()?;
+            let url = parts.next()?.trim().to_string();
+            let draft = parts.next().unwrap_or("").trim() == "true";
+            let branch = parts.next().unwrap_or("").trim().to_string();
+            let author = parts.next().unwrap_or("").trim().to_string();
+            let checks = classify_checks(parts.next().unwrap_or("").trim());
+            let title = parts.next().unwrap_or("").trim().to_string();
+            Some(RemotePr {
+                number,
+                title,
+                url,
+                branch,
+                author,
+                state: if draft { PrState::Draft } else { PrState::Open },
+                checks,
+            })
+        })
+        .collect()
+}
+
+/// Parses one GitLab Merge Request JSON object from `glab mr view -F json`.
+pub fn parse_glab_mr_json(json: &str) -> Option<Pr> {
+    let val = parse_json(json)?;
+    glab_obj_to_pr(&val)
+}
+
+/// Parses a JSON array of GitLab Merge Requests from `glab mr list -F json`.
+pub fn parse_glab_mr_list_json(json: &str) -> Vec<RemotePr> {
+    let Some(JsonVal::Arr(items)) = parse_json(json) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|obj| {
+            let pr = glab_obj_to_pr(obj)?;
+            let title = obj.str_field("title").unwrap_or("").to_string();
+            let branch = obj.str_field("source_branch").unwrap_or("").to_string();
+            let author = obj
+                .field("author")
+                .and_then(|a| a.str_field("username").or_else(|| a.str_field("name")))
+                .unwrap_or("")
+                .to_string();
+            Some(RemotePr {
+                number: pr.number,
+                title,
+                url: pr.url,
+                branch,
+                author,
+                state: pr.state,
+                checks: pr.checks,
+            })
+        })
+        .collect()
+}
+
+fn glab_obj_to_pr(obj: &JsonVal) -> Option<Pr> {
+    let number = obj.u64_field("iid")?;
+    let url = obj.str_field("web_url")?.to_string();
+    let draft = obj.bool_field("draft").unwrap_or(false) || obj.bool_field("work_in_progress").unwrap_or(false);
+    let state = match obj.str_field("state").unwrap_or("").to_ascii_lowercase().as_str() {
+        "merged" => PrState::Merged,
+        "closed" => PrState::Closed,
+        _ if draft => PrState::Draft,
+        _ => PrState::Open,
+    };
+    let pipe = obj
+        .field("head_pipeline")
+        .or_else(|| obj.field("pipeline"))
+        .and_then(|p| p.str_field("status"))
+        .unwrap_or("");
+    Some(Pr { number, url, state, checks: classify_gitlab_pipeline(pipe) })
+}
+
+// ----- minimal dependency-free JSON reader (for `glab -F json`) ----------------------------
+
+#[derive(Debug)]
+enum JsonVal {
+    Null,
+    Bool(bool),
+    Num(f64),
+    Str(String),
+    Arr(Vec<JsonVal>),
+    Obj(Vec<(String, JsonVal)>),
+}
+
+impl JsonVal {
+    fn field(&self, key: &str) -> Option<&JsonVal> {
+        let JsonVal::Obj(pairs) = self else { return None };
+        pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+    fn str_field(&self, key: &str) -> Option<&str> {
+        match self.field(key)? {
+            JsonVal::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+    fn bool_field(&self, key: &str) -> Option<bool> {
+        match self.field(key)? {
+            JsonVal::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+    fn u64_field(&self, key: &str) -> Option<u64> {
+        match self.field(key)? {
+            JsonVal::Num(n) if *n >= 0.0 => Some(*n as u64),
+            _ => None,
+        }
+    }
+}
+
+fn parse_json(src: &str) -> Option<JsonVal> {
+    let mut p = JsonParser { bytes: src.as_bytes(), pos: 0 };
+    p.skip_ws();
+    // Some CLI builds print a warning line before JSON: seek to first `{` or `[` if needed.
+    if !matches!(p.peek(), Some(b'{') | Some(b'['))
+        && let Some(off) = src.find(['{', '['])
+    {
+        p.pos = off;
+    }
+    p.value()
+}
+
+struct JsonParser<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.pos).copied()
+    }
+    fn skip_ws(&mut self) {
+        while let Some(b) = self.peek() {
+            if matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+    fn value(&mut self) -> Option<JsonVal> {
+        self.skip_ws();
+        match self.peek()? {
+            b'{' => self.object(),
+            b'[' => self.array(),
+            b'"' => self.string().map(JsonVal::Str),
+            b't' => self.literal(b"true", JsonVal::Bool(true)),
+            b'f' => self.literal(b"false", JsonVal::Bool(false)),
+            b'n' => self.literal(b"null", JsonVal::Null),
+            b'-' | b'0'..=b'9' => self.number(),
+            _ => None,
+        }
+    }
+    fn literal(&mut self, lit: &[u8], val: JsonVal) -> Option<JsonVal> {
+        if self.bytes.get(self.pos..self.pos + lit.len()) == Some(lit) {
+            self.pos += lit.len();
+            Some(val)
+        } else {
+            None
+        }
+    }
+    fn number(&mut self) -> Option<JsonVal> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        while let Some(b) = self.peek() {
+            if b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-') {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        let s = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
+        s.parse::<f64>().ok().map(JsonVal::Num)
+    }
+    fn string(&mut self) -> Option<String> {
+        if self.peek() != Some(b'"') {
+            return None;
+        }
+        self.pos += 1;
+        let mut out = String::new();
+        while let Some(b) = self.peek() {
+            self.pos += 1;
+            match b {
+                b'"' => return Some(out),
+                b'\\' => {
+                    let esc = self.peek()?;
+                    self.pos += 1;
+                    match esc {
+                        b'"' => out.push('"'),
+                        b'\\' => out.push('\\'),
+                        b'/' => out.push('/'),
+                        b'b' => out.push('\u{0008}'),
+                        b'f' => out.push('\u{000c}'),
+                        b'n' => out.push('\n'),
+                        b'r' => out.push('\r'),
+                        b't' => out.push('\t'),
+                        b'u' => {
+                            let hex = std::str::from_utf8(self.bytes.get(self.pos..self.pos + 4)?).ok()?;
+                            self.pos += 4;
+                            if let Ok(code) = u32::from_str_radix(hex, 16)
+                                && let Some(ch) = char::from_u32(code)
+                            {
+                                out.push(ch);
+                            }
+                        }
+                        _ => out.push(esc as char),
+                    }
+                }
+                _ => {
+                    // Preserve UTF-8 sequences directly.
+                    let start = self.pos - 1;
+                    let width = if b < 0x80 {
+                        1
+                    } else if b & 0xE0 == 0xC0 {
+                        2
+                    } else if b & 0xF0 == 0xE0 {
+                        3
+                    } else {
+                        4
+                    };
+                    let end = (start + width).min(self.bytes.len());
+                    if let Ok(s) = std::str::from_utf8(&self.bytes[start..end]) {
+                        out.push_str(s);
+                    }
+                    self.pos = end;
+                }
+            }
+        }
+        None
+    }
+    fn array(&mut self) -> Option<JsonVal> {
+        self.pos += 1; // '['
+        let mut items = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(b']') {
+            self.pos += 1;
+            return Some(JsonVal::Arr(items));
+        }
+        loop {
+            items.push(self.value()?);
+            self.skip_ws();
+            match self.peek()? {
+                b',' => self.pos += 1,
+                b']' => {
+                    self.pos += 1;
+                    return Some(JsonVal::Arr(items));
+                }
+                _ => return None,
+            }
+        }
+    }
+    fn object(&mut self) -> Option<JsonVal> {
+        self.pos += 1; // '{'
+        let mut pairs = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(b'}') {
+            self.pos += 1;
+            return Some(JsonVal::Obj(pairs));
+        }
+        loop {
+            self.skip_ws();
+            let key = self.string()?;
+            self.skip_ws();
+            if self.peek() != Some(b':') {
+                return None;
+            }
+            self.pos += 1;
+            let val = self.value()?;
+            pairs.push((key, val));
+            self.skip_ws();
+            match self.peek()? {
+                b',' => self.pos += 1,
+                b'}' => {
+                    self.pos += 1;
+                    return Some(JsonVal::Obj(pairs));
+                }
+                _ => return None,
+            }
+        }
+    }
 }
 
 /// Reads the line `PR_JQ` makes.
@@ -531,7 +1097,7 @@ pub fn diff_text(root: &Path, from: &str, to: &str, paths: &[String], max: usize
 
 /// Runs `cmd` (stdin: `input`, or nothing), at most `timeout` long. Ok: its stdout. Err: what
 /// it printed (stderr after stdout: hooks write to either), or why it could not run.
-fn output_of(cmd: &mut Command, input: Option<&[u8]>, timeout: Option<Duration>) -> Result<String, String> {
+pub(crate) fn output_of(cmd: &mut Command, input: Option<&[u8]>, timeout: Option<Duration>) -> Result<String, String> {
     cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let program = cmd.get_program().to_string_lossy().into_owned();
     let mut child = cmd.spawn().map_err(|e| format!("could not run {program}: {e}"))?;
@@ -651,6 +1217,36 @@ mod tests {
         assert!(lab.new_pr_url("main", "fix", "T", "").starts_with("https://gitlab.com/g/app/-/merge_requests/new?merge_request%5Bsource_branch%5D=fix&merge_request%5Btarget_branch%5D=main&"));
         let ghe = parse_remote_url("https://github.acme.io/team/app").unwrap();
         assert_eq!(ghe.gh_repo(), "github.acme.io/team/app");
+        assert_eq!(web.commit_url("abc1234"), "https://github.com/acme/storefront/commit/abc1234");
+        assert_eq!(web.prs_url(), "https://github.com/acme/storefront/pulls");
+        assert_eq!(lab.commit_url("abc1234"), "https://gitlab.com/g/app/-/commit/abc1234");
+        assert_eq!(lab.prs_url(), "https://gitlab.com/g/app/-/merge_requests");
+        assert_eq!(lab.glab_repo(), "g/app");
+    }
+
+    #[test]
+    fn gitlab_mr_json_and_list_parsing() {
+        let single = r#"{"iid": 17, "title": "Add GitLab support", "state": "opened", "draft": false, "web_url": "https://gitlab.com/acme/app/-/merge_requests/17", "source_branch": "feat/gitlab", "author": {"username": "ilham"}, "head_pipeline": {"status": "running"}}"#;
+        let mr = parse_glab_mr_json(single).unwrap();
+        assert_eq!(
+            mr,
+            Pr {
+                number: 17,
+                url: "https://gitlab.com/acme/app/-/merge_requests/17".into(),
+                state: PrState::Open,
+                checks: Checks::Pending,
+            }
+        );
+        let list = format!("[{single}]");
+        let parsed = parse_glab_mr_list_json(&list);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].number, 17);
+        assert_eq!(parsed[0].branch, "feat/gitlab");
+        assert_eq!(parsed[0].author, "ilham");
+        assert_eq!(parsed[0].title, "Add GitLab support");
+
+        let from_glab = pr_from_url("Creating merge request...\nhttps://gitlab.com/acme/app/-/merge_requests/42\n", PrState::Open).unwrap();
+        assert_eq!(from_glab.number, 42);
     }
 
     #[test]

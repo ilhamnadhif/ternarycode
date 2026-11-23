@@ -271,10 +271,24 @@ impl App {
                 items.push(it);
             };
             add(icons::GIT_DIFF, t("Review Changes…"), Action::Review);
+            add(icons::CLOCK_COUNTER_CLOCKWISE, t("Commit History"), Action::History);
             add(icons::GIT_PULL_REQUEST, t("Commit…"), Action::Commit);
-            // The branch's pull request, once it is known.
-            if let Some(n) = self.active.and_then(|id| self.ship.get(&id)).and_then(|s| s.pr.as_ref()).map(|pr| pr.number) {
-                add(icons::GIT_PULL_REQUEST, &tf("Open Pull Request #{}", &[&n.to_string()]), Action::OpenPullRequest);
+            // The branch's pull / merge request, once it is known.
+            if let Some(s) = self.active.and_then(|id| self.ship.get(&id))
+                && let Some(pr) = &s.pr
+            {
+                let is_gitlab = s
+                    .facts
+                    .as_ref()
+                    .and_then(|f| f.remote.as_ref())
+                    .and_then(|r| r.web.as_ref())
+                    .is_some_and(|w| w.forge == tc_git::ship::Forge::GitLab);
+                let label = if is_gitlab {
+                    tf("Open Merge Request !{}", &[&pr.number.to_string()])
+                } else {
+                    tf("Open Pull Request #{}", &[&pr.number.to_string()])
+                };
+                add(icons::GIT_PULL_REQUEST, &label, Action::OpenPullRequest);
             }
             // The worktree in view: its own commands.
             if let Some((id, base)) = self.active_project().and_then(|x| Some((x.id, x.worktree.as_ref()?.base.clone()))) {

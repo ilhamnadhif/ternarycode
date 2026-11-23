@@ -96,7 +96,9 @@ impl App {
         let now_unix = profiles::now_unix_secs();
         let profiles = self.effective_profiles();
         let cur_agent_pane = self.current_pane().filter(|pid| {
-            self.panes.get(pid).is_some_and(|x| x.alive() && x.tracker.agent.is_some())
+            self.panes
+                .get(pid)
+                .is_some_and(|x| x.alive() && x.tracker.agent.is_some_and(profiles::supports_multi_profile))
         });
         let cur_pane_profile = cur_agent_pane
             .and_then(|pid| self.panes.get(&pid))
@@ -186,8 +188,12 @@ impl App {
                                     ui.add_space(20.0);
                                     ui.vertical(|ui| {
                                         ui.spacing_mut().item_spacing.y = 2.0;
-                                        paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 68.0, &p);
-                                        paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 68.0, &p);
+                                        if rt.has_window_5h(prof) {
+                                            paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 68.0, &p);
+                                        }
+                                        if rt.has_window_weekly(prof) {
+                                            paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 68.0, &p);
+                                        }
                                     });
                                 });
                                 if let Some((pane_id, proj_id)) = rt.active_panes.first().copied() {
@@ -381,8 +387,12 @@ impl App {
                                                                 });
                                                                 ui.horizontal_wrapped(|ui| {
                                                                     ui.spacing_mut().item_spacing = vec2(18.0, 4.0);
-                                                                    paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 88.0, &p);
-                                                                    paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 88.0, &p);
+                                                                    if rt.has_window_5h(prof) {
+                                                                        paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 88.0, &p);
+                                                                    }
+                                                                    if rt.has_window_weekly(prof) {
+                                                                        paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 88.0, &p);
+                                                                    }
                                                                 });
                                                             });
                                                         });

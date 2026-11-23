@@ -18,7 +18,7 @@ use eframe::egui;
 use tc_core::agent::AgentKind;
 use tc_core::model::{ShipAction, ShipPrefs};
 use tc_core::{PaneId, ProjectId};
-use tc_git::ship::{Busy, Checks, Facts, GhError, Pr, PrState, PushError, Web};
+use tc_git::ship::{Busy, Checks, Facts, Forge, GhError, Pr, PrState, PushError, Web};
 
 use crate::actions::Action;
 use crate::app::{App, AppMsg};
@@ -109,6 +109,8 @@ pub struct Ship {
     pub loaded_at: Option<Instant>,
     /// gh, when it is installed (found on the user's PATH).
     pub gh: Option<PathBuf>,
+    /// glab (GitLab CLI), when it is installed (found on the user's PATH).
+    pub glab: Option<PathBuf>,
     pub pr: Option<Pr>,
     /// The message (subject, blank line, body).
     pub message: String,
@@ -151,6 +153,17 @@ pub struct Plan {
     pub can_branch: bool,
     /// The remote has no pages TernaryCode knows (a folder, a server of its own).
     pub no_pages: bool,
+    /// Which forge the remote belongs to (GitHub vs GitLab), for PR / MR wording.
+    pub forge: Option<Forge>,
+}
+
+/// Picks the CLI binary (`gh` or `glab`) matching `web`'s forge.
+pub fn cli_for<'a>(web: Option<&Web>, gh: &'a Option<PathBuf>, glab: &'a Option<PathBuf>) -> Option<&'a PathBuf> {
+    match web.map(|w| w.forge) {
+        Some(Forge::GitHub) => gh.as_ref(),
+        Some(Forge::GitLab) => glab.as_ref(),
+        None => None,
+    }
 }
 
 impl Plan {
@@ -196,6 +209,7 @@ pub fn plan(i: &Inputs) -> Plan {
         unpushed: f.unpushed,
         can_branch: false,
         no_pages: f.remote.as_ref().is_some_and(|r| r.web.is_none()),
+        forge: f.remote.as_ref().and_then(|r| r.web.as_ref()).map(|w| w.forge),
     };
     if let Some(b) = f.busy {
         p.blocked = Some(match b {
@@ -264,20 +278,29 @@ pub fn label(p: &Plan) -> String {
     let push = p.has(&StepKind::Push);
     let pr = p.pr_step();
     let n = p.unpushed;
-    match (commit, push, pr) {
-        (true, true, Some(true)) => t("Commit, Push & Create PR").to_string(),
-        (true, true, Some(false)) => t("Commit, Push & Open PR Form").to_string(),
-        (true, true, None) => t("Commit & Push").to_string(),
-        (true, false, _) => t("Commit").to_string(),
-        (false, true, Some(true)) if n > 0 => crate::i18n::count(n, t("Push 1 Commit & Create PR"), t("Push {} Commits & Create PR")),
-        (false, true, Some(false)) if n > 0 => crate::i18n::count(n, t("Push 1 Commit & Open PR Form"), t("Push {} Commits & Open PR Form")),
-        (false, true, Some(true)) => t("Push & Create PR").to_string(),
-        (false, true, Some(false)) => t("Push & Open PR Form").to_string(),
-        (false, true, None) if n > 0 => crate::i18n::count(n, t("Push 1 Commit"), t("Push {} Commits")),
-        (false, true, None) => t("Push").to_string(),
-        (false, false, Some(true)) => t("Create PR").to_string(),
-        (false, false, Some(false)) => t("Open PR Form").to_string(),
-        (false, false, None) => String::new(),
+    let gitlab = p.forge == Some(Forge::GitLab);
+    match (commit, push, pr, gitlab) {
+        (true, true, Some(true), true) => t("Commit, Push & Create MR").to_string(),
+        (true, true, Some(false), true) => t("Commit, Push & Open MR Form").to_string(),
+        (true, true, Some(true), false) => t("Commit, Push & Create PR").to_string(),
+        (true, true, Some(false), false) => t("Commit, Push & Open PR Form").to_string(),
+        (true, true, None, _) => t("Commit & Push").to_string(),
+        (true, false, _, _) => t("Commit").to_string(),
+        (false, true, Some(true), true) if n > 0 => crate::i18n::count(n, t("Push 1 Commit & Create MR"), t("Push {} Commits & Create MR")),
+        (false, true, Some(false), true) if n > 0 => crate::i18n::count(n, t("Push 1 Commit & Open MR Form"), t("Push {} Commits & Open MR Form")),
+        (false, true, Some(true), false) if n > 0 => crate::i18n::count(n, t("Push 1 Commit & Create PR"), t("Push {} Commits & Create PR")),
+        (false, true, Some(false), false) if n > 0 => crate::i18n::count(n, t("Push 1 Commit & Open PR Form"), t("Push {} Commits & Open PR Form")),
+        (false, true, Some(true), true) => t("Push & Create MR").to_string(),
+        (false, true, Some(false), true) => t("Push & Open MR Form").to_string(),
+        (false, true, Some(true), false) => t("Push & Create PR").to_string(),
+        (false, true, Some(false), false) => t("Push & Open PR Form").to_string(),
+        (false, true, None, _) if n > 0 => crate::i18n::count(n, t("Push 1 Commit"), t("Push {} Commits")),
+        (false, true, None, _) => t("Push").to_string(),
+        (false, false, Some(true), true) => t("Create MR").to_string(),
+        (false, false, Some(false), true) => t("Open MR Form").to_string(),
+        (false, false, Some(true), false) => t("Create PR").to_string(),
+        (false, false, Some(false), false) => t("Open PR Form").to_string(),
+        (false, false, None, _) => String::new(),
     }
 }
 
@@ -514,6 +537,7 @@ pub struct RunReq {
     pub draft: bool,
     pub web: Option<Web>,
     pub gh: Option<PathBuf>,
+    pub glab: Option<PathBuf>,
     pub path: Option<OsString>,
 }
 
@@ -549,22 +573,35 @@ impl RunReq {
                     out.push(format!("git push{} {} {}", if self.set_upstream { " -u" } else { "" }, quote(&remote), quote(&self.branch)));
                 }
                 StepKind::PullRequest { gh: true } => {
-                    let (title, _) = tc_git::ship::split_message(&self.message);
-                    let repo = self.web.as_ref().map(|w| w.gh_repo()).unwrap_or_default();
-                    let body = if write {
-                        body_file(&self.root, &self.message).map(|p| p.display().to_string()).unwrap_or_default()
+                    let (title, desc) = tc_git::ship::split_message(&self.message);
+                    if self.web.as_ref().is_some_and(|w| w.forge == Forge::GitLab) {
+                        let repo = self.web.as_ref().map(|w| w.glab_repo()).unwrap_or_default();
+                        out.push(format!(
+                            "glab mr create -R {} --source-branch {} --target-branch {} --title {}{} --description {} --yes",
+                            quote(&repo),
+                            quote(&self.branch),
+                            quote(self.base.as_deref().unwrap_or("main")),
+                            quote(&title),
+                            if self.draft { " --draft" } else { "" },
+                            quote(&desc)
+                        ));
                     } else {
-                        ".git/TC_PR_BODY".to_string()
-                    };
-                    out.push(format!(
-                        "gh pr create -R {} --base {} --head {} --title {}{} --body-file {}",
-                        quote(&repo),
-                        quote(self.base.as_deref().unwrap_or("main")),
-                        quote(&self.branch),
-                        quote(&title),
-                        if self.draft { " --draft" } else { "" },
-                        quote(&body)
-                    ));
+                        let repo = self.web.as_ref().map(|w| w.gh_repo()).unwrap_or_default();
+                        let body = if write {
+                            body_file(&self.root, &self.message).map(|p| p.display().to_string()).unwrap_or_default()
+                        } else {
+                            ".git/TC_PR_BODY".to_string()
+                        };
+                        out.push(format!(
+                            "gh pr create -R {} --base {} --head {} --title {}{} --body-file {}",
+                            quote(&repo),
+                            quote(self.base.as_deref().unwrap_or("main")),
+                            quote(&self.branch),
+                            quote(&title),
+                            if self.draft { " --draft" } else { "" },
+                            quote(&body)
+                        ));
+                    }
                 }
                 StepKind::PullRequest { gh: false } => {}
             }
@@ -588,7 +625,7 @@ fn body_file(root: &Path, message: &str) -> Option<PathBuf> {
 
 /// Results of ship work off the UI thread.
 pub enum ShipMsg {
-    Facts { project: ProjectId, load: u64, root: PathBuf, facts: Box<Facts>, gh: Option<PathBuf>, pr: Option<Pr> },
+    Facts { project: ProjectId, load: u64, root: PathBuf, facts: Box<Facts>, gh: Option<PathBuf>, glab: Option<PathBuf>, pr: Option<Pr> },
     /// A step ended (or started: `Running`).
     Step { project: ProjectId, run: u64, index: usize, state: StepState, detail: String, took: Duration },
     /// The pull request made, or the form to open.
@@ -650,18 +687,21 @@ impl App {
             let root = tc_git::repo_root(&folder).unwrap_or(folder);
             let facts = tc_git::ship::facts(&root);
             let path = path.or_else(|| Some(tc_lsp::servers::user_path()));
-            // The end-to-end tests give a stand-in gh (no GitHub reached).
-            let stand_in = std::env::var_os("TERNARYCODE_GH").filter(|_| cfg!(debug_assertions)).map(PathBuf::from);
-            let gh = stand_in.or_else(|| path.as_ref().and_then(|p| tc_lsp::servers::resolve("gh", p)));
-            let pr = match (&gh, facts.remote.as_ref().and_then(|r| r.web.as_ref()), &facts.branch) {
-                (Some(gh), Some(web), Some(branch))
-                    if web.forge == tc_git::ship::Forge::GitHub && facts.upstream.is_some() && facts.default_branch.as_deref() != Some(branch.as_str()) =>
+            // The end-to-end tests give stand-in `gh` / `glab` binaries (no network reached).
+            let gh_stand_in = std::env::var_os("TERNARYCODE_GH").filter(|_| cfg!(debug_assertions)).map(PathBuf::from);
+            let gh = gh_stand_in.or_else(|| path.as_ref().and_then(|p| tc_lsp::servers::resolve("gh", p)));
+            let glab_stand_in = std::env::var_os("TERNARYCODE_GLAB").filter(|_| cfg!(debug_assertions)).map(PathBuf::from);
+            let glab = glab_stand_in.or_else(|| path.as_ref().and_then(|p| tc_lsp::servers::resolve("glab", p)));
+            let web = facts.remote.as_ref().and_then(|r| r.web.as_ref());
+            let pr = match (cli_for(web, &gh, &glab), web, &facts.branch) {
+                (Some(cli), Some(web), Some(branch))
+                    if facts.upstream.is_some() && facts.default_branch.as_deref() != Some(branch.as_str()) =>
                 {
-                    tc_git::ship::find_pr(gh, &root, web, branch, path.as_deref()).ok().flatten()
+                    tc_git::ship::find_request(cli, &root, web, branch, path.as_deref()).ok().flatten()
                 }
                 _ => None,
             };
-            let _ = tx.send(AppMsg::Ship(ShipMsg::Facts { project, load, root, facts: Box::new(facts), gh, pr }));
+            let _ = tx.send(AppMsg::Ship(ShipMsg::Facts { project, load, root, facts: Box::new(facts), gh, glab, pr }));
             ctx.request_repaint();
         });
     }
@@ -679,7 +719,7 @@ impl App {
 
     pub fn on_ship_msg(&mut self, msg: ShipMsg) {
         match msg {
-            ShipMsg::Facts { project, load, root, facts, gh, pr } => {
+            ShipMsg::Facts { project, load, root, facts, gh, glab, pr } => {
                 let s = self.ship_mut(project);
                 if s.load != load {
                     return;
@@ -689,11 +729,16 @@ impl App {
                 s.root = Some(root);
                 s.facts = Some(*facts);
                 s.gh = gh;
+                s.glab = glab;
                 let pending = pr.as_ref().is_some_and(|pr| pr.checks == Checks::Pending);
                 s.pr = pr;
                 // Checks running: read again a minute from now (not at once).
                 if pending {
                     self.ship_checks_at.insert(project, Instant::now());
+                }
+                // Refresh open PRs/MRs in Commit History if it is open for this project.
+                if self.history.as_ref().is_some_and(|h| h.project == project && h.open_prs.is_empty() && !h.prs_loading) {
+                    self.history_load_open_prs();
                 }
             }
             ShipMsg::Step { project, run, index, state, detail, took } => {
@@ -731,8 +776,11 @@ impl App {
                     if let Some(r) = s.run.as_mut().filter(|r| r.id == run) {
                         r.finished = true;
                         ok = r.failed().is_none();
+                        let gitlab = r.req.web.as_ref().is_some_and(|w| w.forge == Forge::GitLab);
                         title = match (&r.pr, &r.form) {
+                            (Some(pr), _) if gitlab => tf("MR !{} opened", &[&pr.number.to_string()]),
                             (Some(pr), _) => tf("PR #{} opened", &[&pr.number.to_string()]),
+                            (None, Some(_)) if gitlab => t("The merge request form is open").to_string(),
                             (None, Some(_)) => t("The pull request form is open").to_string(),
                             _ if r.steps.iter().any(|s| s.kind == StepKind::Push) => t("Pushed").to_string(),
                             _ => t("Committed").to_string(),
@@ -754,6 +802,9 @@ impl App {
                 if self.review.as_ref().is_some_and(|r| r.project == project) {
                     let base = self.review.as_ref().map(|r| r.base);
                     self.open_review(base);
+                }
+                if self.history.as_ref().is_some_and(|h| h.project == project) {
+                    self.history_reload(false);
                 }
                 self.refresh_git(project);
                 // Told when not looking at it.
@@ -818,11 +869,15 @@ impl App {
                     StepKind::PullRequest { gh } => {
                         let (title, body) = tc_git::ship::split_message(&req.message);
                         let base = req.base.clone().unwrap_or_else(|| "main".into());
-                        match (&req.web, gh, &req.gh) {
+                        match (&req.web, gh, cli_for(req.web.as_ref(), &req.gh, &req.glab)) {
                             (Some(web), true, Some(bin)) => {
-                                match tc_git::ship::create_pr(bin, &req.root, web, &base, &req.branch, &title, &body, req.draft, req.path.as_deref()) {
+                                match tc_git::ship::create_request(bin, &req.root, web, &base, &req.branch, &title, &body, req.draft, req.path.as_deref()) {
                                     Ok(pr) => {
-                                        let detail = tf("#{} into {}", &[&pr.number.to_string(), &base]);
+                                        let detail = if web.forge == Forge::GitLab {
+                                            tf("!{} into {}", &[&pr.number.to_string(), &base])
+                                        } else {
+                                            tf("#{} into {}", &[&pr.number.to_string(), &base])
+                                        };
                                         send(ShipMsg::Pr { project, run: id, pr: Some(pr), form: None });
                                         Ok(detail)
                                     }
@@ -903,11 +958,13 @@ impl App {
         self.ship_load(project);
     }
 
-    /// The pull request's checks read again (while they run, the project in view).
+    /// The pull/merge request's checks read again (while they run, the project in view).
     pub fn ship_poll_checks(&mut self) {
         let Some(project) = self.active else { return };
         let Some(s) = self.ship.get(&project) else { return };
-        let (Some(pr), Some(facts), Some(gh), Some(root)) = (s.pr.clone(), s.facts.clone(), s.gh.clone(), s.root.clone()) else { return };
+        let (Some(pr), Some(facts), Some(root)) = (s.pr.clone(), s.facts.clone(), s.root.clone()) else { return };
+        let web_opt = facts.remote.as_ref().and_then(|r| r.web.as_ref());
+        let Some(cli) = cli_for(web_opt, &s.gh, &s.glab).cloned() else { return };
         if pr.checks != Checks::Pending || s.loading {
             return;
         }
@@ -921,7 +978,7 @@ impl App {
         let tx = self.app_tx.clone();
         let ctx = self.ctx.clone();
         self.rt.spawn_blocking(move || {
-            if let Ok(pr) = tc_git::ship::find_pr(&gh, &root, &web, &branch, path.as_deref()) {
+            if let Ok(pr) = tc_git::ship::find_request(&cli, &root, &web, &branch, path.as_deref()) {
                 let _ = tx.send(AppMsg::Ship(ShipMsg::PrState { project, branch, pr }));
                 ctx.request_repaint();
             }

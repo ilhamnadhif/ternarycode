@@ -685,21 +685,12 @@ impl Settings {
         self.long_command_secs = self.long_command_secs.clamp(1, 86_400);
         self.failover.default_cooldown_mins = self.failover.default_cooldown_mins.clamp(1, 1440);
         self.companion.port = self.companion.port.clamp(1024, 65535);
+        // Multi-account profiles are supported only for Claude Code and ChatGPT / Codex.
+        // Drop saved Antigravity / Gemini / OpenCode / Custom profiles cleanly on upgrade.
+        self.profiles.retain(|pr| matches!(pr.agent, AgentKind::Claude | AgentKind::Codex));
         // Sanitize & deduplicate hand-edited profiles so IDs, paths, keys, and env names are valid.
         let mut seen_ids = std::collections::HashSet::new();
         for (idx, pr) in self.profiles.iter_mut().enumerate() {
-            // Antigravity CLI (`agy`) replaced Gemini CLI: migrate any saved legacy Gemini profiles.
-            if pr.agent == AgentKind::Gemini {
-                pr.agent = AgentKind::Antigravity;
-                if pr.id.trim().eq_ignore_ascii_case("gemini1") {
-                    pr.id = "agy1".into();
-                }
-                if pr.name.trim().eq_ignore_ascii_case("Gemini 1")
-                    || pr.name.trim().eq_ignore_ascii_case("Gemini CLI")
-                {
-                    pr.name = "Antigravity 1".into();
-                }
-            }
             let mut id: String = pr
                 .id
                 .trim()
@@ -1025,20 +1016,30 @@ mod tests {
             let dec: View = serde_json::from_str(&enc).unwrap();
             assert_eq!(dec, v);
         }
-        // Saved legacy Gemini CLI profiles migrate cleanly to Antigravity CLI (`agy1`).
+        // Multi-account profiles are restricted to Claude Code & ChatGPT/Codex: saved Antigravity
+        // or legacy Gemini profiles are stripped cleanly on sanitize.
         let mut legacy = Settings::default();
         legacy.profiles.push(AgentProfile {
-            id: "gemini1".into(),
-            name: "Gemini 1".into(),
-            agent: AgentKind::Gemini,
-            fallback_order: 3,
+            id: "agy1".into(),
+            name: "Antigravity 1".into(),
+            agent: AgentKind::Antigravity,
+            fallback_order: 1,
+            enabled: true,
+            use_default_auth: true,
+            ..Default::default()
+        });
+        legacy.profiles.push(AgentProfile {
+            id: "chatgpt1".into(),
+            name: "ChatGPT 1".into(),
+            agent: AgentKind::Codex,
+            fallback_order: 2,
             enabled: true,
             use_default_auth: true,
             ..Default::default()
         });
         assert!(legacy.sanitize());
-        assert_eq!(legacy.profiles[0].id, "agy1");
-        assert_eq!(legacy.profiles[0].name, "Antigravity 1");
-        assert_eq!(legacy.profiles[0].agent, AgentKind::Antigravity);
+        assert_eq!(legacy.profiles.len(), 1);
+        assert_eq!(legacy.profiles[0].id, "chatgpt1");
+        assert_eq!(legacy.profiles[0].agent, AgentKind::Codex);
     }
 }

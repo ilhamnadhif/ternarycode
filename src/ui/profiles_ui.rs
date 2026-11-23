@@ -35,6 +35,17 @@ pub fn profile_state_label(state: ProfileState) -> &'static str {
     }
 }
 
+/// Paints a crisp 2×3 dot drag handle inside `rect`.
+fn paint_drag_grip(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    for dx in [-2.2_f32, 2.2] {
+        for dy in [-4.0_f32, 0.0, 4.0] {
+            painter.circle_filled(pos2(cx + dx, cy + dy), 1.15, color);
+        }
+    }
+}
+
 pub fn usage_pct_color(used_pct: f32, p: &style::Palette) -> Color32 {
     if used_pct >= 90.0 {
         p.rate_limited
@@ -68,12 +79,10 @@ pub fn paint_window_meter(
                 ui.label(RichText::new(profiles::format_tokens(tokens)).font(style::mono(10.0)).color(p.text_faint));
             }
         } else {
-            let (bar_r, _) = ui.allocate_exact_size(vec2(bar_w, 5.0), Sense::hover());
-            kit::paint_quota_bar(ui.painter(), bar_r, 0.0, p.idle, p);
             let tok_str = if tokens > 0 {
                 tf("{} tok", &[&profiles::format_tokens(tokens)])
             } else {
-                "0".into()
+                "—".into()
             };
             ui.label(RichText::new(tok_str).font(style::mono(10.5)).color(p.text_faint));
         }
@@ -275,9 +284,6 @@ impl App {
                         let providers = [
                             (AgentKind::Claude, "Claude Code"),
                             (AgentKind::Codex, "ChatGPT / Codex"),
-                            (AgentKind::Antigravity, "Antigravity CLI (agy)"),
-                            (AgentKind::OpenCode, "OpenCode"),
-                            (AgentKind::Custom, "Custom"),
                         ];
                         let names: Vec<&str> = providers.iter().map(|(_, n)| *n).collect();
                         let cur = providers.iter().find(|(k, _)| *k == draft.agent).map(|(_, n)| *n).unwrap_or("Claude Code");
@@ -331,7 +337,7 @@ impl App {
                         ui.add_space(19.0);
                         ui.add(
                             egui::Label::new(
-                                RichText::new(t("ChatGPT / Codex reports 5h & weekly % automatically; set token limits for Claude or Antigravity."))
+                                RichText::new(t("Claude & ChatGPT / Codex report 5h & weekly % automatically; optionally set custom token caps."))
                                     .size(11.0)
                                     .color(p.text_faint),
                             )
@@ -409,7 +415,7 @@ impl App {
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
                     kit::switch(ui, &mut draft.use_default_auth);
-                    ui.label(RichText::new(t("Use system default auth folder (~/.claude, ~/.codex, ~/.gemini/antigravity-cli)")).size(12.0).color(p.text_muted));
+                    ui.label(RichText::new(t("Use system default auth folder (~/.claude, ~/.codex)")).size(12.0).color(p.text_muted));
                     ui.add_space(14.0);
                     kit::switch(ui, &mut draft.enabled);
                     ui.label(RichText::new(t("Enabled in failover chain")).size(12.0).color(p.text_muted));
@@ -485,9 +491,18 @@ impl App {
         let data = crate::paths::data_dir();
 
         let mut move_dir: Option<(usize, i32)> = None;
+        let mut drag_reorder: Option<(usize, usize)> = None;
         let mut toggle_enabled: Option<String> = None;
         let mut delete_id: Option<String> = None;
         let mut edit_prof: Option<AgentProfile> = None;
+
+        let drag_id = egui::Id::new("profiles-drag-idx");
+        let mut dragging: Option<usize> = ui.data(|d| d.get_temp::<usize>(drag_id));
+        if dragging.is_some_and(|i| i >= profiles.len()) {
+            dragging = None;
+            ui.data_mut(|d| d.remove::<usize>(drag_id));
+        }
+        let mut row_rects: Vec<Rect> = Vec::with_capacity(profiles.len());
 
         let now_unix = profiles::now_unix_secs();
         ui.horizontal_wrapped(|ui| {
@@ -501,7 +516,7 @@ impl App {
         });
         ui.add_space(8.0);
 
-        egui::Frame::NONE
+        let table_resp = egui::Frame::NONE
             .fill(p.surface)
             .stroke(Stroke::new(1.0, if dark { p.border } else { p.border_strong }))
             .corner_radius(CornerRadius::same(9))
@@ -523,22 +538,58 @@ impl App {
                     let used_wk = rt.quota_weekly_used_pct(prof);
                     let reset_5h = rt.window_5h_reset_secs(now_unix, now);
                     let reset_wk = rt.window_weekly_reset_secs(now_unix);
+                    let has_5h = rt.has_window_5h(prof);
+                    let has_wk = rt.has_window_weekly(prof);
                     let l5 = rt.window_5h_label();
                     let lw = rt.window_weekly_label();
                     let can_delete = profiles.len() > 1;
                     let needs_login = auth == AuthStatus::NotSignedIn;
+                    let is_dragged = dragging == Some(idx);
 
-                    egui::Frame::NONE
+                    let row_rect_id = egui::Id::new(("profiles-row-rect", idx));
+                    if profiles.len() > 1
+                        && let Some(prev_r) = ui.data(|d| d.get_temp::<Rect>(row_rect_id))
+                    {
+                        let bg = ui.interact(prev_r, egui::Id::new(("profiles-bg-drag", idx)), Sense::drag());
+                        if bg.drag_started() {
+                            dragging = Some(idx);
+                            ui.data_mut(|d| d.insert_temp(drag_id, idx));
+                        }
+                        if bg.hovered() && dragging.is_none() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        }
+                    }
+
+                    let row_frame = egui::Frame::NONE
+                        .fill(if is_dragged { p.accent_tint } else { Color32::TRANSPARENT })
                         .inner_margin(egui::Margin::symmetric(14, 9))
                         .show(ui, |ui| {
                             let card_w = ui.available_width();
                             ui.set_width(card_w);
                             ui.spacing_mut().item_spacing.y = 4.0;
-                            let indent = if card_w < 560.0 { 24.0 } else { 76.0 };
+                            let indent = if card_w < 560.0 { 24.0 } else { 94.0 };
 
                             let mut draw_identity = |ui: &mut Ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
+                                    // Tactile 6-dot drag grip handle for mouse drag-and-drop reordering.
+                                    let (grip_r, grip_resp) = ui.allocate_exact_size(vec2(14.0, 20.0), Sense::click_and_drag());
+                                    if profiles.len() > 1 {
+                                        let grip_c = if is_dragged || grip_resp.hovered() { p.text_muted } else { p.text_ghost };
+                                        paint_drag_grip(ui.painter(), grip_r, grip_c);
+                                        if grip_resp.drag_started() {
+                                            dragging = Some(idx);
+                                            ui.data_mut(|d| d.insert_temp(drag_id, idx));
+                                        }
+                                        if is_dragged {
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                        } else if grip_resp.hovered() {
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                                        }
+                                        let _ = grip_resp.on_hover_text(t("Drag to reorder"));
+                                    } else {
+                                        paint_drag_grip(ui.painter(), grip_r, p.border_heavy);
+                                    }
                                     ui.label(RichText::new(format!("#{}", idx + 1)).font(style::mono_semibold(11.0)).color(p.text_faint));
                                     if ui.add_enabled_ui(idx > 0, |ui| kit::icon_button_ex(ui, icons::ARROW_UP, t("Move Up"), false, 20.0)).inner.clicked() {
                                         move_dir = Some((idx, -1));
@@ -644,13 +695,17 @@ impl App {
                                 });
                             }
 
-                            // Row 2 (full width, overlap-proof): 5-Hour & Weekly usage limit meters.
+                            // Row 2 (full width, overlap-proof): real provider quota windows (5h / Weekly / 30d).
                             ui.horizontal(|ui| {
                                 ui.add_space(indent);
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing = vec2(20.0, 4.0);
-                                    paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 96.0, &p);
-                                    paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 96.0, &p);
+                                    if has_5h {
+                                        paint_window_meter(ui, &l5, used_5h, rt.usage.window_5h.tokens.total(), reset_5h, 96.0, &p);
+                                    }
+                                    if has_wk {
+                                        paint_window_meter(ui, &lw, used_wk, rt.usage.window_weekly.tokens.total(), reset_wk, 96.0, &p);
+                                    }
                                 });
                             });
 
@@ -681,9 +736,85 @@ impl App {
                                 });
                             }
                         });
+                    ui.data_mut(|d| d.insert_temp(row_rect_id, row_frame.response.rect));
+                    row_rects.push(row_frame.response.rect);
                 }
             });
 
+        // Active mouse drag-and-drop overlay: live drop indicator line + floating ghost pill.
+        if let Some(from) = dragging {
+            let pointer_pos = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
+            let still_down = ui.input(|i| i.pointer.primary_down());
+            if let Some(pos) = pointer_pos {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                let mut slot = row_rects.len();
+                for (i, r) in row_rects.iter().enumerate() {
+                    if pos.y < r.center().y {
+                        slot = i;
+                        break;
+                    }
+                }
+                let line_y = if slot == 0 {
+                    row_rects.first().map_or(table_resp.response.rect.top(), |r| r.top())
+                } else if slot >= row_rects.len() {
+                    row_rects.last().map_or(table_resp.response.rect.bottom(), |r| r.bottom())
+                } else {
+                    row_rects[slot].top()
+                };
+                if slot != from && slot != from + 1 {
+                    let x0 = table_resp.response.rect.left() + 10.0;
+                    let x1 = table_resp.response.rect.right() - 10.0;
+                    let painter = ui.painter();
+                    painter.hline(x0..=x1, line_y, Stroke::new(2.0, p.accent));
+                    painter.circle_filled(pos2(x0, line_y), 3.5, p.accent);
+                    painter.circle_filled(pos2(x1, line_y), 3.5, p.accent);
+                }
+                if let Some(prof) = profiles.get(from) {
+                    egui::Area::new(egui::Id::new("profiles-drag-ghost"))
+                        .order(egui::Order::Tooltip)
+                        .interactable(false)
+                        .fixed_pos(pos + vec2(14.0, -14.0))
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::NONE
+                                .fill(p.overlay)
+                                .stroke(Stroke::new(1.0, p.accent))
+                                .corner_radius(CornerRadius::same(7))
+                                .inner_margin(egui::Margin::symmetric(10, 5))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        let (mr, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                                        let _ = agent_logo::paint(ui.painter(), mr, prof.agent, p.text, false);
+                                        ui.label(RichText::new(&prof.id).font(style::mono_semibold(11.5)).color(p.text));
+                                    });
+                                });
+                        });
+                }
+                if !still_down {
+                    let target = if slot > from { slot - 1 } else { slot };
+                    if target != from && target < profiles.len() {
+                        drag_reorder = Some((from, target));
+                    }
+                    ui.data_mut(|d| d.remove::<usize>(drag_id));
+                }
+            } else if !still_down {
+                ui.data_mut(|d| d.remove::<usize>(drag_id));
+            }
+        }
+
+        if let Some((from, to)) = drag_reorder {
+            self.ensure_mutable_profiles();
+            self.settings.profiles.sort_by_key(|x| (x.fallback_order, x.id.clone()));
+            if from < self.settings.profiles.len() && to < self.settings.profiles.len() && from != to {
+                let item = self.settings.profiles.remove(from);
+                self.settings.profiles.insert(to, item);
+                for (i, p_item) in self.settings.profiles.iter_mut().enumerate() {
+                    p_item.fallback_order = (i + 1) as u32;
+                }
+                self.settings_changed();
+                self.push_companion_now();
+            }
+        }
         if let Some((idx, delta)) = move_dir {
             self.ensure_mutable_profiles();
             self.settings.profiles.sort_by_key(|x| (x.fallback_order, x.id.clone()));
@@ -743,15 +874,18 @@ impl App {
         let now = Instant::now();
         let now_unix = profiles::now_unix_secs();
         let profiles = self.effective_profiles();
-        let Some((active_id, agent, has_live_agent)) = self.panes.get(&pane_id).map(|pane| {
-            let agent = pane.tracker.agent.or(pane.last_agent);
+        let Some((active_id, agent, has_live_agent)) = self.panes.get(&pane_id).and_then(|pane| {
+            let agent = pane.tracker.agent.or(pane.last_agent)?;
+            if !profiles::supports_multi_profile(agent) {
+                return None;
+            }
             let id = pane.active_profile.clone().or_else(|| {
-                agent.and_then(|a| profiles.iter().find(|x| x.agent == a && x.enabled).map(|x| x.id.clone()))
+                profiles.iter().find(|x| x.agent == agent && x.enabled).map(|x| x.id.clone())
             });
             let live = pane.alive()
                 && pane.tracker.agent.is_some()
                 && !matches!(pane.tracker.fg, tc_core::status::Foreground::Shell | tc_core::status::Foreground::Gone);
-            (id, agent, live)
+            Some((id, Some(agent), live))
         }) else {
             return;
         };

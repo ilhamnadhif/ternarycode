@@ -74,6 +74,8 @@ pub enum AppMsg {
     UpdateInstalled(Result<PathBuf, crate::update::Outcome>),
     /// The commit box: a branch's facts, a run's steps, a message written by an agent.
     Ship(crate::ship::ShipMsg),
+    /// Commit History: paginated git log, commit changed files & diffs, remote fetch, open PRs/MRs.
+    History(crate::history::HistoryMsg),
     /// Async CLI / auth readiness check for a multi-account agent profile.
     ProfileTest(String, Result<String, String>),
     /// Multi-window (5h + weekly + 24h) token usage & server quota telemetry parsed from a profile.
@@ -445,6 +447,8 @@ pub struct App {
     project_files_at: HashMap<ProjectId, Instant>,
     pub pane_search: Option<PaneSearch>,
     pub review: Option<crate::ui::review::Review>,
+    /// Commit History & GitHub/GitLab integration view inside the Code Editor stage.
+    pub history: Option<crate::history::History>,
     /// Files an agent changed on disk while it worked, by project (kept while git still lists
     /// them as changed): the Files column marks them with its logo.
     pub agent_touched: HashMap<ProjectId, HashMap<PathBuf, tc_core::agent::AgentKind>>,
@@ -760,6 +764,7 @@ impl App {
             explorers: HashMap::new(),
             pane_search: None,
             review: None,
+            history: None,
             agent_touched: HashMap::new(),
             review_split: false,
             review_filter: String::new(),
@@ -902,7 +907,8 @@ impl App {
     pub fn workspace_split(&self, project: ProjectId, body: egui::Rect) -> (Option<egui::Rect>, Option<egui::Rect>) {
         use tc_core::model::DrawerDock;
         let review_here = self.review.as_ref().is_some_and(|r| r.project == project && !r.expanded);
-        let editor_on = self.zen_mode || review_here || self.editors.get(&project).is_some_and(|e| e.visible);
+        let history_here = self.history.as_ref().is_some_and(|h| h.project == project);
+        let editor_on = self.zen_mode || review_here || history_here || self.editors.get(&project).is_some_and(|e| e.visible);
         let drawer_on = !self.zen_mode && (self.settings.drawer_open || !editor_on);
         if editor_on && self.drawer_maximized && drawer_on {
             return (None, Some(body));
@@ -1419,7 +1425,8 @@ impl App {
                 }
                 let pid = self.active?;
                 let review_here = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
-                let editor_on = review_here || self.editors.get(&pid).is_some_and(|e| e.visible);
+                let history_here = self.history.as_ref().is_some_and(|h| h.project == pid);
+                let editor_on = review_here || history_here || self.editors.get(&pid).is_some_and(|e| e.visible);
                 if editor_on && !self.settings.drawer_open {
                     return None;
                 }
@@ -1782,6 +1789,7 @@ impl App {
                 AppMsg::Lsp(key, generation, msg) => self.lsp_message(key, generation, msg),
                 AppMsg::LspPath(path) => self.lsp_path_found(ctx, path),
                 AppMsg::Ship(msg) => self.on_ship_msg(msg),
+                AppMsg::History(msg) => self.on_history_msg(msg),
                 AppMsg::Sessions(agent, path, list) => {
                     self.session_lists.insert((agent, path), Some(list));
                 }
@@ -3564,11 +3572,12 @@ impl App {
                 } else if let Some(e) = self.editor_mut() {
                     e.visible = !e.visible;
                 }
-                // Review in the drawer goes with it.
-                if !self.editors.get(&self.active.unwrap_or_default()).is_some_and(|e| e.visible)
-                    && self.review.as_ref().is_some_and(|r| !r.expanded)
-                {
-                    self.review = None;
+                // Review & History in the drawer go with it.
+                if !self.editors.get(&self.active.unwrap_or_default()).is_some_and(|e| e.visible) {
+                    if self.review.as_ref().is_some_and(|r| !r.expanded) {
+                        self.review = None;
+                    }
+                    self.history = None;
                 }
                 self.show_focus();
                 if !self.editors.get(&self.active.unwrap_or_default()).is_some_and(|e| e.visible) {
@@ -3743,6 +3752,7 @@ impl App {
                 Some(r) if self.view == View::Focus => r.expanded = !r.expanded,
                 _ => self.open_review(None),
             },
+            Action::History => self.open_history(),
             Action::ReviewAgent => self.open_review_with(None, true),
             Action::Commit => self.ship_open(),
             Action::OpenPullRequest => {
@@ -3907,7 +3917,8 @@ impl App {
                 } else {
                     let editor_on = self.active.is_some_and(|pid| {
                         let review_here = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
-                        review_here || self.editors.get(&pid).is_some_and(|e| e.visible)
+                        let history_here = self.history.as_ref().is_some_and(|h| h.project == pid);
+                        review_here || history_here || self.editors.get(&pid).is_some_and(|e| e.visible)
                     });
                     if !editor_on && let Some(pid) = self.active {
                         // When the Code Editor is hidden, terminals already fill the workspace;
@@ -4353,6 +4364,7 @@ impl App {
             self.dispatch(ctx, action);
         }
         self.review_follow();
+        self.history_follow();
         self.update_attention();
         self.ade_tick(ctx);
         self.take_run_snapshots();

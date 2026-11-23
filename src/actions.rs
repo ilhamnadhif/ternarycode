@@ -168,6 +168,8 @@ pub enum Action {
     QuickOpen,
     Find,
     Review,
+    /// Opens Commit History & GitHub/GitLab integration in the Code stage.
+    History,
     /// ⇧⌘C: the commit box of the project in view (Review's Changes, its message focused).
     Commit,
     /// The pull request of the branch in view, in the Browser panel.

@@ -35,12 +35,12 @@ Tanpa Electron dan tanpa server perantara: terbuka ~0,2 detik, CPU 0% saat diam,
 ## Sorotan
 
 - **Editor Kode Lebar & Panel Terminal Fleksibel**: Code Editor & Diff Viewer mengisi viewport utama (≥60% secara default), sementara Terminal, Agent Logs, dan LSP Problems berada di panel bawah/kanan yang bisa dilipat (`⇧⌘L`).
-- **Riwayat Sesi di Dalam Tree Project**: klik panah `›` pada project mana pun di sidebar untuk melihat sesi aktif & riwayat **Claude Code, Codex, dan Antigravity CLI (`agy`)** lengkap dengan logo asli dan resume 1-klik.
-- **Profil Multi-Akun & Batas 5 Jam / Mingguan**: daftarkan banyak akun sejak awal (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `agy1`) dengan folder auth terisolasi. Pindah akun **1-klik tanpa logout/login ulang**, atau aktifkan failover Auto/Manual Resume saat akun kena limit.
+- **Riwayat Sesi di Dalam Tree Project**: klik panah `›` pada project mana pun di sidebar untuk melihat sesi aktif & riwayat **Claude Code, Codex, dan Antigravity CLI (`agy`)** dengan logo asli, tampilan ringkas 3 baris (`N more…` / `Show less`), dan resume 1-klik.
+- **Profil Multi-Akun & Kuota 5 Jam / Mingguan Asli**: daftarkan banyak akun **Claude Code** & **ChatGPT / Codex** (`claude1`, `claude2`, `chatgpt1`, `chatgpt2`) dengan folder auth terisolasi, geser urutan prioritas dengan mouse (drag-and-drop), dan pantau persentase kuota & waktu reset langsung dari server. Pindah akun **1-klik tanpa logout/login ulang**, atau aktifkan failover Auto/Manual Resume saat akun kena limit.
 - **Monitor Pemakaian & Status Semua Agent**: pill telemetri live di top bar, popover cepat dengan tombol Switch 1-klik, dan halaman penuh yang memantau kuota **5 jam** & **mingguan**, hitung mundur reset, sesi aktif, serta log failover.
 - **Pairing Ponsel & Mobile Companion**: pindai kode QR lewat Wi-Fi lokal atau tunnel aman untuk memantau output agent secara live, menyetujui tool, mengirim prompt lanjutan, dan memindah akun dari HP.
 - **Tahu Agent Mana yang Butuh Anda**: status berbasis hook (*Butuh input*, *Berjalan*, *Selesai*, *Gagal*), lompatan `⌘J`, dan **Grid** (`⌘0`) live untuk semua project.
-- **Browser Agent, Review, Worktree & Dokumen**: web view bawaan yang bisa dikendalikan agent, diff berdampingan + commit/push/PR 1 tombol, git worktree terpisah, serta penampil PDF, Word, PowerPoint, Excel, CSV, dan gambar.
+- **Riwayat Commit, Integrasi GitHub & GitLab, Browser, & Dokumen**: telusuri log commit & diff per commit (`Files | Changes | History`), fetch remote, lihat daftar **GitHub PR** (`gh`) & **GitLab MR** (`glab`) aktif, commit/push/PR/MR 1 tombol, browser bawaan, serta penampil PDF/Office/CSV/gambar.
 
 ## Instalasi
 
@@ -68,7 +68,7 @@ Di Linux, TernaryCode butuh OpenGL dan glibc 2.28+; panel Browser butuh WebKitGT
 ## Mulai cepat
 
 1. **Tambah project**: klik **+** di sidebar, jatuhkan folder ke jendela, atau jalankan `ternarycode .` di terminal.
-2. **Daftarkan akun sejak awal** (opsional): buka **Profil** (ikon 👤 di kiri bawah), klik **+ Add Profile**, pilih provider (**Claude Code**, **ChatGPT / Codex**, **Antigravity CLI (`agy`)**, atau **OpenCode**), lalu klik **Auth Login** sekali per akun. Setiap akun login di folder privat `0o700` masing-masing tanpa saling menimpa.
+2. **Daftarkan akun sejak awal** (opsional): buka **Profil** (ikon 👤 di kiri bawah), klik **+ Add Profile**, pilih **Claude Code** atau **ChatGPT / Codex**, seret kartu untuk mengatur urutan prioritas, lalu klik **Auth Login** sekali per akun. Setiap akun login di folder privat `0o700` masing-masing tanpa saling menimpa.
 3. **Jalankan Agent** (`⇧⌘A`): mulai Claude Code, Codex, Antigravity CLI (`agy`), atau OpenCode. Buka dropdown project di sidebar kapan saja untuk melanjutkan sesi lama dengan 1 klik.
 4. **Pindah akun instan**: klik tombol `⇄ <akun_berikutnya>` langsung di header pane untuk pindah akun tanpa logout, atau tekan `⌘J` untuk lompat ke agent yang menunggu.
 
@@ -84,8 +84,8 @@ Di Linux, TernaryCode butuh OpenGL dan glibc 2.28+; panel Browser butuh WebKitGT
 
 ![Profil Agent & Failover menampilkan 6 akun terdaftar untuk Claude Max, ChatGPT Plus, dan Antigravity CLI lengkap dengan meter batas 5 jam & mingguan serta folder auth terisolasi](docs/screenshots/profiles.png)
 
-- **Tanpa logout-login ulang**: daftarkan banyak akun (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `agy1`) sejak awal. Setiap profil punya `CLAUDE_CONFIG_DIR`, `CODEX_HOME` berbasis file (`auth.json`), atau `AGY_DATA_DIR` sendiri sehingga login tidak pernah bentrok.
-- **Meter Batas 5 Jam & Mingguan**: menampilkan pemakaian **jendela 5 jam** dan **mingguan (7 hari)** — membaca persentase & waktu reset langsung dari telemetri server Codex (`rate_limits.primary` / `secondary`, `plan_type`), serta jendela log 5 jam/7 hari + batas token opsional untuk Claude dan Antigravity.
+- **Tanpa logout-login ulang**: daftarkan banyak akun **Claude Code** & **ChatGPT / Codex** (`claude1`, `claude2`, `chatgpt1`, `chatgpt2`) sejak awal dan seret urutan prioritas fallback dengan mouse. Setiap profil punya `CLAUDE_CONFIG_DIR` atau `CODEX_HOME` berbasis file (`auth.json`) sendiri sehingga login tidak pernah bentrok.
+- **Meter Batas 5 Jam & Mingguan Akurat**: menampilkan pemakaian **jendela 5 jam** dan **mingguan (7 hari) / 30 hari** — membaca persentase, paket, dan waktu reset resmi langsung dari server Claude Code (`cachedUsageUtilization`) dan Codex (`rate_limits.primary` / `secondary`, `plan_type`).
 - **Pindah Akun Live 1-Klik & Failover**: klik tombol `⇄` di header pane agent kapan saja — atau biarkan **Auto-Resume** / **Manual Resume** mengambil alih saat kena limit. Perpindahan sesama provider otomatis menyalin file sesi dan melakukan `--resume` dengan riwayat utuh; lintas provider membuat ringkasan *handoff* dengan penyensoran secret otomatis.
 
 ![Banner pemulihan Rate Limit inline dengan tombol 1-klik Resume on claude2, chatgpt1, atau chatgpt2](docs/screenshots/editor.png)
@@ -108,7 +108,7 @@ Di Linux, TernaryCode butuh OpenGL dan glibc 2.28+; panel Browser butuh WebKitGT
 
 ![Tampilan Review diff dengan checkbox vektor tajam dan tombol Commit 1-klik di samping agent](docs/screenshots/review.png)
 
-- **Review & Commit/Push/PR 1 tombol** (`⇧⌘R`, `⇧⌘C`): tinjau diff unified atau berdampingan, jalankan agent di **git worktree** terpisah, lalu commit, push, atau buka PR GitHub dalam satu langkah.
+- **Riwayat Commit, Review, & Integrasi GitHub / GitLab** (`⇧⌘R`, `⇧⌘C`): beralih mulus antara **Files | Changes | History** untuk melihat diff unified/berdampingan, menelusuri riwayat commit & diff tiap commit, fetch remote, melihat daftar **GitHub PR** (`gh`) & **GitLab MR** (`glab`) aktif, serta commit, push, atau buat PR/MR dalam satu tombol.
 - **Grid** (`⌘0`): pantau semua project berdampingan dalam terminal sungguhan.
 - **Panel Browser** (`⇧⌘B`): web view sistem (WebKit, WebView2, WebKitGTK) yang bisa dioperasikan agent sambil Anda pantau atau ambil alih kapan saja.
 - **Dokumen Langsung Terbuka**: PDF, Word, PowerPoint, Excel, CSV (sebagai tabel interaktif), dan gambar langsung di samping agent.

@@ -111,6 +111,21 @@ impl ProfileRuntime {
         (rem > 0).then_some(rem as u64)
     }
 
+    /// Whether this profile actually has a short (e.g. 5h) quota window to display.
+    /// (Plans like ChatGPT Free only have a single 30d window and no 5h quota.)
+    pub fn has_window_5h(&self, prof: &AgentProfile) -> bool {
+        self.quota_5h_used_pct(prof).is_some()
+            || self.usage.window_5h.window_minutes.is_some()
+            || self.usage.window_5h.resets_at_unix.is_some()
+    }
+
+    /// Whether this profile actually has a long (Weekly / 30d) quota window to display.
+    pub fn has_window_weekly(&self, prof: &AgentProfile) -> bool {
+        self.quota_weekly_used_pct(prof).is_some()
+            || self.usage.window_weekly.window_minutes.is_some()
+            || self.usage.window_weekly.resets_at_unix.is_some()
+    }
+
     /// Short label for the primary short window (`"5h"` by default, or provider-reported hours).
     pub fn window_5h_label(&self) -> String {
         match self.usage.window_5h.window_minutes {
@@ -221,6 +236,13 @@ pub struct ProjectSessionItem {
     pub live_pane: Option<PaneId>,
 }
 
+/// Whether `agent` supports isolated multi-account profiles & failover.
+/// Only Claude Code (`CLAUDE_CONFIG_DIR`) and ChatGPT / Codex (`CODEX_HOME` + file-backed auth)
+/// support true per-profile OAuth isolation without colliding in the global OS Keychain.
+pub fn supports_multi_profile(agent: AgentKind) -> bool {
+    matches!(agent, AgentKind::Claude | AgentKind::Codex)
+}
+
 /// Built-in default starter profiles when the user has not customized `settings.profiles` yet.
 /// Each default profile uses the provider's standard auth folder so existing logins work instantly.
 pub fn default_profiles() -> Vec<AgentProfile> {
@@ -239,15 +261,6 @@ pub fn default_profiles() -> Vec<AgentProfile> {
             name: "ChatGPT / Codex 1".into(),
             agent: AgentKind::Codex,
             fallback_order: 2,
-            enabled: true,
-            use_default_auth: true,
-            ..Default::default()
-        },
-        AgentProfile {
-            id: "agy1".into(),
-            name: "Antigravity 1".into(),
-            agent: AgentKind::Antigravity,
-            fallback_order: 3,
             enabled: true,
             use_default_auth: true,
             ..Default::default()
@@ -859,14 +872,10 @@ mod tests {
         assert_eq!(cenv.get("CODEX_HOME").map(PathBuf::from), Some(data.join("profiles").join("chatgpt2")));
         assert_eq!(cenv.get("OPENAI_API_KEY").map(String::as_str), Some("sk-openai"));
 
-        let agy = AgentProfile {
-            id: "agy2".into(),
-            name: "Antigravity 2".into(),
-            agent: AgentKind::Antigravity,
-            ..Default::default()
-        };
-        let aenv = profile_env(&agy, home, data);
-        assert_eq!(aenv.get("AGY_DATA_DIR").map(PathBuf::from), Some(data.join("profiles").join("agy2")));
+        assert!(supports_multi_profile(AgentKind::Claude));
+        assert!(supports_multi_profile(AgentKind::Codex));
+        assert!(!supports_multi_profile(AgentKind::Antigravity));
+        assert!(!supports_multi_profile(AgentKind::OpenCode));
     }
 
     #[test]
@@ -908,7 +917,7 @@ mod tests {
         let profiles = vec![
             AgentProfile { id: "claude1".into(), agent: AgentKind::Claude, fallback_order: 1, enabled: true, ..Default::default() },
             AgentProfile { id: "claude2".into(), agent: AgentKind::Claude, fallback_order: 2, enabled: true, ..Default::default() },
-            AgentProfile { id: "agy1".into(), agent: AgentKind::Antigravity, fallback_order: 3, enabled: true, ..Default::default() },
+            AgentProfile { id: "chatgpt1".into(), agent: AgentKind::Codex, fallback_order: 3, enabled: true, ..Default::default() },
         ];
         let mut rt = std::collections::HashMap::new();
         rt.insert("claude1".into(), ProfileRuntime { state: ProfileState::RateLimited, reset_at: Some(now + Duration::from_secs(600)), ..Default::default() });
@@ -918,10 +927,10 @@ mod tests {
         let pick = pick_failover_profile(&profiles, &rt, "claude1", AgentKind::Claude, &policy, now).unwrap();
         assert_eq!(pick.id, "claude2");
 
-        // All Claude profiles limited: falls over to agy1.
+        // All Claude profiles limited: falls over to chatgpt1.
         rt.insert("claude2".into(), ProfileRuntime { state: ProfileState::RateLimited, reset_at: Some(now + Duration::from_secs(600)), ..Default::default() });
         let pick2 = pick_failover_profile(&profiles, &rt, "claude1", AgentKind::Claude, &policy, now).unwrap();
-        assert_eq!(pick2.id, "agy1");
+        assert_eq!(pick2.id, "chatgpt1");
 
         // Cross-provider disabled: returns None.
         let strict = FailoverSettings { cross_provider: false, ..Default::default() };

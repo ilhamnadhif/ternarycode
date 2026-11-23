@@ -9,6 +9,7 @@ pub mod explorer_ui;
 pub mod ide_ui;
 pub mod focus;
 pub mod grid;
+pub mod history_ui;
 pub mod icon_codes;
 pub mod icons;
 pub mod kit;

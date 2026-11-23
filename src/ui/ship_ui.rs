@@ -66,7 +66,10 @@ impl App {
         let agent = self.ship_agent_pane(project).map(|(_, a)| a);
         let prefs = self.project(project).map(|x| x.ship).unwrap_or_default();
         let Some(s) = self.ship.get(&project) else { return col.bottom() };
-        let github = s.facts.as_ref().and_then(|f| f.remote.as_ref()).and_then(|r| r.web.as_ref()).is_some_and(|w| w.forge == tc_git::ship::Forge::GitHub);
+        let web_info = s.facts.as_ref().and_then(|f| f.remote.as_ref()).and_then(|r| r.web.as_ref());
+        let is_gitlab = web_info.is_some_and(|w| w.forge == tc_git::ship::Forge::GitLab);
+        let has_forge = web_info.is_some();
+        let has_cli = ship::cli_for(web_info, &s.gh, &s.glab).is_some();
         let plan: Option<Plan> = s.facts.as_ref().map(|f| {
             ship::plan(&ship::Inputs {
                 facts: f,
@@ -75,7 +78,7 @@ impl App {
                 new_branch: s.new_branch.as_deref(),
                 base: base_hint.as_deref(),
                 pr: s.pr.as_ref(),
-                gh: s.gh.is_some() && github,
+                gh: has_cli,
             })
         });
         let run = s.run.clone();
@@ -124,10 +127,19 @@ impl App {
             parts.push(Part::Steps);
             match (run.failed(), run.finished) {
                 (Some((_, f)), _) => {
+                    let run_gitlab = run.req.web.as_ref().is_some_and(|w| w.forge == tc_git::ship::Forge::GitLab);
                     let (text, icon, color) = match f {
                         Failure::Rejected(_) => (tf("{} has commits you don’t have. Your commit is safe here.", &[&format!("{}/{}", run.req.remote.as_deref().unwrap_or("origin"), run.req.branch)]), icons::WARNING, p.warn),
                         Failure::Credentials(_) => (t("git wants a password or an SSH passphrase. It can only ask in a terminal.").to_string(), icons::KEY, p.warn),
-                        Failure::SignedOut(_) => (t("GitHub CLI isn’t signed in. The branch is pushed: finish the pull request on GitHub.").to_string(), icons::INFO, p.text_faint),
+                        Failure::SignedOut(_) => (
+                            if run_gitlab {
+                                t("GitLab CLI isn’t signed in. The branch is pushed: finish the merge request on GitLab.").to_string()
+                            } else {
+                                t("GitHub CLI isn’t signed in. The branch is pushed: finish the pull request on GitHub.").to_string()
+                            },
+                            icons::INFO,
+                            p.text_faint,
+                        ),
                         Failure::Output(_) => (String::new(), icons::INFO, p.text_faint),
                     };
                     if !text.is_empty() {
@@ -141,10 +153,16 @@ impl App {
                     parts.push(Part::Acts);
                 }
                 (None, true) => {
+                    let run_gitlab = run.req.web.as_ref().is_some_and(|w| w.forge == tc_git::ship::Forge::GitLab);
                     if run.pr.is_some() {
                         parts.push(Part::PrCard);
                     } else if run.form.is_some() {
-                        parts.push(note(ui, t("The pull request form is open in the Browser panel, filled in."), icons::GLOBE, p.text_faint));
+                        let msg = if run_gitlab {
+                            t("The merge request form is open in the Browser panel, filled in.")
+                        } else {
+                            t("The pull request form is open in the Browser panel, filled in.")
+                        };
+                        parts.push(note(ui, msg, icons::GLOBE, p.text_faint));
                     }
                     parts.push(Part::Acts);
                 }
@@ -172,7 +190,11 @@ impl App {
                 let branch = facts.as_ref().and_then(|f| f.branch.clone()).unwrap_or_default();
                 let text = match (&pr, facts.as_ref().and_then(|f| f.remote.as_ref())) {
                     (Some(pr), _) if matches!(pr.state, tc_git::ship::PrState::Open | tc_git::ship::PrState::Draft) => {
-                        tf("Nothing to commit. {} is pushed; PR #{} is up to date.", &[&branch, &pr.number.to_string()])
+                        if is_gitlab {
+                            tf("Nothing to commit. {} is pushed; MR !{} is up to date.", &[&branch, &pr.number.to_string()])
+                        } else {
+                            tf("Nothing to commit. {} is pushed; PR #{} is up to date.", &[&branch, &pr.number.to_string()])
+                        }
                     }
                     (_, Some(remote)) if facts.as_ref().is_some_and(|f| f.upstream.is_some()) => tf("Nothing to commit. {} is the same as {}.", &[&branch, &remote.name]),
                     _ => t("Nothing to commit.").to_string(),
@@ -180,8 +202,13 @@ impl App {
                 parts.push(note(ui, &text, icons::CHECK_CIRCLE, p.ok));
             } else if facts.as_ref().is_some_and(|f| f.remote.is_none()) && plan.has(&StepKind::Commit) && prefs.action != ShipAction::Commit {
                 parts.push(note(ui, t("No remote yet, so nothing to push to. Add one (git remote add origin …) and the button pushes too."), icons::INFO, p.text_faint));
-            } else if plan.pr_step() == Some(false) && github {
-                parts.push(note(ui, t("GitHub CLI isn’t installed: after the push, the pull request form opens in the Browser panel, filled in."), icons::INFO, p.text_faint));
+            } else if plan.pr_step() == Some(false) && has_forge {
+                let msg = if is_gitlab {
+                    t("GitLab CLI isn’t installed: after the push, the merge request form opens in the Browser panel, filled in.")
+                } else {
+                    t("GitHub CLI isn’t installed: after the push, the pull request form opens in the Browser panel, filled in.")
+                };
+                parts.push(note(ui, msg, icons::INFO, p.text_faint));
             }
             if !plan.idle() || plan.blocked.is_some() {
                 parts.push(Part::Go);
@@ -236,13 +263,14 @@ impl App {
                 }
                 Part::Steps => {
                     let Some(run) = &run else { continue };
+                    let run_gitlab = run.req.web.as_ref().is_some_and(|w| w.forge == tc_git::ship::Forge::GitLab);
                     let fill = if dark { p.inset } else { Color32::WHITE };
                     painter.rect(row, CornerRadius::same(9), fill, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
                     let mut sy = row.top() + 4.0;
                     for step in &run.steps {
                         let sr = Rect::from_min_size(pos2(row.left() + 4.0, sy), vec2(row.width() - 8.0, STEP_H));
                         sy += STEP_H;
-                        paint_step(&painter, sr, step, &p);
+                        paint_step(&painter, sr, step, run_gitlab, &p);
                         #[cfg(debug_assertions)]
                         crate::devtest::record(format!("ship-step:{}", step_name(&step.kind)), sr);
                     }
@@ -387,12 +415,14 @@ impl App {
                 }
                 Part::PrCard => {
                     let Some(pr) = run.as_ref().and_then(|r| r.pr.clone()) else { continue };
+                    let run_gitlab = run.as_ref().and_then(|r| r.req.web.as_ref()).is_some_and(|w| w.forge == tc_git::ship::Forge::GitLab);
+                    let prefix = if run_gitlab { "!" } else { "#" };
                     painter.rect(row, CornerRadius::same(9), style::over(p.canvas, p.ok, 0.09), Stroke::new(1.0, style::soft(p.ok, 0.26)), egui::StrokeKind::Inside);
                     let ic = Rect::from_min_size(pos2(row.left() + 10.0, row.center().y - 14.0), vec2(28.0, 28.0));
                     painter.rect_filled(ic, CornerRadius::same(8), style::soft(p.ok, 0.14));
                     painter.text(ic.center(), Align2::CENTER_CENTER, icons::GIT_PULL_REQUEST, style::icon_font(15.0), p.ok);
                     let tx = ic.right() + 10.0;
-                    let title = format!("#{} {}", pr.number, run.as_ref().map(|r| r.title.as_str()).unwrap_or(""));
+                    let title = format!("{prefix}{} {}", pr.number, run.as_ref().map(|r| r.title.as_str()).unwrap_or(""));
                     let mut job = egui::text::LayoutJob::simple_singleline(title, style::semibold(12.5), p.text);
                     job.wrap = egui::text::TextWrapping::truncate_at_width(row.right() - 10.0 - tx);
                     let g = painter.layout_job(job);
@@ -423,12 +453,15 @@ impl App {
                                     btns.push((Act::new(kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Push in Terminal"), "ship-act-push"), Ask::TerminalFrom { from: i, prefix: None }));
                                 }
                                 Failure::SignedOut(_) => {
+                                    let run_gitlab = run.req.web.as_ref().is_some_and(|w| w.forge == tc_git::ship::Forge::GitLab);
                                     if let Some(web) = &run.req.web {
                                         let (title, body) = tc_git::ship::split_message(&run.req.message);
                                         let url = web.new_pr_url(run.req.base.as_deref().unwrap_or("main"), &run.req.branch, &title, &body);
-                                        btns.push((Act::new(kit::Kind::Primary, Some(icons::GLOBE), t("Finish on GitHub"), "ship-act-web"), Ask::OpenPr(url)));
+                                        let finish_label = if run_gitlab { t("Finish on GitLab") } else { t("Finish on GitHub") };
+                                        btns.push((Act::new(kit::Kind::Primary, Some(icons::GLOBE), finish_label, "ship-act-web"), Ask::OpenPr(url)));
                                     }
-                                    btns.push((Act::new(kit::Kind::Ghost, Some(icons::TERMINAL_WINDOW), "gh auth login", "ship-act-login"), Ask::Terminal(vec!["gh auth login".to_string()])));
+                                    let login_cmd = if run_gitlab { "glab auth login" } else { "gh auth login" };
+                                    btns.push((Act::new(kit::Kind::Ghost, Some(icons::TERMINAL_WINDOW), login_cmd, "ship-act-login"), Ask::Terminal(vec![login_cmd.to_string()])));
                                 }
                                 Failure::Output(out) => {
                                     let commit = run.steps.get(i).is_some_and(|s| s.kind == StepKind::Commit);
@@ -498,7 +531,11 @@ impl App {
                         for (a, icon, label) in [
                             (ShipAction::Commit, icons::GIT_COMMIT, t("Commit")),
                             (ShipAction::CommitPush, icons::ARROW_UP, t("Commit & Push")),
-                            (ShipAction::PullRequest, icons::GIT_PULL_REQUEST, t("Commit, Push & Create PR")),
+                            (
+                                ShipAction::PullRequest,
+                                icons::GIT_PULL_REQUEST,
+                                if is_gitlab { t("Commit, Push & Create MR") } else { t("Commit, Push & Create PR") },
+                            ),
                         ] {
                             let on = prefs.action == a;
                             let item = kit::menu_item(ui, Some(if on { icons::CHECK } else { icon }), label, None, false);
@@ -510,7 +547,8 @@ impl App {
                             }
                         }
                         kit::menu_sep(ui);
-                        let item = kit::menu_item(ui, Some(if prefs.draft { icons::CHECK } else { icons::FILE_DASHED }), t("Create PR as Draft"), None, false);
+                        let draft_label = if is_gitlab { t("Create MR as Draft") } else { t("Create PR as Draft") };
+                        let item = kit::menu_item(ui, Some(if prefs.draft { icons::CHECK } else { icons::FILE_DASHED }), draft_label, None, false);
                         if item.clicked() {
                             asks.push(Ask::Draft);
                             ui.close();
@@ -551,16 +589,26 @@ impl App {
                         (Some(remote), a) if a != ShipAction::Commit => {
                             job.append("→", 5.0, fmt(p.text_ghost));
                             if let Some(n) = plan.updates {
-                                job.append(&tf("updates PR #{}", &[&n.to_string()]), 5.0, fmt(p.text_faint));
+                                let upd = if is_gitlab {
+                                    tf("updates MR !{}", &[&n.to_string()])
+                                } else {
+                                    tf("updates PR #{}", &[&n.to_string()])
+                                };
+                                job.append(&upd, 5.0, fmt(p.text_faint));
                             } else if plan.pr_step().is_some() {
-                                job.append(&format!("{remote} · {}", tf("PR into {}", &[plan.base.as_deref().unwrap_or("main")])), 5.0, fmt(p.text_faint));
+                                let into = if is_gitlab {
+                                    tf("MR into {}", &[plan.base.as_deref().unwrap_or("main")])
+                                } else {
+                                    tf("PR into {}", &[plan.base.as_deref().unwrap_or("main")])
+                                };
+                                job.append(&format!("{remote} · {into}"), 5.0, fmt(p.text_faint));
                             } else {
                                 job.append(&format!("{remote}/{}", plan.branch), 5.0, fmt(p.text_faint));
                             }
                         }
                         _ => job.append(&format!("· {}", t("commit only")), 5.0, fmt(p.text_faint)),
                     }
-                    let link = plan.can_branch.then_some(t("Branch & PR…"));
+                    let link = plan.can_branch.then_some(if is_gitlab { t("Branch & MR…") } else { t("Branch & PR…") });
                     let link_g = link.map(|l| painter.layout_no_wrap(l.to_string(), egui::FontId::proportional(11.0), p.text_faint));
                     let link_w = link_g.as_ref().map_or(0.0, |g| g.size().x + 10.0);
                     painter.text(pos2(row.left() + 6.0, row.center().y), Align2::CENTER_CENTER, icons::GIT_BRANCH, style::icon_font(11.0), p.text_faint);
@@ -703,6 +751,7 @@ impl App {
             draft: prefs.draft,
             web: facts.remote.and_then(|r| r.web),
             gh: s.and_then(|s| s.gh.clone()),
+            glab: s.and_then(|s| s.glab.clone()),
             path: self.lsp.path_env.clone(),
         }
     }
@@ -734,7 +783,7 @@ fn step_name(k: &StepKind) -> &'static str {
 }
 
 /// One step's row: its state, its name, what it made, how long it took.
-fn paint_step(painter: &egui::Painter, r: Rect, step: &ship::Step, p: &style::Palette) {
+fn paint_step(painter: &egui::Painter, r: Rect, step: &ship::Step, gitlab: bool, p: &style::Palette) {
     let cy = r.center().y;
     let gx = r.left() + 12.0;
     let (name_c, detail_c) = match &step.state {
@@ -757,7 +806,7 @@ fn paint_step(painter: &egui::Painter, r: Rect, step: &ship::Step, p: &style::Pa
         StepKind::Branch(_) => t("Branch"),
         StepKind::Commit => t("Commit"),
         StepKind::Push => t("Push"),
-        StepKind::PullRequest { .. } => t("Pull request"),
+        StepKind::PullRequest { .. } => if gitlab { t("Merge request") } else { t("Pull request") },
     };
     let font = if step.state == StepState::Todo { egui::FontId::proportional(12.5) } else { style::medium(12.5) };
     let g = painter.layout_no_wrap(name.to_string(), font, name_c);
@@ -773,7 +822,7 @@ fn paint_step(painter: &egui::Painter, r: Rect, step: &ship::Step, p: &style::Pa
         (StepState::Failed(f), _) => match f {
             Failure::Rejected(_) => t("rejected").to_string(),
             Failure::Credentials(_) => t("needs your key").to_string(),
-            Failure::SignedOut(_) => t("gh isn’t signed in").to_string(),
+            Failure::SignedOut(_) => if gitlab { t("glab isn’t signed in").to_string() } else { t("gh isn’t signed in").to_string() },
             Failure::Output(_) => t("stopped").to_string(),
         },
         (StepState::Todo, StepKind::Branch(name)) => name.clone(),

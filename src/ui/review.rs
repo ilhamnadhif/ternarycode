@@ -165,10 +165,12 @@ impl App {
             || self.review.as_ref().is_some_and(|r| r.project == project_id && r.expanded);
         if !expanded {
             // The drawer opens as ⌘E opens it (a first time at its usual width).
+            self.history = None;
             self.drawer_maximized = false;
             self.editors.entry(project_id).or_insert_with(|| crate::editor::Editor { width: 0.54, ..Default::default() }).visible = true;
         }
         let load = next_work();
+        self.review_close = false;
         self.review = Some(Review {
             project: project_id,
             load,
@@ -1457,14 +1459,14 @@ const NEXT_H: f32 = 40.0;
 const SIDES_H: f32 = 28.0;
 /// The narrowest diff (in the drawer) shown side by side.
 const SPLIT_MIN_W: f32 = 560.0;
-const HUNK_H: f32 = 30.0;
+pub(super) const HUNK_H: f32 = 30.0;
 /// A worktree's foot in full screen (its branch, Merge, Remove).
 const WT_FOOT_H: f32 = 52.0;
 /// The five boxes that show the share of added and removed lines.
-const BARS_W: f32 = 5.0 * 6.0 + 4.0 * 2.0;
+pub(super) const BARS_W: f32 = 5.0 * 6.0 + 4.0 * 2.0;
 
 /// How long ago a Unix time was ("6 min", "2 h", "3 d").
-fn unix_age(t: i64) -> String {
+pub(super) fn unix_age(t: i64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let s = (now - t).max(0);
     if s < 60 {
@@ -1561,7 +1563,7 @@ pub fn paint_share(painter: &egui::Painter, left_center: egui::Pos2, a: u32, d: 
 }
 
 /// Five boxes: the share of added (green) and removed (red) lines, starting at `left_center`.
-fn paint_bars(painter: &egui::Painter, left_center: egui::Pos2, a: u32, d: u32, p: &style::Palette) {
+pub(super) fn paint_bars(painter: &egui::Painter, left_center: egui::Pos2, a: u32, d: u32, p: &style::Palette) {
     let total = (a + d).max(1) as f32;
     let na = ((a as f32 / total) * 5.0).round() as usize;
     let nd = (((d as f32 / total) * 5.0).round() as usize).min(5 - na.min(5));
@@ -1637,15 +1639,15 @@ fn branch_summary(ui: &Ui, files_rect: Rect, top: f32, b: &BranchView, p: &style
 }
 
 /// How a diff's lines are set: their height, the size of their text, the width of a number.
-struct LineLook {
-    h: f32,
-    font: f32,
-    num_w: f32,
+pub(super) struct LineLook {
+    pub(super) h: f32,
+    pub(super) font: f32,
+    pub(super) num_w: f32,
 }
 
 /// For each line of a hunk, the line it replaced or that replaced it (a removed line and the
 /// added line in the same place of the run that follows), for marking the words that changed.
-fn word_pairs(lines: &[tc_git::DiffLine]) -> Vec<Option<usize>> {
+pub(super) fn word_pairs(lines: &[tc_git::DiffLine]) -> Vec<Option<usize>> {
     let mut out = vec![None; lines.len()];
     let mut i = 0;
     while i < lines.len() {
@@ -1666,7 +1668,7 @@ fn word_pairs(lines: &[tc_git::DiffLine]) -> Vec<Option<usize>> {
 
 /// The part of `text` that differs from `other` (from the first difference to the last, out to
 /// whole words), as a byte range; none when the lines have too little in common for it to help.
-fn changed_part(text: &str, other: &str) -> Option<std::ops::Range<usize>> {
+pub(super) fn changed_part(text: &str, other: &str) -> Option<std::ops::Range<usize>> {
     let text = text.trim_end_matches(['\n', '\r']);
     let other = other.trim_end_matches(['\n', '\r']);
     let a: Vec<(usize, char)> = text.char_indices().collect();
@@ -1756,7 +1758,7 @@ fn group_new_folders(r: &mut Review, folders: &[PathBuf]) {
     r.folded = (0..r.new_dirs.len()).filter(|d| Some(*d) != open).collect();
 }
 
-fn change_letter(kind: ChangeKind, p: &style::Palette) -> (&'static str, Color32) {
+pub(super) fn change_letter(kind: ChangeKind, p: &style::Palette) -> (&'static str, Color32) {
     match kind {
         ChangeKind::Added => ("A", p.ok),
         ChangeKind::Modified => ("M", p.accent_text),
@@ -1767,7 +1769,7 @@ fn change_letter(kind: ChangeKind, p: &style::Palette) -> (&'static str, Color32
 
 /// A hunk's header: its line ranges, then the function it is in; the hunk in view (`nav`: the
 /// right edge in view) has ↑ ↓ at its right. Returns the step asked for.
-fn paint_hunk_header(ui: &Ui, r: Rect, header: &str, p: &style::Palette, first: bool, nav: Option<(f32, usize)>) -> Option<i32> {
+pub(super) fn paint_hunk_header(ui: &Ui, r: Rect, header: &str, p: &style::Palette, first: bool, nav: Option<(f32, usize)>) -> Option<i32> {
     if !ui.is_rect_visible(r) {
         return None;
     }
@@ -1807,7 +1809,7 @@ fn paint_hunk_header(ui: &Ui, r: Rect, header: &str, p: &style::Palette, first: 
 /// code in syntax colours, on green or red when added or removed; `hl`: the words that changed,
 /// on a stronger tint.
 #[allow(clippy::too_many_arguments)]
-fn paint_line(ui: &Ui, r: Rect, kind: LineKind, old: Option<u32>, new: Option<u32>, text: &str, syntax: &str, dark: bool, p: &style::Palette, both: bool, hl: Option<std::ops::Range<usize>>, look: &LineLook) {
+pub(super) fn paint_line(ui: &Ui, r: Rect, kind: LineKind, old: Option<u32>, new: Option<u32>, text: &str, syntax: &str, dark: bool, p: &style::Palette, both: bool, hl: Option<std::ops::Range<usize>>, look: &LineLook) {
     let painter = ui.painter();
     let (bg, hl_bg, sign, sc, num_c) = match kind {
         LineKind::Added => (style::soft(p.ok, if dark { 0.10 } else { 0.08 }), style::soft(p.ok, if dark { 0.28 } else { 0.20 }), "+", p.ok, style::soft(p.ok, 0.6)),
@@ -1870,7 +1872,7 @@ fn paint_hatch(painter: &egui::Painter, r: Rect, p: &style::Palette) {
 /// A hunk side by side: removed lines at the left beside what replaced them at the right (the
 /// words that changed marked), a hatched side where one has no line.
 #[allow(clippy::too_many_arguments)]
-fn paint_split(ui: &mut Ui, w: f32, lines: &[tc_git::DiffLine], syntax: &str, dark: bool, p: &style::Palette, look: &LineLook) {
+pub(super) fn paint_split(ui: &mut Ui, w: f32, lines: &[tc_git::DiffLine], syntax: &str, dark: bool, p: &style::Palette, look: &LineLook) {
     let mut rows: Vec<(Option<usize>, Option<usize>)> = Vec::new();
     let mut i = 0;
     while i < lines.len() {

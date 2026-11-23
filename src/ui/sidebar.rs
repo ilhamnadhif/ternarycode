@@ -1672,9 +1672,11 @@ impl App {
     ) {
         let dark = ui.visuals().dark_mode;
         let current_pane = self.current_pane();
+        const MAX_COLLAPSED: usize = 3;
         let all_id = egui::Id::new(("sessions-show-all", project_id));
         let show_all = ui.data(|d| d.get_temp::<bool>(all_id).unwrap_or(false));
-        let shown = if show_all { sessions.len() } else { sessions.len().min(5) };
+        let has_toggle = sessions.len() > MAX_COLLAPSED;
+        let shown = if show_all { sessions.len() } else { sessions.len().min(MAX_COLLAPSED) };
         let hidden = sessions.len().saturating_sub(shown);
         if sessions.is_empty() && self.sessions_running.contains(&project_id) {
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
@@ -1695,7 +1697,7 @@ impl App {
             ui.painter_at(gap_r).vline(gap_r.left() + 19.5, gap_r.y_range(), rail_stroke);
         }
         for (idx, item) in sessions.iter().take(shown).enumerate() {
-            let is_last = idx + 1 == shown && hidden == 0;
+            let is_last = idx + 1 == shown && !has_toggle;
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
             if !ui.is_rect_visible(rect) {
                 continue;
@@ -1798,22 +1800,30 @@ impl App {
                 }
             }
         }
-        if hidden > 0 {
-            let (more_r, more_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
-            if ui.is_rect_visible(more_r) {
-                let painter = ui.painter_at(more_r);
-                let guide_x = more_r.left() + 19.5;
-                painter.vline(guide_x, more_r.top()..=more_r.center().y, rail_stroke);
-                painter.hline(guide_x..=(guide_x + 4.5), more_r.center().y, rail_stroke);
-                let row_r = Rect::from_min_max(pos2(more_r.left() + 25.0, more_r.top() + 1.0), pos2(more_r.right(), more_r.bottom() - 1.0));
-                if more_resp.hovered() {
+        if has_toggle {
+            let (toggle_r, toggle_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("project-sessions-toggle:{project_id}"), toggle_r);
+            if ui.is_rect_visible(toggle_r) {
+                let painter = ui.painter_at(toggle_r);
+                let guide_x = toggle_r.left() + 19.5;
+                painter.vline(guide_x, toggle_r.top()..=toggle_r.center().y, rail_stroke);
+                painter.hline(guide_x..=(guide_x + 4.5), toggle_r.center().y, rail_stroke);
+                let row_r = Rect::from_min_max(pos2(toggle_r.left() + 25.0, toggle_r.top() + 1.0), pos2(toggle_r.right(), toggle_r.bottom() - 1.0));
+                if toggle_resp.hovered() {
                     painter.rect_filled(row_r, CornerRadius::same(6), p.hover);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                let text = crate::i18n::tf("{} more…", &[&hidden.to_string()]);
-                painter.text(pos2(row_r.left() + 8.0, row_r.center().y), Align2::LEFT_CENTER, text, egui::FontId::proportional(11.0), p.text_faint);
-                if more_resp.clicked() {
-                    ui.data_mut(|d| d.insert_temp(all_id, true));
+                let ink = if toggle_resp.hovered() { p.text_muted } else { p.text_faint };
+                let (caret, text) = if show_all {
+                    (icons::CARET_UP, t("Show less").to_string())
+                } else {
+                    (icons::CARET_DOWN, crate::i18n::tf("{} more…", &[&hidden.to_string()]))
+                };
+                painter.text(pos2(row_r.left() + 10.0, row_r.center().y), Align2::CENTER_CENTER, caret, style::icon_font(10.0), ink);
+                painter.text(pos2(row_r.left() + 20.0, row_r.center().y), Align2::LEFT_CENTER, text, egui::FontId::proportional(11.0), ink);
+                if toggle_resp.clicked() {
+                    ui.data_mut(|d| d.insert_temp(all_id, !show_all));
                 }
             }
         }

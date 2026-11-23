@@ -79,6 +79,7 @@ impl ProfileDraft {
     }
 
     pub fn new_for(agent: AgentKind, existing: &[AgentProfile]) -> Self {
+        let agent = if profiles::supports_multi_profile(agent) { agent } else { AgentKind::Claude };
         let (id, name) = Self::suggest_id_and_name(agent, existing);
         Self {
             editing_id: None,
@@ -179,20 +180,26 @@ impl ProfileDraft {
 }
 
 impl App {
-    /// Configured multi-account profiles, falling back to starter defaults (`claude1`, `chatgpt1`,
-    /// `agy1`) until customized.
+    /// Configured multi-account profiles, falling back to starter defaults (`claude1`, `chatgpt1`)
+    /// until customized. Restricted to providers that support isolated multi-account auth.
     pub fn effective_profiles(&self) -> Vec<AgentProfile> {
-        let mut list = if self.settings.profiles.is_empty() {
-            profiles::default_profiles()
-        } else {
-            self.settings.profiles.clone()
-        };
+        let mut list: Vec<AgentProfile> = self
+            .settings
+            .profiles
+            .iter()
+            .filter(|p| profiles::supports_multi_profile(p.agent))
+            .cloned()
+            .collect();
+        if list.is_empty() {
+            list = profiles::default_profiles();
+        }
         list.sort_by_key(|p| (p.fallback_order, p.id.clone()));
         list
     }
 
     /// Materializes default profiles into `settings.profiles` before mutating.
     pub fn ensure_mutable_profiles(&mut self) {
+        self.settings.profiles.retain(|p| profiles::supports_multi_profile(p.agent));
         if self.settings.profiles.is_empty() {
             self.settings.profiles = profiles::default_profiles();
         }
@@ -204,6 +211,9 @@ impl App {
 
     /// Picks the highest-priority enabled healthy profile for `agent` (or first enabled profile).
     pub fn preferred_profile_for(&self, agent: AgentKind, project: Option<ProjectId>) -> Option<AgentProfile> {
+        if !profiles::supports_multi_profile(agent) {
+            return None;
+        }
         let now = Instant::now();
         let all = self.effective_profiles();
         if let Some(pid) = project
@@ -351,16 +361,17 @@ impl App {
         // 1. Recompute active panes per profile & expire finished rate-limit cooldowns across ALL entries.
         let mut active_by_profile: BTreeMap<String, Vec<(PaneId, ProjectId, Status)>> = BTreeMap::new();
         for pane in self.panes.values() {
-            if !pane.alive() || pane.tracker.agent.is_none() {
+            if !pane.alive() {
                 continue;
             }
+            let Some(agent) = pane.tracker.agent.filter(|a| profiles::supports_multi_profile(*a)) else {
+                continue;
+            };
             let pid = pane.active_profile.clone().or_else(|| {
-                pane.tracker.agent.and_then(|a| {
-                    profiles
-                        .iter()
-                        .find(|p| p.agent == a && p.enabled && p.use_default_auth && !profiles::has_custom_config_dir(p))
-                        .map(|p| p.id.clone())
-                })
+                profiles
+                    .iter()
+                    .find(|p| p.agent == agent && p.enabled && p.use_default_auth && !profiles::has_custom_config_dir(p))
+                    .map(|p| p.id.clone())
             });
             if let Some(prof_id) = pid {
                 active_by_profile.entry(prof_id).or_default().push((pane.id, pane.project, pane.tracker.status));
@@ -421,11 +432,11 @@ impl App {
             }
         }
 
-        // 2. Scan live agent panes (currently running an agent, not at the shell prompt) for rate-limit output.
+        // 2. Scan live agent panes (currently running an agent with multi-account profile support) for rate-limit output.
         let mut detected: Vec<(PaneId, RateLimitHit)> = Vec::new();
         for pane in self.panes.values_mut() {
             let in_agent = pane.alive()
-                && pane.tracker.agent.is_some()
+                && pane.tracker.agent.is_some_and(profiles::supports_multi_profile)
                 && !matches!(pane.tracker.fg, tc_core::status::Foreground::Shell | tc_core::status::Foreground::Gone);
             if !in_agent {
                 continue;
@@ -538,10 +549,14 @@ impl App {
                 None => tc_agent::sessions::Roots::from_env(&home),
             };
             for agent in [AgentKind::Claude, AgentKind::Codex, AgentKind::Antigravity] {
-                let default_prof = profiles
-                    .iter()
-                    .find(|p| p.agent == agent && p.use_default_auth && !profiles::has_custom_config_dir(p))
-                    .map(|p| p.id.clone());
+                let default_prof = if profiles::supports_multi_profile(agent) {
+                    profiles
+                        .iter()
+                        .find(|p| p.agent == agent && p.use_default_auth && !profiles::has_custom_config_dir(p))
+                        .map(|p| p.id.clone())
+                } else {
+                    None
+                };
                 for s in tc_agent::sessions::list(agent, &project_path, &default_roots, 8) {
                     if seen.insert((agent, s.id.clone())) {
                         items.push(ProjectSessionItem {
@@ -563,7 +578,7 @@ impl App {
                 if prof.use_default_auth && !profiles::has_custom_config_dir(prof) {
                     continue;
                 }
-                if !tc_agent::sessions::listable(prof.agent) {
+                if !profiles::supports_multi_profile(prof.agent) || !tc_agent::sessions::listable(prof.agent) {
                     continue;
                 }
                 let dir = profiles::resolved_config_dir(prof, &home, &data);
@@ -590,7 +605,7 @@ impl App {
             }
 
             items.sort_by_key(|s| std::cmp::Reverse(s.updated));
-            items.truncate(14);
+            items.truncate(20);
             let _ = tx.send(AppMsg::ProjectSessions(project_id, items));
             ctx.request_repaint();
         });
@@ -647,7 +662,7 @@ impl App {
                     id: sid,
                     title,
                     agent,
-                    profile_id: pane.active_profile.clone(),
+                    profile_id: profiles::supports_multi_profile(agent).then(|| pane.active_profile.clone()).flatten(),
                     status: pane.tracker.status,
                     updated: SystemTime::now(),
                     branch: branch.clone(),
@@ -1323,6 +1338,9 @@ impl App {
         let now = Instant::now();
         let pane = self.panes.get(&pane_id)?;
         let agent = pane.tracker.agent.or(pane.last_agent)?;
+        if !profiles::supports_multi_profile(agent) {
+            return None;
+        }
         let profiles = self.effective_profiles();
         let active_id = pane.active_profile.clone().or_else(|| {
             profiles.iter().find(|p| p.agent == agent && p.enabled).map(|p| p.id.clone())

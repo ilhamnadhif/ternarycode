@@ -165,7 +165,8 @@ impl App {
             return;
         }
         let review_here = self.active.is_some_and(|pid| self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded));
-        let editor_on = !self.drawer_maximized && (review_here || self.active.and_then(|id| self.editors.get(&id)).is_some_and(|e| e.visible));
+        let history_here = self.active.is_some_and(|pid| self.history.as_ref().is_some_and(|h| h.project == pid));
+        let editor_on = !self.drawer_maximized && (review_here || history_here || self.active.and_then(|id| self.editors.get(&id)).is_some_and(|e| e.visible));
         let drawer_on = !editor_on || self.settings.drawer_open;
         let drawer_icon = if self.is_dock_right() { icons::COLUMNS } else { icons::ROWS };
         // Added right to left: Terminal Panel, Code Editor, Browser, Telemetry Pill, Run Agent.
@@ -278,10 +279,14 @@ impl App {
         let mut strip_shown: Option<Rect> = None;
         let letters = project.letters();
         let changed = git.as_ref().map_or(0, |g| g.changed);
-        // The branch's pull request (read with gh), while it is open.
-        let pr = self
-            .ship
-            .get(&pid)
+        // The branch's pull / merge request (read with gh or glab), while it is open.
+        let ship_state = self.ship.get(&pid);
+        let pr_forge = ship_state
+            .and_then(|s| s.facts.as_ref())
+            .and_then(|f| f.remote.as_ref())
+            .and_then(|r| r.web.as_ref())
+            .map(|w| w.forge);
+        let pr = ship_state
             .filter(|s| s.facts.as_ref().and_then(|f| f.branch.as_deref()) == git.as_ref().map(|g| g.branch.as_str()))
             .and_then(|s| s.pr.clone())
             .filter(|pr| matches!(pr.state, tc_git::ship::PrState::Open | tc_git::ship::PrState::Draft));
@@ -362,14 +367,15 @@ impl App {
                 }
             }
             if let Some(pr) = &pr {
-                let r = pr_chip(ui, pr);
+                let r = pr_chip(ui, pr, pr_forge);
                 #[cfg(debug_assertions)]
                 crate::devtest::record("pr-chip", r.rect);
+                let is_gitlab = pr_forge == Some(tc_git::ship::Forge::GitLab);
                 let tip = match pr.checks {
                     tc_git::ship::Checks::Pending => t("Checks are running"),
                     tc_git::ship::Checks::Passed => t("Checks passed"),
                     tc_git::ship::Checks::Failed => t("A check failed"),
-                    tc_git::ship::Checks::None => t("Open the pull request"),
+                    tc_git::ship::Checks::None => if is_gitlab { t("Open the merge request") } else { t("Open the pull request") },
                 };
                 if r.on_hover_text(tip).clicked() {
                     app.actions.push(Action::OpenWeb(pr.url.clone()));
@@ -492,15 +498,22 @@ impl App {
             paint_sheet(ui.painter(), stage, &p, SheetLook::Plain);
             let root = self.project(pid).map(|x| x.path.clone()).unwrap_or_default();
             let review_here = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
+            let history_here = !review_here && self.history.as_ref().is_some_and(|h| h.project == pid);
+            let mode = if review_here { 1 } else if history_here { 2 } else { 0 };
             let head = Rect::from_min_size(stage.min, vec2(stage.width(), DRAWER_HEAD_H));
-            self.drawer_head(ui, head, pid, review_here);
+            self.drawer_head(ui, head, pid, mode);
             let editor_rect = Rect::from_min_max(pos2(stage.left() + 1.0, head.bottom()), pos2(stage.right() - 1.0, stage.bottom() - 1.0));
             ui.painter().hline(editor_rect.x_range(), editor_rect.top() + 0.5, Stroke::new(1.0, p.border));
             let editor_rect = Rect::from_min_max(pos2(editor_rect.left(), editor_rect.top() + 1.0), editor_rect.max);
+            // Re-check mode after `drawer_head` so switching Files | Changes | History paints immediately with no 1-frame blank flash.
+            let review_now = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
+            let history_now = !review_now && self.history.as_ref().is_some_and(|h| h.project == pid);
             ui.scope_builder(egui::UiBuilder::new().max_rect(editor_rect), |ui| {
                 ui.set_clip_rect(editor_rect);
-                if review_here {
+                if review_now {
                     self.review_drawer(ui);
+                } else if history_now {
+                    self.history_drawer(ui);
                 } else {
                     self.code_drawer(ui, pid, root);
                 }
@@ -1139,8 +1152,14 @@ impl App {
         crate::devtest::record(format!("pane-menu:{pane_id}"), menu_rect);
         egui::Popup::menu(&menu).align(egui::RectAlign::BOTTOM_END).show(|ui| self.pane_menu(ui, pane_id));
 
-        // Inline Active Profile Switcher + 1-click Switch Account button inside agent panes.
-        let show_profile = has_agent || self.panes.get(&pane_id).is_some_and(|x| x.active_profile.is_some());
+        // Inline Active Profile Switcher + 1-click Switch Account button inside agent panes
+        // that support isolated multi-account profiles (Claude Code & ChatGPT / Codex).
+        let _ = has_agent;
+        let show_profile = self
+            .panes
+            .get(&pane_id)
+            .and_then(|x| x.tracker.agent.or(x.last_agent))
+            .is_some_and(crate::profiles::supports_multi_profile);
         if show_profile && rect.width() > 300.0 {
             let left = (right - 270.0).max(rect.left() + 130.0).min(right);
             let switcher_area = Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom()));
@@ -1640,26 +1659,42 @@ impl App {
         (errs, warns)
     }
 
-    /// The Code drawer's head: Files | Changes (Changes is the Review, with how many files
-    /// changed since the last commit), then at the right search (⌘O), full screen (the Review)
-    /// and close.
-    fn drawer_head(&mut self, ui: &mut Ui, rect: Rect, pid: tc_core::ProjectId, review: bool) {
+    /// The Code drawer's head: Files | Changes | History (`mode`: 0 = Files, 1 = Changes,
+    /// 2 = Commit History), then at the right search (⌘O), full screen (the Review), and close.
+    fn drawer_head(&mut self, ui: &mut Ui, rect: Rect, pid: tc_core::ProjectId, mode: usize) {
         let p = style::pal(ui);
+        let review = mode == 1;
+        let history = mode == 2;
         let changed = self.project(pid).and_then(|x| x.git.as_ref()).map_or(0, |g| g.changes.len());
-        let mut options = vec![kit::Seg::new(t("Files"), "").icon(icons::FILES), kit::Seg::new(t("Changes"), "").icon(icons::GIT_DIFF)];
+        let mut options = vec![
+            kit::Seg::new(t("Files"), "").icon(icons::FILES),
+            kit::Seg::new(t("Changes"), "").icon(icons::GIT_DIFF),
+            kit::Seg::new(t("History"), "").icon(icons::CLOCK_COUNTER_CLOCKWISE),
+        ];
         if changed > 0 {
             options[1] = options[1].clone().count(changed, p.text_faint);
         }
         let w = kit::segmented_width(ui, &options);
         let seg = Rect::from_min_size(pos2(rect.left() + 8.0, rect.center().y - kit::SEGMENTED_H / 2.0), vec2(w, kit::SEGMENTED_H));
         #[cfg(debug_assertions)]
-        for (r, name) in kit::segment_rects(seg, 2).into_iter().zip(["files:files", "files:changes"]) {
+        for (r, name) in kit::segment_rects(seg, 3).into_iter().zip(["files:files", "files:changes", "files:history"]) {
             crate::devtest::record(name, r);
         }
-        match kit::segmented_in(ui, seg, egui::Id::new(("drawer-mode", pid)), &options, review as usize) {
-            Some(0) => self.review_close = true,
-            Some(_) => self.open_review(Some(super::review::Base::Head)),
-            None => {}
+        match kit::segmented_in(ui, seg, egui::Id::new(("drawer-mode", pid)), &options, mode) {
+            Some(0) => {
+                if review {
+                    self.review_close = true;
+                }
+                self.history = None;
+            }
+            Some(1) => {
+                self.history = None;
+                self.open_review(Some(super::review::Base::Head));
+            }
+            Some(2) => {
+                self.open_history();
+            }
+            _ => {}
         }
         // From the right: close, full screen (the Review), search.
         let mut x = rect.right() - 8.0;
@@ -1675,6 +1710,9 @@ impl App {
         if c.clicked() {
             if review {
                 self.review_close = true;
+            }
+            if history {
+                self.history = None;
             }
             self.actions.push(Action::ToggleEditor);
         }
@@ -1918,11 +1956,12 @@ pub(super) fn server_label(url: &str) -> &str {
 /// first one's address with a green dot, "+N" for the others. A click opens it in the browser;
 /// with several, a menu lists them all with the pane each runs in. Returns the address
 /// clicked (it opens in the project's browser pane; with ⌥, in the default browser).
-/// A pull request in the top bar: its number and its checks (a lattice while they run).
-fn pr_chip(ui: &mut Ui, pr: &tc_git::ship::Pr) -> egui::Response {
+/// A pull/merge request in the top bar: its number (`#N` on GitHub, `!N` on GitLab) and its checks.
+fn pr_chip(ui: &mut Ui, pr: &tc_git::ship::Pr, forge: Option<tc_git::ship::Forge>) -> egui::Response {
     use tc_git::ship::{Checks, PrState};
     let p = style::pal(ui);
-    let number = format!("#{}", pr.number);
+    let prefix = forge.map_or("#", |f| f.request_prefix());
+    let number = format!("{prefix}{}", pr.number);
     let (check_text, check_c) = match pr.checks {
         Checks::Pending => (t("checks"), p.info),
         Checks::Passed => (t("passed"), p.ok),

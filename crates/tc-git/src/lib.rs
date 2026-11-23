@@ -16,6 +16,7 @@
 //! Every function blocks until git exits, so call them off the UI thread. Errors are
 //! human-readable strings that include git's stderr.
 
+pub mod history;
 mod parse;
 pub mod ship;
 pub mod worktree;

@@ -35,12 +35,12 @@ No Electron, no cloud middleman: it launches in ~0.2 s, idles at 0% CPU, and kee
 ## Highlights
 
 - **Wide Code Editor & Collapsible Terminal Panel**: the Code Editor & Diff Viewer commands the primary viewport (≥60% by default), while Terminals, Agent Logs, and LSP Problems live in a dockable bottom or right panel (`⇧⌘L`).
-- **Project-Nested Agent Sessions**: expand any project in the sidebar to see live and past sessions for **Claude Code, Codex, and Antigravity CLI (`agy`)** with brand logos, live status pills, and 1-click resume.
-- **Multi-Account Profiles & 5-Hour / Weekly Usage Limits**: pre-register multiple accounts (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `agy1`) with isolated file-backed auth folders. Switch accounts in **one click without logging out**, or let Auto/Manual Failover resume your session automatically when an account hits its limit.
+- **Project-Nested Agent Sessions**: expand any project in the sidebar to see live and past sessions for **Claude Code, Codex, and Antigravity CLI (`agy`)** with brand logos, live status pills, compact 3-row preview (`N more…` / `Show less`), and 1-click resume.
+- **Multi-Account Profiles & Real 5-Hour / Weekly Usage Limits**: pre-register multiple **Claude Code** & **ChatGPT / Codex** accounts (`claude1`, `claude2`, `chatgpt1`, `chatgpt2`) with isolated file-backed auth folders, mouse drag-and-drop priority ordering, and real server-reported quotas & reset countdowns. Switch accounts in **one click without logging out**, or let Auto/Manual Failover resume your session automatically when an account hits its limit.
 - **Unified All-Agent Usage & Status Monitor**: live top-bar telemetry pill, quick-switch popover, and full monitor tracking **5-hour** & **weekly** quotas, reset countdowns, active sessions, and failover events.
 - **Phone Pairing & Mobile Companion**: pair your smartphone via QR code over local Wi-Fi or a secure tunnel to stream live agent output, approve pending tools, send follow-ups, and trigger profile failovers remotely.
 - **Know Which Agent Needs You**: hook-backed *Needs input*, *Running*, *Done*, and *Failed* states, `⌘J` jump queue, and a live **Grid** (`⌘0`) of every project.
-- **Agent Browser, Review, Worktrees & Documents**: built-in web view agents can drive, side-by-side diffs with 1-button commit/push/PR, isolated git worktrees, and in-place viewers for PDF, Word, PowerPoint, Excel, CSV, and images.
+- **Commit History, GitHub & GitLab Integration, Review, Browser & Documents**: inspect git commit logs & per-commit diffs (`Files | Changes | History`), fetch remotes, view live open **GitHub PRs** & **GitLab MRs** (`gh` / `glab`), ship with 1-button Commit/Push/PR/MR, drive the built-in browser, and view PDF/Office/CSV/images in place.
 
 ## Install
 
@@ -74,7 +74,7 @@ TernaryCode updates itself (the `.deb`, `.rpm`, and portable `.zip` through a ne
 ## Quick start
 
 1. **Add a project**: click **+** in the sidebar, drop a folder on the window, or run `ternarycode .` in any terminal.
-2. **Pre-register your accounts** (optional): open **Profiles** (bottom-left 👤), click **+ Add Profile**, choose your provider (**Claude Code**, **ChatGPT / Codex**, **Antigravity CLI (`agy`)**, or **OpenCode**), and click **Auth Login** once per account. Each account stays signed in inside its own private `0o700` folder.
+2. **Pre-register your accounts** (optional): open **Profiles** (bottom-left 👤), click **+ Add Profile**, choose **Claude Code** or **ChatGPT / Codex**, drag cards to order fallback priority, and click **Auth Login** once per account. Each account stays signed in inside its own private `0o700` folder.
 3. **Run Agent** (`⇧⌘A`): launch Claude Code, Codex, Antigravity CLI (`agy`), or OpenCode. Expand the project in the sidebar anytime to resume past sessions in one click.
 4. **Switch accounts or jump to waiting agents**: click `⇄ <next_account>` right in the pane header to switch accounts mid-session without logout, or press `⌘J` to jump to any waiting agent.
 
@@ -90,8 +90,8 @@ TernaryCode updates itself (the `.deb`, `.rpm`, and portable `.zip` through a ne
 
 ![Agent Profiles & Failover showing 6 pre-registered accounts across Claude Max, ChatGPT Plus, and Antigravity CLI with 5-hour & weekly usage meters and isolated auth folders](docs/screenshots/profiles.png)
 
-- **Zero logout/re-login dance**: register multiple accounts (`chatgpt1`, `chatgpt2`, `chatgpt3`, `claude1`, `claude2`, `agy1`) upfront. Each isolated profile gets its own `CLAUDE_CONFIG_DIR`, file-backed `CODEX_HOME` (`auth.json`), or `AGY_DATA_DIR`, plus automatic env cleanup across switches.
-- **Dual Usage Limit Meters**: tracks both **5-Hour rolling limits** and **Weekly (7-day) limits** — reading real server-reported percentages & reset timestamps directly from Codex session telemetry (`rate_limits.primary` / `secondary`, `plan_type`), and rolling 5h/7d log windows + optional token caps for Claude and Antigravity.
+- **Zero logout/re-login dance**: register multiple **Claude Code** & **ChatGPT / Codex** accounts (`claude1`, `claude2`, `chatgpt1`, `chatgpt2`) upfront and drag-and-drop rows to arrange your fallback priority chain. Each isolated profile gets its own `CLAUDE_CONFIG_DIR` or file-backed `CODEX_HOME` (`auth.json`), plus automatic env cleanup across switches.
+- **Accurate Server Usage Limit Meters**: tracks both **5-Hour rolling limits** and **Weekly (7-day) / 30-day limits** — reading real server-reported percentages, plan tiers, and exact reset timestamps directly from Claude Code (`cachedUsageUtilization`) and Codex (`rate_limits.primary` / `secondary`, `plan_type`).
 - **1-Click Live Account Switch & Rate-Limit Failover**: click the `⇄` quick-switch button in any running agent pane header — or let **Auto-Resume** / **Manual Resume** kick in when a limit hits. Same-provider switches atomically copy the session file across isolated roots and natively `--resume` your exact conversation; cross-provider switches write a secret-redacted handoff note so work continues seamlessly.
 
 ![Inline Rate-Limit Recovery Banner inside the workspace with one-click Resume on claude2, chatgpt1, or chatgpt2](docs/screenshots/editor.png)
@@ -114,7 +114,7 @@ TernaryCode updates itself (the `.deb`, `.rpm`, and portable `.zip` through a ne
 
 ![Review diff with crisp checkboxes and 1-button Commit beside the active agent](docs/screenshots/review.png)
 
-- **Review & 1-button Commit/Push/PR** (`⇧⌘R`, `⇧⌘C`): inspect unified or split diffs since an agent started or since the last commit, start agents in isolated **git worktrees**, and commit, push, or open a GitHub PR in one step.
+- **Commit History, Review, & GitHub / GitLab Integration** (`⇧⌘R`, `⇧⌘C`): switch cleanly between **Files | Changes | History** to inspect unified/split diffs, browse paginated commit logs & per-commit diffs, fetch remotes, view live open **GitHub PRs** (`gh`) & **GitLab MRs** (`glab`), and commit, push, or create a PR/MR in one button.
 - **The Grid** (`⌘0`): monitor every project side by side in live terminals, with changed-file badges and 1-click Review.
 - **Agent Browser** (`⇧⌘B`): native system web view (WebKit, WebView2, WebKitGTK) that agents can navigate, click, and inspect while you watch or Take Over anytime.
 - **In-Place Documents**: open PDF, Word, PowerPoint, Excel, CSV (as an interactive table), and images directly beside your agent.
