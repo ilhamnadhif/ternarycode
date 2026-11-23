@@ -118,7 +118,6 @@ impl App {
         self.editor_keyboard = self.editor_seen;
         let ctx = ui.ctx().clone();
         self.monitor_popover_ui(&ctx);
-        self.attention_panel(&ctx);
         self.palette_ui(&ctx);
         self.dialogs(&ctx);
         self.updates(&ctx);
