@@ -1,5 +1,5 @@
 /* The hero: a live TernaryCode window, drawn with the app's own design system (app.js).
-   Agents change state on their own; ⌘J (or J) jumps to the one that waits, ↵ answers it,
+   Agents change state on their own; ⌘J (or J) jumps to the one that waits, ↵ approves it,
    ⇧⌘J goes back. The same loop as the app, with sample projects. Nothing leaves the page. */
 (() => {
   const host = document.getElementById('demo-win');
@@ -9,47 +9,50 @@
 
   const MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '') || /Mac OS X/.test(navigator.userAgent);
   const JUMP = MAC ? ['⌘', 'J'] : ['J'];
-  const BACK = MAC ? ['⇧', '⌘', 'J'] : ['⇧', 'J'];
-  const P = ['docs-site', 'ml-pipeline', 'mobile-app', 'payments-api', 'storefront', 'ternary-engine'];
-  const IDLE = ['api-gateway', 'infra'];
-  const AG = { 'mobile-app': 'CC', 'ternary-engine': 'CC', 'storefront': 'CC', 'payments-api': 'Cx', 'ml-pipeline': 'Cx', 'docs-site': 'SH' };
-  const RANK = { wait: 0, fail: 1, done: 2 };
+  const P = PROJECTS.map(p => p.n);
+  const RANK = { inp: 0, fail: 1, done: 2 };
+  // The two agents that stop to ask, what they ask, and who they are.
+  const ASK = {
+    'storefront': { a: 'CC', who: 'Claude Code', cmd: 'npm test -- auth', body: 'Bash · npm test -- auth' },
+    'ternarycode': { a: 'Cx', who: 'Codex', cmd: 'cargo test --workspace', body: 'cargo test --workspace' },
+  };
 
-  let S, vt, lastHtml = '', prevQ = new Set(), prevSt = {}, coachKey = '', coachAt = 0, autoT = 0, endAt = 0;
+  let S, vt, lastHtml = '', prevSt = {}, coachKey = '', coachAt = 0, autoT = 0, endAt = 0;
   let active = false, inView = false, userDrove = false;
 
   function reset() {
-    vt = 0; lastHtml = ''; prevQ = new Set(); prevSt = {}; coachKey = ''; endAt = 0; userDrove = false;
+    vt = 0; lastHtml = ''; prevSt = {}; coachKey = ''; endAt = 0; userDrove = false;
     S = {
       view: 'storefront', back: [],
-      st: { 'docs-site': 'run', 'ml-pipeline': 'run', 'mobile-app': 'run', 'payments-api': 'run', 'storefront': 'run', 'ternary-engine': 'run' },
-      since: {}, seen: {}, stage: { 'mobile-app': 0, 'ternary-engine': 0 }, stageAt: {},
+      st: { 'storefront': 'run', 'ternarycode': 'run', 'api-gateway': 'run', 'mobile-app': 'fail', 'docs-site': null, 'infra': null },
+      since: { 'mobile-app': -240000 }, seen: { 'mobile-app': true }, stage: { 'storefront': 0, 'ternarycode': 0 }, stageAt: {},
     };
   }
 
   /* ------------------------------------------------------------ the story, on the demo's clock */
   const EVENTS = [
-    [2600, () => ask('mobile-app')],
-    [9800, () => ask('ternary-engine')],
-    [13200, () => finish('payments-api')],
+    [2600, () => ask('storefront')],
+    [9800, () => ask('ternarycode')],
+    [13200, () => finish('api-gateway')],
   ];
-  function ask(p) { if (S.stage[p] === 0) { S.stage[p] = 1; S.stageAt[p] = vt; setSt(p, 'wait'); } }
+  function ask(p) { if (S.stage[p] === 0) { S.stage[p] = 1; S.stageAt[p] = vt; setSt(p, 'inp'); } }
   function finish(p) { setSt(p, 'done'); S.seen[p] = S.view === p; }
-  function setSt(p, st) { S.st[p] = st; S.since[p] = vt; if (st === 'wait' || st === 'done') S.seen[p] = false; }
+  function setSt(p, st) { S.st[p] = st; S.since[p] = vt; if (st === 'inp' || st === 'done') S.seen[p] = false; }
 
+  // The Inbox: what waits for you, in the order ⌘J visits it.
   function queue() {
-    return P.filter(p => S.st[p] === 'wait' || (S.st[p] === 'done' && !S.seen[p]))
+    return P.filter(p => S.st[p] === 'inp' || ((S.st[p] === 'done' || S.st[p] === 'fail') && !S.seen[p]))
       .map(p => ({ p, st: S.st[p], since: S.since[p] ?? 0 }))
       .sort((a, b) => (RANK[a.st] - RANK[b.st]) || (a.since - b.since));
   }
   const nextItem = () => queue().find(i => i.p !== S.view);
 
   function goTo(p) {
-    if (p === S.view) return;
+    if (p === S.view || !P.includes(p)) return;
     S.back.push(S.view);
     if (S.back.length > 20) S.back.shift();
     S.view = p;
-    if (S.st[p] === 'done') S.seen[p] = true;
+    if (S.st[p] === 'done' || S.st[p] === 'fail') S.seen[p] = true;
   }
   function jump() { const n = nextItem(); if (n) goTo(n.p); }
   function back() { if (!S.back.length) return; S.view = S.back.pop(); if (S.st[S.view] === 'done') S.seen[S.view] = true; }
@@ -59,207 +62,246 @@
     S.stage[p] = 2; S.stageAt[p] = vt; S.st[p] = 'run'; S.since[p] = vt;
   }
   function advance() {
-    for (const p of ['mobile-app', 'ternary-engine'])
+    for (const p of Object.keys(ASK))
       if (S.stage[p] === 2 && vt - S.stageAt[p] > 2600) { S.stage[p] = 3; S.stageAt[p] = vt; finish(p); }
     for (const [t, f] of EVENTS) if (vt >= t && !f.done) { f.done = true; f(); }
   }
 
   /* ------------------------------------------------------------ text */
   const secs = ms => Math.max(0, Math.floor(ms / 1000));
-  const age = ms => { const s = secs(ms); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m`; };
   const clock = (base, ms) => { const s = base + secs(ms); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
-  const spin = (text, s) => `<span class="cc"><span class="spin">✻</span> ${text}…</span> <span class="d">(${s}s · esc to interrupt)</span>`;
-  const bashLine = cmd => `<span class="g">⏺</span> <span class="b">Bash</span>(${cmd})`;
-  const WHAT = {
-    'mobile-app': { wait: 'Bash · flutter test', done: 'Finished · 14 tests pass' },
-    'ternary-engine': { wait: 'Bash · cargo test --workspace', done: 'Finished · 42 tests pass' },
-    'payments-api': { done: 'Finished · 2 files changed' },
-  };
-  const ASKS = { 'mobile-app': 'flutter test', 'ternary-engine': 'cargo test' };
+  const ago = (base, ms) => `${base + Math.floor(secs(ms) / 60)}m`;
+  const ccSpin = (text, s) => `<span class="a"><span class="tspin">✻</span> ${text}…</span> <span class="d">(${s}s · esc to interrupt)</span>`;
+  const cxWork = s => `<span class="d">◦ Working (${s}s • esc to interrupt)</span>`;
+  const usagePct = () => 42 + Math.min(4, Math.floor(vt / 8000));
+  const stOf = stg => (stg === 1 ? 'inp' : stg === 3 ? 'done' : 'run');
 
-  /* ------------------------------------------------------------ scenes */
+  /* ------------------------------------------------------------ the projects, one scene each */
   function storefront() {
-    const all = T.storefrontAgent, t = vt;
-    const n = Math.min(10, 7 + Math.floor(t / 1700));             // lines of the conversation shown
-    const clicked2 = t > 7 * 1700 + 2600, hover2 = t > 7 * 1700 + 900;
-    const doing = n < 8 ? 'Opening localhost:5173' : n < 9 ? 'Clicking “Add to cart” on Ridge 28 Daypack'
-      : clicked2 ? 'Reading the cart badge' : 'Clicking “Add to cart” on Saddle UL Tent';
-    const sp = n < 8 ? 'Opening the page' : n < 9 ? 'Adding an item to the cart' : clicked2 ? 'Checking the count goes up' : 'Adding a second item';
-    const lines = [...T.ccHead(), ...all.slice(0, n), '', spin(sp, 14 + secs(t)), '', ...T.prompt(60)];
-    const page = fernway({
-      count: n < 9 ? 0 : clicked2 ? 2 : 1,
-      added: n < 9 ? [] : clicked2 ? [0, 1] : [0],
-      hl: n < 8 ? -1 : hover2 ? 1 : 0,
-      cursor: n < 8 ? '' : hover2 ? 'left:452px;top:372px' : 'left:170px;top:372px',
-    });
+    const stg = S.stage.storefront, t = vt, ts = vt - (S.stageAt.storefront ?? 0);
+    const head = [
+      `<span class="d">&gt; </span><span class="p">Fix the OAuth redirect loop after the callback. Users</span>`,
+      `<span class="p">  bounce between /login and /auth/callback when returnTo</span>`,
+      `<span class="p">  is missing.</span>`, '',
+      `<span class="a">⏺ </span>I'll trace where returnTo is read and written.`, '',
+      `<span class="a">⏺ </span><span class="p">Search</span><span class="d">(pattern: "returnTo", path: "src")</span>`,
+      `<span class="d">  ⎿  Found 6 files</span>`,
+      `<span class="a">⏺ </span><span class="p">Read</span><span class="d">(src/auth/callback.ts)</span>`,
+      `<span class="d">  ⎿  Read 84 lines</span>`, '',
+    ];
+    const explain = [`<span class="a">⏺ </span>The callback redirects to session.returnTo even when it`, `  is empty, so the login page sends users straight back.`, ''];
+    const update = [
+      `<span class="a">⏺ </span><span class="p">Update</span><span class="d">(src/auth/callback.ts)</span>`,
+      `<span class="d">  ⎿  Updated with 6 additions and 2 removals</span>`,
+      `<span class="d">      38   </span>const session = await getSession(req)`,
+      `<span class="d">      39 </span><span class="r">-  return redirect(session.returnTo)</span>`,
+      `<span class="d">      39 </span><span class="g">+  const target = safeReturnTo(session.returnTo)</span>`,
+      `<span class="d">      40 </span><span class="g">+  return redirect(target ?? "/account")</span>`, '',
+    ];
+    const bash = `<span class="a">⏺ </span><span class="p">Bash</span><span class="d">(npm test -- auth)</span>`;
+    let lines;
+    if (stg === 0) lines = [...head, ...(t > 900 ? explain : []), ...(t > 1800 ? update : []), ccSpin(t > 1800 ? 'Checking the fix' : 'Reading the callback', 61 + secs(t))];
+    else if (stg === 1) lines = [...head, ...explain, ...update, bash, `<span class="y">  ⎿  Waiting for your approval…</span>`];
+    else if (stg === 2) lines = [...head, ...explain, ...update, bash, `<span class="d">  ⎿  Running…</span>`, '', ccSpin('Running the auth tests', secs(ts))];
+    else lines = [...head, ...explain, ...update, bash, `<span class="d">  ⎿  </span><span class="g">Tests: 9 passed, 9 total</span>`, '',
+      `<span class="a">⏺ </span>Fixed. An empty or off-site returnTo now falls back to`, `  /account. All 9 auth tests pass.`, '', `<span class="d">&gt; </span>${CUR}`];
+    const st = stOf(stg);
+    const task = { run: stg === 2 ? 'Bash · npm test -- auth' : t > 1800 ? 'Editing src/auth/callback.ts' : 'Reading src/auth', inp: 'Bash · npm test -- auth', done: '2 files · +6 −2' }[st];
+    const note = stg === 1 ? notice('inp', 'Claude Code wants to run a command', { body: ASK.storefront.body, sec: 'Reject', pri: 'Approve', sc: '↵', priAttr: 'data-approve' })
+      : stg === 3 ? notice('done', 'Claude Code finished its turn', { body: '2 files changed · +6 −2', sec: 'Review', pri: 'Commit…' }) : '';
+    const vite = [...TX.vite, ...(t > 1800 || stg > 0 ? [TX.hmr('12:41:07', '/src/auth/callback.ts'), TX.hmr('12:41:09', '/src/auth/session.ts')] : [])];
     return {
-      top: topbar({ p: 'storefront', web: true, tabs: [{ al: 'CC', l: 'Claude Code', on: true }, { l: 'zsh', i: 'terminal-window' }] }),
-      main: `
-        <div class="stack" style="width:566px;flex:none">
-          ${pane({ a: 'CC', st: 'run', stl: 'Running', meta: 'opus 4.6', hooks: true, time: clock(102, t), cls: 'focus fill' }, lines)}
-          ${pane({ a: 'SH', name: 'npm run dev', st: 'run', stl: '', meta: 'node · 18m', style: 'height:300px;flex:none' }, T.vite)}
-        </div>
-        ${browserPanel({ agent: { a: 'CC', doing }, console: '2', page, style: 'flex:1' })}`,
+      bar: { branch: 'main', changed: 5, pr: [128, 'running'], server: 'localhost:5173' },
+      tabs: [{ a: 'CC', t: 'Fix OAuth redirect loop', st, on: true }, { a: 'Cx', t: 'Add order export to CSV', st: 'run' }, { t: 'dev server' }],
+      sessions: [{ a: 'CC', t: 'Fix OAuth redirect loop', meta: ago(2, vt), st, on: true }, { a: 'Cx', t: 'Add order export to CSV', meta: ago(14, vt), st: 'run' }, { a: 'SH', t: 'npm run dev', meta: ':5173' }],
+      worktrees: [{ n: 'codex-export', br: 'tc/export', st: 'run' }],
+      lsp: 'typescript',
+      body: hsplit(
+        pane({ a: 'CC', name: 'Fix OAuth redirect loop', st, task, timer: clock(132, vt), profile: `claude1 · ${usagePct()}%`, focus: true, wait: stg === 1, notice: note, lines }),
+        vsplit(pane({ name: 'npm run dev', st: 'run', task: 'localhost:5173', lines: vite }),
+          pane({ name: 'zsh', place: '~/code/storefront', lines: TX.gitStatus }))),
     };
   }
 
-  const FLUTTER_RUN = [
-    `<span class="m">mobile-app</span> <span class="d">on</span> <span class="m"> feature/checkout</span> <span class="g">❯</span> flutter run -d macos`,
-    `<span class="d">Launching lib/main.dart on macOS in debug mode...</span>`,
-    `<span class="g">✓</span> Built build/macos/Build/Products/Debug/`,
-    `  mobile_app.app`,
-    `<span class="d">Syncing files to device macOS...</span>     <span class="d">58ms</span>`,
-    '',
-    `Flutter run key commands.`,
-    `<span class="b">r</span> Hot reload.`,
-    `<span class="b">R</span> Hot restart.`,
-    `<span class="b">q</span> Quit (terminate the application).`,
-    '',
-    `<span class="d">flutter:</span> CheckoutPage built in 14ms`,
-    `<span class="d">flutter:</span> total(<span class="y">19.99</span>, discount: <span class="y">0.15</span>) = <span class="r">16.98</span>`,
-  ];
-  function claudeAsk(p) {
-    const stg = S.stage[p], t = vt - (S.stageAt[p] ?? 0), mob = p === 'mobile-app';
-    const ask = mob ? T.flutterAsk : T.cargoAsk;
-    const conv = ask.slice(0, mob ? 6 : 8);
-    const cmd = mob ? 'flutter test test/checkout_test.dart' : 'cargo test --workspace';
-    let lines;
-    if (stg === 0) lines = [...conv.slice(0, mob ? 5 : 7), '', spin(mob ? 'Fixing the rounding' : 'Writing the tests', 31 + secs(vt))];
-    else if (stg === 1) lines = ask;
-    else if (stg === 2) lines = [...conv, bashLine(cmd), `  <span class="f">⎿</span>  <span class="d">${mob ? 'Running 14 tests…' : 'Compiling ternary-engine v0.3.0'}</span>`, '', spin(mob ? 'Running the checkout tests' : 'Running the tests', secs(t))];
-    else lines = [...conv, bashLine(cmd),
-      `  <span class="f">⎿</span>  <span class="g">${mob ? '00:04 +14: All tests passed!' : 'test result: ok. 42 passed; 0 failed'}</span>`, '',
-      mob ? `<span class="g">⏺</span> The total now rounds once, after the discount:` : `<span class="g">⏺</span> <span class="b">Vec&lt;Option&lt;T&gt;&gt;</span> parses now: <span class="b">&gt;&gt;</span> closes both lists.`,
-      mob ? `  19.99 − 15% = <span class="b">16.99</span>. All 14 checkout tests pass.` : `  42 tests pass, 6 of them new.`,
-      '', ...T.prompt(mob ? 60 : 56)];
-    const st = stg === 1 ? 'wait' : stg === 3 ? 'done' : 'run';
-    const head = { a: 'CC', st, stl: { wait: 'Needs input', run: 'Running', done: 'Done' }[st], task: stg === 1 ? WHAT[p].wait : '', meta: 'opus 4.6', hooks: true,
-      time: clock(mob ? 127 : 252, stg === 0 ? vt : vt - S.stageAt[p]), cls: `focus fill ${stg === 1 ? 'wait' : ''}` };
-    return { lines: [...T.ccHead('opus 4.6', `~/code/${p}`), ...lines], head };
-  }
-  function mobile() {
-    const c = claudeAsk('mobile-app'), done = S.stage['mobile-app'] === 3;
-    const run = done ? [...FLUTTER_RUN, `<span class="d">Performing hot reload...</span>`, `<span class="g">Reloaded 1 of 812 libraries in 241ms.</span>`,
-      `<span class="d">flutter:</span> total(<span class="y">19.99</span>, discount: <span class="y">0.15</span>) = <span class="g">16.99</span>`] : FLUTTER_RUN;
-    return {
-      top: topbar({ p: 'mobile-app', server: false, tabs: [{ al: 'CC', l: 'Claude Code', on: true, w: S.stage['mobile-app'] === 1 }, { l: 'flutter run', i: 'device-mobile' }] }),
-      main: `${pane(c.head, c.lines)}${pane({ a: 'SH', icon: 'device-mobile', name: 'flutter run', st: 'run', stl: '', meta: 'macOS · 24m', style: 'width:470px;flex:none' }, run)}`,
-    };
-  }
-  function engine() {
-    const c = claudeAsk('ternary-engine');
-    const zsh = [
-      `<span class="m">ternary-engine</span> <span class="d">on</span> <span class="m"> main</span> <span class="g">❯</span> git diff --stat`,
-      ` src/lexer.rs      |  6 <span class="g">++</span><span class="r">-</span>`,
-      ` src/lib.rs        |  2 <span class="g">+</span><span class="r">-</span>`,
-      ` src/parser.rs     | 47 <span class="g">+++++++++++</span><span class="r">---</span>`,
-      ` tests/generics.rs | 64 <span class="g">++++++++++++++++</span>`,
-      ` Cargo.toml        |  1 <span class="g">+</span>`,
-      ` 5 files changed, 109 insertions(+), 11 deletions(-)`,
-      `<span class="m">ternary-engine</span> <span class="d">on</span> <span class="m"> main</span> <span class="g">❯</span> ${CUR}`,
+  function ternarycode() {
+    const stg = S.stage.ternarycode, ts = vt - (S.stageAt.ternarycode ?? 0);
+    const head = [
+      `<span class="d">› </span><span class="p">Make the find bar count its matches, then run the tests</span>`, '',
+      `<span class="c">• </span>Explored`,
+      `<span class="d">  └ Read src/term/find.rs, src/ui/find_bar.rs</span>`,
+      `<span class="c">• </span>Edited <span class="p">src/term/find.rs </span><span class="g">(+38 </span><span class="r">-9</span><span class="g">)</span>`,
+      `<span class="c">• </span>Edited <span class="p">src/ui/find_bar.rs </span><span class="g">(+12 </span><span class="r">-2</span><span class="g">)</span>`, '',
     ];
+    const ran = `<span class="c">• </span>Ran <span class="p">cargo test --workspace</span>`;
+    let lines;
+    if (stg === 0) lines = [...head, cxWork(48 + secs(vt))];
+    else if (stg === 1) lines = [...head,
+      `<span class="y">▌ </span><span class="p">Allow Codex to run this command?</span>`,
+      `<span class="y">▌</span>`,
+      `<span class="y">▌ </span><span class="d">$ </span>cargo test --workspace`,
+      `<span class="y">▌</span>`,
+      `<span class="y">▌ </span><span class="b">› 1. Yes, run it</span>`,
+      `<span class="y">▌ </span>  2. Yes, and don't ask again for <span class="p">cargo test</span>`,
+      `<span class="y">▌ </span>  3. No, and tell Codex what to do differently <span class="d">(esc)</span>`];
+    else if (stg === 2) lines = [...head, ran, `<span class="d">  └ Compiling ternarycode v0.2.5</span>`, '', cxWork(secs(ts))];
+    else lines = [...head, ran, `<span class="d">  └ </span><span class="g">✓ 214 passed </span><span class="d">(18.4s)</span>`, '',
+      `<span class="g">✓ </span>The find bar counts its matches now: “3 of 12”.`, '', `<span class="d">› </span>${CUR}`];
+    const st = stOf(stg);
+    const note = stg === 1 ? notice('inp', 'Codex wants to run a command', { body: ASK.ternarycode.body, sec: 'Reject', pri: 'Approve', sc: '↵', priAttr: 'data-approve' })
+      : stg === 3 ? notice('done', 'Codex finished its turn', { body: '2 files changed · +50 −11', sec: 'Review', pri: 'Commit…' }) : '';
     return {
-      top: topbar({ p: 'ternary-engine', server: false, chg: 5, tabs: [{ al: 'CC', l: 'Claude Code', on: true, w: S.stage['ternary-engine'] === 1 }, { l: 'zsh', i: 'terminal-window' }] }),
-      main: `${pane(c.head, c.lines)}${pane({ a: 'SH', name: 'zsh', meta: 'zsh · 2h', style: 'width:470px;flex:none' }, zsh)}`,
+      bar: { branch: 'main', changed: 2 },
+      tabs: [{ a: 'Cx', t: 'Find bar counts its matches', st, on: true }, { t: 'cargo watch', st: 'run' }],
+      sessions: [{ a: 'Cx', t: 'Find bar counts its matches', meta: ago(6, vt), st, on: true }, { a: 'SH', t: 'cargo watch', meta: '1h', st: 'run' }],
+      lsp: 'rust-analyzer',
+      body: hsplit(
+        pane({ a: 'Cx', name: 'Find bar counts its matches', st, task: { run: stg === 2 ? 'Running cargo test' : 'Editing src/ui/find_bar.rs', inp: 'cargo test --workspace', done: '2 files · +50 −11' }[st],
+          timer: clock(355, vt), profile: 'codex1 · 18%', focus: true, wait: stg === 1, notice: note, lines }),
+        pane({ name: 'cargo watch', st: 'run', task: 'Checking ternarycode', lines: [
+          `${ps1('ternarycode')}cargo watch -x check`,
+          `<span class="y">[Running 'cargo check']</span>`,
+          `<span class="g">    Checking </span>ternarycode v0.2.5 (~/code/ternarycode)`,
+          `<span class="g">    Finished </span>\`dev\` profile in 3.41s`,
+          `<span class="y">[Finished running. Exit status: 0]</span>`] })),
     };
   }
-  function payments() {
-    const done = S.st['payments-api'] === 'done', all = T.codexDone;
-    const lines = done ? [...all, '', ...T.prompt(56)] : [...all.slice(0, 6), '', `<span class="d">•</span> <span class="b">Working</span> <span class="d">(${12 + secs(vt)}s · esc to interrupt)</span>`];
+
+  function apiGateway() {
+    const done = S.st['api-gateway'] === 'done';
+    const all = [
+      `<span class="d">&gt; </span><span class="p">Rate-limit the /v1/search endpoint per API key</span>`, '',
+      `<span class="a">⏺ </span><span class="p">Update</span><span class="d">(src/middleware/ratelimit.ts)</span>`,
+      `<span class="d">  ⎿  Updated with 41 additions</span>`,
+      `<span class="a">⏺ </span><span class="p">Bash</span><span class="d">(npm test)</span>`,
+      `<span class="d">  ⎿  </span><span class="g">Tests: 88 passed, 88 total</span>`, '',
+      `<span class="a">⏺ </span>Done. /v1/search now allows 60 requests per minute per`,
+      `  key, with a Retry-After header on 429.`,
+    ];
+    const lines = done ? [...all, '', `<span class="d">&gt; </span>${CUR}`] : [...all.slice(0, 5), '', ccSpin('Running the tests', 87 + secs(vt))];
+    const st = done ? 'done' : 'run';
     return {
-      top: topbar({ p: 'payments-api', server: false, tabs: [{ al: 'Cx', l: 'Codex', on: true }, { l: 'zsh', i: 'terminal-window' }] }),
-      main: `${pane({ a: 'Cx', st: done ? 'done' : 'run', stl: done ? 'Done' : 'Running', meta: 'gpt-5.5', hooks: true, time: clock(181, done ? 0 : vt), cls: 'focus fill' }, lines)}
-        ${pane({ a: 'SH', name: 'zsh', meta: 'zsh · 1h', style: 'width:470px;flex:none' }, [
-          `<span class="m">payments-api</span> <span class="d">on</span> <span class="m"> main</span> <span class="g">❯</span> go test ./...`,
-          `<span class="g">ok</span>  	payments/charges	<span class="d">0.412s</span>`,
-          `<span class="g">ok</span>  	payments/ledger 	<span class="d">0.236s</span>`,
-          `<span class="g">ok</span>  	payments/webhook	<span class="d">0.119s</span>`,
-          `<span class="m">payments-api</span> <span class="d">on</span> <span class="m"> main</span> <span class="g">❯</span> ${CUR}`])}`,
+      bar: { branch: 'feat/ratelimit', changed: 2 },
+      tabs: [{ a: 'CC', t: 'Rate-limit /v1/search', st, on: true }, { t: 'zsh' }],
+      sessions: [{ a: 'CC', t: 'Rate-limit /v1/search', meta: ago(9, vt), st, on: true }, { a: 'SH', t: 'zsh', meta: '' }],
+      lsp: 'typescript',
+      body: hsplit(
+        pane({ a: 'CC', name: 'Rate-limit /v1/search', st, task: done ? '2 files · +41' : 'Bash · npm test', timer: clock(296, done ? S.since['api-gateway'] : vt),
+          profile: 'claude2 · 12%', focus: true, notice: done ? notice('done', 'Claude Code finished its turn', { body: '2 files changed · +41', sec: 'Review', pri: 'Commit…' }) : '', lines }),
+        pane({ name: 'zsh', place: '~/code/api-gateway', lines: [
+          `${ps1('api-gateway', 'feat/ratelimit')}git log --oneline -3`,
+          `<span class="y">a41c9e2</span> Add the search endpoint`,
+          `<span class="y">7d02b18</span> Cache API keys for 60 s`,
+          `<span class="y">3f8e0c1</span> Upgrade to Node 22`,
+          `${ps1('api-gateway', 'feat/ratelimit')}${CUR}`] })),
     };
   }
-  function other(p) {
-    if (p === 'docs-site') return { top: topbar({ p, server: 'localhost:4321', tabs: [{ l: 'npm run dev', i: 'terminal-window', on: true }] }),
-      main: `${pane({ a: 'SH', name: 'npm run dev', st: 'run', stl: '', meta: 'node · 31m', cls: 'focus fill' }, T.astro)}${pane({ a: 'SH', name: 'zsh', style: 'width:470px;flex:none' }, T.idle(p))}` };
-    if (p === 'ml-pipeline') return { top: topbar({ p, server: false, tabs: [{ al: 'Cx', l: 'Codex', on: true }] }),
-      main: pane({ a: 'Cx', st: 'run', stl: 'Running', meta: 'gpt-5.5', hooks: true, time: clock(1514, vt), cls: 'focus fill' }, [...T.codexTrain, `  <span class="d">[${Math.min(600, 500 + Math.floor(vt / 900) * 10)}/600]</span> auc <span class="b">0.917</span>  logloss 0.226`]) };
-    return { top: topbar({ p, server: false, tabs: [{ l: 'zsh', i: 'terminal-window', on: true }] }), main: pane({ a: 'SH', name: 'zsh', cls: 'focus fill' }, T.idle(p)) };
+
+  function mobileApp() {
+    return {
+      bar: { branch: 'dev', changed: 1 },
+      tabs: [{ t: 'flutter test', st: 'fail', on: true }, { t: 'zsh' }],
+      sessions: [{ a: 'SH', t: 'flutter test', meta: '4m', st: 'fail', on: true }, { a: 'SH', t: 'zsh', meta: '' }],
+      lsp: 'dart',
+      body: hsplit(
+        pane({ name: 'flutter test', st: 'fail', task: 'exit 1', focus: true, lines: TX.flutterFail,
+          notice: notice('fail', 'flutter test exited with code 1', { body: 'after 6s · 1 test failed', sec: 'Ask Claude to fix', pri: 'Run again', dismiss: true }) }),
+        pane({ name: 'zsh', place: '~/code/mobile-app', lines: [`${ps1('mobile-app', 'dev')}${CUR}`] })),
+    };
   }
-  const SCENE = { 'storefront': storefront, 'mobile-app': mobile, 'ternary-engine': engine, 'payments-api': payments };
+
+  function docsSite() {
+    return {
+      bar: { branch: 'main', changed: 1, server: 'localhost:4321' },
+      tabs: [{ a: 'AG', t: 'Write onboarding copy', on: true }, { t: 'npm run dev', st: 'run' }],
+      sessions: [{ a: 'AG', t: 'Write onboarding copy', meta: ago(9, vt), on: true }, { a: 'SH', t: 'npm run dev', meta: ':4321' }],
+      lsp: 'astro',
+      body: hsplit(
+        pane({ a: 'AG', name: 'Write onboarding copy', st: 'idle', stl: 'Active', timer: clock(541, vt), focus: true, lines: [
+          `<span class="d">&gt; </span><span class="p">Write the onboarding copy for the docs home page</span>`, '',
+          `<span class="c">• </span>Read <span class="p">docs/index.mdx</span>, <span class="p">docs/getting-started.mdx</span>`,
+          `<span class="c">• </span>Wrote three hero lines to <span class="p">docs/drafts/hero.md</span>`, '',
+          `  1. Every agent, one window.`,
+          `  2. Know which agent needs you.`,
+          `  3. Your agents, and nothing in the way.`] }),
+        pane({ name: 'npm run dev', st: 'run', task: 'localhost:4321', lines: [
+          `${ps1('docs-site')}npm run dev`, '',
+          `<span class="g"> astro </span> <span class="g">v5.0.3</span> <span class="d">ready in</span> 418 <span class="d">ms</span>`, '',
+          ` ┃ Local    <span class="c">http://localhost:4321/</span>`,
+          ` ┃ Network  <span class="d">use --host to expose</span>`, '',
+          `<span class="d">10:39:52</span> <span class="c">[watch]</span> docs/drafts/hero.md`] })),
+    };
+  }
+
+  function infra() {
+    return {
+      bar: { branch: 'main' },
+      tabs: [{ t: 'zsh', on: true }],
+      sessions: [{ a: 'SH', t: 'zsh', meta: '', on: true }],
+      lsp: 'terraform-ls',
+      body: hsplit(pane({ name: 'zsh', place: '~/code/infra', focus: true, lines: [
+        `${ps1('infra')}terraform plan`,
+        `<span class="g">  + </span>aws_s3_bucket.assets`,
+        `<span class="y">  ~ </span>aws_cloudfront.cdn`,
+        `Plan: 1 to add, 1 to change, 0 to destroy.`,
+        `${ps1('infra')}${CUR}`] })),
+    };
+  }
+  const SCENE = { 'storefront': storefront, 'ternarycode': ternarycode, 'api-gateway': apiGateway, 'mobile-app': mobileApp, 'docs-site': docsSite, 'infra': infra };
 
   /* ------------------------------------------------------------ the window */
-  function sidebarHtml(q) {
-    const pct = Math.min(97, 62 + Math.floor(vt / 1800));
-    const here = q.find(i => i.p === S.view), next = q.find(i => i.p !== S.view);
-    const items = q.map(i => ({ p: i.p, a: AG[i.p], st: i.st, what: WHAT[i.p][i.st], age: age(vt - i.since), here: i === here, next: i === next }));
-    const rows = P.map(p => {
-      const st = S.st[p], r = { n: p, sel: p === S.view };
-      const unseen = q.some(i => i.p === p) && p !== S.view;
-      if (p === 'docs-site') return { ...r, st: 'run', a: 'SH', stl: 'npm run dev', dots: ['r'] };
-      if (p === 'ml-pipeline') return { ...r, st: 'run', a: 'Cx', stl: `Codex · ${pct}%`, dots: ['r'] };
-      if (st === 'run') return { ...r, st: 'run', a: AG[p], stl: AG[p] === 'Cx' ? 'Codex' : 'Claude Code', dots: p === 'storefront' ? ['r', 'r', 'web'] : p === 'mobile-app' ? ['r', ''] : ['r'] };
-      return { ...r, st, badge: unseen ? [st, 1] : null, dots: [st === 'wait' ? 'w' : 'd', ...(p === 'mobile-app' ? [''] : [])] };
-    });
-    const c = { run: 0, wait: 0, done: 0 };
-    rows.forEach(r => c[r.st]++);
-    const sum = `<span class="c-run">${lat('run')}${c.run}</span>${c.wait ? `<span class="c-wait">${IF('bell-ringing')}${c.wait}</span>` : ''}${c.done ? `<span class="c-done">${IF('check-circle')}${c.done}</span>` : ''}`;
-    return sidebar({ queue: items, groups: [
-      { name: 'Active', n: 6, sum, rows },
-      { name: 'Idle', n: 2, rows: IDLE.map(n => ({ n, sel: n === S.view })) },
-    ] });
-  }
-  function statusHtml(q) {
-    const here = q.find(i => i.p === S.view), next = q.find(i => i.p !== S.view);
-    const backK = S.back.length ? `<span class="t4" style="margin-left:4px;display:inline-flex;gap:5px;align-items:center">${kbd('⇧⌘J')} back</span>` : '';
-    if (!next) return statusbar({ lead: `<span class="lead">${IF('check-circle', 'c-done')}<span class="t2">No agent is waiting for you.</span>${backK}</span>` });
-    const more = q.filter(i => i !== next && i !== here).length;
-    const what = next.st === 'wait'
-      ? `Claude Code wants to run <span class="mono" style="font-size:10.5px;color:var(--text)">${ASKS[next.p]}</span>`
-      : `${AG[next.p] === 'Cx' ? 'Codex' : 'Claude Code'} finished · ${WHAT[next.p].done.replace('Finished · ', '')}`;
-    return statusbar({ lead: `<span class="lead">${next.st === 'wait' ? IF('bell-ringing', 'c-wait') : IF('check-circle', 'c-done')}${here ? '<span class="t3">Next:</span>' : ''}<b>${next.p}</b><span class="t3">·</span>${what}${more ? `<span class="t3">+${more} more</span>` : ''}${kbd('⌘J')}${backK}</span>` });
-  }
   function windowHtml() {
-    const q = queue();
-    const sc = (SCENE[S.view] || (() => other(S.view)))();
-    return { q, html: win({ theme: 'dark', sb: sidebarHtml(q), top: sc.top, main: sc.main, status: statusHtml(q) }) };
+    const q = queue(), sc = SCENE[S.view]();
+    const projects = PROJECTS.map(p => ({ ...p, st: S.st[p.n], count: S.st[p.n] === 'inp' ? 1 : 0, on: p.n === S.view,
+      sessions: p.n === S.view ? sc.sessions : [], worktrees: p.n === S.view ? sc.worktrees : [] }));
+    const waiting = P.filter(p => S.st[p] === 'inp').length;
+    const running = 1 + ['storefront', 'ternarycode', 'api-gateway'].filter(p => S.st[p] === 'run').length;
+    const proj = PROJECTS.find(p => p.n === S.view);
+    return {
+      q, html: win({
+        sb: sidebar({ projects, inbox: q.length, navAttr: { inbox: 'data-jump' }, usage: { a: 'CC', label: 'Claude · claude1', pct: usagePct(), reset: 'resets 2h 14m' } }),
+        bar: projectBar({ p: proj, ...sc.bar }),
+        stage: stage(sc.tabs, sc.body),
+        status: statusBar({ branch: sc.bar.branch, lsp: sc.lsp, waiting, running, mem: `${308 + Math.floor(vt / 4000) % 6} MB` }),
+      }),
+    };
   }
 
-  const LAT_DELAY = { 2: 0, 4: .15, 8: .3, 3: .6, 5: .75 };
-  function syncLat(root) {
-    const off = (performance.now() % 1200) / 1000;
-    root.querySelectorAll('.lat.run').forEach(l => [...l.children].forEach((b, i) => { const d = LAT_DELAY[i + 1]; if (d !== undefined) b.style.animationDelay = `${d - off}s`; }));
+  // Spinners keep their phase when the window is drawn again.
+  function syncSpin(root) {
+    const d = `${-(performance.now() % 1000)}ms`;
+    root.querySelectorAll('.k-si.run > i, .coach-spin').forEach(i => { i.style.animationDelay = d; });
   }
   function render(force) {
-    const { q, html } = windowHtml();
+    const { html } = windowHtml();
     if (!force && html === lastHtml) return;
     lastHtml = html;
     host.innerHTML = html;
-    syncLat(host);
-    // what is new since the last frame: queue rows slide in, rows that changed state flash
-    const qis = host.querySelectorAll('.queue .qi');
-    q.forEach((it, i) => { const k = it.p + it.st; if (!prevQ.has(k) && qis[i]) qis[i].classList.add('enter'); });
-    prevQ = new Set(q.map(it => it.p + it.st));
-    const prs = host.querySelectorAll('.sb .pr');
-    P.forEach((p, i) => { if (prevSt[p] && prevSt[p] !== S.st[p] && S.st[p] !== 'run' && prs[i]) prs[i].classList.add('flash'); });
+    syncSpin(host);
+    // a project whose state just changed flashes once
+    host.querySelectorAll('.k-prow[data-p]').forEach(el => {
+      const p = el.dataset.p;
+      if (prevSt[p] !== undefined && prevSt[p] !== S.st[p] && S.st[p] !== 'run') el.classList.add('flash');
+    });
     prevSt = { ...S.st };
-    qis.forEach((el, i) => { el.dataset.p = q[i].p; });
-    prs.forEach((el, i) => { el.dataset.p = [...P, ...IDLE][i]; });
     renderCoach();
   }
 
   /* ------------------------------------------------------------ the coach under the window */
   const keys = ks => ks.map(k => `<kbd>${k}</kbd>`).join('');
+  const DONE = { 'storefront': 'Claude Code changed 2 files.', 'ternarycode': 'Codex changed 2 files.', 'api-gateway': 'Claude Code changed 2 files.' };
+  const SPIN = () => `${I('circle-notch', 'c-run coach-spin')}`;
   function coachState() {
     const cur = S.view, n = nextItem();
-    if (S.stage[cur] === 1) return { key: 'ask-' + cur, icon: IF('bell-ringing', 'c-wait'),
-      text: `<b>Claude Code</b> asks to run <code>${ASKS[cur]}</code>.`, act: { label: 'Allow', keys: ['↵'], fn: answer } };
-    if (n) return { key: 'next-' + n.p + n.st, icon: n.st === 'wait' ? IF('bell-ringing', 'c-wait') : IF('check-circle', 'c-done'),
-      text: n.st === 'wait' ? `<b>${n.p}</b> needs you.` : `<b>${n.p}</b> is done. ${AG[n.p] === 'Cx' ? 'Codex' : 'Claude Code'} changed 2 files.`,
-      act: { label: n.st === 'wait' ? 'Go there' : 'Take a look', keys: JUMP, fn: jump } };
-    const answered = S.stage['mobile-app'] === 3 && S.stage['ternary-engine'] === 3 && S.st['payments-api'] === 'done';
+    if (S.stage[cur] === 1) return { key: 'ask-' + cur, icon: IF('chat-circle-dots', 'c-wait'),
+      text: `<b>${ASK[cur].who}</b> asks to run <code>${ASK[cur].cmd}</code>.`, act: { label: 'Approve', keys: ['↵'], fn: answer } };
+    if (n) return { key: 'next-' + n.p + n.st, icon: n.st === 'inp' ? IF('chat-circle-dots', 'c-wait') : IF('check-circle', 'c-done'),
+      text: n.st === 'inp' ? `<b>${n.p}</b> needs you. It’s in your Inbox.` : `<b>${n.p}</b> is done. ${DONE[n.p]}`,
+      act: { label: n.st === 'inp' ? 'Go there' : 'Take a look', keys: JUMP, fn: jump } };
+    const answered = S.stage.storefront === 3 && S.stage.ternarycode === 3 && S.st['api-gateway'] === 'done';
     if (answered) return { key: 'end', icon: IF('check-circle', 'c-done'), end: true,
       text: `That’s the loop. <b>An agent waits, you answer, it gets back to work.</b>`, act: { label: 'Replay', icon: 'arrow-counter-clockwise', fn: replay, ghost: true } };
-    if (S.stage['mobile-app'] >= 2 || S.stage['ternary-engine'] >= 2) return { key: 'working', icon: lat('run', 'lg'), text: `Back to work. <b>Nothing else needs you right now.</b>` };
-    return { key: 'watch', icon: lat('run', 'lg'), text: `Five agents at work in six projects. <b>Nothing needs you yet.</b>` };
+    if (S.stage.storefront >= 2 || S.stage.ternarycode >= 2) return { key: 'working', icon: SPIN(), text: `Back to work. <b>Nothing else needs you right now.</b>` };
+    return { key: 'watch', icon: SPIN(), text: `Five agents at work in six projects. <b>Nothing needs you yet.</b>` };
   }
   let coachS = null;
   function renderCoach() {
@@ -271,7 +313,7 @@
     const act = c.act ? `<button class="coach-act ${c.act.ghost ? 'ghost' : ''}" type="button" data-act>${c.act.icon ? `<i class="ic" data-i="${c.act.icon}"></i>` : ''}${c.act.label}${c.act.keys ? keys(c.act.keys) : ''}</button>` : '';
     coachEl.innerHTML = `<div class="coach-in swap">${c.icon}<span class="t">${c.text}</span>${act}</div>`;
     if (window.fillIcons) window.fillIcons(coachEl);
-    syncLat(coachEl);
+    syncSpin(coachEl);
   }
   coachEl.addEventListener('click', e => {
     if (!e.target.closest('[data-act]') || !coachS || !coachS.act) return;
@@ -284,7 +326,7 @@
     if (userDrove || !coachS) return;
     if (coachS.end) { if (vt - endAt > 9000) replay(); return; }
     if (!coachS.act) return;
-    const wait = coachS.key.startsWith('ask') ? 3800 : coachKey === 'next-mobile-appwait' ? 5200 : 4200;
+    const wait = coachS.key.startsWith('ask') ? 3800 : 4200;
     if (vt - coachAt > wait && !autoT) {
       const b = coachEl.querySelector('[data-act]');
       if (b) b.classList.add('press');
@@ -295,7 +337,10 @@
 
   /* ------------------------------------------------------------ input */
   host.addEventListener('click', e => {
-    const el = e.target.closest('[data-p]');
+    const t = e.target;
+    if (t.closest('[data-approve]')) { userDrove = true; answer(); render(); return; }
+    if (t.closest('[data-jump]')) { userDrove = true; jump(); render(); return; }
+    const el = t.closest('[data-p]');
     if (!el) return;
     userDrove = true; goTo(el.dataset.p); render();
   });
@@ -312,11 +357,16 @@
     }
   });
 
-  /* ------------------------------------------------------------ scale & clock */
+  /* ------------------------------------------------------------ scale, theme & clock */
   const scaler = host.parentElement;
   const fit = () => { const s = scaler.clientWidth / 1440; host.style.transform = `scale(${s})`; scaler.style.height = `${Math.round(900 * s)}px`; };
   new ResizeObserver(fit).observe(scaler);
   fit();
+  if (window.matchMedia) {
+    const mq = matchMedia('(prefers-color-scheme: light)');
+    const redraw = () => render(true);
+    mq.addEventListener ? mq.addEventListener('change', redraw) : mq.addListener(redraw);
+  }
 
   new IntersectionObserver(es => { inView = es[0].isIntersecting && es[0].intersectionRatio > 0.3; }, { threshold: [0, .3, .6] }).observe(demoEl);
   let last = performance.now();
@@ -330,7 +380,7 @@
   }, 250);
   const GL = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
   let gi = 0;
-  setInterval(() => { if (!active) return; gi = (gi + 1) % GL.length; host.querySelectorAll('.spin').forEach(s => { s.textContent = GL[gi]; }); }, 130);
+  setInterval(() => { if (!active) return; gi = (gi + 1) % GL.length; host.querySelectorAll('.tspin').forEach(s => { s.textContent = GL[gi]; }); }, 130);
 
   reset();
   render(true);

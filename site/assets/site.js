@@ -136,35 +136,44 @@
     b._t = setTimeout(() => { label.textContent = 'Copy'; icon.dataset.i = 'copy'; fillIcons(b); b.classList.remove('ok'); }, 1800);
   }));
 
-  /* ---------------------------------------------------------- shortcuts */
+  /* ---------------------------------------------------------- shortcuts (the app's own table: src/ui/kit.rs key_labels) */
   const KEYS = [
-    ['jump', '<b>Next waiting agent</b>', ['⌘J'], ['Ctrl+Shift+J']],
-    ['back', 'Back to where you were', ['⇧⌘J'], ['Ctrl+Alt+J']],
-    ['palette', 'Command palette', ['⌘K'], ['Ctrl+Shift+K']],
-    ['project', 'Switch project', ['⌘P'], ['Ctrl+Shift+P']],
-    ['run', 'Run an agent', ['⇧⌘A'], ['Ctrl+Shift+A']],
-    ['grid', 'Grid', ['⌘0'], ['Ctrl+Shift+0']],
-    ['code', 'Code Editor', ['⌘E'], ['Ctrl+Shift+Y']],
-    ['drawer', 'Terminal Panel', ['⇧⌘L'], ['Ctrl+Shift+L']],
-    ['review', 'Review changes', ['⇧⌘R'], ['Ctrl+Shift+R']],
-    ['commit', 'Commit, push &amp; PR', ['⇧⌘C'], ['Ctrl+Shift+Alt+C']],
-    ['browser', 'Browser panel', ['⇧⌘B'], ['Ctrl+Shift+Alt+B']],
-    ['split', 'Split right · down', ['⌘D', '⇧⌘D'], ['Ctrl+Shift+D', 'Ctrl+Shift+E']],
-    ['find', 'Find · in all panes', ['⌘F', '⇧⌘F'], ['Ctrl+Shift+F', 'Ctrl+Shift+G']],
-    ['narrow', 'Narrow sidebar', ['⌥⌘B'], ['Ctrl+Alt+B']],
+    ['<b>Command palette</b> · switch project', ['⌘K', '⌘P'], ['Ctrl+Shift+K', 'Ctrl+Shift+P']],
+    ['<b>Next waiting agent</b> · back', ['⌘J', '⇧⌘J'], ['Ctrl+Shift+J', 'Ctrl+Alt+J']],
+    ['Run an agent', ['⇧⌘A'], ['Ctrl+Shift+A']],
+    ['Overview', ['⌘0'], ['Ctrl+Shift+0']],
+    ['Changes · Files · Browser', ['⇧⌘R', '⌘E', '⇧⌘B'], ['Ctrl+Shift+R', 'Ctrl+Shift+Y', 'Ctrl+Shift+Alt+B']],
+    ['Show or hide the panel · fill the window', ['⇧⌘L', '⇧⌘E'], ['Ctrl+Shift+L', 'Ctrl+Alt+E']],
+    ['Commit, push &amp; pull request', ['⇧⌘C'], ['Ctrl+Shift+Alt+C']],
+    ['Open a file', ['⌘O'], ['Ctrl+Shift+O']],
+    ['New tab · close pane', ['⌘T', '⌘W'], ['Ctrl+Shift+T', 'Ctrl+Shift+W']],
+    ['Split right · down', ['⌘D', '⇧⌘D'], ['Ctrl+Shift+D', 'Ctrl+Shift+E']],
+    ['Find · in every pane', ['⌘F', '⇧⌘F'], ['Ctrl+Shift+F', 'Ctrl+Shift+G']],
+    ['Sidebar · narrow sidebar', ['⌘B', '⌥⌘B'], ['Ctrl+Shift+B', 'Ctrl+Alt+B']],
+    ['Zen: only the terminals', ['⌥⌘Z'], ['Ctrl+Alt+Z']],
+    ['Project 1–9 · move project', ['⌘1–9', '⌥⌘↑', '⌥⌘↓'], ['Ctrl+Shift+1–9', 'Ctrl+Alt+↑', 'Ctrl+Alt+↓']],
   ];
-  const caps = combo => (combo.includes('+') ? combo.split('+') : [...combo]).map(k => `<kbd>${k}</kbd>`).join('');
-  const combos = list => list.map(caps).join('<span style="color:var(--fg-4);margin:0 4px">·</span>');
+  // The shortcuts quoted in the text: <span data-k="jump">.
+  const INLINE = {
+    jump: ['⌘J', 'Ctrl+Shift+J'], back: ['⇧⌘J', 'Ctrl+Alt+J'], palette: ['⌘K', 'Ctrl+Shift+K'], run: ['⇧⌘A', 'Ctrl+Shift+A'],
+    overview: ['⌘0', 'Ctrl+Shift+0'], changes: ['⇧⌘R', 'Ctrl+Shift+R'], panel: ['⇧⌘L', 'Ctrl+Shift+L'], expand: ['⇧⌘E', 'Ctrl+Alt+E'],
+    browser: ['⇧⌘B', 'Ctrl+Shift+Alt+B'], commit: ['⇧⌘C', 'Ctrl+Shift+Alt+C'], zen: ['⌥⌘Z', 'Ctrl+Alt+Z'], open: ['⌘O', 'Ctrl+Shift+O'],
+    move: ['⌥⌘↑', 'Ctrl+Alt+↑'], project: ['⌘1–9', 'Ctrl+Shift+1–9'], settings: ['⌘,', 'Ctrl+Shift+,'],
+  };
+  // ⌥⌘↑ → ⌥ ⌘ ↑ ; Ctrl+Alt+↑ → Ctrl Alt ↑
+  const split = c => (c.includes('+') ? c.split('+') : (c.match(/^[⌘⇧⌥⌃]+/) || [''])[0].split('').concat(c.replace(/^[⌘⇧⌥⌃]+/, '')).filter(Boolean));
+  const caps = combo => `<span class="kc">${split(combo).map(k => `<kbd>${k}</kbd>`).join('')}</span>`;
+  const combos = list => list.map(caps).join('<span class="kdot">·</span>');
   let keysOs = OS === 'mac' ? 'mac' : 'pc';
   function drawKeys() {
-    const col = keysOs === 'mac' ? 2 : 3;
-    $('#keygrid').innerHTML = KEYS.map(k => `<div class="krow"><span>${k[1]}</span><span class="kk">${combos(k[col])}</span></div>`).join('');
+    const col = keysOs === 'mac' ? 1 : 2;
+    $('#keygrid').innerHTML = KEYS.map(k => `<div class="krow"><span>${k[0]}</span><span class="kk">${combos(k[col])}</span></div>`).join('');
     $('#keys-note').innerHTML = keysOs === 'mac'
       ? 'The command palette, <kbd>⌘</kbd><kbd>K</kbd>, lists all of them.'
-      : 'On Windows and Linux, <kbd>⌘</kbd> is <kbd>Ctrl</kbd><kbd>Shift</kbd>, so <kbd>Ctrl</kbd><kbd>C</kbd> still reaches the terminal. <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>K</kbd> lists them all.';
+      : 'On Windows and Linux, <kbd>⌘</kbd> is <kbd>Ctrl</kbd><kbd>Shift</kbd> and <kbd>⌥</kbd> stays <kbd>Alt</kbd>, so <kbd>Ctrl</kbd><kbd>C</kbd> still reaches the terminal. <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>K</kbd> lists them all.';
     $$('.seg-os button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.keys === keysOs)));
     // the shortcuts quoted in the text follow the same choice
-    $$('[data-k]').forEach(el => { const k = KEYS.find(r => r[0] === el.dataset.k); if (k) el.innerHTML = combos(k[col]); });
+    $$('[data-k]').forEach(el => { const k = INLINE[el.dataset.k]; if (k) el.innerHTML = caps(k[col - 1]); });
   }
   $$('.seg-os button').forEach(b => b.addEventListener('click', () => { keysOs = b.dataset.keys; drawKeys(); }));
   drawKeys();
@@ -174,139 +183,43 @@
     const sc = $('.scaled', el);
     sc.innerHTML = html;
     const fit = () => { const s = el.clientWidth / w; sc.style.transform = `scale(${s})`; el.style.height = `${Math.round(h * s)}px`; };
-    new ResizeObserver(fit).observe(el);
+    if (!el._fit) { el._fit = fit; new ResizeObserver(() => el._fit()).observe(el); }
     fit();
   }
-  function reviewWindow() {
-    const groups = [
-      { name: 'Active', n: 6, sum: SUM(), rows: [
-        { n: 'docs-site', st: 'run', a: 'SH', stl: 'npm run dev', dots: ['r'] },
-        { n: 'ml-pipeline', st: 'run', a: 'Cx', stl: 'Codex · 62%', dots: ['r'] },
-        { n: 'mobile-app', st: 'wait', badge: ['wait', 1], dots: ['w', ''] },
-        { n: 'storefront', st: 'run', a: 'CC', stl: 'Claude Code', dots: ['r', 'web'] },
-        { n: 'storefront', child: true, label: 'cart-badge', br: 'tc/cart-badge', chg: 5, st: 'done', sel: true },
-        { n: 'ternary-engine', st: 'wait', badge: ['wait', 1], dots: ['w'] },
-      ] },
-      { name: 'Idle', n: 3, open: false, rows: [] },
-    ];
-    const top = topbar({
-      left: `${ib('arrow-left', { sm: true })}<span class="ttl"><span class="nm">Review</span></span>
-        <span class="row g6" style="font-size:12.5px">${pt('storefront', 's18')}<span class="t2">storefront</span>${I('caret-right', 't4')}${I('git-fork', 't3')}<span class="medium">cart-badge</span></span>
-        ${vsep()}<span class="chip line">${I('git-branch')}<span>Since branched from <span class="mono" style="font-size:11px">main</span></span>${I('caret-down', 'ext')}</span>`,
-      right: `<span class="mono t3" style="font-size:11px">5 files · <span class="c-add">+112</span> <span class="c-del">−1</span></span>
-        ${seg(['Unified', 'Split'], 1)}${vsep()}<span class="btn ghost">Close <span class="kb">esc</span></span>`,
-    });
-    const commits = [
-      { h: '', t: 'Not committed', d: '1 file · header.css', wip: true },
-      { h: 'a41c9e2', t: 'Add CartBadge to the header', d: 'Claude Code · 6 min' },
-      { h: '7d02b18', t: 'Add useCart hook', d: 'Claude Code · 18 min' },
-    ];
-    const left = `<div class="cd-col" style="width:300px">
-      <div class="cd-sh">Commits <span class="n">2 + not committed</span><span class="sp"></span><span class="t3" style="font-size:11.5px">All</span></div>
-      <div class="cd-commits">${commits.map(c => `<div class="cd-cm ${c.wip ? 'wip' : ''}"><span class="cd-dot"></span><div style="min-width:0;flex:1"><div class="ell">${c.t}</div><div class="t3" style="font-size:11px;margin-top:1px">${c.h ? `<span class="mono">${c.h}</span> · ` : ''}${c.d}</div></div></div>`).join('')}
-        <div class="cd-cm base"><span class="cd-dot"></span><div class="t3" style="font-size:11.5px">branched from <span class="mono">main</span> at <span class="mono">3f8e0c1</span> · 41 min</div></div></div>
-      <div class="cd-sh" style="margin-top:6px">Files <span class="n">5</span></div>
-      <div class="cd-flist">${cdFiles([
-        { m: 'a', n: 'CartBadge.tsx', d: 'src/components', a: 31 },
-        { m: 'm', n: 'Header.tsx', d: 'src/components', a: 7, x: 1, on: true },
-        { m: 'a', n: 'useCart.ts', d: 'src/cart', a: 22 },
-        { m: 'a', n: 'cart.test.tsx', d: 'src/cart', a: 40 },
-        { m: 'm', n: 'header.css', d: 'src/styles', a: 12 },
-      ])}</div>
-    </div>`;
-    const body = sheet(`
-      <div class="row" style="flex:1;min-height:0;align-items:stretch">
-        ${left}
-        <div class="cd-main">
-          <div class="cd-dfh">${cdMark('m')}<span class="medium">src/components/Header.tsx</span><span class="mono c-add" style="font-size:11px">+7</span><span class="mono c-del" style="font-size:11px">−1</span>${bars(7, 1)}<span class="sp"></span><span class="mono t3" style="font-size:10.5px">in a41c9e2</span>${btn('Open in Editor', { sm: true, i: 'arrow-square-out', kb: '↵' })}</div>
-          <div class="cd-sphd"><span class="mono">main · 3f8e0c1</span><span class="mono">tc/cart-badge</span></div>
-          ${cdSplit(HEADER_SPLIT, 'ts')}
-          <div class="cd-next">${cdMark('m')}<span class="medium">src/styles/header.css</span><span class="mono c-add" style="font-size:11px">+12</span>${bars(12, 0)}<span class="sp"></span><span class="t3" style="font-size:11.5px">${kbd('j')} next file</span></div>
-        </div>
-      </div>
-      <div class="cd-wtf">
-        ${I('git-fork', 't3')}<span class="mono" style="font-size:11px">tc/cart-badge</span><span class="t3">2 commits ahead of <span class="mono">main</span>, nothing new on <span class="mono">main</span>, 1 file not committed</span>
-        <span class="sp"></span>${btn('Remove Worktree…', { k: 'ghost', i: 'trash', cls: 'dangerq' })}${btn('Merge into main…', { k: 'primary', i: 'git-merge' })}
-      </div>`, { cls: 'focus', style: 'flex:1' });
-    return win({ theme: 'dark', sb: sidebar({ sel: null, groups }), top, main: body,
-      status: statusbar({ lead: `<span class="lead">${IF('bell-ringing', 'c-wait')}<b>mobile-app</b><span class="t3">·</span>Claude Code wants to run <span class="mono" style="font-size:10.5px;color:var(--text)">flutter test</span><span class="t3">+1 more</span>${kbd('⌘J')}</span>` }) });
-  }
-  // The commit box under Changes: the message from the agent's task and last words, one button.
-  function shipWindow() {
-    const shFile = r => `<div class="sh-fr ${r.on ? 'on' : ''}">${chk(true)}${cdMark(r.m)}
-      <div class="sh-nm"><div class="ell t1">${r.n}</div><div class="mono t3 ell" style="font-size:10.5px;margin-top:1px">${r.d}</div></div>
-      ${al(r.ag, 11)}<span class="cd-pm"><span class="c-add">+${r.a}</span>${r.x ? `<span class="c-del">−${r.x}</span>` : ''}</span></div>`;
-    const files = [
-      { m: 'a', n: 'CartBadge.tsx', d: 'src/components', a: 31, ag: 'CC' },
-      { m: 'a', n: 'useCart.ts', d: 'src/cart', a: 22, ag: 'CC' },
-      { m: 'm', n: 'Header.tsx', d: 'src/components', a: 7, x: 1, ag: 'CC', on: true },
-    ];
-    const unified = [`<div class="hunk"><span>@@ −1,14 +1,19 @@</span><span class="ctx">export function Header()</span></div>`];
-    for (const [t, a, l, b, r] of HEADER_SPLIT) {
-      if (t === 'add') unified.push(cdDl('add', '', b, r, 'ts'));
-      else if (t === 'mod') { unified.push(cdDl('del', a, '', l, 'ts')); unified.push(cdDl('add', '', b, r.replace('<CartButton>', '<CartButton⟦⟧>'), 'ts')); }
-      else unified.push(cdDl('', a, b, l, 'ts'));
-    }
-    const agent = [
-      ...T.ccHead('opus 4.6', '~/code/storefront'),
-      `<span class="d">&gt;</span> Add a cart badge to the header, then`,
-      `  check it in the browser`,
-      '',
-      `<span class="g">⏺</span> Write <span class="b">src/components/CartBadge.tsx</span> <span class="g">+31</span>`,
-      `<span class="g">⏺</span> Write <span class="b">src/cart/useCart.ts</span> <span class="g">+22</span>`,
-      `<span class="g">⏺</span> Update <span class="b">src/components/Header.tsx</span> <span class="g">+7</span> <span class="r">−1</span>`,
-      `<span class="g">⏺</span> <span class="b">ternarycode</span> <span class="d">·</span> browser_click <span class="d">× 2</span>`,
-      `  <span class="f">⎿</span>  <span class="d">The badge shows 2.</span>`,
-      '',
-      `<span class="g">⏺</span> The header shows the item count from`,
-      `  useCart. Checked in the browser: 0 → 1 → 2.`,
-      '',
-      ...T.prompt(48),
-    ];
-    const box = `<div class="sh-box">
-      <div class="sh-msg"><div class="t">Add a cart badge to the header</div><div class="b">The header shows the item count from useCart. Checked in the browser: 0 → 1 → 2.</div>${ib('sparkle', { xs: true, cls: 'ai' })}</div>
-      <div class="sh-src">${al('CC', 10)}<span>From Claude Code’s task and its last words</span></div>
-      <div class="sh-go"><span class="btn primary m">${I('git-pull-request')}Commit, Push &amp; Create PR<span class="kb">⌘↵</span></span><span class="btn primary x">${I('caret-down')}</span></div>
-      <div class="sh-to">${I('git-branch')}<span>feature/cart-badge</span><span class="ar">→</span><span class="ell">origin · PR into main</span></div>
-    </div>`;
-    const scope = `<div class="cd-scope">
-      <span class="cd-sc on"><span class="cd-sci">${al('CC', 12)}</span><span class="cd-scb"><span>Since Claude Code started</span><span class="cd-cnt">6 min ago · 3 files</span></span></span>
-      <span class="cd-sc"><span class="cd-sci">${I('git-commit')}</span><span class="cd-scb"><span>Since last commit</span><span class="cd-cnt">4 files</span></span></span>
-    </div>`;
-    const drawer = sheet(`
-      ${cdHead(1, { n: 4 })}
-      <div class="cd-body">
-        <div class="cd-col sh-col">${scope}<div class="cd-flist">${files.map(shFile).join('')}</div>${box}</div>
-        <div class="cd-main">
-          <div class="cd-dfh">${cdMark('m')}<span class="medium">src/components/Header.tsx</span><span class="mono c-add" style="font-size:11px">+7</span><span class="mono c-del" style="font-size:11px">−1</span>${bars(7, 1)}<span class="sp"></span>${seg(['Unified', 'Split'], 0, 'sm')}${ib('arrow-square-out', { sm: true })}</div>
-          <div class="cd-diff code">${unified.join('')}</div>
-          <div class="cd-sl"><span class="row g4">${kbd('j')}${kbd('k')}<span>file</span></span><span class="row g4">${kbd('space')}<span>in or out of the commit</span></span><span class="sp"></span><span class="row g4">${kbd('⇧⌘C')}<span>commit box</span></span></div>
-        </div>
-      </div>`, { cls: 'focus cd-drawer', style: 'flex:1' });
-    const groups = GROUPS('storefront').map(g => ({ ...g, rows: g.rows.map(r => r.n === 'storefront' ? { ...r, st: 'done', a: null, stl: 'Done', br: 'feature/cart-badge', chg: 4, dots: ['d', 'r'] } : r) }));
-    return win({
-      theme: 'dark',
-      sb: sidebar({ sel: 'storefront', queue: QUEUE.slice(0, 2), groups }),
-      top: topbar({ p: 'storefront', br: 'feature/cart-badge', chg: 4, code: true, tabs: [{ al: 'CC', l: 'Claude Code', on: true }, { l: 'zsh', i: 'terminal-window' }] }),
-      main: `${pane({ a: 'CC', st: 'done', stl: 'Done', meta: 'opus 4.6', hooks: true, time: '6:12', style: 'width:440px;flex:none' }, agent)}${drawer}`,
-    });
-  }
   if (typeof LOGO === 'object') $$('[data-logo]').forEach(el => { el.innerHTML = LOGO[el.dataset.logo](16); });
-  if (typeof win === 'function') {
+  function drawKit() {
+    if (typeof sidebar !== 'function') return;
+    const th = THEME();
     const sb = $('[data-frame="sidebar"]');
-    if (sb) frame(sb, 248, 520, `<div class="app dark"><div class="sbx" style="width:248px;height:520px">${sidebar({})}</div></div>`);
-    const rv = $('[data-frame="review"]');
-    if (rv) frame(rv, 1440, 900, reviewWindow());
-    const sh = $('[data-frame="ship"]');
-    if (sh) frame(sh, 1440, 900, shipWindow());
-    // how each state looks where you meet it: a Grid tile's footer, a sidebar row
+    if (sb) {
+      const projects = PROJECTS.map(p => ({ ...p, on: p.n === 'storefront' }));
+      Object.assign(projects[0], { st: 'inp', count: 1,
+        sessions: [{ a: 'CC', t: 'Fix OAuth redirect loop', meta: '2m', st: 'inp', on: true }, { a: 'Cx', t: 'Add order export to CSV', meta: '14m', st: 'run' }, { a: 'SH', t: 'npm run dev', meta: ':5173' }],
+        worktrees: [{ n: 'codex-export', br: 'tc/export', st: 'run' }] });
+      projects[1].st = 'run'; projects[2].st = 'done'; projects[3].st = 'fail';
+      frame(sb, 248, 660, `<div class="app ${th}"><div class="k-win" style="width:248px;height:660px">${sidebar({ projects, inbox: 3,
+        usage: { a: 'CC', label: 'Claude · claude1', pct: 42, reset: 'resets 2h 14m' } })}</div></div>`);
+    }
+    // how each state looks where you meet it: a Notice at the foot of the pane, a pane header
     const SPEC = {
-      wait: () => `<div class="tile-f wait">${IF('bell-ringing', 'c-wait')}<span class="ell">Claude Code wants to run <code>flutter test</code></span><span class="sp"></span>${btn('Allow', { sm: true, k: 'primary' })}</div>`,
-      run: () => prow({ n: 'storefront', st: 'run', a: 'CC', stl: 'Claude Code', dots: ['r', 'r', 'web'] }),
-      done: () => `<div class="tile-f done">${IF('check-circle', 'c-done')}<span class="ell">Done · <span class="mono">2 files changed</span></span><span class="sp"></span>${btn('Review', { sm: true, i: 'git-diff' })}</div>`,
-      fail: () => `<div class="tile-f fail">${IF('x-circle', 'c-fail')}<span class="ell"><code>npm test</code> failed · exit 1</span><span class="sp"></span>${btn('Show', { sm: true })}</div>`,
+      wait: () => notice('inp', 'Claude Code wants to run a command', { body: 'Bash · npm test -- auth', sec: 'Reject', pri: 'Approve', sc: '↵', cls: 'solo' }),
+      run: () => `<div class="k-sheet" style="border-radius:9px">${paneHead({ a: 'Cx', name: 'Add order export to CSV', st: 'run', task: 'Editing api/orders.ts', timer: '2:14' })}</div>`,
+      done: () => notice('done', 'Codex finished its turn', { body: '3 files changed · +102 −2', sec: 'Review', pri: 'Commit…', cls: 'solo' }),
+      fail: () => notice('fail', 'Exited with code 1', { body: 'pnpm build · after 42s', pri: 'Run again', dismiss: true, cls: 'solo' }),
+      limit: () => notice('lim', 'claude1 hit its 5-hour limit', { body: 'Resets in 14m · claude2 is ready', pri: 'Resume on claude2', cls: 'solo' }),
+      resume: () => notice('info', 'Claude Code ran here before the restart', { body: '“Review pass” · 41 min ago', pri: 'Resume', cls: 'solo' }),
+      server: () => `<span class="k-chip"><span class="k-live"></span>localhost:5173${I('arrow-up-right', 'k-ext')}</span><span class="k-chip">${I('git-pull-request', 'k-acc-i')}<span class="k-t1">#128</span>${si('done')}<span class="k-sans">checks passed</span></span>`,
+      usage: () => usagePop([
+        { a: 'CC', id: 'claude1', plan: 'MAX', st: 'lim', stl: 'Limited', p5: 100, pw: 61, reset: '↺ 14m' },
+        { a: 'CC', id: 'claude2', plan: 'PRO', st: 'done', stl: 'Ready', p5: 12, pw: 30, reset: '↺ 4h 2m' },
+        { a: 'Cx', id: 'codex1', plan: 'PLUS', st: 'run', stl: 'In use', p5: 18, pw: 22, reset: '↺ 2h 40m' }]),
     };
-    $$('[data-spec]').forEach(el => { el.innerHTML = `<div class="app dark">${SPEC[el.dataset.spec]()}</div>`; });
+    $$('[data-spec]').forEach(el => { el.innerHTML = `<div class="app ${th}">${SPEC[el.dataset.spec]()}</div>`; });
+  }
+  drawKit();
+  if (window.matchMedia) {
+    const mq = matchMedia('(prefers-color-scheme: light)');
+    mq.addEventListener ? mq.addEventListener('change', drawKit) : mq.addListener(drawKit);
   }
 
   /* ---------------------------------------------------------- the lattice behind the hero */

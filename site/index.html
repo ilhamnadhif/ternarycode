@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TernaryCode — know which agent needs you</title>
-<meta name="description" content="One native window for all your projects and the AI coding agents working in them. TernaryCode tells you when Claude Code, Codex or OpenCode is waiting, and ⌘J takes you there. Free and open source for macOS, Windows and Linux.">
-<meta name="theme-color" content="#0a0a0a">
+<meta name="description" content="One native window for all your projects and the AI coding agents working in them. When Claude Code, Codex or OpenCode waits for you, it lands in your Inbox, and ⌘J takes you there. Free and open source for macOS, Windows and Linux.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#fbfbfc" media="(prefers-color-scheme: light)">
 <link rel="canonical" href="https://ilhamnadhif.github.io/ternarycode/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="TernaryCode">
@@ -53,10 +55,10 @@
   <div class="wrap hero-in">
     <a class="announce" href="https://github.com/ilhamnadhif/ternarycode/releases/latest" data-release-link>
       <span class="lat run">&nbsp;<b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></span>
-      <span><b>TernaryCode <span data-version>0.2.2</span></b> is out</span><span class="sep"></span><span>What’s new</span><i class="ic" data-i="arrow-right"></i>
+      <span><b>TernaryCode <span data-version>0.2.5</span></b> is out</span><span class="sep"></span><span>What’s new</span><i class="ic" data-i="arrow-right"></i>
     </a>
     <h1>Which agent<br>needs you now?</h1>
-    <p class="lede">One native window for all your projects and the coding agents working in them. When <b>Claude Code</b>, <b>Codex</b> or <b>OpenCode</b> waits for you, TernaryCode knows, and <span data-k="jump"><kbd>⌘</kbd><kbd>J</kbd></span> takes you there.</p>
+    <p class="lede">One native window for all your projects and the coding agents working in them. When <b>Claude Code</b>, <b>Codex</b> or <b>OpenCode</b> waits for you, it lands in your <b>Inbox</b>, and <span data-k="jump"><kbd>⌘</kbd><kbd>J</kbd></span> takes you there.</p>
     <div class="cta">
       <a class="pb pb-pri" href="#install" id="cta-main"><i class="ic" data-i="download-simple"></i><span>Download for macOS</span></a>
       <a class="pb pb-sec" href="https://github.com/ilhamnadhif/ternarycode"><i class="ic" data-i="github-logo"></i>View on GitHub</a>
@@ -72,7 +74,7 @@
     </div>
     <div class="demo-frame">
       <div class="scaler"><div class="scaled" id="demo-win" aria-hidden="true"></div></div>
-      <noscript><img src="assets/img/focus.webp" alt="TernaryCode: Claude Code checks its change in the Browser panel while the sidebar lists the agents waiting in other projects" width="1600" height="1000"></noscript>
+      <noscript><img src="assets/img/focus.webp" alt="TernaryCode: Claude Code asks to run a command in storefront; its pane is ringed in amber and a notice offers Reject and Approve" width="1600" height="1000"></noscript>
     </div>
     <div class="coach" id="coach" aria-live="polite"></div>
   </div>
@@ -123,49 +125,118 @@
         <h2>Status you can trust, <span class="q">not a guess.</span></h2>
       </div>
       <div class="ch-body">
-        <p>Each agent tells TernaryCode what it’s doing through its own <b>hooks</b>. The ones that wait for you line up at the top of the sidebar, in the order <span data-k="jump"><kbd>⌘J</kbd></span> visits them; <span data-k="back"><kbd>⇧⌘J</kbd></span> takes you back.</p>
+        <p>Each agent tells TernaryCode what it’s doing through its own <b>hooks</b>. When one stops for you, its pane gets an amber ring and a <b>Notice</b> at its foot: <b>Approve</b> with ↵, or Reject, right where it asked. The sidebar, the Inbox and the status bar count it.</p>
         <ul class="facts">
-          <li><b>Hooks are added per launch</b> for Claude Code and Codex. Nothing in your config changes.</li>
-          <li>Notifications and the Dock badge only when you’re <b>not</b> looking.</li>
+          <li><b>One Notice for every banner</b>: an agent’s question, a usage limit, a session to resume, a shell that ended.</li>
+          <li>Hooks are added per launch for Claude Code and Codex. <b>Nothing in your config changes.</b> Notifications and the Dock badge only when you’re not looking.</li>
         </ul>
       </div>
     </div>
     <div class="status-grid rv">
       <div class="sb-shot"><div class="scaler" data-frame="sidebar" aria-hidden="true"><div class="scaled"></div></div></div>
       <div class="states">
-        <div class="state"><span class="pill wait"><i class="icf" data-i="bell-ringing"></i>Needs input</span><p>Wants permission or an answer. It goes to the <b>top of the queue</b>, the oldest first.</p><div class="spec" data-spec="wait"></div><span class="src">PermissionRequest · Notification</span></div>
-        <div class="state"><span class="pill run"><span class="lat run"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></span>Running</span><p>Working on its own. The light runs along the <b>&lt;/</b> of the app’s icon.</p><div class="spec" data-spec="run"></div><span class="src">UserPromptSubmit · PreToolUse</span></div>
-        <div class="state"><span class="pill done"><i class="icf" data-i="check-circle"></i>Done</span><p>Finished its turn. It says <b>how many files</b> it changed, with Review one click away.</p><div class="spec" data-spec="done"></div><span class="src">Stop · agent-turn-complete</span></div>
+        <div class="state"><span class="pill wait"><i class="icf" data-i="chat-circle-dots"></i>Needs input</span><p>Wants permission or an answer. The pane rings amber and the <b>Inbox</b> lists it, the oldest first.</p><div class="spec" data-spec="wait"></div><span class="src">PermissionRequest · Notification</span></div>
+        <div class="state"><span class="pill run"><i class="ic spin" data-i="circle-notch"></i>Running</span><p>Working on its own. The pane header says <b>what it’s doing</b>, for how long, and on which account.</p><div class="spec" data-spec="run"></div><span class="src">UserPromptSubmit · PreToolUse</span></div>
+        <div class="state"><span class="pill done"><i class="icf" data-i="check-circle"></i>Done</span><p>Finished its turn. It says <b>how many files</b> it changed, with Review and Commit one click away.</p><div class="spec" data-spec="done"></div><span class="src">Stop · agent-turn-complete</span></div>
         <div class="state"><span class="pill fail"><i class="icf" data-i="x-circle"></i>Failed</span><p>An error, or a command that exited badly. <b>Without a reliable signal</b> it says <i>Active</i>, never a guess.</p><div class="spec" data-spec="fail"></div><span class="src">StopFailure · exit status</span></div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ============================================================ 2. grid -->
+<!-- ============================================================ 2. inbox -->
 <section class="sec">
   <div class="wrap">
     <div class="ch-head rv">
       <div>
-        <div class="eyebrow"><span data-k="grid"><kbd>⌘0</kbd></span>Grid</div>
-        <h2>Every project, <span class="q">live, side by side.</span></h2>
+        <div class="eyebrow"><i class="ic" data-i="tray"></i>Inbox</div>
+        <h2>Everything that waits, <span class="q">in one list.</span></h2>
       </div>
       <div class="ch-body">
-        <p>The Grid shows every project at once, each tile a real terminal, not a picture of one. Two agents asking for permission and one that finished: you see all three without opening anything.</p>
+        <p>The <b>Inbox</b> at the top of the sidebar collects what needs you in every project: permission requests, questions, failures and finished turns, oldest first. Read the agent’s question and the last lines of its terminal, then <b>Approve</b> with ↵, or open the pane.</p>
         <ul class="facts">
-          <li>A finished agent’s tile says <b>how many files it changed</b>, with Review at hand.</li>
-          <li>Tabs and splits per project come back at the next start. <b>Shells start when you look at them</b>, so twenty projects open as fast as one.</li>
+          <li><span data-k="jump"><kbd>⌘J</kbd></span> jumps to the next one from anywhere; <span data-k="back"><kbd>⇧⌘J</kbd></span> takes you back to where you were.</li>
+          <li>Finished turns wait in a group of their own until you’ve <b>seen</b> them.</li>
         </ul>
       </div>
     </div>
-    <figure class="shot rv" style="margin-left:0;margin-right:0">
-      <img src="assets/img/grid.webp" alt="The Grid: four projects live side by side with active waiting indicator" width="1600" height="1000" loading="lazy" decoding="async">
-      <figcaption><b></b>The real app, on macOS</figcaption>
+    <figure class="shot rv">
+      <img src="assets/img/inbox.webp" alt="The Inbox: what waits for you in every project, with the agent’s question, the last lines of its terminal, and Approve, Reject and Open pane" width="1600" height="1000" loading="lazy" decoding="async">
+      <figcaption><b></b>The Inbox, on macOS</figcaption>
     </figure>
   </div>
 </section>
 
-<!-- ============================================================ 3. browser -->
+<!-- ============================================================ 3. terminals first, one panel -->
+<section class="sec">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><span data-k="panel"><kbd>⇧⌘L</kbd></span>Terminals first</div>
+        <h2>Terminals are the stage. <span class="q">Code is one panel away.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>Your agents work in terminals, so the terminals get the window: tabs and splits per project, and a header on every pane with the agent, its status, what it’s doing, a timer and the account. Beside them, <b>one panel</b> holds Changes, Files, History and the Browser. <span data-k="panel"><kbd>⇧⌘L</kbd></span> shows or hides it; <span data-k="expand"><kbd>⇧⌘E</kbd></span> lets it fill the window.</p>
+        <ul class="facts">
+          <li>The selected project opens its <b>sessions and worktrees</b> under it in the sidebar. An earlier Claude Code, Codex or Antigravity CLI session resumes in one click.</li>
+          <li>Files reads code with your language servers: <b>rust-analyzer, gopls, TypeScript, pyright, clangd</b>… <span data-k="zen"><kbd>⌥⌘Z</kbd></span> (Zen) hides everything but the terminals.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot rv">
+      <img src="assets/img/files.webp" alt="Files in the panel beside the terminals: a source file open next to the agent that is changing it" width="1600" height="1000" loading="lazy" decoding="async">
+      <figcaption><b></b>Files beside the terminals, on macOS</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================================================ 4. overview -->
+<section class="sec">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><span data-k="overview"><kbd>⌘0</kbd></span>Overview</div>
+        <h2>Every project, <span class="q">live, side by side.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>The Overview shows every project at once, each tile a real terminal you can type into, not a picture of one. An agent that asks, one that finished, a test run that failed: you see all of them without opening anything.</p>
+        <ul class="facts">
+          <li>Projects stay in <b>the order you choose</b>. <span data-k="move"><kbd>⌥⌘↑</kbd></span> moves one, <span data-k="project"><kbd>⌘1–9</kbd></span> opens one, and the numbers never shift.</li>
+          <li>Tabs and splits come back at the next start. <b>Shells start when you look at them</b>, so twenty projects open as fast as one.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot rv">
+      <img src="assets/img/overview.webp" alt="The Overview: every project’s live terminal in tiles, with a Notice on the ones that need you" width="1600" height="1000" loading="lazy" decoding="async">
+      <figcaption><b></b>The Overview, on macOS</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================================================ 5. changes & commit -->
+<section class="sec">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><span data-k="changes"><kbd>⇧⌘R</kbd></span>Changes, worktrees &amp; commit</div>
+        <h2>Review it, commit it, <span class="q">or ship in one button.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p><b>Changes</b> shows what this run touched, the whole branch, or the last commit, as a diff beside the agent that wrote it. The commit message is written from the agent’s task; <b>Commit</b> <span data-k="commit"><kbd>⇧⌘C</kbd></span> commits, pushes and opens the pull request.</p>
+        <ul class="facts">
+          <li>Start an agent in <b>a git worktree of its own</b>, so two agents never write over the same files. It shows under its project in the sidebar.</li>
+          <li><b>History</b> lists commits and pull requests; the project bar shows the open pull request and whether its checks pass.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot rv">
+      <img src="assets/img/changes.webp" alt="Changes beside the terminals: the files this run touched, a diff, and a commit message written from the agent’s task" width="1600" height="1000" loading="lazy" decoding="async">
+      <figcaption><b></b>Changes, on macOS</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================================================ 6. browser -->
 <section class="sec">
   <div class="wrap">
     <div class="ch-head rv">
@@ -174,128 +245,73 @@
         <h2>A browser your agents <span class="q">can drive.</span></h2>
       </div>
       <div class="ch-body">
-        <p>An agent opens your dev server beside its terminal, clicks through it, types, reads the page and the console, and answers dialogs, with <b>real input events</b>. You watch it work. Click into the page to <b>Take Over</b>; <b>Hand Back</b> when you’re done.</p>
+        <p>An agent opens your dev server in the panel beside its terminal, clicks through it, types, reads the page and the console, and answers dialogs, with <b>real input events</b>. You watch it work, and click into the page to take over any time.</p>
         <ul class="facts">
           <li>The system’s own web view: <b>WebKit, WebView2, WebKitGTK</b>. Sign-in pop-ups, downloads, find, zoom and the inspector all work.</li>
-          <li>Each agent gets a page of its own. Agents <b>never type your passwords</b>.</li>
+          <li>Each agent gets a page of its own. A dev server a pane starts shows up as a chip in the project bar. Agents <b>never type your passwords</b>.</li>
         </ul>
       </div>
     </div>
+    <figure class="shot rv">
+      <img src="assets/img/browser.webp" alt="An agent clicks through a page in the Browser panel while the terminals keep running" width="1600" height="1000" loading="lazy" decoding="async">
+      <figcaption><b></b>The Browser panel, on macOS</figcaption>
+    </figure>
   </div>
 </section>
 
-<!-- ============================================================ 4. code & nested sessions -->
+<!-- ============================================================ 7. accounts & usage -->
 <section class="sec">
   <div class="wrap">
     <div class="ch-head rv">
       <div>
-        <div class="eyebrow"><span data-k="code"><kbd>⌘E</kbd></span>Wide Code Editor &amp; Nested Sessions</div>
-        <h2>Code wide. <span class="q">Every session in your project tree.</span></h2>
+        <div class="eyebrow"><i class="ic" data-i="gauge"></i>Accounts &amp; usage</div>
+        <h2>Several accounts per agent. <span class="q">No logout dance.</span></h2>
       </div>
       <div class="ch-body">
-        <p>The Code Editor commands the main viewport while Terminals, Agent Logs, and LSP Problems live in a collapsible bottom or right panel (<span data-k="drawer"><kbd>⇧⌘L</kbd></span>). Expand any project in the sidebar to see live and past sessions for <b>Claude Code, Codex, and Antigravity CLI (<span class="mono">agy</span>)</b> — one click resumes right where you stopped.</p>
+        <p>Add your <b>Claude Code</b> and <b>Codex</b> accounts in <b>Settings › Accounts</b>, each with its own isolated login, and drag them into the order you want them used. The meter at the foot of the sidebar shows the account in use; click it for every account’s real <b>5-hour</b> and <b>weekly</b> limits, with their reset times.</p>
         <ul class="facts">
-          <li>Your language servers: <b>rust-analyzer, gopls, TypeScript, pyright, clangd</b>… Definitions, references, rename, hover and problems.</li>
-          <li>Dock the Terminal Panel bottom or right, maximize it, or hide it completely while reading code.</li>
+          <li>When an account hits its limit, the pane’s Notice offers <b>Resume on</b> the next one, or failover does it for you and resumes <b>the same conversation</b>.</li>
+          <li>When every account of an agent is limited, another provider can take over from a handoff summary that leaves secrets out.</li>
         </ul>
+        <div class="spec spec-in" data-spec="limit"></div>
       </div>
     </div>
-    <figure class="shot rv" style="margin-left:0;margin-right:0">
-      <img src="assets/img/focus.webp" alt="Wide Code Editor commanding the workspace with project-nested agent sessions (Claude Code, Codex, Antigravity CLI) in the sidebar and collapsible Terminal Panel below" width="1600" height="1000" loading="lazy" decoding="async">
-      <figcaption><b></b>The real app, on macOS</figcaption>
-    </figure>
+    <div class="duo">
+      <figure class="shot rv">
+        <img src="assets/img/accounts.webp" alt="Settings › Accounts: accounts in failover order with their 5-hour and weekly usage, and what happens when one hits its limit" width="1600" height="1000" loading="lazy" decoding="async">
+        <figcaption><b></b>Settings › Accounts</figcaption>
+      </figure>
+      <figure class="shot rv">
+        <img src="assets/img/usage.webp" alt="The usage meter at the foot of the sidebar, open as Accounts &amp; usage: every account’s 5-hour and weekly meters and the failover switch" width="1600" height="1000" loading="lazy" decoding="async">
+        <figcaption><b></b>The usage meter and Accounts &amp; usage</figcaption>
+      </figure>
+    </div>
   </div>
 </section>
 
-<!-- ============================================================ 4b. multi-account profiles & failover -->
+<!-- ============================================================ 8. phone -->
 <section class="sec">
   <div class="wrap">
     <div class="ch-head rv">
       <div>
-        <div class="eyebrow"><i class="ic" data-i="key"></i>Multi-Account Profiles &amp; Failover</div>
-        <h2>Switch accounts in one click. <span class="q">Zero logout dance.</span></h2>
+        <div class="eyebrow"><i class="ic" data-i="device-mobile"></i>Phone</div>
+        <h2>Answer your agents <span class="q">from your phone.</span></h2>
       </div>
       <div class="ch-body">
-        <p>Pre-register multiple <b>Claude Code</b> &amp; <b>ChatGPT / Codex</b> accounts — <b>claude1, claude2, chatgpt1, chatgpt2</b> — each signed in inside its own isolated <span class="mono">0o700</span> auth folder. Drag and drop cards to set fallback order, track real server-reported <b>5-hour</b> and <b>weekly</b> usage percentages with live reset countdowns, switch accounts mid-session in one click, or let Auto-Resume fail over automatically.</p>
+        <p>Turn on <b>Settings › Phone</b> and scan the QR code. Your phone follows every agent over the same Wi-Fi, or through your own Cloudflare, Tailscale or ngrok tunnel: live output, <b>Approve</b> and <b>Reject</b>, follow-ups and account switches.</p>
         <ul class="facts">
-          <li><b>Same-provider failover</b> copies the session across isolated roots and runs native <span class="mono">--resume</span> with full conversation history intact.</li>
-          <li><b>Cross-provider failover</b> writes a secret-redacted handoff summary so another agent picks up from the exact stopping point.</li>
+          <li>Every phone gets <b>its own key</b>; revoke it from the same page any time.</li>
         </ul>
       </div>
     </div>
-    <figure class="shot rv" style="margin-left:0;margin-right:0">
-      <img src="assets/img/profiles.webp" alt="Multi-Account Profiles showing Claude Max, ChatGPT Plus #1/#2/#3, and Antigravity CLI with 5-hour and weekly usage limit bars" width="1600" height="1000" loading="lazy" decoding="async">
-      <figcaption><b></b>Pre-registered accounts with 5-hour &amp; weekly usage limits</figcaption>
-    </figure>
-    <figure class="shot rv" style="margin-left:0;margin-right:0;margin-top:20px">
-      <img src="assets/img/editor.webp" alt="Inline Rate-Limit Recovery Banner with one-click Resume on claude2, chatgpt1, or chatgpt2" width="1600" height="1000" loading="lazy" decoding="async">
-      <figcaption><b></b>Manual &amp; Auto-Resume failover banner directly inside the paused pane</figcaption>
+    <figure class="shot rv">
+      <img src="assets/img/phone.webp" alt="Settings › Phone: the companion server, a QR code to scan, and the paired phones" width="1600" height="1000" loading="lazy" decoding="async">
+      <figcaption><b></b>Settings › Phone</figcaption>
     </figure>
   </div>
 </section>
 
-<!-- ============================================================ 4c. unified usage monitor -->
-<section class="sec">
-  <div class="wrap">
-    <div class="ch-head rv">
-      <div>
-        <div class="eyebrow"><i class="ic" data-i="lightning"></i>Usage &amp; Status Monitor</div>
-        <h2>Every account’s quota, <span class="q">in one glance.</span></h2>
-      </div>
-      <div class="ch-body">
-        <p>Click the top-bar telemetry pill to inspect every account’s <b>5-hour</b> and <b>weekly</b> quota bars, active session assignment, and 1-click Switch controls — or open the full Monitor view for aggregate token totals and live failover logs.</p>
-      </div>
-    </div>
-    <figure class="shot rv" style="margin-left:0;margin-right:0">
-      <img src="assets/img/monitor.webp" alt="Unified All-Agent Usage & Status Monitor showing 5-hour tokens, weekly tokens, per-account quota bars, and active sessions" width="1600" height="1000" loading="lazy" decoding="async">
-      <figcaption><b></b>Real-time telemetry across all configured accounts</figcaption>
-    </figure>
-  </div>
-</section>
-
-<!-- ============================================================ 4d. phone pairing & mobile companion -->
-<section class="sec">
-  <div class="wrap">
-    <div class="ch-head rv">
-      <div>
-        <div class="eyebrow"><i class="ic" data-i="device-mobile"></i>Phone Pairing &amp; Mobile Companion</div>
-        <h2>Approve tools and switch accounts <span class="q">from your phone.</span></h2>
-      </div>
-      <div class="ch-body">
-        <p>Enable the built-in Mobile Companion server over your local Wi-Fi or a secure tunnel (Cloudflare, Tailscale, ngrok) and scan the QR code. Every paired phone receives a revocable token to watch live streaming output, approve pending tools, send follow-ups, and trigger profile failover remotely.</p>
-      </div>
-    </div>
-    <figure class="shot rv" style="margin-left:0;margin-right:0">
-      <img src="assets/img/pairing.webp" alt="Phone Pairing view with generated QR code, pairing code, and paired iPhone device management" width="1600" height="1000" loading="lazy" decoding="async">
-      <figcaption><b></b>QR pairing with revocable per-device tokens &amp; secret-redacted streaming</figcaption>
-    </figure>
-  </div>
-</section>
-
-<!-- ============================================================ 5. review -->
-<section class="sec">
-  <div class="wrap">
-    <div class="ch-head rv">
-      <div>
-        <div class="eyebrow"><span data-k="review"><kbd>⇧⌘R</kbd></span>Review, worktrees &amp; commit</div>
-        <h2>Review it, merge it, <span class="q">or ship in one button.</span></h2>
-      </div>
-      <div class="ch-body">
-        <p>Review shows what changed <b>since the agent started</b> or since the last commit, unified or side by side, with 1-button <b>commit, push and pull request</b> directly below the file list.</p>
-        <ul class="facts">
-          <li>Start an agent in <b>a git worktree of its own</b>, so two agents never write over the same files.</li>
-          <li>Only the files you check go in; on a branch it opens the pull request via GitHub CLI or the Browser panel.</li>
-        </ul>
-      </div>
-    </div>
-    <figure class="shot rv" style="margin-left:0;margin-right:0">
-      <img src="assets/img/review.webp" alt="Review diff with file checkboxes and one-button Commit beside the active agent" width="1600" height="1000" loading="lazy" decoding="async">
-      <figcaption><b></b>The real app, on macOS</figcaption>
-    </figure>
-  </div>
-</section>
-
-<!-- ============================================================ 7. documents -->
+<!-- ============================================================ 9. documents -->
 <section class="sec">
   <div class="wrap">
     <div class="ch-head rv">
@@ -304,13 +320,39 @@
         <h2>The report your agent wrote, <span class="q">right there.</span></h2>
       </div>
       <div class="ch-body">
-        <p>PDF, Word, PowerPoint, Excel, CSV and images open in place, read in Rust off the UI thread. A CSV opens as a table, with find and zoom, beside the agent that wrote it.</p>
+        <p>PDF, Word, PowerPoint, Excel, CSV and images open in the panel, read in Rust off the UI thread. A CSV opens as a table, with find and zoom, beside the agent that wrote it.</p>
       </div>
     </div>
-    <figure class="shot rv" style="margin-left:0;margin-right:0">
-      <img src="assets/img/docs.webp" alt="A CSV report open as a table beside Codex" width="1600" height="1000" loading="lazy" decoding="async">
-      <figcaption><b></b>The real app, on macOS</figcaption>
+    <figure class="shot rv">
+      <img src="assets/img/docs.webp" alt="A report open in the panel beside the agent that wrote it" width="1600" height="1000" loading="lazy" decoding="async">
+      <figcaption><b></b>A document in the panel, on macOS</figcaption>
     </figure>
+  </div>
+</section>
+
+<!-- ============================================================ 10. palette & light -->
+<section class="sec">
+  <div class="wrap">
+    <div class="ch-head rv">
+      <div>
+        <div class="eyebrow"><span data-k="palette"><kbd>⌘K</kbd></span>Command palette</div>
+        <h2>One box finds anything. <span class="q">Day or night.</span></h2>
+      </div>
+      <div class="ch-body">
+        <p>The command palette searches <b>everything</b>: projects, sessions (live and ones to resume), files, the output of every pane, and every command with its shortcut, so you learn them as you go. <kbd>⇥</kbd> moves between the scopes.</p>
+        <p>TernaryCode follows your system’s appearance, terminals included, with a dark and a light scheme made for long sessions.</p>
+      </div>
+    </div>
+    <div class="duo">
+      <figure class="shot rv">
+        <img src="assets/img/palette.webp" alt="The command palette with its scopes: All, Projects, Sessions, Files, Output and Commands" width="1600" height="1000" loading="lazy" decoding="async">
+        <figcaption><b></b>The command palette</figcaption>
+      </figure>
+      <figure class="shot rv">
+        <img src="assets/img/light.webp" alt="TernaryCode in light mode: an agent asks, and the Notice offers Reject and Approve" width="1600" height="1000" loading="lazy" decoding="async">
+        <figcaption><b></b>In light mode</figcaption>
+      </figure>
+    </div>
   </div>
 </section>
 
@@ -323,31 +365,31 @@
     </div>
     <div class="bento">
       <div class="tile-c rv">
-        <div class="vis"><span class="mini"><span class="lat run lg" style="--c:var(--run)"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></span>Updated to <span class="mono" data-version>0.1.49</span><span class="t3">·</span><span class="t3">4 agents kept running</span></span></div>
+        <div class="vis"><span class="mini"><i class="icf c-done" data-i="check-circle"></i>Updated to <span class="mono" data-version>0.2.5</span><span class="t3 wide">· 4 agents kept running</span></span></div>
         <h3>Updates don’t stop your agents</h3>
         <p>On macOS, an update installs while you work and TernaryCode restarts in place. The programs in your panes keep running.</p>
       </div>
       <div class="tile-c rv">
-        <div class="vis"><span class="mini"><i class="ic" data-i="clock-counter-clockwise" style="color:var(--fg-3)"></i>Claude Code<span class="t3">·</span><span class="t3">can resume</span><span class="key" style="margin-left:4px">↵</span></span></div>
+        <div class="vis"><div class="spec" data-spec="resume"></div></div>
         <h3>Pick up the conversation</h3>
-        <p>Agents that can continue a conversation offer <b>Resume</b> after a restart, in the pane where they were.</p>
+        <p>After a restart, agents that can continue a conversation offer <b>Resume</b> in a Notice, in the pane where they were.</p>
       </div>
       <div class="tile-c rv">
-        <div class="vis"><span class="mini"><span class="dot"></span><span class="mono">localhost:5173</span><i class="ic" data-i="arrow-up-right" style="color:var(--fg-3);font-size:12px"></i></span></div>
+        <div class="vis"><div class="spec chips" data-spec="server"></div></div>
         <h3>Dev servers become chips</h3>
-        <p>A local server a pane starts shows up in the top bar. One click opens it in the Browser panel, beside the agent.</p>
+        <p>A local server a pane starts shows up in the project bar, beside the pull request and its checks. One click opens it in the Browser panel.</p>
       </div>
       <div class="tile-c rv">
-        <div class="vis" style="min-height:0"><div class="term-mini"><span class="m">storefront</span> <span class="d">on</span> <span class="m"> main</span> <span class="g">❯</span> npm test
+        <div class="vis" style="min-height:0"><div class="term-mini"><span class="u">~/code/storefront</span> <span class="m">main</span> <span class="g">❯</span> npm test
 <span class="g">✓</span> 48 passed <span class="d">(1.2s)</span>  see <span class="lnk">src/cart.ts:42</span>
-<span class="m">storefront</span> <span class="g">❯</span> <span class="cur"> </span></div></div>
+<span class="u">~/code/storefront</span> <span class="m">main</span> <span class="g">❯</span> <span class="cur"> </span></div></div>
         <h3>A real terminal</h3>
-        <p>24-bit colour, mouse, IME, <kbd>⌘</kbd>-click links, <kbd>⇧⌘F</kbd> search in every pane, shell integration for zsh, bash, fish and PowerShell.</p>
+        <p>24-bit colour, mouse, IME, <kbd>⌘</kbd>-click links, find that counts its matches in every pane, shell integration for zsh, bash, fish and PowerShell.</p>
       </div>
       <div class="tile-c rv">
-        <div class="vis" style="min-height:0"><div class="pal"><div class="pal-q"><i class="ic" data-i="magnifying-glass"></i>re<span class="caret"></span></div><div class="pal-r on"><i class="ic" data-i="git-diff"></i>Review Changes…<span class="k">⇧⌘R</span></div><div class="pal-r"><i class="ic" data-i="clock-counter-clockwise"></i>Reopen Closed Page</div></div></div>
-        <h3>Everything is a keystroke away</h3>
-        <p>The command palette <span data-k="palette"><kbd>⌘K</kbd></span> lists every command, with its shortcut, so you learn them as you go.</p>
+        <div class="vis"><span class="keys-big" data-k="zen"><kbd>⌥</kbd><kbd>⌘</kbd><kbd>Z</kbd></span></div>
+        <h3>Zen, when you only want the terminals</h3>
+        <p>The sidebar, the panel and the bars step aside. The same keys bring them back, where they were.</p>
       </div>
       <div class="tile-c rv">
         <div class="vis"><span class="mini"><i class="ic" data-i="apple-logo"></i>macOS</span><span class="mini"><i class="ic" data-i="windows-logo"></i>Windows</span><span class="mini"><i class="ic" data-i="linux-logo"></i>Linux</span></div>
@@ -385,8 +427,8 @@
     </div>
     <div class="trio rv">
       <div><h3><i class="ic" data-i="user-circle-dashed"></i>No account</h3><p>Download it and use it. There is no sign-in, no plan and no trial. Your agents keep their own logins, as they do in any terminal.</p></div>
-      <div><h3><i class="ic" data-i="eye-slash"></i>No telemetry</h3><p>TernaryCode connects to one place: GitHub, to check for updates, and you can turn that off. Pushes, commit history, and pull/merge requests go through your own git, GitHub CLI (<span class="mono">gh</span>), and GitLab CLI (<span class="mono">glab</span>). Hooks and browser tools talk to the app over a local socket, with a token per pane.</p></div>
-      <div><h3><i class="ic" data-i="code"></i>Open source</h3><p>MIT licensed, built in the open with <a href="https://github.com/emilk/egui" style="text-decoration:underline;text-decoration-color:var(--hair-3);text-underline-offset:3px">egui</a>, alacritty_terminal and wry. Read it, build it, change it.</p></div>
+      <div><h3><i class="ic" data-i="eye-slash"></i>No telemetry</h3><p>TernaryCode connects to one place: GitHub, to check for updates, and you can turn that off. Pushes, commit history and pull or merge requests go through your own git, GitHub CLI (<code>gh</code>) and GitLab CLI (<code>glab</code>). Hooks and browser tools talk to the app over a local socket, with a token per pane.</p></div>
+      <div><h3><i class="ic" data-i="code"></i>Open source</h3><p>MIT licensed, built in the open with <a href="https://github.com/emilk/egui" class="ul">egui</a>, alacritty_terminal and wry. Read it, build it, change it.</p></div>
     </div>
   </div>
 </section>
@@ -404,7 +446,7 @@
         <button type="button" role="tab" id="tab-mac" aria-controls="os-mac" aria-selected="true"><i class="ic" data-i="apple-logo"></i>macOS</button>
         <button type="button" role="tab" id="tab-win" aria-controls="os-win" aria-selected="false"><i class="ic" data-i="windows-logo"></i>Windows</button>
         <button type="button" role="tab" id="tab-linux" aria-controls="os-linux" aria-selected="false"><i class="ic" data-i="linux-logo"></i>Linux</button>
-        <span class="ver">v<span data-version>0.2.2</span></span>
+        <span class="ver">v<span data-version>0.2.5</span></span>
       </div>
 
       <div class="pane-os" role="tabpanel" id="os-mac" aria-labelledby="tab-mac">
@@ -473,10 +515,11 @@
     </div>
     <div class="faq-l rv">
       <details><summary>Is it really free?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Yes. TernaryCode is MIT licensed, with no account, no paid tier and no telemetry. You pay only for the agents you already use, through their own plans.</p></div></details>
-      <details><summary>Which agents does it work with?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Run Agent has presets for <b>Claude Code, ChatGPT / Codex, Antigravity CLI (<span class="mono">agy</span>), and OpenCode</b>, and you can add any command as a preset of your own. Each agent is installed on its own, as usual.</p><p>Sessions for Claude Code, Codex, and Antigravity CLI appear directly inside each project in the sidebar for one-click resume, and you can pre-register multiple isolated accounts per provider with 5-hour and weekly usage limit tracking.</p></div></details>
-      <details><summary>Will it change my agent’s settings?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not unless you ask. Hooks are passed for each launch, and secondary accounts live in private <span class="mono">0o700</span> profile folders so your default CLI login is untouched. If you want agents you start by hand to report too, <b>Settings → Agents</b> installs hooks once with an exact preview and full <b>Uninstall</b>.</p></div></details>
-      <details><summary>How does multi-account switching work?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Register each account once in <b>Profiles</b> (for example <span class="mono">chatgpt1</span>, <span class="mono">chatgpt2</span>, <span class="mono">chatgpt3</span>) and click <b>Auth Login</b> inside its isolated folder. When an account nears or hits its 5-hour or weekly limit, click the one-click Switch button in the pane header — or let Auto-Resume fail over — to copy the session and continue right where you stopped without logging out.</p></div></details>
-      <details><summary>Does my code go anywhere?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not through TernaryCode. It sends nothing about you or your code; it only asks GitHub whether there’s an update. When you push or open a pull request, your own git and GitHub CLI send it where you asked. Your agents talk to their own providers, exactly as they do in any terminal.</p></div></details>
+      <details><summary>Which agents does it work with?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Run agent (<span data-k="run"><kbd>⇧⌘A</kbd></span>) has presets for <b>Claude Code, ChatGPT / Codex, Antigravity CLI (<span class="mono">agy</span>) and OpenCode</b>, and you can add any command as a preset of your own. Each agent is installed on its own, as usual.</p><p>The selected project lists its Claude Code, Codex and Antigravity CLI sessions under it in the sidebar, and the command palette finds older ones to resume.</p></div></details>
+      <details><summary>Will it change my agent’s settings?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not unless you ask. Hooks are passed for each launch, and each account you add lives in a private <span class="mono">0o700</span> folder so your default CLI login is untouched. If you want agents you start by hand to report too, <b>Settings › Agents</b> installs hooks once with an exact preview and full <b>Uninstall</b>.</p></div></details>
+      <details><summary>How does switching accounts work?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Add each account once in <b>Settings › Accounts</b> (for example <span class="mono">claude1</span>, <span class="mono">claude2</span>, <span class="mono">codex1</span>) and sign in inside its own folder; drag them into the order they should be used. When one hits its 5-hour or weekly limit, the pane’s Notice offers <b>Resume on</b> the next account, or failover does it for you. The conversation goes on where it stopped, and nobody logs out.</p></div></details>
+      <details><summary>Where did Profiles and Phone Pairing go?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Into Settings, with everything else: <b>Profiles</b> is now <b>Settings › Accounts</b>, and <b>Phone Pairing</b> is <b>Settings › Phone</b>. The usage meter at the foot of the sidebar opens <b>Accounts &amp; usage</b> with every account’s meters.</p></div></details>
+      <details><summary>Does my code go anywhere?<i class="ic" data-i="plus"></i></summary><div class="a"><p>Not through TernaryCode. It sends nothing about you or your code; it only asks GitHub whether there’s an update. When you push or open a pull request, your own git and GitHub or GitLab CLI send it where you asked. The phone companion serves your own network, or the tunnel you set. Your agents talk to their own providers, exactly as they do in any terminal.</p></div></details>
       <details><summary>Why does my system warn me about it?<i class="ic" data-i="plus"></i></summary><div class="a"><p>The builds aren’t notarized or code-signed yet. On macOS, the one-line installer checks the download’s SHA-256 and signature itself; with the <b>.dmg</b>, use <b>Open Anyway</b> in Privacy &amp; Security. On Windows, SmartScreen asks once.</p></div></details>
     </div>
   </div>
@@ -492,7 +535,7 @@
       <a class="pb pb-pri" href="#install" data-cta-main><i class="ic" data-i="download-simple"></i><span>Download for macOS</span></a>
       <a class="pb pb-sec" href="https://github.com/ilhamnadhif/ternarycode"><i class="ic" data-i="github-logo"></i>View on GitHub</a>
     </div>
-    <p class="cta-note">Free and open source · v<span data-version>0.2.2</span></p>
+    <p class="cta-note">Free and open source · v<span data-version>0.2.5</span></p>
   </div>
 </section>
 
