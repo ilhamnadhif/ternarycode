@@ -3,7 +3,7 @@
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, CornerRadius, Id, Margin, RichText, Stroke};
+use eframe::egui::{self, CornerRadius, FontId, Id, Margin, RichText, Stroke};
 use parking_lot::Mutex;
 use tc_core::model::Settings;
 
@@ -80,6 +80,10 @@ pub struct Updater {
     skipped: Option<String>,
     /// The previous run's update was reported and its leftovers cleaned (first frame).
     started: bool,
+    /// The user opened the dialog (the menu, the status bar): Enter answers it. One that opened
+    /// by itself (found at launch, downloaded, failed) takes a click, so an Enter meant for a
+    /// terminal never installs or restarts.
+    asked: bool,
 }
 
 impl Default for Updater {
@@ -96,6 +100,7 @@ impl Default for Updater {
             skip_ticked: false,
             skipped: None,
             started: false,
+            asked: false,
         }
     }
 }
@@ -134,6 +139,7 @@ impl Updater {
     /// "Check for Updates…" from the menu.
     pub fn check_now(&mut self, ctx: &egui::Context) {
         self.dialog_open = true;
+        self.asked = true;
         match self.state {
             State::Downloading(_) => {}
             // Shown as it is, while a check looks for an even newer version.
@@ -150,6 +156,7 @@ impl Updater {
     /// the user chose not to see again is dropped (no toolbar button either).
     pub fn close_dialog(&mut self) {
         self.dialog_open = false;
+        self.asked = false;
         if std::mem::take(&mut self.skip_ticked)
             && let State::Available(release) = &self.state
         {
@@ -168,6 +175,7 @@ impl Updater {
     fn show_error(&mut self, message: String) {
         self.state = State::Error(message);
         self.dialog_open = true;
+        self.asked = false;
     }
 
     /// First frame: reports how the update the previous run installed went, and removes what
@@ -206,6 +214,10 @@ impl Updater {
         if !self.started {
             self.started = true;
             toast = self.report_last_update();
+            #[cfg(debug_assertions)]
+            if let Ok(name) = std::env::var("TERNARYCODE_DEV_UPDATE") {
+                self.dev_state(&name);
+            }
         }
         if let Some(rx) = &self.rx {
             match rx.try_recv() {
@@ -268,11 +280,13 @@ impl Updater {
                             match (std::mem::replace(&mut self.state, State::Idle), result) {
                                 (State::Downloading(release), Ok(prepared)) => {
                                     self.state = State::Ready(release, prepared);
+                                    self.asked &= self.dialog_open;
                                     self.dialog_open = true;
                                 }
                                 (_, Err(e)) => {
                                     self.state =
                                         State::Error(tf("The update could not be installed: {}", &[&e]));
+                                    self.asked &= self.dialog_open;
                                     self.dialog_open = true;
                                 }
                                 (other, Ok(_)) => self.state = other,
@@ -294,6 +308,7 @@ impl Updater {
             self.popup = false;
             if matches!(self.state, State::Available(_)) {
                 self.dialog_open = true;
+                self.asked = false;
             }
         }
         // Automatic checks.
@@ -341,6 +356,34 @@ impl Updater {
     /// Opens the dialog (the status bar item was clicked).
     pub fn open_dialog(&mut self) {
         self.dialog_open = true;
+        self.asked = true;
+    }
+
+    /// A state to look at (debug builds, `TERNARYCODE_DEV_UPDATE`): checking, uptodate, error,
+    /// available, downloading, ready.
+    #[cfg(debug_assertions)]
+    fn dev_state(&mut self, name: &str) {
+        let release = Release {
+            version: "0.3.0".into(),
+            notes: "## New\n\n- Slate: the whole window redesigned around the Inbox.\n- Commit, push and open a pull request from Changes.\n\n## Improved\n\n- Terminal find counts its matches.\n".into(),
+            date: Some("2026-11-23".into()),
+            page: String::new(),
+            download: None,
+        };
+        self.state = match name {
+            "checking" => State::Checking,
+            "uptodate" => State::UpToDate,
+            "error" => State::Error("The download doesn't match its published checksum".into()),
+            "available" => State::Available(release),
+            "downloading" => {
+                *self.stage.lock() = Stage::Downloading { done: 4_404_019, total: 19_188_940 };
+                State::Downloading(release)
+            }
+            "ready" => State::Ready(release, Prepared { version: "0.3.0".into(), dir: std::path::PathBuf::new(), file: std::path::PathBuf::new() }),
+            _ => return,
+        };
+        self.dialog_open = true;
+        self.asked = true;
     }
 
     fn start_download(&mut self, ctx: &egui::Context, release: Release) {
@@ -395,227 +438,213 @@ impl Updater {
         let screen = ctx.content_rect();
         let dark = ctx.global_style().visuals.dark_mode;
         let p = style::palette(dark);
-        let width = if matches!(self.state, State::Available(_)) {
-            (screen.width() - 32.0).clamp(360.0, 560.0)
-        } else {
-            (screen.width() - 32.0).clamp(340.0, 460.0)
-        };
-        // Enter answers only the dialog asked for (up to date). The others can open by
-        // themselves (found at launch, downloaded, failed) while the user types into a
-        // terminal, and an Enter meant for it must not install or restart: they take a click
-        // (Esc still closes them).
+        // Enter answers the dialog the user asked for (`asked`); Up to date always.
         let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        let asked = self.asked;
+        let keys = asked.then_some("↵");
         let modal = egui::Modal::new(Id::new("update-dialog"))
             .frame(dialogs::frame(ctx))
             .backdrop_color(dialogs::scrim(dark))
-            .show(ctx, |ui| {
-                ui.set_width(width);
-                match &self.state {
-                    State::Idle | State::Checking => {
-                        if dialogs::header(ui, icons::ARROW_CIRCLE_UP, p.accent, t("Software Update"), Some(&tf("TernaryCode {} is installed.", &[CURRENT]))) {
+            .show(ctx, |ui| match &self.state {
+                State::Idle | State::Checking => {
+                    dialogs::begin(ui, dialogs::W_CONFIRM);
+                    // The tile turns while it looks.
+                    let lead = &mut |ui: &mut egui::Ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
+                        ui.painter().rect_filled(r, CornerRadius::same(9), p.accent_tint);
+                        super::status::paint_spinner(ui.painter(), r.center(), 17.0, p.accent_text);
+                    };
+                    if dialogs::head(ui, lead, t("Checking for updates…"), Some(&tf("TernaryCode {} is installed.", &[CURRENT])), false) {
+                        close = true;
+                    }
+                    dialogs::body(ui, |_| {});
+                    dialogs::footer_with(ui, None, |ui| {
+                        if kit::secondary(ui, None, t("Cancel")).clicked() {
                             close = true;
                         }
-                        dialogs::body(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(RichText::new(t("Checking for updates…")).color(p.text_muted));
-                            });
-                        });
-                        dialogs::footer_with(ui, None, |ui| {
-                            if kit::secondary(ui, None, t("Cancel")).clicked() {
+                    });
+                }
+                State::UpToDate => {
+                    dialogs::begin(ui, dialogs::W_CONFIRM);
+                    if dialogs::header(ui, icons::CHECK_CIRCLE, p.ok, t("TernaryCode is up to date"), Some(&tf("Version {} is the latest.", &[CURRENT]))) {
+                        close = true;
+                    }
+                    dialogs::body(ui, |_| {});
+                    dialogs::footer_with(ui, None, |ui| {
+                        if kit::button_keys(ui, kit::Kind::Primary, None, t("OK"), Some("↵"), false).clicked() || enter {
+                            close = true;
+                        }
+                    });
+                }
+                State::Error(e) => {
+                    dialogs::begin(ui, dialogs::W_LIST);
+                    if dialogs::header(ui, icons::WARNING, p.err, t("The update failed"), None) {
+                        close = true;
+                    }
+                    // The reason as a sentence: "the download does not match…" → "The download…".
+                    let mut reason = e.trim_end_matches('.').to_string();
+                    if let Some(first) = reason.get_mut(0..1) {
+                        first.make_ascii_uppercase();
+                    }
+                    let text = format!("{reason}. {}", t("Nothing was changed."));
+                    dialogs::body(ui, |ui| {
+                        ui.add(egui::Label::new(RichText::new(text).size(style::SMALL).color(p.text_muted).line_height(Some(16.0))).wrap());
+                    });
+                    dialogs::footer_left(
+                        ui,
+                        |ui| {
+                            if dialogs::hint_link(ui, t("Open releases page")).clicked() {
+                                update::open_page(&format!("https://github.com/{}/releases/latest", update::REPO));
+                            }
+                        },
+                        |ui| {
+                            if kit::button_keys(ui, kit::Kind::Primary, None, t("Try again"), keys, false).clicked() || (asked && enter) {
+                                retry = true;
+                            }
+                            if kit::secondary(ui, None, t("Close")).clicked() {
                                 close = true;
                             }
-                        });
+                        },
+                    );
+                }
+                State::Available(release) => {
+                    dialogs::begin(ui, dialogs::W_FORM);
+                    let mut sub = vec![tf("you have {}", &[CURRENT])];
+                    if let Some(date) = &release.date {
+                        sub.push(tf("released {}", &[date]));
                     }
-                    State::UpToDate => {
-                        if dialogs::header(ui, icons::CHECK_CIRCLE, p.ok, t("TernaryCode is up to date"), Some(&tf("Version {} is the latest.", &[CURRENT]))) {
-                            close = true;
-                        }
-                        ui.add_space(12.0);
-                        dialogs::footer_with(ui, Some(&tf("↵ {}", &[t("OK")])), |ui| {
-                            if kit::button_ex(ui, kit::Kind::Primary, None, t("OK"), false).clicked() || enter {
-                                close = true;
-                            }
-                        });
+                    if let Some(size) = release.download.as_ref().map(|a| a.size).filter(|s| *s > 0) {
+                        sub.push(human_size(size));
                     }
-                    State::Error(e) => {
-                        let sub = format!("{}. {}", e.trim_end_matches('.'), t("Nothing was changed."));
-                        if dialogs::header(ui, icons::WARNING, p.err, t("Software Update Failed"), Some(&sub)) {
-                            close = true;
-                        }
-                        ui.add_space(12.0);
-                        dialogs::footer_left(
-                            ui,
-                            |ui| {
-                                if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_SQUARE_OUT), t("Open Releases Page"), false).clicked() {
-                                    update::open_page(&format!("https://github.com/{}/releases/latest", update::REPO));
-                                }
-                            },
-                            |ui| {
-                                if kit::button_ex(ui, kit::Kind::Primary, None, t("OK"), false).clicked() {
-                                    close = true;
-                                }
-                                if kit::secondary(ui, None, t("Try Again")).clicked() {
-                                    retry = true;
-                                }
-                            },
-                        );
+                    let logo = &mut |ui: &mut egui::Ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
+                        super::settings::paint_logo(ui.painter(), r.expand(3.0), &p);
+                    };
+                    if dialogs::head(ui, logo, &tf("TernaryCode {} is available", &[&release.version]), Some(&sub.join(" · ")), true) {
+                        close = true;
                     }
-                    State::Available(release) => {
-                        let mut sub = vec![tf("you have {}", &[CURRENT])];
-                        if let Some(date) = &release.date {
-                            sub.push(tf("released {}", &[date]));
-                        }
-                        if let Some(size) = release.download.as_ref().map(|a| a.size).filter(|s| *s > 0) {
-                            sub.push(human_size(size));
-                        }
-                        if update_head(ui, &tf("TernaryCode {} is available", &[&release.version]), &sub.join(" · ")) {
-                            close = true;
-                        }
-                        let installable = update::installable(release);
-                        dialogs::body(ui, |ui| {
-                            let notes_h = (screen.height() - 470.0).clamp(110.0, 300.0);
-                            release_notes(ui, &release.notes, notes_h);
-                            if !installable {
-                                ui.add_space(6.0);
-                                ui.add(egui::Label::new(RichText::new(update::manual_reason()).size(style::SMALL).color(p.text_muted)).wrap());
-                            } else {
-                                ui.add_space(12.0);
-                                promise(ui, running_count, running);
-                                ui.add_space(10.0);
-                                ui.horizontal_top(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 8.0;
-                                    ui.label(RichText::new(icons::SHIELD_CHECK).font(style::icon_fill(13.0)).color(p.ok));
-                                    let note = if cfg!(target_os = "macos") {
-                                        t("Downloaded from GitHub, then its size, SHA-256 and code signature are checked before anything is replaced.")
-                                    } else {
-                                        t("Downloaded from GitHub, then its size and SHA-256 are checked before anything is replaced.")
-                                    };
-                                    ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint)).wrap());
-                                });
-                            }
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
+                    let installable = update::installable(release) || dev_preview();
+                    dialogs::body(ui, |ui| {
+                        let notes_h = (screen.height() - 470.0).clamp(110.0, 300.0);
+                        release_notes(ui, &release.notes, notes_h);
+                        if installable {
+                            promise(ui, running_count, running);
+                            ui.horizontal_top(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
-                                let skip = kit::switch(ui, &mut self.skip_ticked);
-                                #[cfg(debug_assertions)]
-                                crate::devtest::record("update-skip", skip.rect);
-                                let _ = skip;
-                                ui.label(RichText::new(tf("Don’t remind me about {}", &[&release.version])).size(style::SMALL).color(p.text_muted));
+                                ui.label(RichText::new(icons::SHIELD_CHECK).font(style::icon_fill(13.0)).color(p.text_faint));
+                                let note = if cfg!(target_os = "macos") {
+                                    t("Downloaded from GitHub, then its size, SHA-256 and code signature are checked before anything is replaced.")
+                                } else {
+                                    t("Downloaded from GitHub, then its size and SHA-256 are checked before anything is replaced.")
+                                };
+                                ui.add(egui::Label::new(RichText::new(note).size(style::SMALL).color(p.text_faint).line_height(Some(16.0))).wrap());
                             });
+                        } else {
+                            ui.add(egui::Label::new(RichText::new(update::manual_reason()).size(style::SMALL).color(p.text_muted).line_height(Some(16.0))).wrap());
+                        }
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            let skip = kit::switch(ui, &mut self.skip_ticked);
+                            #[cfg(debug_assertions)]
+                            crate::devtest::record("update-skip", skip.rect);
+                            let _ = skip;
+                            ui.label(RichText::new(tf("Don’t remind me about {}", &[&release.version])).size(style::SMALL).color(p.text_muted));
                         });
-                        dialogs::footer_with(ui, Some(t("Later keeps it in the status bar.")), |ui| {
+                    });
+                    dialogs::footer_left(
+                        ui,
+                        |ui| {
+                            if dialogs::hint_link(ui, t("View on GitHub")).clicked() {
+                                update::open_page(&release.page);
+                            }
+                        },
+                        |ui| {
                             if installable {
-                                let install = kit::button_keys(ui, kit::Kind::Primary, None, t("Install Update"), None, false);
+                                let install = kit::button_keys(ui, kit::Kind::Primary, None, t("Install update"), keys, false);
                                 #[cfg(debug_assertions)]
                                 crate::devtest::record("update-install", install.rect);
-                                if install.clicked() {
+                                if install.clicked() || (asked && enter) {
                                     install_release = Some(release.clone());
                                 }
-                            } else if kit::button_ex(ui, kit::Kind::Primary, None, t("Download…"), false).clicked() {
+                            } else if kit::button_keys(ui, kit::Kind::Primary, Some(icons::ARROW_SQUARE_OUT), t("Download…"), keys, false).clicked() || (asked && enter) {
                                 update::open_page(&release.page);
                                 close = true;
                             }
-                            let later = kit::secondary(ui, None, t("Later"));
+                            let later = kit::secondary(ui, None, t("Later")).on_hover_text(t("Later keeps it in the status bar."));
                             #[cfg(debug_assertions)]
                             crate::devtest::record("update-close", later.rect);
                             if later.clicked() {
                                 close = true;
                             }
-                            if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_SQUARE_OUT), t("View on GitHub"), false).clicked() {
-                                update::open_page(&release.page);
-                            }
-                        });
+                        },
+                    );
+                }
+                State::Downloading(release) => {
+                    dialogs::begin(ui, dialogs::W_LIST);
+                    if dialogs::header(ui, icons::DOWNLOAD_SIMPLE, p.accent, &tf("Updating to TernaryCode {}", &[&release.version]), None) {
+                        close = true;
                     }
-                    State::Downloading(release) => {
-                        if dialogs::header(ui, icons::DOWNLOAD_SIMPLE, p.accent, &tf("Updating to TernaryCode {}", &[&release.version]), None) {
-                            close = true;
+                    let stage = self.stage.lock().clone();
+                    let (fraction, detail) = match stage {
+                        Stage::Starting => (0.0, t("Starting…").to_string()),
+                        Stage::Downloading { done, total } => {
+                            (if total > 0 { done as f32 / total as f32 } else { 0.0 }, tf("{} of {}", &[&human_size(done), &human_size(total)]))
                         }
-                        let stage = self.stage.lock().clone();
-                        let (fraction, text) = match stage {
-                            Stage::Starting => (0.0, t("Starting…").to_string()),
-                            Stage::Downloading { done, total } => (
-                                if total > 0 { done as f32 / total as f32 } else { 0.0 },
-                                tf("Downloading… {} of {}", &[&human_size(done), &human_size(total)]),
-                            ),
-                            Stage::Verifying => (1.0, t("Verifying…").to_string()),
-                        };
-                        let verifying = matches!(stage, Stage::Verifying);
-                        dialogs::body(ui, |ui| {
-                            let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
-                            ui.painter().rect_filled(bar, egui::CornerRadius::same(3), p.border_strong);
-                            ui.painter().rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * fraction.clamp(0.0, 1.0), 6.0)), egui::CornerRadius::same(3), p.accent);
-                            ui.add_space(12.0);
-                            // The steps: each running (the lattice), done (a check) or to come.
-                            let step = |ui: &mut egui::Ui, state: u8, label: &str, data: &str| {
-                                let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
-                                let cy = r.center().y;
-                                let c = egui::pos2(r.left() + 7.0, cy);
-                                match state {
-                                    2 => {
-                                        ui.painter().text(c, egui::Align2::CENTER_CENTER, icons::CHECK_CIRCLE, style::icon_fill(14.0), p.ok);
-                                    }
-                                    1 => kit::paint_lattice(ui.painter(), c, 10.0, p.info, true),
-                                    _ => {
-                                        ui.painter().circle_stroke(c, 5.5, Stroke::new(1.0, p.text_ghost));
-                                    }
-                                }
-                                let tc = if state == 0 { p.text_ghost } else { p.text };
-                                ui.painter().text(egui::pos2(r.left() + 22.0, cy), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(12.5), tc);
-                                if !data.is_empty() {
-                                    ui.painter().text(egui::pos2(r.right(), cy), egui::Align2::RIGHT_CENTER, data, style::mono(11.0), p.text_faint);
-                                }
-                            };
-                            let pct = format!("{}%", (fraction * 100.0).round() as i32);
-                            step(ui, if verifying { 2 } else { 1 }, &text, if verifying { "" } else { &pct });
-                            let verify_label = if cfg!(target_os = "macos") {
-                                t("Verify size, SHA-256, signature")
-                            } else {
-                                t("Verify size and SHA-256")
-                            };
-                            step(ui, if verifying { 1 } else { 0 }, verify_label, "");
-                            let finish_label = if update::restarts_in_place() {
-                                t("Restart in place")
-                            } else {
-                                t("Install and reopen")
-                            };
-                            step(ui, 0, finish_label, "");
-                        });
-                        dialogs::footer_with(ui, Some(t("It keeps going in the background.")), |ui| {
-                            if kit::secondary(ui, None, t("Hide")).clicked() {
-                                close = true;
-                            }
-                        });
-                    }
-                    State::Ready(release, _) => {
-                        let ready_sub = if update::restarts_in_place() {
-                            t("TernaryCode restarts in place: your projects, tabs and running agents stay open.")
+                        Stage::Verifying => (1.0, String::new()),
+                    };
+                    let verifying = matches!(stage, Stage::Verifying);
+                    dialogs::body(ui, |ui| {
+                        let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
+                        ui.painter().rect_filled(bar, CornerRadius::same(3), p.subtle);
+                        if fraction > 0.0 {
+                            let fill = egui::Rect::from_min_size(bar.min, egui::vec2((bar.width() * fraction.clamp(0.0, 1.0)).max(6.0), 6.0));
+                            ui.painter().rect_filled(fill, CornerRadius::same(3), p.accent);
+                        }
+                        let pct = format!("{}%", (fraction * 100.0).floor() as i32);
+                        let verify = if cfg!(target_os = "macos") { t("size, SHA-256, signature") } else { t("size and SHA-256") };
+                        let (finish, finish_detail) = if update::restarts_in_place() {
+                            (t("Restart in place"), t("panes keep running"))
                         } else {
-                            t("TernaryCode restarts with your projects and tabs. Agents that support it can be resumed.")
+                            (t("Install and reopen"), "")
                         };
-                        if dialogs::header(
+                        steps(
                             ui,
-                            icons::CHECK_CIRCLE,
-                            p.ok,
-                            &tf("TernaryCode {} is ready", &[&release.version]),
-                            Some(ready_sub),
-                        ) {
+                            &[
+                                (if verifying { Step::Done } else { Step::Run }, icons::DOWNLOAD_SIMPLE, t("Downloading"), detail.as_str(), if verifying { "" } else { pct.as_str() }),
+                                (if verifying { Step::Run } else { Step::Todo }, icons::SHIELD_CHECK, t("Verify"), verify, ""),
+                                (Step::Todo, icons::ARROWS_CLOCKWISE, finish, finish_detail, ""),
+                            ],
+                        );
+                    });
+                    dialogs::footer_with(ui, Some(t("It keeps going in the background.")), |ui| {
+                        if kit::secondary(ui, None, t("Hide")).clicked() {
                             close = true;
                         }
-                        ui.add_space(12.0);
-                        dialogs::footer_with(ui, None, |ui| {
-                            let restart = kit::button_ex(ui, kit::Kind::Primary, None, t("Restart Now"), false);
-                            #[cfg(debug_assertions)]
-                            crate::devtest::record("update-restart", restart.rect);
-                            if restart.clicked() {
-                                event = UpdateEvent::Restart;
-                                close = true;
-                            }
-                            if kit::secondary(ui, None, t("Later")).clicked() {
-                                close = true;
-                            }
-                        });
+                    });
+                }
+                State::Ready(release, _) => {
+                    dialogs::begin(ui, dialogs::W_LIST);
+                    let ready_sub = if update::restarts_in_place() {
+                        t("TernaryCode restarts in place: your projects, tabs and running agents stay open.")
+                    } else {
+                        t("TernaryCode restarts with your projects and tabs. Agents that support it can be resumed.")
+                    };
+                    if dialogs::header(ui, icons::CHECK_CIRCLE, p.ok, &tf("TernaryCode {} is ready", &[&release.version]), Some(ready_sub)) {
+                        close = true;
                     }
+                    dialogs::body(ui, |_| {});
+                    dialogs::footer_with(ui, None, |ui| {
+                        let restart = kit::button_keys(ui, kit::Kind::Primary, None, t("Restart now"), keys, false);
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record("update-restart", restart.rect);
+                        if restart.clicked() || (asked && enter) {
+                            event = UpdateEvent::Restart;
+                            close = true;
+                        }
+                        if kit::secondary(ui, None, t("Later")).clicked() {
+                            close = true;
+                        }
+                    });
                 }
             });
         if modal.should_close() {
@@ -623,6 +652,8 @@ impl Updater {
         }
         if let Some(release) = install_release {
             self.skip_ticked = false;
+            // Clicked: the dialog is the user's now, Enter answers it.
+            self.asked = true;
             self.start_download(ctx, release);
         }
         if retry {
@@ -636,6 +667,75 @@ impl Updater {
         }
         event
     }
+}
+
+/// Debug builds showing a state on purpose (`TERNARYCODE_DEV_UPDATE`): an update counts as
+/// installable, to see that layout.
+fn dev_preview() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("TERNARYCODE_DEV_UPDATE").is_some()
+}
+
+/// A step of the update: done (a check), running (the spinner) or to come (a ring).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Done,
+    Run,
+    Todo,
+}
+
+/// The update's steps in an inset card: rows of 34 with the state, an icon, the step (strong
+/// while it runs), what it is about, and a number at the right.
+fn steps(ui: &mut egui::Ui, rows: &[(Step, &str, &str, &str, &str)]) {
+    let p = style::pal(ui);
+    egui::Frame::NONE
+        .fill(p.inset)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::same(4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (state, icon, label, detail, data) in rows {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), egui::Sense::hover());
+                let painter = ui.painter();
+                let cy = r.center().y;
+                let c = egui::pos2(r.left() + 12.0 + 9.0, cy);
+                match state {
+                    Step::Done => {
+                        painter.text(c, egui::Align2::CENTER_CENTER, icons::CHECK_CIRCLE, style::icon_fill(16.0), p.ok);
+                    }
+                    Step::Run => super::status::paint_spinner(painter, c, 14.0, p.info),
+                    Step::Todo => {
+                        painter.circle_stroke(c, 5.25, Stroke::new(1.5, p.border_heavy));
+                    }
+                }
+                let mut x = r.left() + 12.0 + 18.0 + 10.0;
+                painter.text(egui::pos2(x + 7.0, cy), egui::Align2::CENTER_CENTER, *icon, style::icon_font(14.0), p.text_faint);
+                x += 14.0 + 10.0;
+                let (font, color) = match state {
+                    Step::Run => (style::medium(style::BODY), p.text),
+                    Step::Done => (FontId::proportional(style::BODY), p.text),
+                    Step::Todo => (FontId::proportional(style::BODY), p.text_faint),
+                };
+                let g = painter.layout_no_wrap(label.to_string(), font, color);
+                let lw = g.size().x;
+                painter.galley(egui::pos2(x, cy - g.size().y / 2.0), g, color);
+                x += lw + 10.0;
+                let mut right = r.right() - 12.0;
+                if !data.is_empty() {
+                    let g = painter.layout_no_wrap(data.to_string(), style::mono(style::DATA), p.text_faint);
+                    right -= g.size().x;
+                    painter.galley(egui::pos2(right, cy - g.size().y / 2.0), g, p.text_faint);
+                    right -= 10.0;
+                }
+                if !detail.is_empty() {
+                    let mut job = egui::text::LayoutJob::simple_singleline(detail.to_string(), style::mono(style::DATA), p.text_faint);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(20.0));
+                    let g = painter.layout_job(job);
+                    painter.galley(egui::pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+                }
+            }
+        });
 }
 
 impl crate::app::App {
@@ -659,19 +759,20 @@ impl crate::app::App {
         }
     }
 
-    /// The status bar's update item, while there is an update to install.
+    /// The status bar's update item, while there is an update to install: a pill (20 high,
+    /// rounded 10) on the accent's tint, its icon and Small Strong text in the accent.
     pub fn update_status_item(&mut self, ui: &mut egui::Ui) {
         let Some(text) = self.updater.status_text() else { return };
         let p = style::pal(ui);
-        let font = style::medium(style::SMALL);
+        let dark = ui.visuals().dark_mode;
         let glyph = if self.updater.downloading() { icons::DOWNLOAD_SIMPLE } else { icons::ARROW_CIRCLE_UP };
-        let icon = ui.painter().layout_no_wrap(glyph.to_string(), style::icon_font(13.0), p.accent_text);
-        let label = ui.painter().layout_no_wrap(text, font, p.accent_text);
-        let size = egui::vec2(7.0 + icon.size().x + 5.0 + label.size().x + 9.0, 20.0);
+        let icon = ui.painter().layout_no_wrap(glyph.to_string(), style::icon_font(12.0), p.accent_text);
+        let label = ui.painter().layout_no_wrap(text, style::medium(style::SMALL), p.accent_text);
+        let size = egui::vec2(6.0 + icon.size().x + 5.0 + label.size().x + 8.0, kit::PILL_H);
         let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-        let fill = if resp.hovered() { p.accent_soft.gamma_multiply(1.4) } else { p.accent_soft };
+        let fill = if resp.hovered() { style::soft(p.accent, if dark { 0.24 } else { 0.16 }) } else { p.accent_tint };
         ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
-        let mut x = rect.left() + 7.0;
+        let mut x = rect.left() + 6.0;
         ui.painter().galley(egui::pos2(x, rect.center().y - icon.size().y / 2.0), icon.clone(), p.accent_text);
         x += icon.size().x + 5.0;
         ui.painter().galley(egui::pos2(x, rect.center().y - label.size().y / 2.0), label, p.accent_text);
@@ -750,13 +851,13 @@ fn parse_notes(notes: &str) -> Vec<Block> {
     blocks
 }
 
-/// Inline Markdown: **bold** stands out, `code` is monospace, links show their text.
+/// Inline Markdown: **bold** stands out, `code` is monospace, links show their text (Small).
 fn inline(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
+    let p = style::pal(ui);
     let mut job = egui::text::LayoutJob::default();
-    let body = egui::TextStyle::Body.resolve(ui.style());
-    let mono = egui::TextStyle::Monospace.resolve(ui.style());
-    let normal = ui.visuals().text_color();
-    let strong = ui.visuals().strong_text_color();
+    let body = egui::FontId::proportional(style::SMALL);
+    let strong = style::medium(style::SMALL);
+    let mono = style::mono(style::DATA);
     // [text](url) → text
     let mut plain = String::new();
     let mut rest = text;
@@ -787,8 +888,9 @@ fn inline(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
             return;
         }
         let format = egui::TextFormat {
-            font_id: if code { mono.clone() } else { body.clone() },
-            color: if bold { strong } else { normal },
+            font_id: if code { mono.clone() } else if bold { strong.clone() } else { body.clone() },
+            color: p.text,
+            line_height: Some(16.0),
             ..Default::default()
         };
         job.append(&std::mem::take(chunk), 0.0, format);
@@ -809,79 +911,49 @@ fn inline(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
     job
 }
 
-/// Release notes from GitHub (Markdown), in a scrolling box.
-/// The update window's head: the app's icon, the title and what it says under it, ×.
-fn update_head(ui: &mut egui::Ui, title: &str, sub: &str) -> bool {
-    let p = style::pal(ui);
-    let top = ui.max_rect();
-    kit::paint_highlight(ui.painter(), egui::Rect::from_min_size(top.min, egui::vec2(top.width(), 1.0)), style::RADIUS_DIALOG, &p);
-    let mut close = false;
-    egui::Frame::NONE.inner_margin(Margin { left: 20, right: 14, top: 18, bottom: 6 }).show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            let (r, _) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
-            super::settings::paint_logo(ui.painter(), r, &p);
-            ui.add_space(12.0);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                ui.add_space(2.0);
-                ui.label(RichText::new(title).font(style::semibold(15.0)).color(p.text));
-                ui.label(RichText::new(sub).font(style::mono(11.0)).color(p.text_faint));
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                close = kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0).clicked();
-            });
-        });
-    });
-    close
-}
-
-/// The promise of a restart in place: what runs keeps running (where TernaryCode can hand its
-/// panes over), else that the panes and tabs come back.
+/// The promise of a restart in place, on the accent's tint: what runs keeps running (where
+/// TernaryCode can hand its panes over), else that the panes and tabs come back.
 fn promise(ui: &mut egui::Ui, running_count: usize, running: &[String]) {
     let p = style::pal(ui);
     let in_place = update::restarts_in_place();
-    let r = egui::Frame::NONE
-        .fill(style::soft(p.accent, 0.08))
-        .stroke(Stroke::new(1.0, style::soft(p.accent, 0.25)))
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(Margin { left: 14, right: 14, top: 12, bottom: 12 })
+    egui::Frame::NONE
+        .fill(p.accent_tint)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                let (g, _) = ui.allocate_exact_size(egui::vec2(14.0, 18.0), egui::Sense::hover());
-                kit::paint_lattice(ui.painter(), g.center(), 14.0, p.info, true);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    let title = if in_place { t("Agents and programs keep running through the update") } else { t("Your projects and tabs come back after the update") };
-                    ui.label(RichText::new(title).font(style::medium(13.0)).color(p.text));
-                    let mut text = String::new();
-                    if running_count > 0 && in_place {
-                        let list = match running {
-                            [one] => one.clone(),
-                            [rest @ .., last] => format!("{} {} {last}", rest.join(", "), t("and")),
-                            [] => String::new(),
-                        };
-                        text.push_str(&crate::i18n::count(running_count, &tf("1 agent is working now, in {}.", &[&list]), &tf("{} agents are working now, in {}.", &["{}", &list])));
-                        text.push(' ');
-                    }
-                    text.push_str(if in_place {
-                        t("TernaryCode restarts in place: your panes, tabs and pages come back as they are.")
-                    } else {
-                        t("Agents that support it can be resumed in their panes.")
-                    });
-                    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(p.text_muted).line_height(Some(17.5))).wrap());
+                ui.spacing_mut().item_spacing.x = 10.0;
+                ui.label(RichText::new(icons::LIGHTNING).font(style::icon_font(16.0)).color(p.accent_text));
+                let mut text = String::new();
+                if running_count > 0 && in_place {
+                    let list = match running {
+                        [one] => one.clone(),
+                        [rest @ .., last] => format!("{} {} {last}", rest.join(", "), t("and")),
+                        [] => String::new(),
+                    };
+                    text.push_str(&crate::i18n::count(running_count, &tf("1 agent is working now, in {}.", &[&list]), &tf("{} agents are working now, in {}.", &["{}", &list])));
+                    text.push(' ');
+                }
+                text.push_str(if in_place {
+                    t("Agents and programs keep running through the update: TernaryCode restarts in place.")
+                } else {
+                    t("Your projects and tabs come back after the update; agents that support it can be resumed in their panes.")
                 });
+                ui.add(egui::Label::new(RichText::new(text).size(style::SMALL).color(p.text).line_height(Some(18.0))).wrap());
             });
         });
-    let _ = r;
 }
 
+/// Release notes from GitHub (Markdown), in an inset scrolling box: each item with its
+/// section's tag (NEW in the accent, IMPROVED in green, others quiet).
 fn release_notes(ui: &mut egui::Ui, notes: &str, max_height: f32) {
     let blocks = parse_notes(notes);
     let p = style::pal(ui);
     egui::Frame::NONE
-        .inner_margin(Margin::symmetric(0, 2))
+        .fill(p.inset)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(14))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             egui::ScrollArea::vertical()
@@ -889,30 +961,47 @@ fn release_notes(ui: &mut egui::Ui, notes: &str, max_height: f32) {
                 .min_scrolled_height(max_height.min(140.0))
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
                     if blocks.is_empty() {
-                        ui.label(RichText::new(t("No release notes.")).color(p.text_muted));
+                        ui.label(RichText::new(t("No release notes.")).size(style::SMALL).color(p.text_muted));
                     }
-                    for (i, block) in blocks.iter().enumerate() {
+                    // The section's tag, given to its items (a long heading stands on its own).
+                    let mut tag: Option<(String, egui::Color32)> = None;
+                    for block in &blocks {
                         match block {
                             Block::Heading(text) => {
-                                if i > 0 {
-                                    ui.add_space(10.0);
-                                }
-                                // A heading as a tag: NEW in the accent, IMPROVED in green, the rest
-                                // quiet.
                                 let upper = text.to_uppercase();
-                                let c = if upper.contains("NEW") || upper.contains("ADDED") { p.accent_text } else if upper.contains("IMPROV") || upper.contains("CHANGED") { p.ok } else { p.text_faint };
-                                let g = ui.painter().layout_no_wrap(upper, style::mono_semibold(10.0), c);
-                                let (r, _) = ui.allocate_exact_size(egui::vec2(g.size().x + 12.0, 18.0), egui::Sense::hover());
-                                ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-                                ui.painter().galley(r.center() - g.size() / 2.0, g, c);
-                                ui.add_space(4.0);
+                                let c = if upper.contains("NEW") || upper.contains("ADDED") {
+                                    p.accent_text
+                                } else if upper.contains("IMPROV") || upper.contains("CHANGED") {
+                                    p.ok
+                                } else {
+                                    p.text_faint
+                                };
+                                if upper.chars().count() <= 12 {
+                                    tag = Some((upper, c));
+                                } else {
+                                    tag = None;
+                                    ui.label(RichText::new(text).font(style::medium(style::SMALL)).color(p.text));
+                                }
                             }
                             Block::Item(level, text) => {
                                 ui.horizontal_top(|ui| {
-                                    ui.add_space(4.0 + *level as f32 * 16.0);
-                                    ui.label(if *level == 0 { "•" } else { "◦" });
+                                    ui.spacing_mut().item_spacing.x = 10.0;
+                                    match (&tag, level) {
+                                        (Some((word, c)), 0) => {
+                                            let g = ui.painter().layout_no_wrap(word.clone(), style::mono(style::DATA), *c);
+                                            let (r, _) = ui.allocate_exact_size(egui::vec2(g.size().x + 12.0, 18.0), egui::Sense::hover());
+                                            ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, *c), egui::StrokeKind::Inside);
+                                            ui.painter().galley(r.center() - g.size() / 2.0, g, *c);
+                                        }
+                                        _ => {
+                                            ui.add_space(*level as f32 * 16.0);
+                                            ui.label(RichText::new(if *level == 0 { "•" } else { "◦" }).size(style::SMALL).color(p.text_faint));
+                                        }
+                                    }
                                     ui.vertical(|ui| {
+                                        ui.add_space(1.0);
                                         let job = inline(ui, text);
                                         ui.add(egui::Label::new(job).wrap());
                                     });
@@ -923,7 +1012,7 @@ fn release_notes(ui: &mut egui::Ui, notes: &str, max_height: f32) {
                                 ui.add(egui::Label::new(job).wrap());
                             }
                             Block::Code(text) => {
-                                ui.label(RichText::new(text).monospace().small());
+                                ui.label(RichText::new(text).font(style::mono(style::DATA)).color(p.text_muted));
                             }
                         }
                     }

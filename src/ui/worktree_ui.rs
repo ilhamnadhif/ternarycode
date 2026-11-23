@@ -1,12 +1,12 @@
 //! The worktree parts of the UI: Run Agent's new-worktree box, the worktree menu (the project
 //! title, the sidebar, the palette), and the Merge, Remove and Setup dialogs.
 
-use eframe::egui::{self, Align2, Color32, CornerRadius, Margin, RichText, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Margin, RichText, Sense, Stroke, Ui, pos2, vec2};
 use tc_core::ProjectId;
 use tc_core::agent::AgentKind;
 use tc_core::model::WorktreeSetup;
 
-use super::dialogs::{ago, body, field_label, footer_left, footer_with, header};
+use super::dialogs::{self, W_FORM, W_LIST, ago, begin, body, field_label, footer, footer_left, header, hint, hint_link, mono_field};
 use super::{icons, kit, style};
 use crate::actions::Action;
 use crate::app::App;
@@ -14,53 +14,61 @@ use crate::i18n::{t, tf};
 use crate::worktree::{Facts, Form};
 
 /// Width of the labels at the left of Run Agent's worktree box.
-const LABEL_W: f32 = 72.0;
-/// Run Agent's body: the dialog (560) without its sides.
-const RUN_AGENT_BODY: f32 = 780.0 - 250.0 - 40.0;
+const LABEL_W: f32 = 64.0;
 
-/// A line of a dialog's checks: an icon in its colour and what it says, wrapped.
+/// A line of a dialog's checks: an icon in its colour and what it says, wrapped (Small).
 fn check(ui: &mut Ui, icon: &str, color: Color32, text: &str, muted: bool) {
     let p = style::pal(ui);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         ui.label(RichText::new(icon).font(style::icon_font(14.0)).color(color));
-        ui.add(egui::Label::new(RichText::new(text).size(12.5).color(if muted { p.text_muted } else { p.text }).line_height(Some(18.0))).wrap());
+        ui.add(egui::Label::new(RichText::new(text).size(style::SMALL).color(if muted { p.text_muted } else { p.text }).line_height(Some(16.0))).wrap());
     });
 }
 
-/// A quiet box holding lines (programs to stop, a branch's state).
-fn boxed(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+/// An inset well holding lines (a branch's state, programs to stop): padding 12, 8 apart.
+fn well(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     let p = style::pal(ui);
     egui::Frame::NONE
-        .fill(p.canvas)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(style::RADIUS + 1))
-        .inner_margin(Margin::symmetric(10, 6))
+        .fill(p.inset)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.spacing_mut().item_spacing.y = 8.0;
             add(ui);
         });
 }
 
-/// One line of a [`boxed`] list.
-fn boxed_line(ui: &mut Ui, icon: &str, color: Color32, text: &str) {
-    let p = style::pal(ui);
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-    ui.painter().text(pos2(r.left() + 6.5, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), color);
-    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), egui::FontId::proportional(12.5), p.text);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((r.width() - 21.0).max(20.0));
+/// One line of a [`well`]: an icon (filled when `fill`) and Small text.
+fn well_line(ui: &mut Ui, icon: &str, fill: bool, color: Color32, text: &str, text_color: Color32) {
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
+    let font = if fill { style::icon_fill(14.0) } else { style::icon_font(14.0) };
+    ui.painter().text(pos2(r.left() + 7.0, r.center().y), Align2::CENTER_CENTER, icon, font, color);
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), FontId::proportional(style::SMALL), text_color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((r.width() - 22.0).max(20.0));
     let g = ui.painter().layout_job(job);
-    ui.painter().galley(pos2(r.left() + 21.0, r.center().y - g.size().y / 2.0), g, p.text);
+    ui.painter().galley(pos2(r.left() + 22.0, r.center().y - g.size().y / 2.0), g, text_color);
 }
 
-/// A switch with its label after it.
+/// One line of text cut to `w` with "…" (a label in a row would grow to its whole length).
+fn cut(ui: &mut Ui, text: &str, font: FontId, color: Color32, w: f32) -> egui::Response {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(w.max(20.0));
+    let g = ui.painter().layout_job(job);
+    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x, 16.0), Sense::hover());
+    ui.painter().galley(pos2(r.left(), r.center().y - g.size().y / 2.0), g, color);
+    resp
+}
+
+/// A switch with its label after it (Body); quiet while off when `muted`.
 fn switch_line(ui: &mut Ui, on: &mut bool, label: &str, muted: bool) {
     let p = style::pal(ui);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         kit::switch(ui, on);
-        ui.label(RichText::new(label).size(style::SMALL).color(if muted { p.text_muted } else { p.text }));
+        let c = if muted && !*on { p.text_faint } else { p.text };
+        ui.label(RichText::new(label).size(style::BODY).color(c));
     });
 }
 
@@ -75,27 +83,27 @@ impl App {
             let r = ui.add_enabled_ui(flag.is_some(), |ui| kit::switch(ui, &mut skip)).inner;
             #[cfg(debug_assertions)]
             crate::devtest::record("skip-permissions", r.rect);
-            if r.changed()
+            if r.on_hover_text(t("The agent runs every tool without asking you.")).changed()
                 && let Some(a) = agent
             {
                 self.set_skips_permissions(a, skip);
             }
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
-                ui.label(RichText::new(t("Skip permission prompts")).size(13.0).color(p.text));
-                let (note, c) = match flag {
-                    Some(f) if skip => (tf("Adds {}: the agent runs every tool without asking you.", &[f]), p.warn),
-                    Some(_) => (t("The agent runs every tool without asking you.").to_string(), p.text_faint),
-                    None => (t("This agent has no option for this.").to_string(), p.text_faint),
-                };
-                ui.label(RichText::new(note).size(11.5).color(c));
-            });
+            ui.label(RichText::new(t("Skip permission prompts")).size(style::BODY).color(if flag.is_some() { p.text } else { p.text_faint }));
         });
+        match flag {
+            Some(f) if skip => {
+                ui.label(RichText::new(tf("Adds {}: the agent runs every tool without asking you.", &[f])).size(style::SMALL).color(p.warn));
+            }
+            None => {
+                ui.label(RichText::new(t("This agent has no option for this.")).size(style::SMALL).color(p.text_faint));
+            }
+            _ => {}
+        }
     }
 
     /// Run Agent's new worktree: its name (and so its branch), the branch it starts from, its
-    /// folder, the project's setup (Edit… opens it), and a word on changes not committed in the
-    /// project (they stay there). Returns whether Edit… was clicked.
+    /// folder, the project's setup (Edit… opens it), and a notice on changes not committed in
+    /// the project (they stay there). Returns whether Edit… was clicked.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn worktree_box(
         &mut self,
@@ -114,55 +122,53 @@ impl App {
         let folder = self.project(root).map(|r| crate::paths::contract_tilde(&self.worktree_dir(r, wt.name.trim()))).unwrap_or_default();
         let branch = self.worktree_branch(&wt.name);
         let setup = crate::worktree::setup_summary(&self.worktree_setup_of(root));
-        // The dialog's width, not what its longest line would like (a long folder is cut).
-        let inner = (ui.available_width().min(RUN_AGENT_BODY) - 28.0).max(200.0);
+        let width = ui.available_width();
         egui::Frame::NONE
-            .fill(p.canvas)
+            .fill(p.surface)
             .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(CornerRadius::same(8))
-            .inner_margin(Margin { left: 14, right: 14, top: 12, bottom: 12 })
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::same(13))
             .show(ui, |ui| {
+                let inner = ui.available_width();
                 ui.set_width(inner);
-                ui.set_max_width(inner);
                 ui.spacing_mut().item_spacing.y = 10.0;
-                let label = |ui: &mut Ui, text: &str| {
-                    let (r, _) = ui.allocate_exact_size(vec2(LABEL_W, 26.0), Sense::hover());
-                    ui.painter().text(pos2(r.left(), r.center().y), Align2::LEFT_CENTER, text, egui::FontId::proportional(style::SMALL), p.text_muted);
+                let label = |ui: &mut Ui, text: &str, h: f32| {
+                    let (r, _) = ui.allocate_exact_size(vec2(LABEL_W, h), Sense::hover());
+                    ui.painter().text(r.left_center(), Align2::LEFT_CENTER, text, FontId::proportional(style::SMALL), p.text_faint);
                 };
+                let quiet = |ui: &mut Ui, text: &str, w: f32| cut(ui, text, style::mono(style::DATA), p.text_faint, w);
                 // The name, and the branch it makes (or why it can't be).
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    label(ui, t("Name"));
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    label(ui, t("Name"), 30.0);
                     let mut name = wt.name.clone();
-                    let r = kit::field(ui, name_id, &mut name, None, "", 200.0, true);
+                    let field_w = 200.0f32.min(inner - LABEL_W - 10.0);
+                    let r = kit::field(ui, name_id, &mut name, None, "", field_w, false);
                     #[cfg(debug_assertions)]
                     crate::devtest::record("worktree-name", r.rect);
                     if r.changed() {
                         wt.name = name.replace(char::is_whitespace, "-");
                         wt.typed = true;
                     }
-                    ui.add_space(10.0);
+                    let rest = ui.available_width();
                     match problem {
                         Some(why) => {
-                            ui.label(RichText::new(why).size(style::SMALL).color(p.err));
+                            ui.add(egui::Label::new(RichText::new(why).size(style::SMALL).color(p.err)).truncate());
                         }
                         None => {
-                            ui.label(RichText::new(t("branch")).size(style::SMALL).color(p.text_faint));
-                            ui.add_space(4.0);
-                            ui.add(egui::Label::new(RichText::new(&branch).font(egui::FontId::monospace(11.5)).color(p.text_muted)).truncate());
+                            quiet(ui, &tf("branch {}", &[&branch]), rest);
                         }
                     }
                 });
                 // The branch it starts from.
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    label(ui, t("From"));
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    label(ui, t("From"), 30.0);
                     let branches = facts.map(|f| f.branches.clone()).unwrap_or_default();
                     let names: Vec<&str> = branches.iter().map(String::as_str).collect();
-                    if let Some(i) = kit::select(ui, "worktree-base", base, &names, 120.0) {
+                    if let Some(i) = kit::select(ui, "worktree-base", base, &names, 140.0) {
                         wt.base = branches.get(i).cloned();
                     }
-                    ui.add_space(10.0);
                     let note = match facts.and_then(|f| f.last.get(base)) {
                         Some((short, time)) => {
                             let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs((*time).max(0) as u64);
@@ -171,51 +177,36 @@ impl App {
                         None if facts.is_none() => t("Reading the branches…").to_string(),
                         None => String::new(),
                     };
-                    ui.add(egui::Label::new(RichText::new(note).size(style::SMALL).color(p.text_faint)).truncate());
+                    let rest = ui.available_width();
+                    quiet(ui, &note, rest);
                 });
                 // Where it goes.
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    label(ui, t("Folder"));
-                    let mut job = egui::text::LayoutJob::simple_singleline(folder.clone(), egui::FontId::monospace(11.5), p.text_faint);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width((inner - LABEL_W).max(40.0));
-                    ui.label(job).on_hover_text(&folder);
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    label(ui, t("Folder"), 16.0);
+                    quiet(ui, &folder, inner - LABEL_W - 10.0).on_hover_text(&folder);
                 });
                 // What it gets from the project.
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    label(ui, t("Setup"));
-                    ui.add(egui::Label::new(RichText::new(&setup).size(style::SMALL).color(p.text)).truncate());
-                    ui.add_space(8.0);
-                    let link = ui.add(egui::Label::new(RichText::new(t("Edit…")).size(style::SMALL).color(p.accent_text)).sense(Sense::click()));
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    label(ui, t("Setup"), 16.0);
+                    let link_w = ui.painter().layout_no_wrap(t("Edit…").to_string(), style::medium(style::SMALL), Color32::PLACEHOLDER).size().x;
+                    cut(ui, &setup, FontId::proportional(style::SMALL), p.text_muted, inner - LABEL_W - 20.0 - link_w);
+                    let link = ui.add(egui::Label::new(RichText::new(t("Edit…")).font(style::medium(style::SMALL)).color(p.accent_text)).sense(Sense::click()));
                     #[cfg(debug_assertions)]
                     crate::devtest::record("worktree-setup-edit", link.rect);
                     if link.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t("What a new worktree of this project gets")).clicked() {
                         edit = true;
                     }
                 });
-                // Changes not committed in the project stay there.
-                if changed > 0 {
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        ui.add_space(LABEL_W - 8.0);
-                        ui.label(RichText::new(icons::WARNING).font(style::icon_font(13.0)).color(p.warn));
-                        ui.set_max_width(inner - LABEL_W);
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(tf(
-                                    "{} has {} uncommitted changes. They stay there: the worktree starts from {}’s last commit.",
-                                    &[root_name, &changed.to_string(), base],
-                                ))
-                                .size(12.5)
-                                .color(p.warn)
-                                .line_height(Some(18.0)),
-                            )
-                            .wrap(),
-                        );
-                    });
-                }
             });
+        // Changes not committed in the project stay there.
+        if changed > 0 {
+            let changes = crate::i18n::count(changed, t("1 uncommitted change"), t("{} uncommitted changes"));
+            let title = tf("{} has {}", &[root_name, &changes]);
+            let body = tf("They stay there: the worktree starts from {}’s last commit.", &[base]);
+            kit::notice(ui, width, kit::Tone::Input, Some(icons::WARNING), &title, Some(&body), None, None, false);
+        }
         edit
     }
 
@@ -274,8 +265,6 @@ impl App {
     /// changes not committed on either side).
     pub(super) fn merge_worktree_dialog(&mut self, ui: &mut Ui, id: ProjectId, enter: bool) -> bool {
         let p = style::pal(ui);
-        let w_cap = (ui.ctx().content_rect().width() - 32.0).clamp(320.0, 480.0);
-        ui.set_width(w_cap);
         let Some(w) = self.project(id) else { return false };
         let Some(wt) = w.worktree.clone() else { return false };
         let (name, git) = (w.name.clone(), w.git.clone());
@@ -284,6 +273,7 @@ impl App {
         let parent_git = parent.and_then(|r| r.git.clone());
         let mut keep = true;
         let path = w.path.clone();
+        begin(ui, W_FORM);
         let sub = tf("TernaryCode types the command in a new tab of {}, so you see git and any conflict.", &[&parent_name]);
         if header(ui, icons::GIT_MERGE, p.accent, &tf("Merge {} into {}", &[&name, &wt.base]), Some(&sub)) {
             keep = false;
@@ -299,49 +289,46 @@ impl App {
             }
         };
         body(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 10.0;
+            let full = ui.available_width();
             let (ahead, files) = git.as_ref().map_or((0, 0), |g| (g.ahead, g.branch_files.max(stat.0)));
             if ahead > 0 {
-                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
+                // "2 commits · 3 files · +81 −2" and its share.
+                let (rect, _) = ui.allocate_exact_size(vec2(full, 16.0), Sense::hover());
                 let painter = ui.painter();
-                let mut job = egui::text::LayoutJob::default();
-                let small = egui::FontId::proportional(12.0);
-                job.append(&crate::i18n::count(ahead, t("1 commit"), t("{} commits")), 0.0, egui::TextFormat::simple(small.clone(), p.text_muted));
-                job.append("·", 10.0, egui::TextFormat::simple(small.clone(), p.text_ghost));
-                job.append(&crate::i18n::count(files, t("1 file"), t("{} files")), 10.0, egui::TextFormat::simple(small.clone(), p.text_muted));
-                job.append("·", 10.0, egui::TextFormat::simple(small, p.text_ghost));
-                job.append(&format!("+{}", stat.1), 10.0, egui::TextFormat::simple(style::mono(11.0), p.ok));
-                job.append(&format!("−{}", stat.2), 6.0, egui::TextFormat::simple(style::mono(11.0), p.err));
-                let g = painter.layout_job(job);
+                let text = format!(
+                    "{} · {} · +{} −{}",
+                    crate::i18n::count(ahead, t("1 commit"), t("{} commits")),
+                    crate::i18n::count(files, t("1 file"), t("{} files")),
+                    stat.1,
+                    stat.2
+                );
+                let g = painter.layout_no_wrap(text, style::mono(style::DATA), p.text_muted);
+                let gw = g.size().x;
                 painter.galley(pos2(rect.left(), rect.center().y - g.size().y / 2.0), g, p.text_muted);
-                super::review::paint_share(painter, pos2(rect.right() - super::review::SHARE_W, rect.center().y), stat.1, stat.2, &p);
+                super::review::paint_share(painter, pos2(rect.left() + gw + 10.0, rect.center().y), stat.1, stat.2, &p);
             } else {
                 check(ui, icons::INFO, p.text_faint, &tf("{} has no commits of its own yet: there is nothing to merge.", &[&wt.branch]), true);
             }
             // The command it types.
-            egui::Frame::NONE
-                .fill(if ui.visuals().dark_mode { p.inset } else { Color32::WHITE })
-                .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(CornerRadius::same(8))
-                .inner_margin(Margin::symmetric(12, 9))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        ui.label(RichText::new("$").font(style::mono(12.0)).color(p.text_ghost));
-                        let cmd = format!("git merge --no-ff --no-edit {}", wt.branch);
-                        ui.add(egui::Label::new(RichText::new(&cmd).font(style::mono(12.0)).color(p.text)).truncate())
-                            .on_hover_text(cmd);
-                    });
-                });
-            match parent_git.as_ref().map(|g| g.branch.clone()) {
-                Some(b) if b != wt.base => check(ui, icons::WARNING, p.warn, &tf("{} is on {}, not {}: the merge goes into {}.", &[&parent_name, &b, &wt.base, &b]), false),
-                _ => {}
+            let cmd = format!("$ git merge --no-ff --no-edit {}", wt.branch);
+            let (r, resp) = ui.allocate_exact_size(vec2(full, 36.0), Sense::hover());
+            ui.painter().rect_filled(r, CornerRadius::same(8), p.inset);
+            let mut job = egui::text::LayoutJob::simple_singleline(cmd.clone(), style::mono(style::MONO), p.text);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(r.width() - 24.0);
+            let g = ui.painter().layout_job(job);
+            ui.painter().galley(pos2(r.left() + 12.0, r.center().y - g.size().y / 2.0), g, p.text);
+            resp.on_hover_text(cmd);
+            if let Some(b) = parent_git.as_ref().map(|g| g.branch.clone())
+                && b != wt.base
+            {
+                let title = tf("{} is on {}, not {}", &[&parent_name, &b, &wt.base]);
+                kit::notice(ui, full, kit::Tone::Input, Some(icons::WARNING), &title, Some(&tf("The merge goes into {}.", &[&b])), None, None, false);
             }
             let parent_changed = parent_git.as_ref().map_or(0, |g| g.changed);
             if parent_changed > 0 {
                 let changes = crate::i18n::count(parent_changed, t("1 uncommitted change"), t("{} uncommitted changes"));
-                check(ui, icons::WARNING, p.warn, &tf("{} has {}. git stops if the merge touches it.", &[&parent_name, &changes]), false);
+                let title = tf("{} has {}", &[&parent_name, &changes]);
+                kit::notice(ui, full, kit::Tone::Input, Some(icons::WARNING), &title, Some(t("git stops if the merge touches them.")), None, None, false);
             }
             let changed = self.worktree_dirty_files(id).len();
             if changed > 0 {
@@ -350,15 +337,19 @@ impl App {
             }
         });
         let mut ok = false;
-        footer_with(ui, Some(&tf("Opens a new tab in {}.", &[&parent_name])), |ui| {
-            let r = kit::button_keys(ui, kit::Kind::Primary, Some(icons::TERMINAL_WINDOW), t("Merge in Terminal"), Some("↵"), false);
-            #[cfg(debug_assertions)]
-            crate::devtest::record("dialog-ok", r.rect);
-            ok = r.clicked();
-            if kit::button_ex(ui, kit::Kind::Ghost, None, t("Cancel"), false).clicked() {
-                keep = false;
-            }
-        });
+        footer_left(
+            ui,
+            |ui| hint(ui, &tf("Opens a new tab in {}", &[&parent_name])),
+            |ui| {
+                let r = kit::button_keys(ui, kit::Kind::Primary, None, t("Merge in terminal"), Some("↵"), false);
+                #[cfg(debug_assertions)]
+                crate::devtest::record("dialog-ok", r.rect);
+                ok = r.clicked();
+                if kit::secondary(ui, None, t("Cancel")).clicked() {
+                    keep = false;
+                }
+            },
+        );
         if ok || enter {
             ui.data_mut(|d| d.remove::<(usize, u32, u32)>(stat_id));
             self.actions.push(Action::MergeWorktreeNow(id));
@@ -375,8 +366,6 @@ impl App {
     /// named first, and its branch is kept unless chosen otherwise.
     pub(super) fn remove_worktree_dialog(&mut self, ui: &mut Ui, id: ProjectId, branch: &mut Option<bool>) -> bool {
         let p = style::pal(ui);
-        let w_cap = (ui.ctx().content_rect().width() - 32.0).clamp(320.0, 500.0);
-        ui.set_width(w_cap);
         let Some(w) = self.project(id) else { return false };
         let Some(wt) = w.worktree.clone() else { return false };
         let name = w.name.clone();
@@ -387,42 +376,39 @@ impl App {
         let running: Vec<String> = w.panes().iter().filter_map(|x| self.panes.get(x)).filter_map(crate::pane::Pane::busy_with).collect();
         let unmerged = ahead > 0 && !merged;
         let safe = uncommitted.is_empty() && !unmerged;
+        begin(ui, W_LIST);
         // Until the user flips it, the switch follows what git says now (its numbers may come
         // after the dialog opened): a branch with commits not merged is kept.
         let mut choice = branch.unwrap_or(!unmerged);
         let delete = &mut choice;
         let mut keep = true;
         let (mut remove, mut review) = (false, false);
+        let title = tf("Remove the worktree {}?", &[&name]);
         if safe {
-            if header(ui, icons::TRASH, p.err, &tf("Remove the worktree {}?", &[&name]), Some(&tf("Its folder is deleted: {}", &[&place]))) {
+            if header(ui, icons::TRASH, p.err, &title, Some(&tf("Its folder is deleted: {}", &[&place]))) {
                 keep = false;
             }
             body(ui, |ui| {
-                boxed(ui, |ui| {
-                    for r in &running {
-                        boxed_line(ui, icons::TERMINAL_WINDOW, p.text_faint, &tf("{} · it is stopped", &[r]));
-                    }
+                well(ui, |ui| {
                     if merged {
-                        boxed_line(ui, icons::CHECK_CIRCLE, p.ok, &tf("{} is merged into {}", &[&wt.branch, &wt.base]));
+                        well_line(ui, icons::CHECK_CIRCLE, true, p.ok, &tf("{} is merged into {}", &[&wt.branch, &wt.base]), p.text);
                     } else {
-                        boxed_line(ui, icons::INFO, p.text_faint, &tf("{} has no commits of its own", &[&wt.branch]));
+                        well_line(ui, icons::INFO, false, p.text_faint, &tf("{} has no commits of its own", &[&wt.branch]), p.text);
+                    }
+                    for r in &running {
+                        well_line(ui, icons::STOP, false, p.text_faint, &tf("{} · it is stopped", &[r]), p.text_muted);
                     }
                 });
-                ui.add_space(6.0);
                 switch_line(ui, delete, &tf("Delete the branch {} too", &[&wt.branch]), false);
             });
-            footer_with(ui, None, |ui| {
-                let r = kit::button_ex(ui, kit::Kind::DangerFilled, None, t("Remove Worktree"), false);
-                #[cfg(debug_assertions)]
-                crate::devtest::record("dialog-ok", r.rect);
-                remove = r.clicked();
-                if kit::secondary(ui, None, t("Cancel")).clicked() {
-                    keep = false;
-                }
-            });
+            let (cancel, ok) = footer(ui, None, t("Remove worktree"), dialogs::Confirm::Danger, true);
+            remove = ok;
+            if cancel {
+                keep = false;
+            }
         } else {
-            let sub = tf("{} has work that is not in {}. Removing the worktree deletes its folder; the branch is kept, so you can merge it later.", &[&wt.branch, &wt.base]);
-            if header(ui, icons::TRASH, p.err, &tf("Remove worktree {}?", &[&name]), Some(&sub)) {
+            let sub = tf("{} has work that is not in {}. The branch is kept, so you can merge it later.", &[&wt.branch, &wt.base]);
+            if header(ui, icons::TRASH, p.err, &title, Some(&sub)) {
                 keep = false;
             }
             // Its commits not merged (read once, when the dialog opens).
@@ -439,46 +425,41 @@ impl App {
                 }
             };
             let git_changes = self.project(id).and_then(|x| x.git.clone());
-            let max_list_h = (ui.ctx().content_rect().height() - 280.0).clamp(160.0, 380.0);
+            let max_list_h = (ui.ctx().content_rect().height() - 300.0).clamp(160.0, 380.0);
             body(ui, |ui| {
-                // What would be lost or left behind, in one scrollable list so short windows never clip the footer.
-                egui::ScrollArea::vertical()
-                    .id_salt(("remove-wt-scroll", id))
-                    .max_height(max_list_h)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                egui::Frame::NONE
-                    .fill(p.canvas)
-                    .stroke(Stroke::new(1.0, p.border_strong))
-                    .corner_radius(CornerRadius::same(9))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.spacing_mut().item_spacing.y = 0.0;
+                // What would be lost or left behind, in one scrollable well so short windows never
+                // clip the footer.
+                egui::ScrollArea::vertical().id_salt(("remove-wt-scroll", id)).max_height(max_list_h).auto_shrink([false, true]).show(ui, |ui| {
+                    well(ui, |ui| {
                         let full = ui.available_width();
-                        let section = |ui: &mut Ui, icon: &str, text: &str, first: bool| {
-                            let (r, _) = ui.allocate_exact_size(vec2(full, 30.0), Sense::hover());
-                            if !first {
-                                ui.painter().hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, p.border));
-                            }
-                            ui.painter().rect_filled(r.shrink(1.0), CornerRadius::ZERO, p.hover);
-                            ui.painter().text(pos2(r.left() + 12.0 + 6.0, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(12.0), p.text_faint);
-                            ui.painter().text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, text, style::medium(12.0), p.text);
-                        };
-                        let line = |ui: &mut Ui, mark: (&str, Color32), text: &str, mono: bool| {
-                            let (r, _) = ui.allocate_exact_size(vec2(full, 30.0), Sense::hover());
-                            ui.painter().hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, p.border));
-                            ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, mark.0, style::mono(10.5), mark.1);
-                            let x = r.left() + if mark.0.len() > 2 { 66.0 } else { 34.0 };
-                            let font = if mono { style::mono(11.5) } else { egui::FontId::proportional(12.5) };
-                            let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, p.text);
-                            job.wrap = egui::text::TextWrapping::truncate_at_width((r.right() - 12.0 - x).max(20.0));
-                            let g = ui.painter().layout_job(job);
-                            ui.painter().galley(pos2(x, r.center().y - g.size().y / 2.0), g, p.text);
-                        };
                         let mut first = true;
+                        let section = |ui: &mut Ui, text: &str, first: &mut bool| {
+                            if !*first {
+                                let (r, _) = ui.allocate_exact_size(vec2(full, 1.0), Sense::hover());
+                                ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, p.border));
+                            }
+                            *first = false;
+                            ui.label(RichText::new(text).font(style::medium(style::SMALL)).color(p.text));
+                        };
+                        // A line: a mark (a commit, a change's letter) and its text.
+                        let line = |ui: &mut Ui, mark: (&str, Color32), text: &str, mono: bool| {
+                            let (r, _) = ui.allocate_exact_size(vec2(full, 18.0), Sense::hover());
+                            let painter = ui.painter();
+                            let mut x = r.left();
+                            if !mark.0.is_empty() {
+                                let font = if mono { style::mono_semibold(style::DATA) } else { style::mono(style::DATA) };
+                                let g = painter.layout_no_wrap(mark.0.to_string(), font, mark.1);
+                                x += g.size().x + 8.0;
+                                painter.galley(pos2(r.left(), r.center().y - g.size().y / 2.0), g, mark.1);
+                            }
+                            let font = if mono { style::mono(style::DATA) } else { FontId::proportional(style::SMALL) };
+                            let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, p.text_muted);
+                            job.wrap = egui::text::TextWrapping::truncate_at_width((r.right() - x).max(20.0));
+                            let g = painter.layout_job(job);
+                            painter.galley(pos2(x, r.center().y - g.size().y / 2.0), g, p.text_muted);
+                        };
                         if unmerged {
-                            section(ui, icons::GIT_COMMIT, &crate::i18n::count(ahead, t("1 commit to merge"), t("{} commits to merge")), first);
-                            first = false;
+                            section(ui, &crate::i18n::count(ahead, t("1 commit to merge"), t("{} commits to merge")), &mut first);
                             for (short, subject) in commits.iter().take(5) {
                                 line(ui, (short, p.accent_text), subject, false);
                             }
@@ -487,8 +468,7 @@ impl App {
                             }
                         }
                         if !uncommitted.is_empty() {
-                            section(ui, icons::FILE, &crate::i18n::count(uncommitted.len(), t("1 file is not committed"), t("{} files are not committed")), first);
-                            first = false;
+                            section(ui, &crate::i18n::count(uncommitted.len(), t("1 file is not committed"), t("{} files are not committed")), &mut first);
                             for f in uncommitted.iter().take(5) {
                                 let change = git_changes.as_ref().and_then(|g| g.changes.get(&w_path.join(f)).copied());
                                 let (letter, color) = change.map_or(("M", p.accent_text), |c| (c.letter(), super::explorer_ui::change_color(c, &p)));
@@ -499,23 +479,22 @@ impl App {
                             }
                         }
                         if !running.is_empty() {
-                            section(ui, icons::TERMINAL_WINDOW, t("Stopped"), first);
+                            section(ui, t("Stopped"), &mut first);
                             for r in &running {
                                 line(ui, ("", p.text_faint), r, false);
                             }
                         }
                     });
-                    });
-                ui.add_space(4.0);
+                });
                 switch_line(ui, delete, &tf("Delete the branch {} too", &[&wt.branch]), true);
             });
             footer_left(
                 ui,
                 |ui| {
-                    review = kit::button_ex(ui, kit::Kind::Ghost, Some(icons::GIT_DIFF), t("Review First"), false).clicked();
+                    review = hint_link(ui, t("Review first")).clicked();
                 },
                 |ui| {
-                    let r = kit::button_ex(ui, kit::Kind::DangerFilled, None, t("Remove Anyway"), false);
+                    let r = kit::button_ex(ui, kit::Kind::Danger, None, t("Remove anyway"), false);
                     #[cfg(debug_assertions)]
                     crate::devtest::record("dialog-ok", r.rect);
                     remove = r.clicked();
@@ -557,7 +536,6 @@ impl App {
         enter: bool,
     ) -> bool {
         let p = style::pal(ui);
-        ui.set_width(480.0);
         let Some(w) = self.project(id) else { return false };
         let (name, path) = (w.name.clone(), w.path.clone());
         let facts = self.worktree_facts(&path).cloned();
@@ -570,6 +548,7 @@ impl App {
             }
         }
         let mut keep = true;
+        begin(ui, W_FORM);
         if header(ui, icons::GIT_FORK, p.accent, &tf("Worktree setup · {}", &[&name]), Some(t("A new worktree starts from a commit: files git ignores are not in it."))) {
             keep = false;
         }
@@ -581,14 +560,13 @@ impl App {
                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                 let mut gone = None;
                 for (i, item) in copy.iter().enumerate() {
-                    let font = egui::FontId::monospace(12.0);
-                    let g = ui.painter().layout_no_wrap(item.clone(), font, p.text);
-                    let (r, _) = ui.allocate_exact_size(vec2(8.0 + g.size().x + 6.0 + 14.0 + 4.0, 22.0), Sense::hover());
+                    let g = ui.painter().layout_no_wrap(item.clone(), style::mono(style::DATA), p.text);
+                    let (r, _) = ui.allocate_exact_size(vec2(8.0 + g.size().x + 6.0 + 10.0 + 8.0, 24.0), Sense::hover());
                     ui.painter().rect_filled(r, CornerRadius::same(style::RADIUS), p.subtle);
                     ui.painter().galley(pos2(r.left() + 8.0, r.center().y - g.size().y / 2.0), g, p.text);
-                    let x = egui::Rect::from_center_size(pos2(r.right() - 4.0 - 7.0, r.center().y), vec2(14.0, 14.0));
+                    let x = egui::Rect::from_center_size(pos2(r.right() - 8.0 - 5.0, r.center().y), vec2(14.0, 14.0));
                     let xr = ui.interact(x, egui::Id::new(("setup-chip", i)), Sense::click()).on_hover_text(t("Don’t copy it"));
-                    ui.painter().text(x.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(11.0), if xr.hovered() { p.text } else { p.text_faint });
+                    ui.painter().text(x.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), if xr.hovered() { p.text } else { p.text_faint });
                     if xr.clicked() {
                         gone = Some(i);
                     }
@@ -624,47 +602,39 @@ impl App {
             // What git ignores here: a click adds it.
             let others: Vec<&String> = ignored.iter().filter(|n| !copy.contains(n)).collect();
             if !others.is_empty() {
-                ui.add_space(2.0);
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(4.0, 2.0);
+                    ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
                     ui.label(RichText::new(t("Ignored here:")).size(style::SMALL).color(p.text_faint));
                     for (i, n) in others.iter().enumerate() {
                         if i > 0 {
-                            ui.label(RichText::new("·").size(style::SMALL).color(p.text_faint));
+                            ui.label(RichText::new("·").font(style::mono(style::DATA)).color(p.text_faint));
                         }
-                        let r = ui.add(egui::Label::new(RichText::new(n.as_str()).size(style::SMALL).color(p.text_faint)).sense(Sense::click()));
+                        let r = ui.add(egui::Label::new(RichText::new(n.as_str()).font(style::mono(style::DATA)).color(p.accent_text)).sense(Sense::click()));
                         if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t("Copy it into new worktrees")).clicked() {
                             copy.push((*n).clone());
                         }
                     }
                 });
             }
-            ui.add_space(10.0);
             field_label(ui, t("Then run, in the new worktree"));
             let w = ui.available_width();
-            let r = kit::field(ui, egui::Id::new("worktree-setup-run"), run, None, "npm install", w, false);
-            let _ = r;
-            ui.add_space(2.0);
+            mono_field(ui, egui::Id::new("worktree-setup-run"), run, "npm install", w);
             ui.add(
                 egui::Label::new(
                     RichText::new(t("Runs in the worktree’s first tab before the agent starts; you see its output. Saved in TernaryCode for this project, not in the repository."))
                         .size(style::SMALL)
                         .color(p.text_faint)
-                        .line_height(Some(17.0)),
+                        .line_height(Some(16.0)),
                 )
                 .wrap(),
             );
         });
         let mut save = enter && !typing;
-        footer_with(ui, Some(&tf("↵ {}", &[t("Save")])), |ui| {
-            let r = kit::button_ex(ui, kit::Kind::Primary, None, t("Save"), false);
-            #[cfg(debug_assertions)]
-            crate::devtest::record("dialog-ok", r.rect);
-            save |= r.clicked();
-            if kit::secondary(ui, None, t("Cancel")).clicked() {
-                keep = false;
-            }
-        });
+        let (cancel, ok) = footer(ui, None, t("Save"), dialogs::Confirm::Primary, true);
+        save |= ok;
+        if cancel {
+            keep = false;
+        }
         if save {
             let setup = WorktreeSetup { copy: copy.clone(), run: run.trim().to_string() };
             self.actions.push(Action::SetWorktreeSetup(id, setup));
