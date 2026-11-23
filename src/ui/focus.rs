@@ -1092,12 +1092,12 @@ impl App {
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("pane-menu:{pane_id}"), menu_rect);
         egui::Popup::menu(&menu).align(egui::RectAlign::BOTTOM_END).show(|ui| self.pane_menu(ui, pane_id));
-        // The agent's account (Claude Code, Codex): a chip, and a switch when another is ready.
+        // The agent's account (Claude Code, Codex, Antigravity): a chip, and a switch when another is ready.
         let show_profile = self
             .panes
             .get(&pane_id)
             .and_then(|x| x.tracker.agent.or(x.last_agent))
-            .is_some_and(crate::profiles::supports_multi_profile);
+            .is_some_and(crate::profiles::supports_profile);
         if show_profile && rect.width() > 340.0 {
             let left = (right - 270.0).max(rect.left() + 160.0).min(right);
             let switcher_area = Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom()));
@@ -1280,45 +1280,29 @@ impl App {
         }
     }
 
-    /// Inline approval / quick-action strip rendered at the bottom of an agent pane waiting for
-    /// permission or input (`Status::NeedsInput`).
+    /// Notice strip rendered at the bottom of an agent pane waiting for permission or input
+    /// (`Status::NeedsInput`). Shows what the agent is asking without Reject/Approve buttons so
+    /// the user handles the prompt directly inside the agent's own terminal UI.
     fn approval_bar(&mut self, ui: &mut Ui, pane_id: PaneId, rect: Rect) {
         let Some(pane) = self.panes.get(&pane_id) else { return };
         let who = pane.tracker.agent.map_or_else(|| t("The agent").to_string(), |a| a.label().to_string());
         let ask = ask_of(pane.tracker.message.as_deref());
-        let (title, body, primary, secondary) = match &ask {
-            Ask::Permission { tool, target } if tool == "Bash" => (tf("{} wants to run a command", &[&who]), Some(format!("Bash · {target}")), t("Approve"), Some(t("Reject"))),
-            Ask::Permission { tool, target } => (tf("{} wants to use {}", &[&who, tool]), Some(format!("{tool} · {target}")), t("Approve"), Some(t("Reject"))),
-            Ask::Plan(plan) => (tf("{} wants to apply its plan", &[&who]), Some(plan.clone()), t("Approve"), Some(t("Reject"))),
-            Ask::Question(q) => (tf("{} has a question", &[&who]), Some(q.clone()), t("Answer in terminal"), None),
-            Ask::Confirm(said) => (tf("{} needs your confirmation", &[&who]), said.clone(), t("Approve"), Some(t("Reject"))),
+        let (title, body) = match &ask {
+            Ask::Permission { tool, target } if tool == "Bash" => (tf("{} wants to run a command", &[&who]), Some(format!("Bash · {target}"))),
+            Ask::Permission { tool, target } => (tf("{} wants to use {}", &[&who, tool]), Some(format!("{tool} · {target}"))),
+            Ask::Plan(plan) => (tf("{} wants to apply its plan", &[&who]), Some(plan.clone())),
+            Ask::Question(q) => (tf("{} has a question", &[&who]), Some(q.clone())),
+            Ask::Confirm(said) => (tf("{} needs your confirmation", &[&who]), said.clone()),
         };
         let out = ui
             .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                kit::notice(ui, rect.width(), kit::Tone::Input, None, &title, body.as_deref(), Some((primary, Some("↵"))), secondary, false)
+                kit::notice(ui, rect.width(), kit::Tone::Input, None, &title, body.as_deref(), None, None, false)
             })
             .inner;
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("approval:{pane_id}"), out.rect);
-        match ask {
-            Ask::Question(_) => {
-                if out.primary {
-                    self.actions.push(Action::FocusPane(pane_id));
-                }
-            }
-            _ => {
-                if out.secondary
-                    && let Some(pane) = self.panes.get_mut(&pane_id)
-                {
-                    pane.input(vec![0x1b]);
-                }
-                if out.primary
-                    && let Some(pane) = self.panes.get_mut(&pane_id)
-                {
-                    pane.entered(Instant::now());
-                    pane.input(b"\r".to_vec());
-                }
-            }
+        if ui.interact(out.rect, egui::Id::new(("approval-focus", pane_id)), Sense::click()).clicked() {
+            self.actions.push(Action::FocusPane(pane_id));
         }
     }
 

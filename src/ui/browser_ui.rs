@@ -887,58 +887,67 @@ impl App {
             clear = true;
         }
         let reveal_tip = if cfg!(target_os = "macos") { t("Show in Finder") } else { t("Show in Folder") };
-        for (i, d) in list.iter().enumerate() {
-            let name = d.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let running = d.done.is_none();
-            let h = if running { 18.0 + 6.0 + 4.0 + 6.0 + 14.0 } else { 18.0 + 2.0 + 16.0 };
-            let (row, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
-            let (icon, ic) = file_icon(&name, &p);
-            let name_y = row.top() + 9.0;
-            ui.painter().text(pos2(row.left() + 8.0, name_y), Align2::CENTER_CENTER, icon, style::icon_font(16.0), ic);
-            let tx = row.left() + 16.0 + 8.0;
-            let button = Rect::from_min_size(pos2(row.right() - ICON_S, if running { row.top() - 3.0 } else { row.center().y - ICON_S / 2.0 }), vec2(ICON_S, ICON_S));
-            let mut job = egui::text::LayoutJob::simple_singleline(name.clone(), egui::FontId::proportional(style::BODY), p.text);
-            job.wrap = egui::text::TextWrapping::truncate_at_width((button.left() - 8.0 - tx).max(20.0));
-            let g = ui.painter().layout_job(job);
-            let nr = Rect::from_min_size(pos2(tx, name_y - g.size().y / 2.0), g.size());
-            let open = ui.interact(nr, egui::Id::new(("browser-download-name", id, i)), Sense::click());
-            let open = if d.done == Some(true) { open.on_hover_cursor(egui::CursorIcon::PointingHand) } else { open };
-            open.clone().on_hover_text(d.path.display().to_string());
-            ui.painter().galley(nr.min, g, p.text);
-            if open.clicked() && d.done == Some(true) {
-                crate::platform::reveal(&d.path);
-                ui.close();
-            }
-            match d.done {
-                None => {
-                    // How far it is, as the system does not say: a segment running along.
-                    let track = Rect::from_min_size(pos2(tx, row.top() + 18.0 + 6.0), vec2(row.right() - tx, 4.0));
-                    ui.painter().rect_filled(track, CornerRadius::same(2), p.subtle);
-                    let seg = track.width() * 0.3;
-                    let x0 = track.left() + ((ui.input(|i| i.time) as f32 * 160.0) % (track.width() + seg)) - seg;
-                    ui.painter().with_clip_rect(track).rect_filled(Rect::from_min_size(pos2(x0, track.top()), vec2(seg, 4.0)), CornerRadius::same(2), p.accent);
-                    ui.ctx().request_repaint_after(Duration::from_millis(33));
-                    ui.painter().text(pos2(tx, track.bottom() + 6.0 + 7.0), Align2::LEFT_CENTER, t("Downloading…"), style::mono(style::DATA), p.text_faint);
-                }
-                Some(false) => {
-                    ui.painter().text(pos2(tx, row.bottom() - 8.0), Align2::LEFT_CENTER, t("Download failed"), egui::FontId::proportional(style::SMALL), p.err);
-                    let r = ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| kit::icon_button_ex(ui, icons::ARROW_CLOCKWISE, t("Retry"), false, ICON_S)).inner;
-                    if r.clicked() {
-                        retry = Some(d.url.clone());
-                    }
-                }
-                Some(true) => {
-                    let at = std::time::SystemTime::now().checked_sub(d.at.elapsed()).unwrap_or_else(std::time::SystemTime::now);
-                    let meta = format!("{} · {}", super::update_ui::human_size(d.size.unwrap_or(0)), super::dialogs::ago(at));
-                    ui.painter().text(pos2(tx, row.bottom() - 8.0), Align2::LEFT_CENTER, meta, style::mono(style::DATA), p.text_faint);
-                    let r = ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| kit::icon_button_ex(ui, icons::FOLDER_OPEN, reveal_tip, false, ICON_S)).inner;
-                    if r.clicked() {
-                        crate::platform::reveal_in_folder(&d.path);
+        let max_list_h = (ui.ctx().content_rect().height() * 0.55).clamp(160.0, 420.0);
+        egui::ScrollArea::vertical()
+            .id_salt(("browser-downloads-scroll", id))
+            .max_height(max_list_h)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.set_width(w);
+                ui.spacing_mut().item_spacing = vec2(8.0, 14.0);
+                for (i, d) in list.iter().enumerate() {
+                    let name = d.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let running = d.done.is_none();
+                    let h = if running { 18.0 + 6.0 + 4.0 + 6.0 + 14.0 } else { 18.0 + 2.0 + 16.0 };
+                    let (row, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+                    let (icon, ic) = file_icon(&name, &p);
+                    let name_y = row.top() + 9.0;
+                    ui.painter().text(pos2(row.left() + 8.0, name_y), Align2::CENTER_CENTER, icon, style::icon_font(16.0), ic);
+                    let tx = row.left() + 16.0 + 8.0;
+                    let button = Rect::from_min_size(pos2(row.right() - ICON_S, if running { row.top() - 3.0 } else { row.center().y - ICON_S / 2.0 }), vec2(ICON_S, ICON_S));
+                    let mut job = egui::text::LayoutJob::simple_singleline(name.clone(), egui::FontId::proportional(style::BODY), p.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((button.left() - 8.0 - tx).max(20.0));
+                    let g = ui.painter().layout_job(job);
+                    let nr = Rect::from_min_size(pos2(tx, name_y - g.size().y / 2.0), g.size());
+                    let open = ui.interact(nr, egui::Id::new(("browser-download-name", id, i)), Sense::click());
+                    let open = if d.done == Some(true) { open.on_hover_cursor(egui::CursorIcon::PointingHand) } else { open };
+                    open.clone().on_hover_text(d.path.display().to_string());
+                    ui.painter().galley(nr.min, g, p.text);
+                    if open.clicked() && d.done == Some(true) {
+                        crate::platform::reveal(&d.path);
                         ui.close();
                     }
+                    match d.done {
+                        None => {
+                            // How far it is, as the system does not say: a segment running along.
+                            let track = Rect::from_min_size(pos2(tx, row.top() + 18.0 + 6.0), vec2(row.right() - tx, 4.0));
+                            ui.painter().rect_filled(track, CornerRadius::same(2), p.subtle);
+                            let seg = track.width() * 0.3;
+                            let x0 = track.left() + ((ui.input(|i| i.time) as f32 * 160.0) % (track.width() + seg)) - seg;
+                            ui.painter().with_clip_rect(track.intersect(ui.clip_rect())).rect_filled(Rect::from_min_size(pos2(x0, track.top()), vec2(seg, 4.0)), CornerRadius::same(2), p.accent);
+                            ui.ctx().request_repaint_after(Duration::from_millis(33));
+                            ui.painter().text(pos2(tx, track.bottom() + 6.0 + 7.0), Align2::LEFT_CENTER, t("Downloading…"), style::mono(style::DATA), p.text_faint);
+                        }
+                        Some(false) => {
+                            ui.painter().text(pos2(tx, row.bottom() - 8.0), Align2::LEFT_CENTER, t("Download failed"), egui::FontId::proportional(style::SMALL), p.err);
+                            let r = ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| kit::icon_button_ex(ui, icons::ARROW_CLOCKWISE, t("Retry"), false, ICON_S)).inner;
+                            if r.clicked() {
+                                retry = Some(d.url.clone());
+                            }
+                        }
+                        Some(true) => {
+                            let at = std::time::SystemTime::now().checked_sub(d.at.elapsed()).unwrap_or_else(std::time::SystemTime::now);
+                            let meta = format!("{} · {}", super::update_ui::human_size(d.size.unwrap_or(0)), super::dialogs::ago(at));
+                            ui.painter().text(pos2(tx, row.bottom() - 8.0), Align2::LEFT_CENTER, meta, style::mono(style::DATA), p.text_faint);
+                            let r = ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| kit::icon_button_ex(ui, icons::FOLDER_OPEN, reveal_tip, false, ICON_S)).inner;
+                            if r.clicked() {
+                                crate::platform::reveal_in_folder(&d.path);
+                                ui.close();
+                            }
+                        }
+                    }
                 }
-            }
-        }
+            });
         if list.is_empty() {
             ui.label(egui::RichText::new(t("Nothing downloaded yet.")).size(style::SMALL).color(p.text_faint));
         }
@@ -1233,7 +1242,10 @@ impl App {
 
     /// ⌘C, ⌘V, ⌘A while a page has the keyboard: sent to the page. Returns whether one has it.
     pub fn page_has_keys(&self, command: &str) -> bool {
-        if let Some(v) = self.browser_focus.and_then(|id| self.browsers.get(&id)).and_then(|b| b.view.as_ref()) {
+        if self.overlay_open() {
+            return false;
+        }
+        if let Some(v) = self.browser_focus.and_then(|id| self.browsers.get(&id)).filter(|b| b.shown).and_then(|b| b.view.as_ref()) {
             crate::browser::edit_command(v, command);
             return true;
         }
@@ -1549,11 +1561,12 @@ impl App {
         for b in self.browsers.values_mut() {
             // A page out of sight that has the user's keyboard gives it back (else keys go
             // nowhere). Not one an agent types in out of sight (macOS: its own window's keyboard).
-            if !b.shown
-                && let Some(v) = &b.view
-                && crate::browser::has_user_keyboard(v)
-            {
-                let _ = v.focus_parent();
+            if !b.shown {
+                if let Some(v) = &b.view
+                    && crate::browser::has_user_keyboard(v)
+                {
+                    let _ = v.focus_parent();
+                }
                 if typing_in == Some(b.id) {
                     typing_in = None;
                 }
@@ -1779,13 +1792,13 @@ fn notice_keys(ui: &mut Ui, rect: Rect, id: egui::Id) -> bool {
 fn notice_buttons(ui: &Ui, rect: Rect, primary: Option<(&str, Option<&str>)>, secondary: Option<&str>) -> (Option<Rect>, Option<Rect>) {
     let cy = rect.center().y;
     let text_left = rect.left() + 40.0;
-    let min_text = 160.0;
+    let min_text = kit::NOTICE_MIN_TEXT;
     let mut right = rect.right() - 8.0;
     let at = |right: f32, w: f32| Rect::from_min_max(pos2(right - w, cy - 12.0), pos2(right, cy + 12.0));
     let mut pr = None;
     if let Some((label, keys)) = primary {
         let w = kit::button_width(ui, None, label, keys, true);
-        if right - w - text_left > min_text * 0.6 {
+        if right - w - text_left > min_text * 0.75 {
             pr = Some(at(right, w));
             right -= w + 6.0;
         }

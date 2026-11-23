@@ -224,6 +224,8 @@ let state = null;
 let tab = "live";
 let selectedPane = null;
 let lastRenderedPane = null;
+let lastRenderedTab = null;
+let lastRenderedPaneKey = null;
 let es = null;
 let retryTimer = null;
 let retryMs = 1000;
@@ -608,11 +610,14 @@ function render(){
   }
 
   // While user is actively typing in `#prompt-input` on the same pane, patch terminal output in
-  // place so virtual keyboard / IME composition is never disrupted by DOM replacement.
+  // place so virtual keyboard / IME composition is never disrupted by DOM replacement, unless
+  // an error toast or a status/rate-limit change needs to be shown.
   const prevInput = document.getElementById("prompt-input");
   const samePane = prevInput && Number(prevInput.dataset.pane) === selectedPane;
-  if(tab === "live" && samePane && document.activeElement === prevInput){
-    const pane = (state.panes||[]).find(p=>p.id===selectedPane);
+  const livePane = (state.panes||[]).find(p=>p.id===selectedPane);
+  const paneKey = livePane ? `${livePane.id}:${livePane.status}:${livePane.message||""}:${Boolean(livePane.rate_limit)}` : "";
+  if(tab === "live" && samePane && !toastMsg && paneKey === lastRenderedPaneKey && document.activeElement === prevInput){
+    const pane = livePane;
     const termBox = document.getElementById("term-box");
     if(pane && termBox){
       const nearBot = (termBox.scrollHeight - termBox.scrollTop - termBox.clientHeight) < 36;
@@ -629,7 +634,7 @@ function render(){
     end: prevInput.selectionEnd
   } : null;
   const prevMain = root.querySelector("main");
-  const savedMainScroll = prevMain ? prevMain.scrollTop : 0;
+  const savedMainScroll = (prevMain && lastRenderedTab === tab) ? prevMain.scrollTop : 0;
   const prevTerm = document.getElementById("term-box");
   const paneChanged = lastRenderedPane !== selectedPane;
   const termNearBottom = !prevTerm || paneChanged || (prevTerm.scrollHeight - prevTerm.scrollTop - prevTerm.clientHeight) < 36;
@@ -660,6 +665,8 @@ function render(){
   </div>`;
 
   lastRenderedPane = selectedPane;
+  lastRenderedTab = tab;
+  lastRenderedPaneKey = paneKey;
   const newMain = root.querySelector("main");
   if(newMain) newMain.scrollTop = savedMainScroll;
   const newTerm = document.getElementById("term-box");

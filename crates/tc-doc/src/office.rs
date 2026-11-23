@@ -614,12 +614,12 @@ impl Counters {
         let n = *self.counts.entry((num.to_string(), level)).and_modify(|c| *c = c.saturating_add(1)).or_insert(start);
         // Deeper levels start again under a new item.
         self.counts.retain(|(k, l), _| k != num || *l <= level);
-        let mut out = if text.is_empty() { format!("%{}.", level + 1) } else { text };
+        let mut out = if text.is_empty() { format!("%{}.", u16::from(level) + 1) } else { text };
         for l in 0..=level {
             let f = numbering.get(&(num.to_string(), l));
             let v = if l == level { n } else { self.counts.get(&(num.to_string(), l)).copied().unwrap_or(f.map_or(1, |f| f.start)) };
             let f = f.map_or("decimal", |f| f.fmt.as_str());
-            out = out.replace(&format!("%{}", l + 1), &number_text(v, f));
+            out = out.replace(&format!("%{}", u16::from(l) + 1), &number_text(v, f));
         }
         Some(out)
     }

@@ -150,6 +150,7 @@ impl App {
                 .map(|(tree, at, agent)| (agent.label().to_string(), *at, tree.clone()))
         });
         let worktree = project.worktree.as_ref().map(|w| (w.branch.clone(), w.base.clone()));
+        self.exit_zen_mode();
         if self.view != tc_core::model::View::Focus {
             self.show_focus();
         }
@@ -453,28 +454,32 @@ impl App {
             ui.memory_mut(|m| m.request_focus(keys_id));
         }
         let has_keys = ui.memory(|m| m.has_focus(keys_id));
-        let filter_focused = ui.ctx().memory(|m| m.focused().is_some_and(|f| f == egui::Id::new("review-filter")));
+        if has_keys {
+            ui.memory_mut(|m| m.set_focus_lock_filter(keys_id, egui::EventFilter { escape: true, tab: true, ..Default::default() }));
+        }
+        let filter_id = egui::Id::new("review-filter");
+        let filter_focused = ui.ctx().memory(|m| m.focused().is_some_and(|f| f == filter_id));
         // Typing in the commit box: Review's keys leave it alone (Esc too).
         let ship_typing = ui.ctx().memory(|m| m.focused().is_some_and(|f| f == App::ship_message_id(r.project) || f == egui::Id::new(("ship-branch", r.project))));
         let mut close = false;
         let mut to_terminal = false;
+        let filter_q = self.review_filter.trim().to_lowercase();
+        let visible: Vec<usize> = r
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| filter_q.is_empty() || f.path.to_lowercase().contains(&filter_q))
+            .map(|(i, _)| i)
+            .collect();
+        if !visible.is_empty() && !visible.contains(&r.selected) {
+            asks.select = Some(visible[0]);
+        }
         if !self.overlay_open() && !self.updater.dialog_open && has_keys && !ship_typing {
-            let filter_q = self.review_filter.trim().to_lowercase();
-            let visible: Vec<usize> = r
-                .files
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| filter_q.is_empty() || f.path.to_lowercase().contains(&filter_q))
-                .map(|(i, _)| i)
-                .collect();
             ui.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::NONE, Key::Escape) {
                     to_terminal = true;
                 }
-                if filter_focused {
-                    return;
-                }
-                let sel = r.selected;
+                let sel = asks.select.unwrap_or(r.selected);
                 if i.consume_key(egui::Modifiers::NONE, Key::J)
                     && let Some(&next) = visible.iter().find(|&&idx| idx > sel)
                 {
@@ -588,9 +593,21 @@ impl App {
         let mut filter = self.review_filter.clone();
         if wide || nfiles > FILTER_FROM || !filter.is_empty() || filter_focused {
             let filter_rect = Rect::from_min_size(pos2(col.left() + margin, top), vec2(col.width() - margin * 2.0, 28.0));
-            ui.scope_builder(egui::UiBuilder::new().max_rect(filter_rect), |ui| {
-                kit::filter_field(ui, egui::Id::new("review-filter"), &mut filter, Some(icons::FUNNEL), t("Filter changed files"), filter_rect.width())
-            });
+            let fresp = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(filter_rect), |ui| {
+                    kit::filter_field(ui, filter_id, &mut filter, Some(icons::FUNNEL), t("Filter changed files"), filter_rect.width())
+                })
+                .inner;
+            if fresp.has_focus() {
+                ui.memory_mut(|m| m.set_focus_lock_filter(filter_id, egui::EventFilter { escape: true, ..Default::default() }));
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+                    if !filter.is_empty() {
+                        filter.clear();
+                    } else {
+                        ui.memory_mut(|m| m.request_focus(keys_id));
+                    }
+                }
+            }
             self.review_filter = filter.clone();
             top = filter_rect.bottom() + if wide { 10.0 } else { 4.0 };
             ui.data_mut(|d| d.insert_temp(egui::Id::new("review-filter-rect"), filter_rect));
@@ -957,7 +974,7 @@ impl App {
         job.wrap = egui::text::TextWrapping::truncate_at_width((avail - reserved).max(16.0));
         let g = painter.layout_job(job);
         let gw = g.size().x;
-        let head_clip = painter.with_clip_rect(Rect::from_min_max(pos2(x, head.top()), pos2(left_end.max(x), head.bottom())));
+        let head_clip = painter.with_clip_rect(Rect::from_min_max(pos2(x, head.top()), pos2(left_end.max(x), head.bottom())).intersect(painter.clip_rect()));
         head_clip.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
         x += gw + gap;
         if show_counts && let Some(c) = counts {
@@ -1457,7 +1474,7 @@ pub(super) fn changed_part(text: &str, other: &str) -> Option<std::ops::Range<us
 fn centered(ui: &Ui, rect: Rect, text: &str, color: Color32) {
     let g = ui.painter().layout(text.to_string(), egui::FontId::proportional(style::BODY), color, (rect.width() - 32.0).max(40.0));
     let sz = g.size();
-    ui.painter().with_clip_rect(rect).galley(pos2(rect.center().x - sz.x / 2.0, rect.center().y - sz.y / 2.0), g, color);
+    ui.painter().with_clip_rect(rect.intersect(ui.clip_rect())).galley(pos2(rect.center().x - sz.x / 2.0, rect.center().y - sz.y / 2.0), g, color);
 }
 
 /// Why there is nothing to show: the empty state (an icon tile, a sentence, a line under it and

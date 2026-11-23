@@ -25,12 +25,64 @@ const GAP: f32 = 10.0;
 const NAV_H: f32 = 30.0;
 const SEARCH_H: f32 = 30.0;
 const PROJECT_H: f32 = 32.0;
+const GROUP_H: f32 = 26.0;
 const SESSION_H: f32 = 28.0;
 const FOOT_H: f32 = 30.0;
 const USAGE_H: f32 = 68.0;
 
+/// Sidebar sizes derived from `settings.sidebar_font_size` (default 14 pt vs base 13 pt).
+#[derive(Clone, Copy)]
+struct SidebarScale {
+    body: f32,
+    small: f32,
+    data: f32,
+    label: f32,
+    icon: f32,
+    tile: f32,
+    nav_h: f32,
+    search_h: f32,
+    project_h: f32,
+    group_h: f32,
+    session_h: f32,
+    foot_h: f32,
+    usage_h: f32,
+}
+
+impl SidebarScale {
+    fn of(body: f32) -> Self {
+        let s = (body / style::BODY).clamp(0.84, 1.45);
+        Self {
+            body,
+            small: (style::SMALL * s).round(),
+            data: (style::DATA * s).round(),
+            label: (style::LABEL * s).round(),
+            icon: (16.0 * s).round(),
+            tile: (20.0 * s).round(),
+            nav_h: (NAV_H * s).round(),
+            search_h: (SEARCH_H * s).round(),
+            project_h: (PROJECT_H * s).round(),
+            group_h: (GROUP_H * s).round(),
+            session_h: (SESSION_H * s).round(),
+            foot_h: (FOOT_H * s).round(),
+            usage_h: (USAGE_H * s).round(),
+        }
+    }
+}
+
+/// How long a project stays under Active after it went quiet (so it does not jump away just as
+/// you reach for it). End-to-end checks can shorten this via `TERNARYCODE_ACTIVE_LINGER_MS`.
+fn active_linger() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("TERNARYCODE_ACTIVE_LINGER_MS").ok().and_then(|v| v.parse().ok()) {
+        return std::time::Duration::from_millis(ms);
+    }
+    std::time::Duration::from_secs(30)
+}
+
 /// A line of the project list.
 enum Line {
+    /// A group's collapsible header (`true` = Active, `false` = Idle).
+    Group(bool),
     /// A project (index), the letters the search found, dimmed (shown for a worktree found
     /// under it).
     Project(usize, Vec<bool>, bool),
@@ -52,6 +104,7 @@ struct SessionRow {
 impl App {
     pub fn sidebar(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
+        let sc = SidebarScale::of(self.settings.sidebar_font_size);
         let full = ui.max_rect();
         let inner_l = full.left() + PAD;
         let inner_r = full.right() - PAD;
@@ -73,24 +126,24 @@ impl App {
         let mut y = title.bottom();
 
         // ----- Search: filters the projects here (⌘K searches everything) --------------------
-        let search = Rect::from_min_size(pos2(inner_l, y), vec2(inner_r - inner_l, SEARCH_H));
-        let typing = self.sidebar_search(ui, search);
+        let search = Rect::from_min_size(pos2(inner_l, y), vec2(inner_r - inner_l, sc.search_h));
+        let typing = self.sidebar_search(ui, search, sc);
         y = search.bottom() + GAP;
         let searching = typing || !self.project_filter.trim().is_empty();
 
         // ----- Inbox, Overview ---------------------------------------------------------------
         if !searching {
             let waiting = self.attention_queue().len();
-            let inbox = Rect::from_min_size(pos2(inner_l, y), vec2(inner_r - inner_l, NAV_H));
-            let r = nav_item(ui, inbox, icons::TRAY, t("Inbox"), (waiting > 0).then_some(waiting), None, self.view == View::Inbox, &p);
+            let inbox = Rect::from_min_size(pos2(inner_l, y), vec2(inner_r - inner_l, sc.nav_h));
+            let r = nav_item(ui, inbox, icons::TRAY, t("Inbox"), (waiting > 0).then_some(waiting), None, self.view == View::Inbox, sc, &p);
             #[cfg(debug_assertions)]
             crate::devtest::record("nav:inbox", inbox);
             if r.on_hover_text(kit::tip(t("Everything that waits for you"), Action::ToggleAttention)).clicked() {
                 self.actions.push(Action::ToggleAttention);
             }
-            let overview = inbox.translate(vec2(0.0, NAV_H + 2.0));
+            let overview = inbox.translate(vec2(0.0, sc.nav_h + 2.0));
             let keys = kit::keys(&Action::ToggleGrid);
-            let r = nav_item(ui, overview, icons::SQUARES_FOUR, t("Overview"), None, keys, self.view == View::Grid && !self.attention_open, &p);
+            let r = nav_item(ui, overview, icons::SQUARES_FOUR, t("Overview"), None, keys, self.view == View::Grid && !self.attention_open, sc, &p);
             #[cfg(debug_assertions)]
             crate::devtest::record("nav:overview", overview);
             if r.on_hover_text(t("Every project at once")).clicked() {
@@ -103,16 +156,16 @@ impl App {
         let bottom = full.bottom() - 10.0;
         let list_bottom = if searching {
             let hint = Rect::from_min_max(pos2(inner_l, bottom - 18.0), pos2(inner_r, bottom));
-            ui.painter().text(pos2(hint.left() + 2.0, hint.center().y), Align2::LEFT_CENTER, t("↑↓ choose · ↵ open · esc clear"), egui::FontId::proportional(style::SMALL), p.text_faint);
+            ui.painter().text(pos2(hint.left() + 2.0, hint.center().y), Align2::LEFT_CENTER, t("↑↓ choose · ↵ open · esc clear"), egui::FontId::proportional(sc.small), p.text_faint);
             hint.top() - GAP
         } else {
-            let foot = Rect::from_min_max(pos2(inner_l, bottom - FOOT_H), pos2(inner_r, bottom));
-            self.sidebar_footer(ui, foot);
+            let foot = Rect::from_min_max(pos2(inner_l, bottom - sc.foot_h), pos2(inner_r, bottom));
+            self.sidebar_footer(ui, foot, sc);
             let mut top = foot.top() - GAP;
             if let Some(meter) = self.usage_meter_data() {
-                let rect = Rect::from_min_max(pos2(inner_l, top - USAGE_H), pos2(inner_r, top));
-                if rect.top() > y + SECTION_H + 3.0 * PROJECT_H {
-                    self.usage_meter(ui, rect, &meter);
+                let rect = Rect::from_min_max(pos2(inner_l, top - sc.usage_h), pos2(inner_r, top));
+                if rect.top() > y + SECTION_H + 3.0 * sc.project_h {
+                    self.usage_meter(ui, rect, &meter, sc);
                     top = rect.top() - GAP;
                 }
             }
@@ -123,14 +176,14 @@ impl App {
         let list = Rect::from_min_max(pos2(full.left(), y.min(list_bottom)), pos2(full.right(), list_bottom.max(y)));
         ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
             ui.set_clip_rect(list.intersect(ui.clip_rect()));
-            self.project_list(ui, searching)
+            self.project_list(ui, searching, sc)
         });
     }
 
     /// The search field at the top: a magnifier, what is typed (or "Search…" and ⌘K), × to
     /// empty it. While it has the keyboard ↑ ↓ choose a project, ↵ opens it, Esc empties it and
     /// lets go. Returns whether it has the keyboard.
-    fn sidebar_search(&mut self, ui: &mut Ui, rect: Rect) -> bool {
+    fn sidebar_search(&mut self, ui: &mut Ui, rect: Rect, sc: SidebarScale) -> bool {
         let p = style::pal(ui);
         let fid = egui::Id::new("project-filter");
         let typing = ui.memory(|m| m.has_focus(fid));
@@ -176,7 +229,7 @@ impl App {
         } else {
             painter.rect(rect, CornerRadius::same(8), p.hover, Stroke::new(1.0, p.border), StrokeKind::Inside);
         }
-        painter.text(pos2(rect.left() + 10.0 + 7.0, rect.center().y), Align2::CENTER_CENTER, icons::MAGNIFYING_GLASS, style::icon_font(14.0), if typing { p.text_muted } else { p.text_faint });
+        painter.text(pos2(rect.left() + 10.0 + 7.0, rect.center().y), Align2::CENTER_CENTER, icons::MAGNIFYING_GLASS, style::icon_font((sc.icon - 2.0).max(12.0)), if typing { p.text_muted } else { p.text_faint });
         let text_rect = Rect::from_min_max(pos2(rect.left() + 10.0 + 14.0 + 8.0, rect.top()), pos2(rect.right() - 30.0, rect.bottom()));
         let mut text = self.project_filter.clone();
         let edit = ui
@@ -185,7 +238,7 @@ impl App {
                     egui::TextEdit::singleline(&mut text)
                         .id(fid)
                         .frame(egui::Frame::NONE)
-                        .font(egui::FontId::proportional(style::BODY))
+                        .font(egui::FontId::proportional(sc.body))
                         .text_color(p.text)
                         .desired_width(text_rect.width())
                         .vertical_align(egui::Align::Center)
@@ -202,7 +255,7 @@ impl App {
             ui.memory_mut(|m| m.set_focus_lock_filter(fid, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, escape: true, ..Default::default() }));
         }
         if self.project_filter.is_empty() {
-            ui.painter().text(pos2(text_rect.left(), rect.center().y), Align2::LEFT_CENTER, t("Search…"), egui::FontId::proportional(style::BODY), p.text_faint);
+            ui.painter().text(pos2(text_rect.left(), rect.center().y), Align2::LEFT_CENTER, t("Search…"), egui::FontId::proportional(sc.body), p.text_faint);
             if !typing && let Some(k) = kit::keys(&Action::Palette) {
                 let kw = kit::kbd_width(ui.painter(), k);
                 kit::paint_kbd_text(ui.painter(), pos2(rect.right() - 6.0 - kw, rect.center().y), k, &p);
@@ -226,11 +279,11 @@ impl App {
     }
 
     /// Settings at the foot, ⌘, at its right.
-    fn sidebar_footer(&mut self, ui: &mut Ui, rect: Rect) {
+    fn sidebar_footer(&mut self, ui: &mut Ui, rect: Rect, sc: SidebarScale) {
         let p = style::pal(ui);
         let label = t("Settings");
-        let g = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(style::BODY), p.text_muted);
-        let b = Rect::from_min_size(rect.min, vec2(8.0 + 16.0 + 10.0 + g.size().x + 8.0, FOOT_H));
+        let g = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(sc.body), p.text_muted);
+        let b = Rect::from_min_size(rect.min, vec2(8.0 + sc.icon + 10.0 + g.size().x + 8.0, sc.foot_h));
         let r = ui.interact(b, egui::Id::new("sidebar-settings"), Sense::click());
         #[cfg(debug_assertions)]
         crate::devtest::record("sidebar-settings", b);
@@ -241,49 +294,92 @@ impl App {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let ink = if hot { p.text } else { p.text_muted };
-        painter.text(pos2(b.left() + 8.0 + 8.0, b.center().y), Align2::CENTER_CENTER, icons::GEAR_SIX, style::icon_font(16.0), ink);
-        painter.galley(pos2(b.left() + 8.0 + 16.0 + 10.0, b.center().y - g.size().y / 2.0), g, ink);
+        painter.text(pos2(b.left() + 8.0 + sc.icon / 2.0, b.center().y), Align2::CENTER_CENTER, icons::GEAR_SIX, style::icon_font(sc.icon), ink);
+        painter.galley(pos2(b.left() + 8.0 + sc.icon + 10.0, b.center().y - g.size().y / 2.0), g, ink);
         if let Some(k) = kit::keys(&Action::Settings) {
-            painter.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, k, style::mono(style::DATA), p.text_ghost);
+            painter.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, k, style::mono(sc.data), p.text_ghost);
         }
         if r.clicked() {
             self.actions.push(Action::Settings);
         }
     }
 
-    /// The account the meter at the foot shows: the one the agent in view uses, else the one
-    /// most used in its short window (only accounts whose usage is known).
+    /// The account the meter at the foot shows: the one the agent in view uses, else an active or
+    /// highest-used account whose usage is known.
     fn usage_meter_data(&self) -> Option<UsageMeter> {
         let profiles = self.effective_profiles();
-        let pick_id = self.current_pane().and_then(|id| self.panes.get(&id)).and_then(|x| x.active_profile.clone());
-        let candidates = profiles.iter().filter(|pr| pr.enabled).filter_map(|pr| {
-            let rt = self.profiles_rt.get(&pr.id)?;
-            let pct = rt.quota_5h_used_pct(pr).or_else(|| rt.quota_weekly_used_pct(pr))?;
-            Some((pr, rt, pct))
+        let pick_id = self.current_pane().and_then(|id| {
+            let pane = self.panes.get(&id)?;
+            if let Some(agent) = pane.tracker.agent.or(pane.last_agent) {
+                self.resolved_pane_profile_id(pane, agent, &profiles)
+            } else {
+                pane.active_profile.clone()
+            }
         });
-        let mut best: Option<(&tc_core::model::AgentProfile, &crate::profiles::ProfileRuntime, f32)> = None;
-        for c in candidates {
-            if pick_id.as_deref() == Some(c.0.id.as_str()) {
-                best = Some(c);
+        let mut best: Option<(&tc_core::model::AgentProfile, &crate::profiles::ProfileRuntime, Option<f32>, bool, f32)> = None;
+        for pr in profiles.iter().filter(|pr| pr.enabled) {
+            let Some(rt) = self.profiles_rt.get(&pr.id) else { continue };
+            let p5 = rt.quota_5h_used_pct(pr);
+            let pw = rt.quota_weekly_used_pct(pr);
+            let pct = p5.or(pw);
+            let has_tokens = rt.usage.window_5h.tokens.total() > 0
+                || rt.usage.window_weekly.tokens.total() > 0
+                || rt.usage.window_5h.turns > 0
+                || rt.usage.window_weekly.turns > 0;
+            if pct.is_none() && !has_tokens {
+                continue;
+            }
+            let running = matches!(
+                rt.state,
+                crate::profiles::ProfileState::Running | crate::profiles::ProfileState::RateLimited
+            );
+            let score = p5.unwrap_or(0.0).max(pw.unwrap_or(0.0));
+            if pick_id.as_deref() == Some(pr.id.as_str()) {
+                best = Some((pr, rt, pct, running, score));
                 break;
             }
-            if best.as_ref().is_none_or(|b| c.2 > b.2) {
-                best = Some(c);
+            let better = match best {
+                None => true,
+                Some((_, _, b_pct, b_run, b_score)) => {
+                    (running, pct.is_some(), score) > (b_run, b_pct.is_some(), b_score)
+                }
+            };
+            if better {
+                best = Some((pr, rt, pct, running, score));
             }
         }
-        let (pr, rt, pct) = best?;
+        let (pr, rt, pct, _, _) = best?;
         let now = std::time::Instant::now();
         let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-        let short = rt.quota_5h_used_pct(pr).is_some();
-        let (window, reset) = if short {
-            (rt.window_5h_label(), rt.window_5h_reset_secs(now_unix, now))
+        let short = rt.quota_5h_used_pct(pr).is_some()
+            || (pct.is_none() && (rt.usage.window_5h.tokens.total() > 0 || rt.usage.window_5h.turns > 0));
+        let (window, reset, tok, turns) = if short {
+            (
+                rt.window_5h_label(),
+                rt.window_5h_reset_secs(now_unix, now),
+                rt.usage.window_5h.tokens.total(),
+                rt.usage.window_5h.turns,
+            )
         } else {
-            (rt.window_weekly_label(), rt.window_weekly_reset_secs(now_unix))
+            (
+                rt.window_weekly_label(),
+                rt.window_weekly_reset_secs(now_unix),
+                rt.usage.window_weekly.tokens.total(),
+                rt.usage.window_weekly.turns,
+            )
+        };
+        let metric = if let Some(v) = pct {
+            format!("{}%", v.round() as u32)
+        } else if tok > 0 {
+            tf("{} tok", &[&crate::profiles::format_tokens(tok)])
+        } else {
+            tf("{} turns", &[&turns.to_string()])
         };
         Some(UsageMeter {
             agent: pr.agent,
             label: format!("{} · {}", short_agent(pr.agent), pr.id),
             pct,
+            metric,
             window,
             reset: reset.map(|s| tf("resets {}", &[&crate::profiles::format_countdown(s)])),
             limited: matches!(rt.state, crate::profiles::ProfileState::RateLimited | crate::profiles::ProfileState::Cooldown),
@@ -292,7 +388,7 @@ impl App {
 
     /// The meter: the agent's mark, "Claude · claude1", how much is used, a bar, the window and
     /// when it resets. A click opens Accounts & usage.
-    fn usage_meter(&mut self, ui: &mut Ui, rect: Rect, m: &UsageMeter) {
+    fn usage_meter(&mut self, ui: &mut Ui, rect: Rect, m: &UsageMeter, sc: SidebarScale) {
         let p = style::pal(ui);
         let r = ui.interact(rect, egui::Id::new("usage-meter"), Sense::click());
         #[cfg(debug_assertions)]
@@ -304,25 +400,28 @@ impl App {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let inner = rect.shrink(10.0);
-        let row1 = inner.top() + 8.0;
-        kit::paint_agent_avatar(painter, Rect::from_center_size(pos2(inner.left() + 8.0, row1), vec2(16.0, 16.0)), Some(m.agent), &p);
-        let pct = format!("{}%", m.pct.round() as u32);
-        let pg = painter.layout_no_wrap(pct, style::mono(style::DATA), p.text_muted);
+        let av = sc.icon;
+        let row1 = inner.top() + av / 2.0;
+        kit::paint_agent_avatar(painter, Rect::from_center_size(pos2(inner.left() + av / 2.0, row1), vec2(av, av)), Some(m.agent), &p);
+        let pg = painter.layout_no_wrap(m.metric.clone(), style::mono(sc.data), p.text_muted);
         let pw = pg.size().x;
         painter.galley(pos2(inner.right() - pw, row1 - pg.size().y / 2.0), pg, p.text_muted);
-        let mut job = egui::text::LayoutJob::simple_singleline(m.label.clone(), style::medium(style::SMALL), p.text);
-        job.wrap = egui::text::TextWrapping::truncate_at_width((inner.width() - 24.0 - pw - 8.0).max(20.0));
+        let mut job = egui::text::LayoutJob::simple_singleline(m.label.clone(), style::medium(sc.small), p.text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((inner.width() - (av + 8.0) - pw - 8.0).max(20.0));
         let g = painter.layout_job(job);
-        painter.galley(pos2(inner.left() + 24.0, row1 - g.size().y / 2.0), g, p.text);
-        let track = Rect::from_min_size(pos2(inner.left(), row1 + 8.0 + 7.0), vec2(inner.width(), 4.0));
+        painter.galley(pos2(inner.left() + av + 8.0, row1 - g.size().y / 2.0), g, p.text);
+        let track_y = inner.center().y;
+        let track = Rect::from_min_size(pos2(inner.left(), track_y - 2.0), vec2(inner.width(), 4.0));
         painter.rect_filled(track, CornerRadius::same(2), p.subtle);
-        let fill_c = if m.limited || m.pct >= 90.0 { p.rate_limited } else { p.accent };
-        let fw = (track.width() * (m.pct / 100.0).clamp(0.0, 1.0)).max(if m.pct > 0.0 { 4.0 } else { 0.0 });
-        painter.rect_filled(Rect::from_min_size(track.min, vec2(fw, 4.0)), CornerRadius::same(2), fill_c);
-        let row3 = track.bottom() + 7.0 + 7.0;
-        painter.text(pos2(inner.left(), row3), Align2::LEFT_CENTER, tf("{} window", &[&m.window]), egui::FontId::proportional(style::LABEL), p.text_faint);
+        if let Some(pct) = m.pct {
+            let fill_c = if m.limited || pct >= 90.0 { p.rate_limited } else { p.accent };
+            let fw = (track.width() * (pct / 100.0).clamp(0.0, 1.0)).max(if pct > 0.0 { 4.0 } else { 0.0 });
+            painter.rect_filled(Rect::from_min_size(track.min, vec2(fw, 4.0)), CornerRadius::same(2), fill_c);
+        }
+        let row3 = inner.bottom() - sc.label / 2.0;
+        painter.text(pos2(inner.left(), row3), Align2::LEFT_CENTER, tf("{} window", &[&m.window]), egui::FontId::proportional(sc.label), p.text_faint);
         if let Some(reset) = &m.reset {
-            painter.text(pos2(inner.right(), row3), Align2::RIGHT_CENTER, reset, egui::FontId::proportional(style::LABEL), p.text_faint);
+            painter.text(pos2(inner.right(), row3), Align2::RIGHT_CENTER, reset, egui::FontId::proportional(sc.label), p.text_faint);
         }
         if r.on_hover_text(t("Accounts & usage")).clicked() {
             self.monitor_popover = !self.monitor_popover;
@@ -333,7 +432,7 @@ impl App {
     /// The projects: "Projects", how many, Search and Add; then each project in its place, the
     /// selected one with its sessions and worktrees under it. While searching: what was found,
     /// the keyboard's row with ↵.
-    fn project_list(&mut self, ui: &mut Ui, searching: bool) {
+    fn project_list(&mut self, ui: &mut Ui, searching: bool, sc: SidebarScale) {
         let p = style::pal(ui);
         let dark = ui.visuals().dark_mode;
         let area = ui.max_rect();
@@ -370,10 +469,16 @@ impl App {
             return;
         }
 
-        // The lines.
+        // The lines: while searching, flat best-match results; otherwise grouped with Active
+        // projects at the top and Idle projects below. While the pointer is over the list
+        // nothing moves between groups so rows never jump under the cursor.
         let query = self.project_filter.trim().to_string();
         let filtering = !query.is_empty();
+        let hold = ui.rect_contains_pointer(list) || typing;
+        let active_ids = self.sidebar_active(hold);
         let mut lines: Vec<Line> = Vec::new();
+        let mut counts = (0usize, 0usize);
+        let mut summary = [0usize; 4];
         if filtering {
             for (i, dim) in self.project_matches() {
                 let pr = &self.projects[i];
@@ -386,10 +491,29 @@ impl App {
             }
         } else {
             let active_root = self.active.and_then(|id| self.root_project(id)).map(|x| x.id);
-            for (i, pr) in self.projects.iter().enumerate().filter(|(_, x)| !x.is_worktree() || x.parent.and_then(|id| self.project(id)).is_none()) {
+            let roots: Vec<usize> = self
+                .projects
+                .iter()
+                .enumerate()
+                .filter(|(_, x)| !x.is_worktree() || x.parent.and_then(|id| self.project(id)).is_none())
+                .map(|(i, _)| i)
+                .collect();
+            let (active_roots, idle_roots): (Vec<usize>, Vec<usize>) =
+                roots.into_iter().partition(|&i| active_ids.contains(&self.projects[i].id));
+            self.sidebar_order = active_roots
+                .iter()
+                .chain(idle_roots.iter())
+                .map(|&i| self.projects[i].id)
+                .collect();
+            counts = (active_roots.len(), idle_roots.len());
+            if !active_roots.is_empty() {
+                summary = self.group_summary(&active_ids);
+            }
+            let push_project = |lines: &mut Vec<Line>, i: usize| {
+                let pr = &self.projects[i];
                 lines.push(Line::Project(i, Vec::new(), false));
                 if active_root != Some(pr.id) {
-                    continue;
+                    return;
                 }
                 // The selected project: its tabs, then its worktrees.
                 for k in 0..pr.tabs.len() {
@@ -397,6 +521,22 @@ impl App {
                 }
                 for (j, _) in self.projects.iter().enumerate().filter(|(_, x)| x.parent == Some(pr.id)) {
                     lines.push(Line::Worktree(j, Vec::new()));
+                }
+            };
+            if !active_roots.is_empty() {
+                lines.push(Line::Group(true));
+                if !self.sidebar_folded.contains("active") {
+                    for i in active_roots {
+                        push_project(&mut lines, i);
+                    }
+                }
+            }
+            if !idle_roots.is_empty() {
+                lines.push(Line::Group(false));
+                if !self.sidebar_folded.contains("idle") {
+                    for i in idle_roots {
+                        push_project(&mut lines, i);
+                    }
                 }
             }
         }
@@ -410,6 +550,7 @@ impl App {
         let top_indices: std::collections::HashMap<tc_core::ProjectId, usize> = self.top_order().into_iter().enumerate().map(|(idx, pid)| (pid, idx)).collect();
         let mut order = Vec::new();
         let mut pick: Option<Action> = None;
+        let mut toggle_group: Option<&'static str> = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(vec2(PAD, 0.0))), |ui| {
             egui::ScrollArea::vertical()
                 .id_salt(if filtering { "project-list-found" } else { "project-list" })
@@ -418,12 +559,48 @@ impl App {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     let mut found = 0usize;
+                    let mut groups_seen = 0usize;
                     for line in &lines {
                         match line {
+                            Line::Group(is_active) => {
+                                if groups_seen > 0 {
+                                    let (sep_r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
+                                    if ui.is_rect_visible(sep_r) {
+                                        ui.painter().hline(
+                                            (sep_r.left() + 6.0)..=(sep_r.right() - 6.0),
+                                            sep_r.center().y,
+                                            Stroke::new(1.0, p.border),
+                                        );
+                                    }
+                                }
+                                groups_seen += 1;
+                                let key = if *is_active { "active" } else { "idle" };
+                                let folded = self.sidebar_folded.contains(key);
+                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), sc.group_h), Sense::click());
+                                if ui.is_rect_visible(rect) {
+                                    #[cfg(debug_assertions)]
+                                    crate::devtest::record(format!("sidebar-group:{key}"), rect.intersect(ui.clip_rect()));
+                                    let (label, count) = if *is_active { (t("Active"), counts.0) } else { (t("Idle"), counts.1) };
+                                    let group_sum: &[(Status, usize)] = if *is_active {
+                                        &[(Status::Running, summary[0]), (Status::NeedsInput, summary[3]), (Status::Done, summary[1]), (Status::Failed(1), summary[2])]
+                                    } else {
+                                        &[]
+                                    };
+                                    paint_group_head(ui, rect, label, count, folded, resp.hovered(), *is_active, group_sum, sc, &p);
+                                }
+                                let resp = if *is_active {
+                                    resp.on_hover_text(t("Only projects where something runs or waits, or an agent can be resumed"))
+                                } else {
+                                    resp
+                                };
+                                if resp.clicked() {
+                                    toggle_group = Some(key);
+                                }
+                            }
                             Line::Project(i, marks, dim) => {
                                 let pr = &self.projects[*i];
                                 let id = pr.id;
-                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), PROJECT_H), Sense::click());
+                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), sc.project_h), Sense::click());
                                 let chosen = typing && !dim && found == sel;
                                 if !dim {
                                     found += 1;
@@ -439,7 +616,7 @@ impl App {
                                 crate::devtest::record(format!("project:{}", pr.name), rect.intersect(ui.clip_rect()));
                                 let selected = !filtering && self.active == Some(id) && self.view == View::Focus && !self.attention_open;
                                 let row = self.project_row(pr, &p);
-                                paint_project_row(ui, rect, &row, &pr.letters(), pr.color32(), marks, selected, resp.hovered() || chosen, *dim, chosen, dark, &p);
+                                paint_project_row(ui, rect, &row, &pr.letters(), pr.color32(), marks, selected, resp.hovered() || chosen, *dim, chosen, dark, sc, &p);
                                 if resp.clicked() {
                                     pick = Some(Action::SelectProject(id));
                                 }
@@ -451,7 +628,7 @@ impl App {
                             Line::Worktree(j, marks) => {
                                 let pr = &self.projects[*j];
                                 let id = pr.id;
-                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SESSION_H), Sense::click());
+                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), sc.session_h), Sense::click());
                                 let chosen = typing && found == sel;
                                 found += 1;
                                 order.push(id);
@@ -466,21 +643,21 @@ impl App {
                                 let selected = !filtering && self.active == Some(id) && self.view == View::Focus && !self.attention_open;
                                 let st = self.project_status(pr).map(|(s, _)| s).filter(|s| shows_status(*s));
                                 let branch = pr.git.as_ref().map(|g| g.branch.clone()).unwrap_or_default();
-                                paint_worktree_row(ui, rect, &pr.name, &branch, marks, st, selected, resp.hovered() || chosen, &p);
+                                paint_worktree_row(ui, rect, &pr.name, &branch, marks, st, selected, resp.hovered() || chosen, sc, &p);
                                 if resp.clicked() {
                                     pick = Some(Action::SelectProject(id));
                                 }
                                 resp.context_menu(|ui| self.worktree_menu(ui, id));
                             }
                             Line::Session(pid, k) => {
-                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SESSION_H), Sense::click());
+                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), sc.session_h), Sense::click());
                                 if !ui.is_rect_visible(rect) {
                                     continue;
                                 }
                                 #[cfg(debug_assertions)]
                                 crate::devtest::record(format!("session:{pid}:{k}"), rect.intersect(ui.clip_rect()));
                                 let Some(s) = self.session_row(*pid, *k) else { continue };
-                                paint_session_row(ui, rect, &s, resp.hovered(), &p);
+                                paint_session_row(ui, rect, &s, resp.hovered(), sc, &p);
                                 if resp.on_hover_text(&s.title).clicked() {
                                     pick = Some(Action::SelectTab(*k));
                                     if self.active != Some(*pid) {
@@ -496,12 +673,78 @@ impl App {
                 });
         });
         self.project_filter_rows = order;
+        if let Some(key) = toggle_group {
+            if !self.sidebar_folded.remove(key) {
+                self.sidebar_folded.insert(key.to_string());
+            }
+            self.mark_dirty();
+        }
         if let Some(a) = pick {
             if self.attention_open {
                 self.attention_open = false;
             }
             self.actions.push(a);
         }
+    }
+
+    /// Root projects currently under the sidebar's Active group: something runs, waits, or can be
+    /// resumed in them or their worktrees now (the Grid's rule), or did less than `active_linger`
+    /// ago. While `hold` (pointer over the list, or typing in search) the set stays put so rows
+    /// never jump under the cursor.
+    fn sidebar_active(&mut self, hold: bool) -> std::collections::HashSet<tc_core::ProjectId> {
+        use super::grid::Activity;
+        let now = std::time::Instant::now();
+        let linger = active_linger();
+        let mut wake: Option<std::time::Duration> = None;
+        for k in 0..self.projects.len() {
+            let pr = &self.projects[k];
+            let top = pr.parent.filter(|x| self.project(*x).is_some()).unwrap_or(pr.id);
+            match self.project_activity(pr.id, now) {
+                Activity::Active => {
+                    self.sidebar_active_until.insert(top, now + linger);
+                }
+                Activity::Soon(d) => wake = Some(wake.map_or(d, |w| w.min(d))),
+                Activity::Idle => {}
+            }
+        }
+        let projects = &self.projects;
+        self.sidebar_active_until
+            .retain(|id, until| *until > now && projects.iter().any(|p| p.id == *id && !p.is_worktree()));
+        if let Some(d) = self.sidebar_active_until.values().map(|u| *u - now).min() {
+            wake = Some(wake.map_or(d, |w| w.min(d)));
+        }
+        if let Some(d) = wake {
+            self.ctx.request_repaint_after(d);
+        }
+        let live: std::collections::HashSet<tc_core::ProjectId> = self.sidebar_active_until.keys().copied().collect();
+        if hold {
+            self.sidebar_hold.get_or_insert(live).clone()
+        } else {
+            self.sidebar_hold = None;
+            live
+        }
+    }
+
+    /// How many Active projects are, at their most pressing: running, done, failed, waiting
+    /// for the user (in that order).
+    fn group_summary(&self, ids: &std::collections::HashSet<tc_core::ProjectId>) -> [usize; 4] {
+        let mut out = [0; 4];
+        for &id in ids {
+            let mut rank = 0;
+            for pid in std::iter::once(id).chain(self.worktrees_of(id)) {
+                let Some(pr) = self.project(pid) else { continue };
+                for pane in pr.panes().iter().filter_map(|x| self.panes.get(x)).filter(|x| x.tracker.wants_attention()) {
+                    rank = rank.max(match pane.tracker.status {
+                        Status::NeedsInput => 3,
+                        Status::Failed(_) => 2,
+                        Status::Done | Status::CommandDone => 1,
+                        _ => 0,
+                    });
+                }
+            }
+            out[rank] += 1;
+        }
+        out
     }
 
     /// A tab of a project as a session row: who works there, what it is called, how long it
@@ -612,34 +855,40 @@ impl App {
         if r.clicked() {
             self.actions.push(Action::Settings);
         }
-        // The projects (a worktree shows as its project).
+        // The projects (a worktree shows as its project), Active first, then Idle.
         let list = Rect::from_min_max(pos2(full.left(), y), pos2(full.right(), gear.top() - 8.0));
+        let active_ids = self.sidebar_active(ui.rect_contains_pointer(list));
         let active_root = self.active.and_then(|id| self.root_project(id)).map(|x| x.id);
-        let rows: Vec<(tc_core::ProjectId, String, String, egui::Color32, Option<egui::Color32>)> = self
+        let build_row = |x: &crate::project::Project| {
+            // Its dot: the most urgent of it and its worktrees, when it asks for the user.
+            let mut dot: Option<(u8, egui::Color32)> = None;
+            for pr in self.projects.iter().filter(|c| c.id == x.id || c.parent == Some(x.id)) {
+                if let Some((st, attention)) = self.project_status(pr) {
+                    let cand = match st {
+                        Status::NeedsInput => Some((3, p.warn)),
+                        Status::Failed(_) => Some((2, p.err)),
+                        Status::Done | Status::CommandDone if attention => Some((1, p.ok)),
+                        _ => None,
+                    };
+                    if let Some((rank, c)) = cand
+                        && dot.is_none_or(|(best, _)| rank > best)
+                    {
+                        dot = Some((rank, c));
+                    }
+                }
+            }
+            (x.id, x.name.clone(), x.letters(), x.color32(), dot.map(|(_, c)| c), active_ids.contains(&x.id))
+        };
+        let (mut active_rows, idle_rows): (Vec<_>, Vec<_>) = self
             .projects
             .iter()
             .filter(|x| x.parent.is_none())
-            .map(|x| {
-                // Its dot: the most urgent of it and its worktrees, when it asks for the user.
-                let mut dot: Option<(u8, egui::Color32)> = None;
-                for pr in self.projects.iter().filter(|c| c.id == x.id || c.parent == Some(x.id)) {
-                    if let Some((st, attention)) = self.project_status(pr) {
-                        let cand = match st {
-                            Status::NeedsInput => Some((3, p.warn)),
-                            Status::Failed(_) => Some((2, p.err)),
-                            Status::Done | Status::CommandDone if attention => Some((1, p.ok)),
-                            _ => None,
-                        };
-                        if let Some((rank, c)) = cand
-                            && dot.is_none_or(|(best, _)| rank > best)
-                        {
-                            dot = Some((rank, c));
-                        }
-                    }
-                }
-                (x.id, x.name.clone(), x.letters(), x.color32(), dot.map(|(_, c)| c))
-            })
-            .collect();
+            .map(build_row)
+            .partition(|r| r.5);
+        let active_count = active_rows.len();
+        active_rows.extend(idle_rows);
+        self.sidebar_order = active_rows.iter().map(|r| r.0).collect();
+        let rows = active_rows;
         let mut pick = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
             ui.set_clip_rect(list.intersect(ui.clip_rect()));
@@ -649,7 +898,11 @@ impl App {
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 8.0;
-                    for (id, name, letters, color, dot) in &rows {
+                    for (idx, (id, name, letters, color, dot, _)) in rows.iter().enumerate() {
+                        if active_count > 0 && idx == active_count {
+                            let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), 5.0), Sense::hover());
+                            ui.painter().hline((sep.center().x - 14.0)..=(sep.center().x + 14.0), sep.center().y, Stroke::new(1.0, p.border));
+                        }
                         let (cell, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
                         let on = active_root == Some(*id) && self.view == View::Focus && !self.attention_open;
                         let back = Rect::from_center_size(cell.center(), vec2(36.0, 36.0));
@@ -823,10 +1076,11 @@ impl App {
             ui.close();
         }
         kit::menu_sep(ui);
-        let tops: Vec<tc_core::ProjectId> = self.top_order();
-        let at = tops.iter().position(|x| *x == id);
+        let in_active = self.is_sidebar_active(id);
+        let group: Vec<tc_core::ProjectId> = self.top_order().into_iter().filter(|pid| self.is_sidebar_active(*pid) == in_active).collect();
+        let at = group.iter().position(|x| *x == id);
         let first = at == Some(0);
-        let last = at.is_some_and(|i| i + 1 == tops.len());
+        let last = at.is_some_and(|i| i + 1 == group.len());
         if ui.add_enabled_ui(!first, |ui| kit::menu_item(ui, Some(icons::ARROW_UP), t("Move Up"), kit::keys(&Action::MoveProject(id, true)), false)).inner.clicked() {
             self.actions.push(Action::MoveProject(id, true));
             ui.close();
@@ -964,7 +1218,8 @@ impl RowMark {
 struct UsageMeter {
     agent: tc_core::agent::AgentKind,
     label: String,
-    pct: f32,
+    pct: Option<f32>,
+    metric: String,
     window: String,
     reset: Option<String>,
     limited: bool,
@@ -1000,7 +1255,7 @@ fn raised(painter: &egui::Painter, rect: Rect, radius: u8, p: &style::Palette) {
 
 /// A place at the top (Inbox, Overview): its icon, its name, a count of what waits, its keys.
 #[allow(clippy::too_many_arguments)]
-fn nav_item(ui: &mut Ui, rect: Rect, icon: &str, label: &str, count: Option<usize>, keys: Option<&str>, on: bool, p: &style::Palette) -> egui::Response {
+fn nav_item(ui: &mut Ui, rect: Rect, icon: &str, label: &str, count: Option<usize>, keys: Option<&str>, on: bool, sc: SidebarScale, p: &style::Palette) -> egui::Response {
     let r = ui.interact(rect, egui::Id::new(("nav", label)), Sense::click());
     let painter = ui.painter();
     if on {
@@ -1013,9 +1268,9 @@ fn nav_item(ui: &mut Ui, rect: Rect, icon: &str, label: &str, count: Option<usiz
     }
     let ink = if on || r.hovered() { p.text } else { p.text_muted };
     let cy = rect.center().y;
-    painter.text(pos2(rect.left() + 8.0 + 8.0, cy), Align2::CENTER_CENTER, icon, style::icon_font(16.0), ink);
-    let font = if on { style::medium(style::BODY) } else { egui::FontId::proportional(style::BODY) };
-    painter.text(pos2(rect.left() + 8.0 + 16.0 + 10.0, cy), Align2::LEFT_CENTER, label, font, ink);
+    painter.text(pos2(rect.left() + 8.0 + sc.icon / 2.0, cy), Align2::CENTER_CENTER, icon, style::icon_font(sc.icon), ink);
+    let font = if on { style::medium(sc.body) } else { egui::FontId::proportional(sc.body) };
+    painter.text(pos2(rect.left() + 8.0 + sc.icon + 10.0, cy), Align2::LEFT_CENTER, label, font, ink);
     let mut right = rect.right() - 8.0;
     if let Some(n) = count {
         right -= count_pill(painter, pos2(right, cy), n, p, ui.visuals().dark_mode);
@@ -1023,7 +1278,7 @@ fn nav_item(ui: &mut Ui, rect: Rect, icon: &str, label: &str, count: Option<usiz
     if let Some(k) = keys
         && count.is_none()
     {
-        painter.text(pos2(right, cy), Align2::RIGHT_CENTER, k, style::mono(style::DATA), p.text_faint);
+        painter.text(pos2(right, cy), Align2::RIGHT_CENTER, k, style::mono(sc.data), p.text_faint);
     }
     r
 }
@@ -1052,6 +1307,52 @@ fn rail_button(ui: &mut Ui, rect: Rect, icon: &str, tip: &str, on: bool, filled:
     r
 }
 
+/// A group's collapsible header line (`Active` / `Idle`): caret, name, count, and (for Active)
+/// compact status counts on the right.
+#[allow(clippy::too_many_arguments)]
+fn paint_group_head(
+    ui: &Ui,
+    rect: Rect,
+    label: &str,
+    count: usize,
+    folded: bool,
+    hovered: bool,
+    is_active: bool,
+    summary: &[(Status, usize)],
+    sc: SidebarScale,
+    p: &style::Palette,
+) {
+    let painter = ui.painter();
+    if hovered {
+        painter.rect_filled(rect, CornerRadius::same(6), p.hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let cy = rect.center().y;
+    let caret = if folded { icons::CARET_RIGHT } else { icons::CARET_DOWN };
+    painter.text(pos2(rect.left() + 10.0, cy), Align2::CENTER_CENTER, caret, style::icon_font((sc.label - 1.5).max(9.0)), p.text_ghost);
+    let label_c = if is_active { p.text_muted } else { p.text_faint };
+    let g = painter.layout_no_wrap(label.to_string(), style::medium(sc.label), label_c);
+    let gw = g.size().x;
+    painter.galley(pos2(rect.left() + 20.0, cy - g.size().y / 2.0), g, label_c);
+    painter.text(pos2(rect.left() + 20.0 + gw + 6.0, cy), Align2::LEFT_CENTER, count.to_string(), style::mono(sc.data), p.text_ghost);
+    let mut x = rect.right() - 8.0;
+    for (s, n) in summary.iter().rev().filter(|s| s.1 > 0) {
+        let color = status::color(*s, p);
+        let num = painter.layout_no_wrap(n.to_string(), style::mono(sc.data), color);
+        x -= num.size().x;
+        painter.galley(pos2(x, cy - num.size().y / 2.0), num, color);
+        x -= 3.5;
+        if *s == Status::Running {
+            kit::paint_lattice(painter, pos2(x - 5.0, cy), 10.0, color, true);
+            x -= 10.0;
+        } else {
+            status::paint_glyph(painter, pos2(x - 5.5, cy), *s, p, 11.0);
+            x -= 11.0;
+        }
+        x -= 7.0;
+    }
+}
+
 /// A project's row: its tile, its name (the letters found in the accent), how many wait,
 /// its status.
 #[allow(clippy::too_many_arguments)]
@@ -1067,6 +1368,7 @@ fn paint_project_row(
     dim: bool,
     chosen: bool,
     dark: bool,
+    sc: SidebarScale,
     p: &style::Palette,
 ) {
     let painter = ui.painter();
@@ -1079,7 +1381,7 @@ fn paint_project_row(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let cy = rect.center().y;
-    let tile = Rect::from_min_size(pos2(rect.left() + 6.0, cy - 10.0), vec2(20.0, 20.0));
+    let tile = Rect::from_min_size(pos2(rect.left() + 6.0, cy - sc.tile / 2.0), vec2(sc.tile, sc.tile));
     kit::paint_project_tile(painter, tile, letters, color, dark);
     let mut right = rect.right() - 8.0;
     if chosen {
@@ -1088,8 +1390,9 @@ fn paint_project_row(
         right -= kw + 8.0;
     } else if !dim {
         if let Some(s) = row.status.filter(|s| shows_status(*s)) {
-            status::paint_glyph(painter, pos2(right - 7.0, cy), s, p, 14.0);
-            right -= 14.0 + 9.0;
+            let gs = (sc.icon - 2.0).max(12.0);
+            status::paint_glyph(painter, pos2(right - gs / 2.0, cy), s, p, gs);
+            right -= gs + 9.0;
         } else if row.asleep {
             painter.circle_filled(pos2(right - 3.0, cy), 2.5, p.text_ghost);
             right -= 6.0 + 9.0;
@@ -1100,7 +1403,7 @@ fn paint_project_row(
     }
     let x = tile.right() + 9.0;
     let ink = if dim { p.text_faint } else if selected || hovered { p.text } else { p.text_muted };
-    let font = if selected { style::medium(style::BODY) } else { egui::FontId::proportional(style::BODY) };
+    let font = if selected { style::medium(sc.body) } else { egui::FontId::proportional(sc.body) };
     let mut job = name_job(&row.name, marks, font, ink, p);
     job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(16.0));
     let g = painter.layout_job(job);
@@ -1109,9 +1412,10 @@ fn paint_project_row(
 
 /// A worktree under its project: the rail, ⑂, its name, its branch, its status.
 #[allow(clippy::too_many_arguments)]
-fn paint_worktree_row(ui: &Ui, rect: Rect, name: &str, branch: &str, marks: &[bool], st: Option<Status>, selected: bool, hovered: bool, p: &style::Palette) {
+fn paint_worktree_row(ui: &Ui, rect: Rect, name: &str, branch: &str, marks: &[bool], st: Option<Status>, selected: bool, hovered: bool, sc: SidebarScale, p: &style::Palette) {
     let painter = ui.painter();
-    let body = Rect::from_min_max(pos2(rect.left() + 6.0 + 18.0 - 4.0, rect.top()), rect.max);
+    let rail_x = rect.left() + 6.0 + sc.tile / 2.0;
+    let body = Rect::from_min_max(pos2(rect.left() + 6.0 + sc.tile - 6.0, rect.top()), rect.max);
     if selected {
         painter.rect_filled(body, CornerRadius::same(6), p.accent_soft);
     } else if hovered {
@@ -1121,10 +1425,11 @@ fn paint_worktree_row(ui: &Ui, rect: Rect, name: &str, branch: &str, marks: &[bo
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let cy = rect.center().y;
-    painter.vline(rect.left() + 6.0 + 9.0, (rect.top() - 1.0)..=(rect.bottom() + 1.0), Stroke::new(1.0, p.border_strong));
-    let mut x = rect.left() + 6.0 + 18.0 + 4.0;
-    painter.text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, icons::GIT_FORK, style::icon_font(14.0), p.text_faint);
-    x += 14.0 + 7.0;
+    painter.vline(rail_x, (rect.top() - 1.0)..=(rect.bottom() + 1.0), Stroke::new(1.0, p.border_strong));
+    let ic = (sc.icon - 2.0).max(12.0);
+    let mut x = body.left() + 8.0;
+    painter.text(pos2(x + ic / 2.0, cy), Align2::CENTER_CENTER, icons::GIT_FORK, style::icon_font(ic), p.text_faint);
+    x += ic + 7.0;
     let mut right = rect.right() - 8.0;
     if let Some(s) = st {
         status::paint_glyph(painter, pos2(right - 6.0, cy), s, p, 12.0);
@@ -1132,7 +1437,7 @@ fn paint_worktree_row(ui: &Ui, rect: Rect, name: &str, branch: &str, marks: &[bo
     }
     if !branch.is_empty() && branch != name {
         let room = ((right - x) * 0.45).max(0.0);
-        let mut job = egui::text::LayoutJob::simple_singleline(branch.to_string(), style::mono(style::DATA), p.text_faint);
+        let mut job = egui::text::LayoutJob::simple_singleline(branch.to_string(), style::mono(sc.data), p.text_faint);
         job.wrap = egui::text::TextWrapping::truncate_at_width(room);
         let g = painter.layout_job(job);
         if g.size().x > 12.0 {
@@ -1142,7 +1447,7 @@ fn paint_worktree_row(ui: &Ui, rect: Rect, name: &str, branch: &str, marks: &[bo
         }
     }
     let ink = if selected || hovered { p.text } else { p.text_muted };
-    let mut job = name_job(name, marks, egui::FontId::proportional(style::SMALL), ink, p);
+    let mut job = name_job(name, marks, egui::FontId::proportional(sc.small), ink, p);
     job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(16.0));
     let g = painter.layout_job(job);
     painter.galley(pos2(x, cy - g.size().y / 2.0), g, ink);
@@ -1150,9 +1455,10 @@ fn paint_worktree_row(ui: &Ui, rect: Rect, name: &str, branch: &str, marks: &[bo
 
 /// A session (a tab) under the selected project: the rail, who works there, its title, how
 /// long or where, its status.
-fn paint_session_row(ui: &Ui, rect: Rect, s: &SessionRow, hovered: bool, p: &style::Palette) {
+fn paint_session_row(ui: &Ui, rect: Rect, s: &SessionRow, hovered: bool, sc: SidebarScale, p: &style::Palette) {
     let painter = ui.painter();
-    let body = Rect::from_min_max(pos2(rect.left() + 6.0 + 18.0 - 4.0, rect.top()), rect.max);
+    let rail_x = rect.left() + 6.0 + sc.tile / 2.0;
+    let body = Rect::from_min_max(pos2(rect.left() + 6.0 + sc.tile - 6.0, rect.top()), rect.max);
     if s.on {
         painter.rect_filled(body, CornerRadius::same(6), p.accent_soft);
     } else if hovered {
@@ -1162,23 +1468,24 @@ fn paint_session_row(ui: &Ui, rect: Rect, s: &SessionRow, hovered: bool, p: &sty
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let cy = rect.center().y;
-    painter.vline(rect.left() + 6.0 + 9.0, (rect.top() - 1.0)..=(rect.bottom() + 1.0), Stroke::new(1.0, p.border_strong));
-    let mut x = rect.left() + 6.0 + 18.0 + 4.0;
-    kit::paint_agent_avatar(painter, Rect::from_center_size(pos2(x + 8.0, cy), vec2(16.0, 16.0)), s.agent, p);
-    x += 16.0 + 7.0;
+    painter.vline(rail_x, (rect.top() - 1.0)..=(rect.bottom() + 1.0), Stroke::new(1.0, p.border_strong));
+    let mut x = body.left() + 8.0;
+    let av = sc.icon;
+    kit::paint_agent_avatar(painter, Rect::from_center_size(pos2(x + av / 2.0, cy), vec2(av, av)), s.agent, p);
+    x += av + 7.0;
     let mut right = rect.right() - 8.0;
     if let Some(st) = s.status {
         status::paint_glyph(painter, pos2(right - 6.0, cy), st, p, 12.0);
         right -= 12.0 + 7.0;
     }
     if !s.meta.is_empty() {
-        let g = painter.layout_no_wrap(s.meta.clone(), style::mono(style::DATA), p.text_faint);
+        let g = painter.layout_no_wrap(s.meta.clone(), style::mono(sc.data), p.text_faint);
         right -= g.size().x;
         painter.galley(pos2(right, cy - g.size().y / 2.0), g, p.text_faint);
         right -= 7.0;
     }
     let ink = if s.on || hovered { p.text } else { p.text_muted };
-    let mut job = egui::text::LayoutJob::simple_singleline(s.title.clone(), egui::FontId::proportional(style::SMALL), ink);
+    let mut job = egui::text::LayoutJob::simple_singleline(s.title.clone(), egui::FontId::proportional(sc.small), ink);
     job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(16.0));
     let g = painter.layout_job(job);
     painter.galley(pos2(x, cy - g.size().y / 2.0), g, ink);
@@ -1294,12 +1601,17 @@ impl App {
             ahead: pr.is_worktree().then(|| pr.git.as_ref().map_or(0, |g| g.ahead)),
             web: self.browsers.values().filter(|b| b.project == pr.id && b.live()).map(|b| b.driven()).max(),
         };
-        // Folded away, its worktrees' most urgent status shows on the project.
-        if pr.folded {
+        // When a project's worktrees are not currently expanded under it (folded or unselected),
+        // roll up their waiting count and most urgent status onto the parent project row.
+        let active_root = self.active.and_then(|id| self.root_project(id)).map(|x| x.id);
+        if !worktrees.is_empty() && (pr.folded || active_root != Some(pr.id)) {
             for w in worktrees {
                 let kid = self.project_row(w, p);
                 row.waiting += kid.waiting;
                 row.asks += kid.asks;
+                if !kid.asleep {
+                    row.asleep = false;
+                }
                 let rank = |s: Option<Status>| s.and_then(Status::priority).unwrap_or(u8::MAX);
                 if rank(kid.status) < rank(row.status) {
                     row.status = kid.status;

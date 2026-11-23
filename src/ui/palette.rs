@@ -629,7 +629,7 @@ impl App {
                 if let Some(x) = pane {
                     if let Some(a) = x.tracker.agent {
                         let who = match &x.active_profile {
-                            Some(prof) if crate::profiles::supports_multi_profile(a) => format!("{} · {prof}", a.label()),
+                            Some(prof) if crate::profiles::supports_profile(a) => format!("{} · {prof}", a.label()),
                             _ => a.label().to_string(),
                         };
                         rows.push((t("Agent").to_string(), who, false));
@@ -730,12 +730,15 @@ impl App {
         r.clicked()
     }
 
-    /// Changes the palette's scope, keeping what was typed.
+    /// Changes the palette's scope, keeping what was typed and where focus came from.
     fn palette_scope(&mut self, mode: PaletteMode) {
-        let query = self.palette.as_ref().map(|p| p.query.clone()).unwrap_or_default();
+        let prev = self.palette.as_ref().map(|p| (p.query.clone(), p.from_editor));
         self.open_palette(mode);
-        if let Some(p) = self.palette.as_mut() {
+        if let Some(p) = self.palette.as_mut()
+            && let Some((query, from_editor)) = prev
+        {
             p.query = query;
+            p.from_editor = from_editor;
         }
     }
 
@@ -922,13 +925,13 @@ impl App {
                         )
                     });
                 }
-                let (down, up, enter, tab, back_tab) = ui.input_mut(|i| {
+                let (down, up, enter, back_tab, tab) = ui.input_mut(|i| {
                     (
                         i.consume_key(egui::Modifiers::NONE, Key::ArrowDown),
                         i.consume_key(egui::Modifiers::NONE, Key::ArrowUp),
                         i.key_pressed(Key::Enter),
-                        i.consume_key(egui::Modifiers::NONE, Key::Tab),
                         i.consume_key(egui::Modifiers::SHIFT, Key::Tab),
+                        i.consume_key(egui::Modifiers::NONE, Key::Tab),
                     )
                 });
                 if down {

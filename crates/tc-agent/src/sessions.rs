@@ -525,6 +525,9 @@ pub struct ProfileUsageReport {
     pub recent_24h: TokenUsage,
     /// Plan tier when reported by the provider (e.g. `"plus"`, `"pro"`, `"team"`, `"free"`).
     pub plan_type: Option<String>,
+    /// Signed-in account email when reported locally by the provider (e.g. Claude `oauthAccount`,
+    /// Antigravity `applyAuthResult`).
+    pub account_email: Option<String>,
     /// Whether local auth credentials exist in this profile's config folder (`None` if indeterminate).
     pub signed_in: Option<bool>,
 }
@@ -799,8 +802,60 @@ pub fn is_signed_in(agent: AgentKind, root: &Path) -> Option<bool> {
                     || non_empty_file(&state_root.join("google_accounts.json")),
             )
         }
+        AgentKind::Antigravity => {
+            if antigravity_auth_email(root).is_some() {
+                return Some(true);
+            }
+            if let Ok(raw) = fs::read_to_string(root.join("cache/onboarding.json"))
+                && let Ok(v) = serde_json::from_str::<Value>(&raw)
+                && v["onboardingComplete"].as_bool() == Some(true)
+            {
+                return Some(true);
+            }
+            Some(
+                non_empty_file(&root.join("settings.json"))
+                    || non_empty_file(&root.join("history.jsonl"))
+                    || antigravity_history(root).is_some(),
+            )
+        }
         _ => None,
     }
+}
+
+/// Reads the most recent signed-in Google email from Antigravity CLI's local log (`cli.log` or
+/// newest `log/cli-*.log`, matching `applyAuthResult: email=<addr>,`).
+fn antigravity_auth_email(root: &Path) -> Option<String> {
+    let mut candidates = vec![root.join("cli.log")];
+    let log_dir = root.join("log");
+    if let Ok(entries) = fs::read_dir(&log_dir) {
+        let mut logs: Vec<(SystemTime, PathBuf)> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".log"))
+            })
+            .map(|p| (modified(&p), p))
+            .collect();
+        logs.sort_by_key(|x| std::cmp::Reverse(x.0));
+        for (_, p) in logs.into_iter().take(4) {
+            candidates.push(p);
+        }
+    }
+    for path in candidates {
+        let (head, tail) = edges(&path, 64 * 1024, 64 * 1024);
+        for line in tail.iter().rev().chain(head.iter().rev()) {
+            if let Some(pos) = line.find("applyAuthResult: email=") {
+                let rest = &line[pos + "applyAuthResult: email=".len()..];
+                let email = rest.split([',', ' ', '\t', '\r', '\n']).next().unwrap_or("").trim();
+                if email.contains('@') && email.len() <= 120 {
+                    return Some(email.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Applies one Codex `rate_limits` window (`primary` or `secondary`). Returns an expired reset
@@ -866,6 +921,9 @@ fn read_claude_account_state(root: &Path, now_unix: i64, report: &mut ProfileUsa
     let oa = &v["oauthAccount"];
     let oa_uuid = oa["accountUuid"].as_str().map(str::trim).filter(|s| !s.is_empty());
     if oa.is_object() {
+        if let Some(email) = oa["emailAddress"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            report.account_email = Some(email.to_string());
+        }
         if let Some(plan) = oa["planDisplayName"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
             report.plan_type = Some(plan.to_string());
         } else if let Some(tier) = oa["organizationRateLimitTier"]
@@ -1041,8 +1099,8 @@ fn recent_jsonl_lines(path: &Path, max_full: u64, max_scan: u64, min_cut_unix: i
                 && let Ok(s) = std::str::from_utf8(slice)
             {
                 let trimmed = s.trim_end_matches(['\r', '\n']);
-                if let Some(pos_ts) = trimmed.find("\"timestamp\":\"")
-                    && let Some(ts_str) = trimmed.get(pos_ts + 13..pos_ts + 32)
+                if let Some(ts_str) = top_level_json_str(trimmed, "timestamp")
+                    .or_else(|| top_level_json_str(trimmed, "created_at"))
                     && let Some(ts) = parse_iso_unix(ts_str)
                 {
                     chunk_oldest_ts = Some(chunk_oldest_ts.map_or(ts, |o| o.min(ts)));
@@ -1068,6 +1126,75 @@ fn recent_jsonl_lines(path: &Path, max_full: u64, max_scan: u64, min_cut_unix: i
     }
     rev_lines.reverse();
     rev_lines
+}
+
+/// Extracts an unescaped top-level JSON string field (e.g. `"timestamp"`) without allocating or
+/// matching keys embedded inside nested objects or string payloads.
+fn top_level_json_str<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let b = line.as_bytes();
+    let key_b = key.as_bytes();
+    let mut i = 0;
+    let mut depth = 0usize;
+    while i < b.len() {
+        match b[i] {
+            b'{' | b'[' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b'"' => {
+                let start = i + 1;
+                i = start;
+                let mut escaped = false;
+                while i < b.len() {
+                    if b[i] == b'\\' {
+                        escaped = true;
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == b'"' {
+                        break;
+                    }
+                    i += 1;
+                }
+                if i >= b.len() {
+                    return None;
+                }
+                let end = i;
+                i += 1;
+                if depth == 1 && !escaped && &b[start..end] == key_b {
+                    let mut j = i;
+                    while j < b.len() && b[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j < b.len() && b[j] == b':' {
+                        j += 1;
+                        while j < b.len() && b[j].is_ascii_whitespace() {
+                            j += 1;
+                        }
+                        if j < b.len() && b[j] == b'"' {
+                            let v_start = j + 1;
+                            let mut v_end = v_start;
+                            while v_end < b.len() {
+                                if b[v_end] == b'\\' {
+                                    return None;
+                                }
+                                if b[v_end] == b'"' {
+                                    return line.get(v_start..v_end);
+                                }
+                                v_end += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Scans real multi-window usage (5-hour rolling, 24-hour, and 7-day weekly / 30-day),
@@ -1211,11 +1338,8 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
             }
             files.sort_by_key(|f| std::cmp::Reverse(f.0));
 
-            let mut got_rate_limits = false;
-            let mut server_5h = WindowQuota::default();
-            let mut server_weekly = WindowQuota::default();
-            let mut expired_5h_reset: Option<i64> = None;
-            let mut expired_long_reset: Option<i64> = None;
+            type CodexRateLimits = (Option<String>, WindowQuota, WindowQuota, Option<i64>, Option<i64>);
+            let mut best_rl: Option<(i64, bool, CodexRateLimits)> = None;
             // Per-turn token deltas with exact turn timestamps (avoids double-counting resumed
             // rollouts and misattributing multi-day totals to the 5h window).
             let mut turn_tokens: Vec<(i64, TokenUsage)> = Vec::new();
@@ -1227,13 +1351,13 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                     l.contains("token_usage") || l.contains("rate_limits")
                 });
                 let mut prev_total: Option<(u64, u64, u64)> = None;
-                type CodexRateLimits = (Option<String>, WindowQuota, WindowQuota, Option<i64>, Option<i64>);
-                let mut latest_rl: Option<CodexRateLimits> = None;
                 for line in &lines {
                     let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
                     let payload = &v["payload"];
-                    if !got_rate_limits && payload["rate_limits"].is_object() {
+                    let ev_ts = v["timestamp"].as_str().and_then(parse_iso_unix).unwrap_or(fallback_ts);
+                    if payload["rate_limits"].is_object() {
                         let rl = &payload["rate_limits"];
+                        let is_primary_id = rl["limit_id"].as_str().is_none_or(|id| id == "codex");
                         let pt = rl["plan_type"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
                         let mut tmp = ProfileUsageReport::default();
                         let (e5a, ela) = apply_codex_window(&mut tmp, &rl["primary"], now_unix, true);
@@ -1243,7 +1367,23 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                             || tmp.window_5h.resets_at_unix.is_some()
                             || tmp.window_weekly.resets_at_unix.is_some()
                         {
-                            latest_rl = Some((pt, tmp.window_5h, tmp.window_weekly, e5a.or(e5b), ela.or(elb)));
+                            // Always pick the newest rate_limits snapshot across concurrent sessions,
+                            // preferring the main `"codex"` account limit over scoped sub-limits.
+                            let replace = match &best_rl {
+                                None => true,
+                                Some((best_ts, best_prim, _)) => {
+                                    ev_ts > *best_ts + 5
+                                        || (ev_ts >= *best_ts - 5 && is_primary_id && !*best_prim)
+                                        || (ev_ts >= *best_ts && is_primary_id == *best_prim)
+                                }
+                            };
+                            if replace {
+                                best_rl = Some((
+                                    ev_ts,
+                                    is_primary_id,
+                                    (pt, tmp.window_5h, tmp.window_weekly, e5a.or(e5b), ela.or(elb)),
+                                ));
+                            }
                         }
                     }
                     let info = &payload["info"];
@@ -1265,7 +1405,6 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                     {
                         continue;
                     }
-                    let ev_ts = v["timestamp"].as_str().and_then(parse_iso_unix).unwrap_or(fallback_ts);
                     let delta = if lu.is_object() {
                         let raw_in = lu["input_tokens"].as_u64().unwrap_or(0);
                         let cached = lu["cached_input_tokens"].as_u64().unwrap_or(0);
@@ -1295,18 +1434,20 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                         turn_tokens.push((ev_ts, delta));
                     }
                 }
-                if !got_rate_limits
-                    && let Some((pt, w5, wl, e5, el)) = latest_rl
-                {
-                    if let Some(p) = pt {
-                        report.plan_type = Some(p);
-                    }
-                    server_5h = w5;
-                    server_weekly = wl;
-                    expired_5h_reset = e5;
-                    expired_long_reset = el;
-                    got_rate_limits = true;
+            }
+
+            let mut server_5h = WindowQuota::default();
+            let mut server_weekly = WindowQuota::default();
+            let mut expired_5h_reset: Option<i64> = None;
+            let mut expired_long_reset: Option<i64> = None;
+            if let Some((_, _, (pt, w5, wl, e5, el))) = best_rl {
+                if let Some(p) = pt {
+                    report.plan_type = Some(p);
                 }
+                server_5h = w5;
+                server_weekly = wl;
+                expired_5h_reset = e5;
+                expired_long_reset = el;
             }
 
             // Apply ONLY the real windows reported by OpenAI / Codex (e.g. Free plan has 30d only,
@@ -1317,15 +1458,14 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                 report.window_5h.used_percent = server_5h.used_percent;
                 report.window_5h.window_minutes = server_5h.window_minutes.or(Some(300));
                 report.window_5h.resets_at_unix = server_5h.resets_at_unix;
-            } else if !has_srv_long {
-                // No rate_limits observed yet (fresh account): keep default 5h/Weekly labels.
+            } else if !has_srv_long && !turn_tokens.is_empty() {
                 report.window_5h.window_minutes = Some(300);
             }
             if has_srv_long {
                 report.window_weekly.used_percent = server_weekly.used_percent;
                 report.window_weekly.window_minutes = server_weekly.window_minutes.or(Some(10_080));
                 report.window_weekly.resets_at_unix = server_weekly.resets_at_unix;
-            } else if !has_srv_5h {
+            } else if !has_srv_5h && !turn_tokens.is_empty() {
                 report.window_weekly.window_minutes = Some(10_080);
             }
 
@@ -1429,16 +1569,64 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
         AgentKind::Antigravity => {
             let cut_5h = now_unix - WIN_5H;
             let cut_7d = now_unix - WIN_7D;
-            let hist = antigravity_history(root);
-            let has_auth = non_empty_file(&root.join("settings.json"))
-                || non_empty_file(&root.join("installation_id"))
-                || non_empty_file(&root.join("history.jsonl"))
-                || hist.is_some();
-            report.signed_in = Some(has_auth);
-            if let Some(path) = hist {
+            report.signed_in = is_signed_in(AgentKind::Antigravity, root);
+            report.account_email = antigravity_auth_email(root);
+
+            // Real per-turn token usage written by Antigravity CLI into each conversation's
+            // `brain/<id>/.system_generated/logs/transcript.jsonl`.
+            let mut transcripts: Vec<(SystemTime, PathBuf)> = Vec::new();
+            for entry in fs::read_dir(root.join("brain")).ok().into_iter().flatten().flatten() {
+                let p = entry.path().join(".system_generated/logs/transcript.jsonl");
+                if p.is_file() {
+                    let m = modified(&p);
+                    if m >= cutoff_7d_st {
+                        transcripts.push((m, p));
+                    }
+                }
+            }
+            transcripts.sort_by_key(|f| std::cmp::Reverse(f.0));
+
+            let mut oldest_5h: Option<i64> = None;
+            let mut oldest_7d: Option<i64> = None;
+            for (mtime, path) in transcripts.into_iter().take(128) {
+                let fallback_ts = unix_secs(mtime);
+                let lines = recent_jsonl_lines(&path, 8 * 1024 * 1024, 64 * 1024 * 1024, cut_7d, |l| {
+                    l.contains("\"input_tokens\"") || l.contains("\"output_tokens\"")
+                });
+                for line in lines {
+                    let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+                    let inp = v["input_tokens"].as_u64().unwrap_or(0);
+                    let out = v["output_tokens"].as_u64().unwrap_or(0);
+                    let cr = v["cache_read_tokens"].as_u64().unwrap_or(0);
+                    if inp == 0 && out == 0 && cr == 0 {
+                        continue;
+                    }
+                    let ts = v["created_at"]
+                        .as_str()
+                        .or_else(|| v["timestamp"].as_str())
+                        .and_then(parse_iso_unix)
+                        .unwrap_or(fallback_ts);
+                    let u = TokenUsage { input: inp, output: out, cache_read: cr };
+                    if ts >= cut_7d {
+                        report.window_weekly.tokens.add_assign(u);
+                        report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
+                        oldest_7d = Some(oldest_7d.map_or(ts, |o| o.min(ts)));
+                    }
+                    if ts >= cut_24h {
+                        report.recent_24h.add_assign(u);
+                    }
+                    if ts >= cut_5h {
+                        report.window_5h.tokens.add_assign(u);
+                        report.window_5h.turns = report.window_5h.turns.saturating_add(1);
+                        oldest_5h = Some(oldest_5h.map_or(ts, |o| o.min(ts)));
+                    }
+                }
+            }
+            // Fallback to `history.jsonl` turn counts if no transcripts exist yet.
+            if report.window_weekly.turns == 0
+                && let Some(path) = antigravity_history(root)
+            {
                 let (head, tail) = edges(&path, 64 * 1024, 512 * 1024);
-                let mut oldest_5h: Option<i64> = None;
-                let mut oldest_7d: Option<i64> = None;
                 for line in head.iter().chain(tail.iter()) {
                     let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
                     let ts_raw = v["timestamp"].as_i64().unwrap_or(0);
@@ -1455,12 +1643,18 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                         oldest_5h = Some(oldest_5h.map_or(ts, |o| o.min(ts)));
                     }
                 }
-                if let Some(o) = oldest_5h {
-                    report.window_5h.resets_at_unix = Some(o + WIN_5H);
-                }
-                if let Some(o) = oldest_7d {
-                    report.window_weekly.resets_at_unix = Some(o + WIN_7D);
-                }
+            }
+            if report.window_5h.tokens.total() > 0 || report.window_5h.turns > 0 {
+                report.window_5h.window_minutes = Some(300);
+            }
+            if report.window_weekly.tokens.total() > 0 || report.window_weekly.turns > 0 {
+                report.window_weekly.window_minutes = Some(10_080);
+            }
+            if let Some(o) = oldest_5h {
+                report.window_5h.resets_at_unix = Some(o + WIN_5H);
+            }
+            if let Some(o) = oldest_7d {
+                report.window_weekly.resets_at_unix = Some(o + WIN_7D);
             }
         }
         AgentKind::OpenCode => {
@@ -1767,5 +1961,48 @@ mod tests {
         // Non-cached TokenUsage::total() excludes cache_read so repeated prompt-cache reads don't inflate totals 80x.
         let tok = TokenUsage { input: 1_200, output: 800, cache_read: 950_000 };
         assert_eq!(tok.total(), 2_000);
+
+        // Top-level timestamp extraction ignores embedded payloads and preserves timezone offset.
+        let line = r#"{"payload":{"timestamp":"2020-01-01T00:00:00Z"},"text":"\"timestamp\":\"2019-01-01T00:00:00Z\"","timestamp":"2026-11-20T11:00:00+07:00"}"#;
+        assert_eq!(top_level_json_str(line, "timestamp"), Some("2026-11-20T11:00:00+07:00"));
+        assert_eq!(parse_iso_unix(top_level_json_str(line, "timestamp").unwrap()), Some(t_utc));
+
+        // Antigravity CLI profile usage scans real per-turn transcript tokens & cli.log auth email.
+        let agy_root = agy_home.join(".gemini/antigravity-cli");
+        write(
+            &agy_root.join("cli.log"),
+            "I1123 19:25:59.409664 275 server_oauth.go:221] applyAuthResult: email=dev@example.com, authMethod=consumer, quotaProject=\n",
+        );
+        // Use a recent RFC3339 UTC timestamp matching `now` so both 5h and 7d windows include it.
+        let now_s = {
+            let days = now / 86_400;
+            let rem = now % 86_400;
+            // Civil date from Unix days (Howard Hinnant algorithm).
+            let z = days + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+            let y = yoe + era * 400;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let d = doy - (153 * mp + 2) / 5 + 1;
+            let m = mp + if mp < 10 { 3 } else { -9 };
+            let y = y + i64::from(m <= 2);
+            format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, (rem % 3600) / 60, rem % 60)
+        };
+        write(
+            &agy_root.join("brain/conv-1/.system_generated/logs/transcript.jsonl"),
+            &format!(
+                "{{\"step_index\":1,\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"{now_s}\",\"input_tokens\":12000,\"output_tokens\":3000,\"cache_read_tokens\":80000}}\n"
+            ),
+        );
+        let agy_rep = profile_usage(AgentKind::Antigravity, &agy_root);
+        assert_eq!(agy_rep.signed_in, Some(true));
+        assert_eq!(agy_rep.account_email.as_deref(), Some("dev@example.com"));
+        assert_eq!(agy_rep.window_5h.tokens.total(), 15_000);
+        assert_eq!(agy_rep.window_5h.tokens.cache_read, 80_000);
+        assert_eq!(agy_rep.window_5h.turns, 1);
+        assert_eq!(agy_rep.window_weekly.tokens.total(), 15_000);
+        assert_eq!(agy_rep.window_5h.used_percent, None);
     }
 }

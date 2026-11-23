@@ -342,7 +342,10 @@ impl Updater {
         }
         if matches!(self.state, State::Downloading(_)) {
             ctx.request_repaint_after(Duration::from_millis(200));
-        } else if auto_checks(settings) && !self.busy() {
+        } else if auto_checks(settings)
+            && !self.busy()
+            && matches!(self.state, State::Idle | State::Available(_) | State::Ready(..))
+        {
             // Wake up for the next scheduled check even when nothing else happens.
             let wait = self.next_check.saturating_duration_since(now);
             ctx.request_repaint_after(

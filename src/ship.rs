@@ -672,7 +672,8 @@ impl App {
     /// Grid it goes to the project's Focus first (the box is in the Code drawer).
     pub fn ship_open(&mut self) {
         let Some(project) = self.active else { return };
-        if self.view == tc_core::model::View::Grid {
+        self.exit_zen_mode();
+        if self.view != tc_core::model::View::Focus {
             self.actions.push(Action::SetView(tc_core::model::View::Focus));
             self.actions.push(Action::Commit);
             return;
@@ -1117,7 +1118,7 @@ mod tests {
             remote: Some(Remote {
                 name: "origin".into(),
                 url: "git@github.com:acme/app.git".into(),
-                web: web.then(|| Web { forge: Forge::GitHub, host: "github.com".into(), repo: "acme/app".into() }),
+                web: web.then(|| Web { forge: Forge::GitHub, host: "github.com".into(), repo: "acme/app".into(), http: false }),
             }),
             upstream: upstream.then(|| format!("origin/{branch}")),
             unpushed,

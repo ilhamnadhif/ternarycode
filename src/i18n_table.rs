@@ -1527,4 +1527,12 @@ const ID: &[(&str, &str)] = &[
     ("Use {}’s version", "Pakai versi {}"),
     ("Yesterday {}", "Kemarin {}"),
     ("Your commit is safe here. Pull them in, then push.", "Commit-mu aman di sini. Tarik dulu, lalu push."),
+    ("Sidebar", "Sidebar"),
+    ("Text size", "Ukuran teks"),
+    ("Size of projects and controls in the sidebar.", "Ukuran project dan kontrol di sidebar."),
+    ("Width", "Lebar"),
+    ("Or drag the sidebar's right edge.", "Atau geser tepi kanan sidebar."),
+    ("Antigravity CLI supports 1 account only (Google policy).", "Antigravity CLI hanya mendukung 1 akun (ketentuan Google)."),
+    ("Antigravity uses its single system sign-in (~/.gemini/antigravity-cli).", "Antigravity memakai satu login sistem (~/.gemini/antigravity-cli)."),
+    ("{} turns", "{} giliran"),
 ];

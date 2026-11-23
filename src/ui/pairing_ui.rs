@@ -202,7 +202,7 @@ impl App {
                             ui.set_width(room);
                             ui.spacing_mut().item_spacing.y = 2.0;
                             let name = if asking { tf("Revoke {}? It must pair again to connect.", &[&dev.name]) } else { dev.name.clone() };
-                            text(ui, &name, FontId::proportional(style::BODY), p.text, 18.0, false);
+                            text(ui, &name, FontId::proportional(style::BODY), p.text, 18.0, true);
                             let seen = format!("{} · {}", dev.ip, seen_ago(dev.last_seen));
                             text(ui, &seen, style::mono(style::DATA), p.text_faint, 14.0, false);
                         });
@@ -276,16 +276,17 @@ fn paint_qr_card(ui: &mut Ui, rect: Rect, payload: &str) {
     let quiet = 2usize;
     let total = qr.size + quiet * 2;
     let inner = rect.shrink(6.0);
-    let cell = (inner.width().min(inner.height()) / total as f32).floor().max(2.0);
+    let cell = (inner.width().min(inner.height()) / total as f32).floor().max(1.0);
     let grid_px = cell * total as f32;
     let ox = (inner.center().x - grid_px / 2.0).round();
     let oy = (inner.center().y - grid_px / 2.0).round();
     let ink = Color32::from_rgb(0x0b, 0x0c, 0x0e);
+    let qp = painter.with_clip_rect(inner.intersect(painter.clip_rect()));
     for y in 0..qr.size {
         for x in 0..qr.size {
             if qr.get(x, y) {
                 let r = Rect::from_min_size(pos2(ox + (x + quiet) as f32 * cell, oy + (y + quiet) as f32 * cell), vec2(cell, cell));
-                painter.rect_filled(r, CornerRadius::ZERO, ink);
+                qp.rect_filled(r, CornerRadius::ZERO, ink);
             }
         }
     }

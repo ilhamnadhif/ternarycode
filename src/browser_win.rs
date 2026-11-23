@@ -71,6 +71,14 @@ pub struct Page {
 
 pub type PageRc = Rc<Page>;
 
+impl Drop for Page {
+    fn drop(&mut self) {
+        let key = page_key(self);
+        let _ = KEYS.try_with(|k| k.borrow_mut().remove(&key));
+        let _ = UPLOADS.try_with(|u| u.borrow_mut().remove(&key));
+    }
+}
+
 /// The page of a view (the same one each time).
 pub fn web_view_of(view: &View) -> PageRc {
     view.page.clone()
@@ -966,6 +974,7 @@ fn new_popup(owner: HWND, opener: PaneId, env: &ICoreWebView2Environment, args: 
             Some((controller, wv)) => {
                 let loading = Rc::new(Cell::new(true));
                 let page = Rc::new(Page { wv, controller: controller.clone(), hwnd: window, loading: loading.clone(), id: opener, emulating: Cell::new(false), keyboard: Rc::new(Cell::new(false)) });
+                KEYS.with_borrow_mut(|k| k.insert(page_key(&page), opener));
                 watch(&page, loading, None);
                 POPUPS.with_borrow_mut(|p| p.push(Popup { opener, window, controller, page }));
             }

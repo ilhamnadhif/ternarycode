@@ -400,7 +400,7 @@ pub enum ThemeMode {
 }
 
 /// The revision of the UI defaults a settings file was written with (see [`Settings::migrate`]).
-pub const UI_REV: u32 = 3;
+pub const UI_REV: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -488,6 +488,9 @@ pub struct Settings {
     pub last_update_check: Option<i64>,
     pub window: Option<[f32; 4]>,
     pub sidebar_width: f32,
+    /// Font size (pt) of project rows and controls in the left sidebar.
+    #[serde(default = "default_sidebar_font_size")]
+    pub sidebar_font_size: f32,
     pub sidebar_hidden: bool,
     /// The sidebar as a narrow column of project tiles (⌥⌘B).
     #[serde(default)]
@@ -616,6 +619,10 @@ fn yes() -> bool {
     true
 }
 
+fn default_sidebar_font_size() -> f32 {
+    14.0
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -652,6 +659,7 @@ impl Default for Settings {
             last_update_check: None,
             window: None,
             sidebar_width: 248.0,
+            sidebar_font_size: default_sidebar_font_size(),
             sidebar_hidden: false,
             sidebar_compact: false,
             files_height: 0.0,
@@ -683,6 +691,7 @@ impl Settings {
         let fix = |v: f32, lo: f32, hi: f32, default: f32| if v.is_finite() { v.clamp(lo, hi) } else { default };
         self.font_size = fix(self.font_size, 6.0, 72.0, d.font_size);
         self.sidebar_width = fix(self.sidebar_width, 180.0, 420.0, d.sidebar_width);
+        self.sidebar_font_size = fix(self.sidebar_font_size, 11.0, 18.0, d.sidebar_font_size);
         self.files_height = fix(self.files_height, 0.0, 4000.0, d.files_height);
         self.drawer_size = fix(self.drawer_size, 0.18, 0.70, d.drawer_size);
         self.scrollback = self.scrollback.clamp(100, 1_000_000);
@@ -690,9 +699,28 @@ impl Settings {
         self.long_command_secs = self.long_command_secs.clamp(1, 86_400);
         self.failover.default_cooldown_mins = self.failover.default_cooldown_mins.clamp(1, 1440);
         self.companion.port = self.companion.port.clamp(1024, 65535);
-        // Multi-account profiles are supported only for Claude Code and ChatGPT / Codex.
-        // Drop saved Antigravity / Gemini / OpenCode / Custom profiles cleanly on upgrade.
-        self.profiles.retain(|pr| matches!(pr.agent, AgentKind::Claude | AgentKind::Codex));
+        // Claude Code and ChatGPT / Codex support multi-account profiles; Antigravity CLI is
+        // strictly limited to 1 profile using its single system sign-in (Google policy).
+        // Legacy Gemini / OpenCode / Custom profiles are dropped cleanly.
+        let mut seen_agy = false;
+        self.profiles.retain(|pr| match pr.agent {
+            AgentKind::Claude | AgentKind::Codex => true,
+            AgentKind::Antigravity => {
+                if seen_agy {
+                    false
+                } else {
+                    seen_agy = true;
+                    true
+                }
+            }
+            _ => false,
+        });
+        for pr in &mut self.profiles {
+            if pr.agent == AgentKind::Antigravity {
+                pr.use_default_auth = true;
+                pr.config_dir = None;
+            }
+        }
         // Sanitize & deduplicate hand-edited profiles so IDs, paths, keys, and env names are valid.
         let mut seen_ids = std::collections::HashSet::new();
         for (idx, pr) in self.profiles.iter_mut().enumerate() {
@@ -779,6 +807,23 @@ impl Settings {
             }
             self.files_hidden = false;
         }
+        // Revision 4: Antigravity CLI (`agy`) has a single-account profile in Accounts & Usage.
+        // Add it once for existing customized profile lists that predate it.
+        if self.ui_rev < 4
+            && !self.profiles.is_empty()
+            && !self.profiles.iter().any(|p| p.agent == AgentKind::Antigravity)
+        {
+            let next_order = self.profiles.iter().map(|p| p.fallback_order).max().unwrap_or(0) + 1;
+            self.profiles.push(AgentProfile {
+                id: "agy1".into(),
+                name: "Antigravity".into(),
+                agent: AgentKind::Antigravity,
+                fallback_order: next_order,
+                enabled: true,
+                use_default_auth: true,
+                ..Default::default()
+            });
+        }
         self.ui_rev = UI_REV;
         true
     }
@@ -862,7 +907,15 @@ mod tests {
         let mut wide: Settings = serde_json::from_str(r#"{"sidebar_width": 300, "ui_rev": 2}"#).unwrap();
         assert!(wide.migrate());
         assert_eq!(wide.sidebar_width, 300.0);
-        let mut now: Settings = serde_json::from_str(r#"{"check_updates": false, "ui_rev": 3}"#).unwrap();
+        // Revision 4: adds the single Antigravity profile once for existing customized profiles.
+        let mut rev3: Settings = serde_json::from_str(
+            r#"{"check_updates": false, "ui_rev": 3, "profiles": [{"id": "claude1", "name": "Claude 1", "agent": "claude", "fallback_order": 1, "enabled": true, "use_default_auth": true}]}"#,
+        )
+        .unwrap();
+        assert!(rev3.migrate() && !rev3.check_updates);
+        assert_eq!(rev3.ui_rev, UI_REV);
+        assert!(rev3.profiles.iter().any(|p| p.agent == AgentKind::Antigravity));
+        let mut now: Settings = serde_json::from_str(&format!(r#"{{"check_updates": false, "ui_rev": {UI_REV}}}"#)).unwrap();
         assert!(!now.migrate() && !now.check_updates);
         // A light theme chosen before is kept.
         let mut light: Settings = serde_json::from_str(r#"{"theme": "light"}"#).unwrap();
@@ -1021,14 +1074,33 @@ mod tests {
             let dec: View = serde_json::from_str(&enc).unwrap();
             assert_eq!(dec, v);
         }
-        // Multi-account profiles are restricted to Claude Code & ChatGPT/Codex: saved Antigravity
-        // or legacy Gemini profiles are stripped cleanly on sanitize.
+        // Claude & Codex support multi-account; Antigravity is capped at 1 default-auth profile;
+        // legacy Gemini profiles are stripped cleanly on sanitize.
         let mut legacy = Settings::default();
         legacy.profiles.push(AgentProfile {
             id: "agy1".into(),
-            name: "Antigravity 1".into(),
+            name: "Antigravity".into(),
             agent: AgentKind::Antigravity,
+            config_dir: Some(PathBuf::from("/tmp/custom-agy")),
             fallback_order: 1,
+            enabled: true,
+            use_default_auth: false,
+            ..Default::default()
+        });
+        legacy.profiles.push(AgentProfile {
+            id: "agy2".into(),
+            name: "Antigravity 2".into(),
+            agent: AgentKind::Antigravity,
+            fallback_order: 2,
+            enabled: true,
+            use_default_auth: false,
+            ..Default::default()
+        });
+        legacy.profiles.push(AgentProfile {
+            id: "gem1".into(),
+            name: "Gemini 1".into(),
+            agent: AgentKind::Gemini,
+            fallback_order: 3,
             enabled: true,
             use_default_auth: true,
             ..Default::default()
@@ -1037,14 +1109,18 @@ mod tests {
             id: "chatgpt1".into(),
             name: "ChatGPT 1".into(),
             agent: AgentKind::Codex,
-            fallback_order: 2,
+            fallback_order: 4,
             enabled: true,
             use_default_auth: true,
             ..Default::default()
         });
         assert!(legacy.sanitize());
-        assert_eq!(legacy.profiles.len(), 1);
-        assert_eq!(legacy.profiles[0].id, "chatgpt1");
-        assert_eq!(legacy.profiles[0].agent, AgentKind::Codex);
+        assert_eq!(legacy.profiles.len(), 2);
+        assert_eq!(legacy.profiles[0].id, "agy1");
+        assert_eq!(legacy.profiles[0].agent, AgentKind::Antigravity);
+        assert!(legacy.profiles[0].use_default_auth);
+        assert_eq!(legacy.profiles[0].config_dir, None);
+        assert_eq!(legacy.profiles[1].id, "chatgpt1");
+        assert_eq!(legacy.profiles[1].agent, AgentKind::Codex);
     }
 }

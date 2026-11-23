@@ -136,11 +136,15 @@ fn spawn_on_pty(opts: &SpawnOptions, env: &HashMap<String, String>) -> io::Resul
             if let Some(cwd) = &cwd {
                 libc::chdir(cwd.as_ptr());
             }
-            if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) != 0 {
+            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) != 0 {
                 return Err(io::Error::last_os_error());
             }
-            libc::close(slave_fd);
-            libc::close(master_fd);
+            if slave_fd > 2 {
+                libc::close(slave_fd);
+            }
+            if master_fd > 2 {
+                libc::close(master_fd);
+            }
             for sig in [libc::SIGCHLD, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGALRM] {
                 libc::signal(sig, libc::SIG_DFL);
             }
@@ -416,16 +420,25 @@ pub fn hang_up_all(ptys: &[Arc<LocalPty>], grace: Duration) {
 
 impl Drop for LocalPty {
     fn drop(&mut self) {
-        // SIGHUP, then the program is waited for (reaped: see `poll_exit`) and the terminal
-        // closed after it. Never on the UI thread; escalate to SIGKILL if it ignores SIGHUP so
-        // this thread and the master fd cannot leak forever.
+        // SIGHUP the shell and its foreground job, close the master fd right away so the slave
+        // side sees EOF/HUP without waiting 2 seconds, then reap (escalating to SIGKILL if it
+        // ignores SIGHUP). Never blocks the UI thread.
         if let Some(file) = self.pty.lock().take() {
             let pid = self.pid as libc::pid_t;
+            // SAFETY: tcgetpgrp on our still-open master fd.
+            let fg = unsafe {
+                let pgrp = libc::tcgetpgrp(file.as_raw_fd());
+                (pgrp > 0 && pgrp != pid).then_some(pgrp)
+            };
+            drop(file);
             std::thread::spawn(move || {
-                // SAFETY: kill and waitpid on this process's own child.
+                // SAFETY: kill and waitpid on this process's own child and session.
                 unsafe {
                     libc::kill(-pid, libc::SIGHUP);
                     libc::kill(pid, libc::SIGHUP);
+                    if let Some(fg) = fg {
+                        libc::kill(-fg, libc::SIGHUP);
+                    }
                     let mut status = 0;
                     let start = std::time::Instant::now();
                     let reaped = loop {
@@ -441,10 +454,14 @@ impl Drop for LocalPty {
                     if !reaped {
                         libc::kill(-pid, libc::SIGKILL);
                         libc::kill(pid, libc::SIGKILL);
+                        if let Some(fg) = fg
+                            && libc::getsid(fg) == pid
+                        {
+                            libc::kill(-fg, libc::SIGKILL);
+                        }
                         while libc::waitpid(pid, &mut status, 0) == -1 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {}
                     }
                 }
-                drop(file);
             });
         }
     }
@@ -581,6 +598,16 @@ pub fn start(
 
     // Reader.
     rt.spawn(async move {
+        struct StopGuard(Arc<Stop>);
+        impl Drop for StopGuard {
+            fn drop(&mut self) {
+                *self.0.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                self.0.ended.notify_all();
+            }
+        }
+        // Always mark `stop.done` on any exit path so `stop_reading` never hangs after the
+        // reader task has already finished.
+        let _stop_guard = StopGuard(stop.clone());
         let mut children = child_signals();
         // SAFETY: as above.
         let reader = match unsafe { AsyncFd::register_with_interest(read_file, Interest::READABLE) } {
@@ -630,8 +657,6 @@ pub fn start(
                 // Whatever is read before it stops is in the terminal, which is drawn for the
                 // next run only once it has stopped.
                 _ = stop.asked.notified() => {
-                    *stop.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
-                    stop.ended.notify_all();
                     return;
                 }
                 ready = reader.readable() => {
@@ -696,6 +721,7 @@ pub fn start(
                                     let fed = feeder.lock().feed(&buf[..n]);
                                     deliver(fed);
                                 }
+                                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                                 _ => break,
                             }
                         }

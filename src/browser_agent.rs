@@ -28,7 +28,9 @@ use crate::browser::{Answer, Ask, Driver};
 use crate::i18n::{t, tf};
 
 /// What the pages answered, by call number (filled on the main thread by WebKit's callbacks).
-pub type Done = Arc<Mutex<HashMap<u64, Result<String, String>>>>;
+/// Entries are pre-inserted as `None` when a step starts and removed when the job finishes, so
+/// late callbacks from timed-out or cancelled jobs never leak entries.
+pub type Done = Arc<Mutex<HashMap<u64, Option<Result<String, String>>>>>;
 
 /// After its last call, an agent is shown using the browser this long (unless its turn ends).
 const DRIVER_LINGER: Duration = Duration::from_secs(30);
@@ -976,7 +978,14 @@ impl App {
             }
             match job.waiting.take() {
                 Some(Waiting::Page { seq, op, since, at }) => {
-                    let got = self.browser_done.lock().remove(&seq);
+                    let got = {
+                        let mut done = self.browser_done.lock();
+                        if done.get(&seq).is_some_and(Option::is_some) {
+                            done.remove(&seq).flatten()
+                        } else {
+                            None
+                        }
+                    };
                     // The page went to another address (or began loading): WebKit won't answer.
                     let left = page_url != at.0 || (loading && !at.1);
                     let got = match got {
@@ -1137,7 +1146,14 @@ impl App {
                     }
                 }
                 Some(Waiting::Picture { seq, since }) => {
-                    let got = self.browser_done.lock().remove(&seq);
+                    let got = {
+                        let mut done = self.browser_done.lock();
+                        if done.get(&seq).is_some_and(Option::is_some) {
+                            done.remove(&seq).flatten()
+                        } else {
+                            None
+                        }
+                    };
                     match got {
                         Some(Ok(png)) => job.image = Some(png),
                         Some(Err(e)) => return Some(Some(format!("Could not take a screenshot: {e}"))),
@@ -1271,8 +1287,11 @@ impl App {
                                 return None;
                             };
                             let done = self.browser_done.clone();
+                            done.lock().insert(seq, None);
                             let page = move |r: Result<String, String>| {
-                                done.lock().insert(seq, r);
+                                if let Some(slot) = done.lock().get_mut(&seq) {
+                                    *slot = Some(r);
+                                }
                             };
                             match op {
                                 Op::Back => {

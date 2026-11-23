@@ -46,11 +46,12 @@ impl App {
         let x = x.clamp(12.0, (screen.right() - w - 12.0).max(12.0));
         let below = anchor.bottom() + 6.0;
         let y = if below + h <= screen.bottom() - 12.0 || anchor.top() - 6.0 - h < 12.0 { below } else { anchor.top() - 6.0 - h };
+        let y = y.clamp(screen.top() + 12.0, (screen.bottom() - h - 12.0).max(screen.top() + 12.0));
         let max_scroll_h = (screen.height() - 140.0).clamp(160.0, 520.0);
         let now = Instant::now();
         let now_unix = profiles::now_unix_secs();
         let profiles = self.effective_profiles();
-        let cur_agent_pane = self.current_pane().filter(|pid| self.panes.get(pid).is_some_and(|x| x.alive() && x.tracker.agent.is_some_and(profiles::supports_multi_profile)));
+        let cur_agent_pane = self.current_pane().filter(|pid| self.panes.get(pid).is_some_and(|x| x.alive() && x.tracker.agent.is_some_and(profiles::supports_profile)));
         let cur_pane_profile = cur_agent_pane.and_then(|pid| {
             let pane = self.panes.get(&pid)?;
             let agent = pane.tracker.agent?;
@@ -99,25 +100,11 @@ impl App {
                                     ui.vertical(|ui| {
                                         ui.spacing_mut().item_spacing.y = 6.0;
                                         // Avatar, id, plan … state (and Switch, for the pane in view).
-                                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
+                                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
                                         let cy = r.center().y;
-                                        let av = Rect::from_min_size(pos2(r.left(), cy - 8.0), vec2(16.0, 16.0));
-                                        paint_agent_tile(ui.painter(), av, Some(prof.agent), "", &p);
-                                        let idc = if prof.enabled { p.text } else { p.text_faint };
-                                        let ig = galley(ui, &prof.id, style::mono_semibold(style::DATA), idc, None, 14.0);
-                                        let mut lx = av.right() + 8.0;
-                                        let iw = ig.size().x;
-                                        ui.painter().galley(pos2(lx, cy - 7.0), ig, idc);
-                                        lx += iw + 8.0;
-                                        if let Some(plan) = rt.usage.plan_type.as_deref().filter(|s| !s.is_empty()) {
-                                            lx = paint_plan_badge(ui.painter(), pos2(lx, cy), plan, 16.0, &p).right() + 8.0;
-                                        }
-                                        if auth == AuthStatus::NotSignedIn {
-                                            let g = galley(ui, t("Not signed in"), FontId::proportional(style::SMALL), p.warn, None, 16.0);
-                                            ui.painter().galley(pos2(lx, cy - 8.0), g, p.warn);
-                                        }
                                         let pw = profile_pill_width(ui.painter(), rt.state, prof.enabled, &p);
                                         let pill = paint_profile_pill(ui.painter(), pos2(r.right() - pw, cy), rt.state, prof.enabled, &p, dark);
+                                        let mut right_limit = pill.left() - 6.0;
                                         if let Some(pane_id) = cur_agent_pane
                                             && prof.enabled
                                             && cur_pane_profile.as_deref() != Some(prof.id.as_str())
@@ -126,11 +113,29 @@ impl App {
                                         {
                                             let bw = kit::button_width(ui, Some(icons::ARROWS_CLOCKWISE), t("Switch"), None, true);
                                             let br = Rect::from_min_size(pos2(pill.left() - 6.0 - bw, cy - 12.0), vec2(bw, 24.0));
+                                            right_limit = br.left() - 6.0;
                                             let b = ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROWS_CLOCKWISE), t("Switch"), true)).inner;
                                             if b.on_hover_text(tf("Resume the pane in view on {}", &[&prof.id])).clicked() {
                                                 self.actions.push(Action::ResumeWithProfile { pane: pane_id, profile_id: prof.id.clone() });
                                                 self.monitor_popover = false;
                                             }
+                                        }
+                                        let left_clip = Rect::from_min_max(r.min, pos2(right_limit.max(r.left()), r.bottom())).intersect(ui.clip_rect());
+                                        let lp = ui.painter().with_clip_rect(left_clip);
+                                        let av = Rect::from_min_size(pos2(r.left(), cy - 8.0), vec2(16.0, 16.0));
+                                        paint_agent_tile(&lp, av, Some(prof.agent), "", &p);
+                                        let idc = if prof.enabled { p.text } else { p.text_faint };
+                                        let ig = galley(ui, &prof.id, style::mono_semibold(style::DATA), idc, None, 14.0);
+                                        let mut lx = av.right() + 8.0;
+                                        let iw = ig.size().x;
+                                        lp.galley(pos2(lx, cy - 7.0), ig, idc);
+                                        lx += iw + 8.0;
+                                        if let Some(plan) = rt.effective_plan() {
+                                            lx = paint_plan_badge(&lp, pos2(lx, cy), plan, 16.0, &p).right() + 8.0;
+                                        }
+                                        if auth == AuthStatus::NotSignedIn {
+                                            let g = galley(ui, t("Not signed in"), FontId::proportional(style::SMALL), p.warn, None, 16.0);
+                                            lp.galley(pos2(lx, cy - 8.0), g, p.warn);
                                         }
                                         // The meters: 5h and the week.
                                         if meters.is_empty() {
@@ -146,7 +151,9 @@ impl App {
                                         }
                                         // Where it runs now: a click goes there.
                                         if let Some((pane_id, proj_id)) = rt.active_panes.first().copied() {
-                                            let g = galley(ui, &tf("Active in {}", &[&self.project_label(proj_id)]), FontId::proportional(style::SMALL), p.accent_text, None, 16.0);
+                                            let mut job = egui::text::LayoutJob::simple_singleline(tf("Active in {}", &[&self.project_label(proj_id)]), FontId::proportional(style::SMALL), p.accent_text);
+                                            job.wrap = egui::text::TextWrapping::truncate_at_width(ui.available_width().max(60.0));
+                                            let g = ui.painter().layout_job(job);
                                             let (lr, link) = ui.allocate_exact_size(g.size(), Sense::click());
                                             ui.painter().galley(lr.min, g, p.accent_text);
                                             if link.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {

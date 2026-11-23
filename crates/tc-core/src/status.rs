@@ -427,6 +427,13 @@ impl Tracker {
                         let Some(start) = self.command_started.take() else {
                             return false;
                         };
+                        // An agent's exit can emit OSC 133;D before the foreground poll notices
+                        // the shell is back; don't turn that into a spurious command notice.
+                        if self.agent.is_some()
+                            || matches!(self.fg, Foreground::Program { agent: Some(_), .. })
+                        {
+                            return self.set(Status::Idle, Source::Shell, false, now);
+                        }
                         let long = now.duration_since(start) >= self.long_command;
                         match code {
                             Some(c) if c != 0 && long => {
@@ -798,6 +805,15 @@ mod tests {
         t.apply(Event::Foreground(Foreground::Shell), t0);
         assert_eq!(t.agent, None);
         assert!(!t.hooks_active);
+
+        // OSC 133;D arriving BEFORE the foreground poll notices the agent exited must also stay Idle.
+        let mut t2 = Tracker::new(t0);
+        t2.apply(Event::Shell(ShellMark::CommandStart), t0);
+        t2.apply(prog("claude", Some(AgentKind::Claude)), t0);
+        t2.apply(hook(HookSignal::SessionStart), t0);
+        t2.apply(Event::Shell(ShellMark::CommandFinished(Some(130))), t0 + LONG_COMMAND);
+        assert_eq!(t2.status, Status::Idle);
+        assert!(!t2.wants_attention());
     }
 
     #[test]

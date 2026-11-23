@@ -202,7 +202,7 @@
     }
     // how each state looks where you meet it: a Notice at the foot of the pane, a pane header
     const SPEC = {
-      wait: () => notice('inp', 'Claude Code wants to run a command', { body: 'Bash · npm test -- auth', sec: 'Reject', pri: 'Approve', sc: '↵', cls: 'solo' }),
+      wait: () => notice('inp', 'Claude Code wants to run a command', { body: 'Bash · npm test -- auth', cls: 'solo' }),
       run: () => `<div class="k-sheet" style="border-radius:9px">${paneHead({ a: 'Cx', name: 'Add order export to CSV', st: 'run', task: 'Editing api/orders.ts', timer: '2:14' })}</div>`,
       done: () => notice('done', 'Codex finished its turn', { body: '3 files changed · +102 −2', sec: 'Review', pri: 'Commit…', cls: 'solo' }),
       fail: () => notice('fail', 'Exited with code 1', { body: 'pnpm build · after 42s', pri: 'Run again', dismiss: true, cls: 'solo' }),

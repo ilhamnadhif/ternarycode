@@ -1219,11 +1219,10 @@ impl App {
         // it starts from.
         let facts = root.as_ref().and_then(|r| self.worktree_facts(&r.2).cloned());
         if let Some(r) = &root
-            && (!wt.typed || wt.name.is_empty())
+            && !wt.typed
         {
             let stem = chosen.as_ref().map(|x| x.agent.map_or(x.name.clone(), |a| a.slug().to_string())).unwrap_or_default();
             wt.name = self.suggest_worktree_name(r.0, &stem);
-            wt.typed = false;
         }
         let base = wt.base.clone().or_else(|| facts.as_ref().and_then(|f| f.current.clone())).unwrap_or_default();
         let problem = root.as_ref().and_then(|r| self.worktree_name_problem(r.0, &wt.name));

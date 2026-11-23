@@ -74,8 +74,9 @@ impl ProfileDraft {
     }
 
     pub fn new_for(agent: AgentKind, existing: &[AgentProfile]) -> Self {
-        let agent = if profiles::supports_multi_profile(agent) { agent } else { AgentKind::Claude };
+        let agent = if profiles::supports_profile(agent) { agent } else { AgentKind::Claude };
         let (id, name) = Self::suggest_id_and_name(agent, existing);
+        let single = !profiles::supports_multi_profile(agent);
         Self {
             editing_id: None,
             name,
@@ -89,7 +90,7 @@ impl ProfileDraft {
             limit_5h_text: String::new(),
             limit_weekly_text: String::new(),
             budget_text: String::new(),
-            use_default_auth: false,
+            use_default_auth: single,
             enabled: true,
         }
     }
@@ -138,7 +139,10 @@ impl ProfileDraft {
                 }
             }
         }
-        let config_dir = {
+        let single = !profiles::supports_multi_profile(self.agent);
+        let config_dir = if single {
+            None
+        } else {
             let trimmed = self.config_dir.trim();
             (!trimmed.is_empty()).then(|| paths::expand_tilde(trimmed))
         };
@@ -180,20 +184,32 @@ impl ProfileDraft {
             limit_5h_tokens,
             limit_weekly_tokens,
             account_hint,
-            use_default_auth: self.use_default_auth,
+            use_default_auth: single || self.use_default_auth,
         }
     }
 }
 
 impl App {
-    /// Configured multi-account profiles, falling back to starter defaults (`claude1`, `chatgpt1`)
-    /// until customized. Restricted to providers that support isolated multi-account auth.
+    /// Configured agent account profiles, falling back to starter defaults (`claude1`, `chatgpt1`,
+    /// `agy1`) until customized. Claude & Codex allow multiple accounts; Antigravity allows 1.
     pub fn effective_profiles(&self) -> Vec<AgentProfile> {
+        let mut seen_agy = false;
         let mut list: Vec<AgentProfile> = self
             .settings
             .profiles
             .iter()
-            .filter(|p| profiles::supports_multi_profile(p.agent))
+            .filter(|p| match p.agent {
+                AgentKind::Claude | AgentKind::Codex => true,
+                AgentKind::Antigravity => {
+                    if seen_agy {
+                        false
+                    } else {
+                        seen_agy = true;
+                        true
+                    }
+                }
+                _ => false,
+            })
             .cloned()
             .collect();
         if list.is_empty() {
@@ -205,7 +221,19 @@ impl App {
 
     /// Materializes default profiles into `settings.profiles` before mutating.
     pub fn ensure_mutable_profiles(&mut self) {
-        self.settings.profiles.retain(|p| profiles::supports_multi_profile(p.agent));
+        let mut seen_agy = false;
+        self.settings.profiles.retain(|p| match p.agent {
+            AgentKind::Claude | AgentKind::Codex => true,
+            AgentKind::Antigravity => {
+                if seen_agy {
+                    false
+                } else {
+                    seen_agy = true;
+                    true
+                }
+            }
+            _ => false,
+        });
         if self.settings.profiles.is_empty() {
             self.settings.profiles = profiles::default_profiles();
         }
@@ -224,7 +252,7 @@ impl App {
         agent: AgentKind,
         profiles: &[AgentProfile],
     ) -> Option<String> {
-        if !profiles::supports_multi_profile(agent) {
+        if !profiles::supports_profile(agent) {
             return None;
         }
         if let Some(id) = pane.active_profile.as_deref()
@@ -241,7 +269,7 @@ impl App {
 
     /// Picks the highest-priority enabled healthy profile for `agent` (or first enabled profile).
     pub fn preferred_profile_for(&self, agent: AgentKind, project: Option<ProjectId>) -> Option<AgentProfile> {
-        if !profiles::supports_multi_profile(agent) {
+        if !profiles::supports_profile(agent) {
             return None;
         }
         let now = Instant::now();
@@ -372,7 +400,7 @@ impl App {
             if !pane.alive() {
                 continue;
             }
-            let Some(agent) = pane.tracker.agent.filter(|a| profiles::supports_multi_profile(*a)) else {
+            let Some(agent) = pane.tracker.agent.filter(|a| profiles::supports_profile(*a)) else {
                 continue;
             };
             if let Some(prof_id) = self.resolved_pane_profile_id(pane, agent, &profiles) {
@@ -438,11 +466,17 @@ impl App {
             }
         }
 
-        // 2. Scan live agent panes (currently running an agent with multi-account profile support) for rate-limit output.
+        // 2. Scan live agent panes (currently running a profile-tracked agent) for rate-limit
+        // output and passive plan-tier detection (e.g. Antigravity CLI's Google AI Pro/Ultra banner).
         let mut detected: Vec<(PaneId, RateLimitHit)> = Vec::new();
+        let mut agy_plan: Option<String> = None;
+        let need_agy_plan = profiles
+            .iter()
+            .find(|p| p.agent == AgentKind::Antigravity)
+            .is_some_and(|p| self.profiles_rt.get(&p.id).is_none_or(|rt| rt.effective_plan().is_none()));
         for pane in self.panes.values_mut() {
             let in_agent = pane.alive()
-                && pane.tracker.agent.is_some_and(profiles::supports_multi_profile)
+                && pane.tracker.agent.is_some_and(profiles::supports_profile)
                 && !matches!(pane.tracker.fg, tc_core::status::Foreground::Shell | tc_core::status::Foreground::Gone);
             if !in_agent {
                 continue;
@@ -462,7 +496,13 @@ impl App {
                 continue;
             }
             pane.last_limit_check = now;
-            let tail = pane.screen_tail(28);
+            let tail = pane.screen_tail(if need_agy_plan && pane.tracker.agent == Some(AgentKind::Antigravity) { 60 } else { 28 });
+            if need_agy_plan
+                && agy_plan.is_none()
+                && pane.tracker.agent == Some(AgentKind::Antigravity)
+            {
+                agy_plan = profiles::detect_agy_plan(&tail);
+            }
             if let Some(hit) = profiles::detect_rate_limit(&tail) {
                 if pane.last_limit_sig.as_deref() != Some(hit.reason.as_str()) {
                     pane.last_limit_sig = Some(hit.reason.clone());
@@ -471,6 +511,11 @@ impl App {
             } else {
                 pane.last_limit_sig = None;
             }
+        }
+        if let Some(plan) = agy_plan
+            && let Some(p) = profiles.iter().find(|p| p.agent == AgentKind::Antigravity)
+        {
+            self.profiles_rt.entry(p.id.clone()).or_default().live_plan_type = Some(plan);
         }
         for (pane_id, hit) in detected {
             self.handle_rate_limit(ctx, pane_id, hit);
@@ -565,7 +610,7 @@ impl App {
                 None => tc_agent::sessions::Roots::from_env(&home),
             };
             for agent in [AgentKind::Claude, AgentKind::Codex, AgentKind::Antigravity] {
-                let default_prof = if profiles::supports_multi_profile(agent) {
+                let default_prof = if profiles::supports_profile(agent) {
                     profiles
                         .iter()
                         .find(|p| p.agent == agent && p.use_default_auth && !profiles::has_custom_config_dir(p))
@@ -678,7 +723,7 @@ impl App {
                     id: sid,
                     title,
                     agent,
-                    profile_id: profiles::supports_multi_profile(agent).then(|| pane.active_profile.clone()).flatten(),
+                    profile_id: profiles::supports_profile(agent).then(|| pane.active_profile.clone()).flatten(),
                     status: pane.tracker.status,
                     updated: SystemTime::now(),
                     branch: branch.clone(),
@@ -722,7 +767,7 @@ impl App {
         let profiles = self.effective_profiles();
         let Some((project_id, agent, from_profile, session_id)) = self.panes.get(&pane_id).and_then(|p| {
             let agent = p.tracker.agent.or(p.last_agent)?;
-            if !profiles::supports_multi_profile(agent) {
+            if !profiles::supports_profile(agent) {
                 return None;
             }
             let prof = self.resolved_pane_profile_id(p, agent, &profiles)?;
@@ -980,7 +1025,7 @@ impl App {
         self.active = Some(project);
         self.show_focus();
         self.ensure_terminals_visible();
-        let valid_profile_id = if profiles::supports_multi_profile(agent) {
+        let valid_profile_id = if profiles::supports_profile(agent) {
             profile_id
                 .as_deref()
                 .and_then(|id| self.profile_by_id(id))
@@ -1240,7 +1285,7 @@ impl App {
                     .tracker
                     .agent
                     .or(p.last_agent)
-                    .is_some_and(profiles::supports_multi_profile);
+                    .is_some_and(profiles::supports_profile);
                 CompanionPane {
                     id: p.id,
                     project_id: p.project,
@@ -1287,8 +1332,8 @@ impl App {
                     id: prof.id.clone(),
                     name: prof.name.clone(),
                     provider: prof.agent.label().into(),
-                    account_hint: prof.account_hint.clone(),
-                    plan_type: rt.usage.plan_type.clone(),
+                    account_hint: prof.account_hint.clone().or_else(|| rt.usage.account_email.clone()),
+                    plan_type: rt.effective_plan().map(str::to_string),
                     signed_in: if prof.api_key.is_some() { Some(true) } else { rt.usage.signed_in },
                     state: rt.state.slug().into(),
                     enabled: prof.enabled,
@@ -1387,7 +1432,7 @@ impl App {
         let now = Instant::now();
         let pane = self.panes.get(&pane_id)?;
         let agent = pane.tracker.agent.or(pane.last_agent)?;
-        if !profiles::supports_multi_profile(agent) {
+        if !profiles::supports_profile(agent) {
             return None;
         }
         let profiles = self.effective_profiles();

@@ -65,6 +65,7 @@ impl App {
             self.editor_seen = true;
             // ← → move through a deck's slides.
             if let State::Ready(Content::Slides(deck)) = &view.state {
+                ui.memory_mut(|m| m.set_focus_lock_filter(doc_id, egui::EventFilter { horizontal_arrows: true, ..Default::default() }));
                 let n = deck.slides.len();
                 let (back, on) = ui.input_mut(|i| {
                     (
@@ -238,8 +239,10 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
             }
             // The number can be typed (Enter goes there, Esc leaves it).
             let id = egui::Id::new(("doc-page", view.path.clone()));
+            let focused_id = id.with("was-focused");
             let focused = ui.ctx().memory(|m| m.has_focus(id));
-            let mut text: String = ui.data(|d| d.get_temp::<String>(id)).filter(|_| focused).unwrap_or_else(|| (page + 1).to_string());
+            let was_focused = ui.data(|d| d.get_temp::<bool>(focused_id)).unwrap_or(false);
+            let mut text: String = ui.data(|d| d.get_temp::<String>(id)).filter(|_| focused || was_focused).unwrap_or_else(|| (page + 1).to_string());
             let (well, _) = ui.allocate_exact_size(vec2(32.0, 24.0), Sense::hover());
             ui.painter().rect(well, CornerRadius::same(5), p.inset, Stroke::new(1.0, if focused { p.accent } else { Color32::TRANSPARENT }), egui::StrokeKind::Inside);
             let r = ui
@@ -256,7 +259,10 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
                     )
                 })
                 .inner;
-            ui.data_mut(|d| d.insert_temp(id, text.clone()));
+            ui.data_mut(|d| {
+                d.insert_temp(id, text.clone());
+                d.insert_temp(focused_id, r.has_focus());
+            });
             if r.lost_focus()
                 && !ui.input(|i| i.key_pressed(egui::Key::Escape))
                 && let Ok(n_typed) = text.trim().parse::<usize>()
@@ -1245,6 +1251,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
     }
     if let Some(e) = &sheet.error {
         ui.painter().text(grid_rect.center(), Align2::CENTER_CENTER, e, egui::FontId::proportional(style::BODY), p.err);
+        return false;
     }
 
     // The grid has a margin round it (8 at 100%), its gutters lit, the cells on the sheet.
@@ -1433,6 +1440,9 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
                 ui.ctx().copy_text(sheet.cell(r, c).text().to_string());
             }
             if resp.has_focus() {
+                ui.memory_mut(|m| {
+                    m.set_focus_lock_filter(resp.id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() });
+                });
                 focused = true;
                 let (rows, cols) = (sheet.rows, widths.len());
                 let moved = ui.input_mut(|i| {
@@ -1538,7 +1548,9 @@ fn image_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
     let margin = 24.0;
     // Pixel for pixel when it fits, else fitted; then the zoom.
     let natural = vec2(iw as f32 / ppp, ih as f32 / ppp);
-    let fit = ((rect.width() - margin * 2.0) / natural.x).min((rect.height() - margin * 2.0) / natural.y).min(1.0);
+    let fit = ((rect.width() - margin * 2.0).max(0.0) / natural.x.max(1.0))
+        .min((rect.height() - margin * 2.0).max(0.0) / natural.y.max(1.0))
+        .min(1.0);
     let size = natural * fit * view.zoom;
     let tex = tex.id();
     egui::ScrollArea::both()

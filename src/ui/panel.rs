@@ -1,9 +1,10 @@
 //! The right panel of the Focus view (Slate): one place beside the terminals for Changes,
-//! Files, History and the Browser, behind one segmented header with Expand (⇧⌘E) and Close.
+//! Files, History and the Browser, switched from the project bar above, with a quiet header
+//! holding the active view's title, Expand (⇧⌘E) and Close.
 //! Terminals stay the stage; the panel never pushes them into a drawer. It is as wide as the
 //! project's panel share (dragged at its left edge), or fills the body when expanded.
 
-use eframe::egui::{self, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 use tc_core::ProjectId;
 
 use super::{icons, kit, style};
@@ -11,8 +12,8 @@ use crate::actions::Action;
 use crate::app::App;
 use crate::i18n::t;
 
-/// Height of the panel's header (the segmented tabs).
-pub const HEAD_H: f32 = 44.0;
+/// Height of the panel's header (aligned with the terminal tab strip beside it).
+pub const HEAD_H: f32 = 40.0;
 /// The least the panel is wide, and the least the terminals keep beside it.
 const MIN_W: f32 = 440.0;
 const MIN_STAGE: f32 = 360.0;
@@ -94,6 +95,9 @@ impl App {
                 self.close_panel(pid);
             }
             return;
+        }
+        if tab != PanelTab::Browser {
+            self.release_page_keyboard();
         }
         match tab {
             PanelTab::Browser => {
@@ -195,8 +199,9 @@ impl App {
         }
     }
 
-    /// The header: the segmented tabs (counts: changed files, pages), then at the right a note
-    /// while it fills the body, Expand / Back beside the terminals, and Close.
+    /// The header: the active panel's title (with its count when relevant), then at the right a
+    /// note while it fills the body, Expand / Back beside the terminals, and Close. Switching
+    /// between panels lives solely in the project toolbar above (no duplicate tab buttons here).
     fn panel_head(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, tab: PanelTab) {
         let p = style::pal(ui);
         let changed = self.project(project).and_then(|x| x.git.as_ref()).map_or(0, |g| g.changed);
@@ -231,34 +236,24 @@ impl App {
                 ui.min_rect().left()
             })
             .inner;
-        let counts: [Option<String>; 4] = [(changed > 0).then(|| changed.to_string()), None, None, (pages > 0).then(|| pages.to_string())];
-        let tips: Vec<String> = PanelTab::ALL
-            .iter()
-            .map(|t| match kit::keys(&t.action()) {
-                Some(k) => format!("{}   {k}", t.label()),
-                None => t.label().to_string(),
-            })
-            .collect();
-        let options: Vec<kit::Seg> = PanelTab::ALL
-            .iter()
-            .zip(counts.iter())
-            .zip(tips.iter())
-            .map(|((tab, n), tip)| {
-                let s = kit::Seg::new(tab.label(), tip).icon(tab.icon());
-                match n {
-                    Some(n) => s.count(n, p.text_faint),
-                    None => s,
-                }
-            })
-            .collect();
-        let on = PanelTab::ALL.iter().position(|x| *x == tab).unwrap_or(0);
-        let seg_rect = Rect::from_min_max(inner.min, pos2((right_left - 8.0).max(inner.left()), inner.bottom()));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(seg_rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-            ui.set_clip_rect(seg_rect.intersect(ui.clip_rect()));
-            if let Some(i) = kit::segmented(ui, &options, on) {
-                self.switch_panel(PanelTab::ALL[i], false);
-            }
-        });
+        let title_rect = Rect::from_min_max(inner.min, pos2((right_left - 8.0).max(inner.left()), inner.bottom()));
+        let painter = ui.painter().with_clip_rect(title_rect.intersect(ui.clip_rect()));
+        let cy = title_rect.center().y;
+        let mut x = title_rect.left() + 6.0;
+        painter.text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, tab.icon(), style::icon_font(14.0), p.text_muted);
+        x += 14.0 + 7.0;
+        let g = painter.layout_no_wrap(tab.label().to_string(), style::medium(style::BODY), p.text);
+        let gw = g.size().x;
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
+        x += gw;
+        let count = match tab {
+            PanelTab::Changes if changed > 0 => Some(changed),
+            PanelTab::Browser if pages > 0 => Some(pages),
+            _ => None,
+        };
+        if let Some(n) = count {
+            painter.text(pos2(x + 7.0, cy), Align2::LEFT_CENTER, n.to_string(), style::mono(style::DATA), p.text_faint);
+        }
     }
 
     /// The edge between the terminals and the panel, dragged to size it.

@@ -38,9 +38,10 @@ pub enum SettingsPage {
     Integrations,
 }
 
-/// The modal: 1000 wide, as tall as its page (at least 640, at most the screen).
-const W: f32 = 1000.0;
-const MIN_H: f32 = 640.0;
+/// The modal: fixed 960 × 640 (clamped cleanly on smaller windows) so switching tabs never
+/// jumps or stretches the dialog; each page scrolls inside its body.
+const W: f32 = 960.0;
+const H: f32 = 640.0;
 const NAV_W: f32 = 232.0;
 /// The page's padding: 32 at the sides, 26 above, 30 below.
 const PAD_X: f32 = 32.0;
@@ -70,7 +71,7 @@ const NAV: [Option<(SettingsPage, &str, &str)>; 12] = [
 fn page_rows(page: SettingsPage) -> &'static [&'static str] {
     match page {
         SettingsPage::General => &["Command line", "Data folder", "Worktrees", "Where new worktrees go", "Branch names start with", "When a branch is merged"],
-        SettingsPage::Appearance => &["Theme", "Language", "Terminal colours", "Dark theme", "Light theme", "Terminal text", "Font", "Size", "Cursor", "Blinking cursor"],
+        SettingsPage::Appearance => &["Theme", "Language", "Terminal colours", "Dark theme", "Light theme", "Terminal text", "Font", "Size", "Cursor", "Blinking cursor", "Sidebar", "Text size", "Width"],
         SettingsPage::Terminal => {
             if cfg!(target_os = "macos") {
                 &["Scrollback per pane", "Scrollback memory for all panes", "Option key as Meta", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]
@@ -406,14 +407,12 @@ impl App {
             *page = SettingsPage::Agents;
         }
         let screen = ui.ctx().content_rect();
-        let w = W.min((screen.width() - 32.0).max(360.0));
-        let max_h = (screen.height() - 48.0).max(360.0);
-        let height_id = egui::Id::new(("settings-height", *page as u8));
-        let wanted = ui.data(|d| d.get_temp::<f32>(height_id)).unwrap_or(MIN_H);
-        let h = wanted.max(MIN_H).min(max_h);
+        let w = W.min((screen.width() - 48.0).max(360.0));
+        let h = H.min((screen.height() - 64.0).max(360.0));
         let nav_w = if w < 760.0 { 184.0 } else { NAV_W };
         ui.set_width(w);
         ui.set_height(h);
+        ui.set_max_size(vec2(w, h));
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let mut keep = true;
         let p = style::pal(ui);
@@ -557,45 +556,36 @@ impl App {
         #[cfg(debug_assertions)]
         crate::devtest::record("settings-body", main);
         let before = self.settings.clone();
-        let content_h = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
-                ui.set_clip_rect(main.intersect(ui.clip_rect()));
-                egui::ScrollArea::vertical()
-                    .id_salt(("settings-page", *page as u8))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let m = egui::Margin { left: PAD_X as i8, right: PAD_X as i8, top: 0, bottom: PAD_BOTTOM as i8 };
-                        egui::Frame::NONE.inner_margin(m).show(ui, |ui| {
-                            ui.set_width((main.width() - PAD_X * 2.0).max(160.0));
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            match *page {
-                                SettingsPage::General => self.general_page(ui, &search),
-                                SettingsPage::Appearance => self.appearance_page(ui, &search),
-                                SettingsPage::Terminal => self.terminal_page(ui, &search),
-                                SettingsPage::Agents | SettingsPage::Integrations => self.agents_page(ui, &search),
-                                SettingsPage::Accounts => self.accounts_page(ui, &search),
-                                SettingsPage::Browser => self.browser_page(ui, &search),
-                                SettingsPage::Editor => self.editor_page(ui, &search),
-                                SettingsPage::Notifications => self.notifications_page(ui, &search),
-                                SettingsPage::Phone => self.phone_page(ui, &search),
-                                SettingsPage::Updates => self.updates_page(ui, &search),
-                                SettingsPage::About => self.about_page(ui, &search),
-                            }
-                            if ui.min_rect().height() < 0.5 && !search.trim().is_empty() {
-                                no_match(ui, &search);
-                            }
-                        });
-                    })
-                    .content_size
-                    .y
-            })
-            .inner;
-        // As tall as the page wants (head and padding included), next frame.
-        let wanted_now = PAD_TOP + head_h + GAP + content_h;
-        if (wanted_now - wanted).abs() > 0.5 {
-            ui.data_mut(|d| d.insert_temp(height_id, wanted_now));
-            ui.ctx().request_repaint();
-        }
+        ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
+            ui.set_clip_rect(main.intersect(ui.clip_rect()));
+            egui::ScrollArea::vertical()
+                .id_salt(("settings-page", *page as u8))
+                .max_height(main.height())
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let m = egui::Margin { left: PAD_X as i8, right: PAD_X as i8, top: 2, bottom: PAD_BOTTOM as i8 };
+                    egui::Frame::NONE.inner_margin(m).show(ui, |ui| {
+                        ui.set_width((main.width() - PAD_X * 2.0).max(160.0));
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        match *page {
+                            SettingsPage::General => self.general_page(ui, &search),
+                            SettingsPage::Appearance => self.appearance_page(ui, &search),
+                            SettingsPage::Terminal => self.terminal_page(ui, &search),
+                            SettingsPage::Agents | SettingsPage::Integrations => self.agents_page(ui, &search),
+                            SettingsPage::Accounts => self.accounts_page(ui, &search),
+                            SettingsPage::Browser => self.browser_page(ui, &search),
+                            SettingsPage::Editor => self.editor_page(ui, &search),
+                            SettingsPage::Notifications => self.notifications_page(ui, &search),
+                            SettingsPage::Phone => self.phone_page(ui, &search),
+                            SettingsPage::Updates => self.updates_page(ui, &search),
+                            SettingsPage::About => self.about_page(ui, &search),
+                        }
+                        if ui.min_rect().height() < 0.5 && !search.trim().is_empty() {
+                            no_match(ui, &search);
+                        }
+                    });
+                });
+        });
 
         ui.allocate_rect(full, Sense::hover());
         if self.settings != before {
@@ -619,6 +609,9 @@ impl App {
                 } else if !self.settings.lsp {
                     self.lsp_stop_all();
                 }
+            }
+            if (self.settings.sidebar_width - before.sidebar_width).abs() > 0.5 {
+                self.sidebar_width_sync = true;
             }
             self.settings_changed();
         }
@@ -813,6 +806,29 @@ impl App {
                         terminal_preview(ui, r, self.scheme(dark), self.settings.font_size, self.settings.cursor_shape);
                     }
                 });
+            });
+        });
+
+        let labels = [
+            (t("Text size"), t("Size of projects and controls in the sidebar.")),
+            (t("Width"), t("Or drag the sidebar's right edge.")),
+        ];
+        section(ui, search, Some(t("Sidebar")), None, &labels, |c| {
+            c.row(labels[0].0, labels[0].1, |ui| {
+                let size = self.settings.sidebar_font_size;
+                match kit::number_stepper(ui, &format!("{} pt", size_text(size)), 70.0) {
+                    -1 => self.settings.sidebar_font_size = (size - 0.5).max(11.0),
+                    1 => self.settings.sidebar_font_size = (size + 0.5).min(18.0),
+                    _ => {}
+                }
+            });
+            c.row(labels[1].0, labels[1].1, |ui| {
+                let w = self.settings.sidebar_width.round();
+                match kit::number_stepper(ui, &format!("{} px", w as i32), 70.0) {
+                    -1 => self.settings.sidebar_width = (w - 16.0).max(200.0),
+                    1 => self.settings.sidebar_width = (w + 16.0).min(420.0),
+                    _ => {}
+                }
             });
         });
     }

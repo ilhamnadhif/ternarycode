@@ -461,10 +461,15 @@ impl App {
         let mono = egui::FontId::monospace((self.settings.font_size - 1.0).max(9.0));
 
         // Completion, under the caret.
+        let editor_focused = ctx.memory(|m| m.has_focus(egui::Id::new(("editor-text", path.to_path_buf()))));
         if let (Some(pop), Some(caret)) = (ide.completion.as_mut().filter(|c| c.path == path), geom.caret) {
             let mut clicked = None;
-            egui::Area::new(egui::Id::new("ide-completion"))
+            let sel_id = egui::Id::new("ide-completion-last-sel");
+            let sel_changed = ctx.data(|d| d.get_temp::<usize>(sel_id)) != Some(pop.selected);
+            ctx.data_mut(|d| d.insert_temp(sel_id, pop.selected));
+            let resp = egui::Area::new(egui::Id::new("ide-completion"))
                 .order(egui::Order::Foreground)
+                .constrain(true)
                 .fixed_pos(caret.left_bottom() + vec2(-4.0, 2.0))
                 .show(ctx, |ui| {
                     // The chosen item's signature and documentation beside the list, when it has any.
@@ -484,7 +489,9 @@ impl App {
                                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                                 if selected {
                                     ui.painter().rect_filled(rect, CornerRadius::same(4), p.accent_soft);
-                                    ui.scroll_to_rect(rect, None);
+                                    if sel_changed {
+                                        ui.scroll_to_rect(rect, None);
+                                    }
                                 } else if resp.hovered() {
                                     ui.painter().rect_filled(rect, CornerRadius::same(4), p.hover);
                                 }
@@ -541,13 +548,19 @@ impl App {
                 pop.selected = row;
                 ide.accept_pending = true;
                 ctx.memory_mut(|m| m.request_focus(egui::Id::new(("editor-text", path.to_path_buf()))));
+            } else if !editor_focused && !ctx.input(|i| i.pointer.hover_pos().is_some_and(|pt| resp.response.rect.contains(pt))) {
+                ide.completion = None;
             }
         }
 
         // Signature help, above the caret.
+        if !editor_focused {
+            ide.signature = None;
+        }
         if let (Some(sig), Some(caret)) = (ide.signature.as_ref().filter(|s| s.path == path), geom.caret) {
             egui::Area::new(egui::Id::new("ide-signature"))
                 .order(egui::Order::Foreground)
+                .constrain(true)
                 .pivot(Align2::LEFT_BOTTOM)
                 .fixed_pos(caret.left_top() + vec2(-4.0, -4.0))
                 .show(ctx, |ui| {
@@ -607,6 +620,7 @@ impl App {
                 .shadow(egui::epaint::Shadow { offset: [0, 10], blur: 30, spread: 0, color: Color32::from_black_alpha(if dark { 110 } else { 36 }) });
             let r = egui::Area::new(egui::Id::new("ide-hover"))
                 .order(egui::Order::Tooltip)
+                .constrain(true)
                 .fixed_pos(at)
                 .show(ctx, |ui| {
                     card.show(ui, |ui| {
@@ -713,6 +727,7 @@ impl App {
             let mut close = false;
             egui::Area::new(egui::Id::new("ide-actions"))
                 .order(egui::Order::Foreground)
+                .constrain(true)
                 .fixed_pos(caret.left_bottom() + vec2(-4.0, 2.0))
                 .show(ctx, |ui| {
                     egui::Frame::menu(ui.style()).show(ui, |ui| {
@@ -765,6 +780,7 @@ impl App {
             let mut done = None;
             egui::Area::new(egui::Id::new("ide-rename-area"))
                 .order(egui::Order::Foreground)
+                .constrain(true)
                 .fixed_pos(caret.left_bottom() + vec2(-4.0, 2.0))
                 .show(ctx, |ui| {
                     frame.show(ui, |ui| {
@@ -947,7 +963,7 @@ impl App {
         let sw = kit::segmented_width(ui, &options).min((head.width() - 24.0).max(120.0));
         let seg = Rect::from_min_size(pos2(head.right() - 12.0 - sw, head.center().y - kit::SEGMENTED_H / 2.0), vec2(sw, kit::SEGMENTED_H));
         if let Some(i) = ui
-            .add_enabled_ui(has_file || show_project, |ui| {
+            .add_enabled_ui(has_file, |ui| {
                 kit::segmented_in(ui, seg, egui::Id::new("problems-scope"), &options, show_project as usize)
             })
             .inner

@@ -1442,11 +1442,30 @@ fn show_inner(
         }
     } else if input_enabled {
         // Releasing a mouse button while holding Shift (after pressing it in mouse mode) must
-        // clear the tracked button so it does not stay stuck once Shift is released.
-        if mouse_mode && view.reported_button.is_some() {
-            let released = ui.input(|i| i.events.iter().any(|e| matches!(e, Event::PointerButton { pressed: false, .. })));
-            if released {
+        // still send the Release event and clear the tracked button so the TUI app does not stay
+        // stuck thinking the button is held down.
+        if mouse_mode && let Some(b) = view.reported_button {
+            let release = ui.input(|i| {
+                i.events.iter().find_map(|e| match *e {
+                    Event::PointerButton { pos, button, pressed: false, modifiers } => {
+                        let released = match button {
+                            PointerButton::Primary => MouseButton::Left,
+                            PointerButton::Middle => MouseButton::Middle,
+                            PointerButton::Secondary => MouseButton::Right,
+                            _ => return None,
+                        };
+                        (released == b).then_some((pos, modifiers))
+                    }
+                    _ => None,
+                })
+            });
+            if let Some((pos, modifiers)) = release {
+                let (col, row, _) = at(pos);
                 view.reported_button = None;
+                view.last_report_cell = Some((col, row));
+                if let Some(bytes) = input::encode_mouse(b, MouseAction::Release, mods_of(modifiers), col, row, sgr) {
+                    out.input.extend(bytes);
+                }
             }
         }
         let press_origin = ui.input(|i| i.pointer.press_origin());

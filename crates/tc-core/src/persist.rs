@@ -31,7 +31,11 @@ pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
             // its folder is (a folder that is not there, a repository not cloned yet, is not
             // made: the write fails).
             Err(e) => {
-                let target = path.parent().unwrap_or(Path::new(".")).join(fs::read_link(path)?);
+                let target = path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."))
+                    .join(fs::read_link(path)?);
                 if !target.parent().is_some_and(Path::is_dir) {
                     return Err(e);
                 }
@@ -45,7 +49,10 @@ pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
     // A file that exists keeps its permissions; a new one is readable by the user only.
     #[cfg(unix)]
     let keep_mode = fs::metadata(path).ok().map(|m| m.permissions().mode() & 0o7777);
-    let dir = path.parent().unwrap_or(Path::new("."));
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     fs::create_dir_all(dir)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = dir.join(format!(

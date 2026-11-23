@@ -61,11 +61,14 @@ pub struct Web {
     pub host: String,
     /// `owner/repo` (on GitLab, groups may nest: `group/sub/repo`).
     pub repo: String,
+    /// True when the remote URL explicitly uses `http://` (self-hosted without TLS).
+    pub http: bool,
 }
 
 impl Web {
     pub fn url(&self) -> String {
-        format!("https://{}/{}", self.host, self.repo)
+        let scheme = if self.http { "http" } else { "https" };
+        format!("{scheme}://{}/{}", self.host, self.repo)
     }
 
     /// The repository as `gh -R` takes it: `owner/repo`, or `host/owner/repo` off github.com.
@@ -1177,7 +1180,8 @@ pub fn parse_remote_url(url: &str) -> Option<Web> {
         host.push(':');
         host.push_str(p);
     }
-    Some(Web { forge, host, repo })
+    let http = scheme_low.as_deref() == Some("http");
+    Some(Web { forge, host, repo, http })
 }
 
 /// A branch name made from a commit title: `Add a cart badge` → `add-a-cart-badge`.
@@ -1313,7 +1317,7 @@ mod tests {
 
     #[test]
     fn remote_addresses() {
-        let gh = |repo: &str| Some(Web { forge: Forge::GitHub, host: "github.com".into(), repo: repo.into() });
+        let gh = |repo: &str| Some(Web { forge: Forge::GitHub, host: "github.com".into(), repo: repo.into(), http: false });
         assert_eq!(parse_remote_url("git@github.com:acme/storefront.git"), gh("acme/storefront"));
         assert_eq!(parse_remote_url("https://github.com/acme/storefront"), gh("acme/storefront"));
         assert_eq!(parse_remote_url("https://github.com/acme/storefront.git/"), gh("acme/storefront"));
@@ -1326,12 +1330,15 @@ mod tests {
         assert!(push(Path::new("."), "origin", "--all", false, None).is_err());
         assert_eq!(
             parse_remote_url("git@gitlab.com:group/sub/app.git"),
-            Some(Web { forge: Forge::GitLab, host: "gitlab.com".into(), repo: "group/sub/app".into() })
+            Some(Web { forge: Forge::GitLab, host: "gitlab.com".into(), repo: "group/sub/app".into(), http: false })
         );
         assert_eq!(
             parse_remote_url("https://github.acme.io/team/app"),
-            Some(Web { forge: Forge::GitHub, host: "github.acme.io".into(), repo: "team/app".into() })
+            Some(Web { forge: Forge::GitHub, host: "github.acme.io".into(), repo: "team/app".into(), http: false })
         );
+        let plain_http = parse_remote_url("http://gitlab.local:8080/team/app.git").unwrap();
+        assert_eq!(plain_http, Web { forge: Forge::GitLab, host: "gitlab.local:8080".into(), repo: "team/app".into(), http: true });
+        assert_eq!(plain_http.url(), "http://gitlab.local:8080/team/app");
         for none in ["/srv/git/app.git", "C:\\repos\\app", "https://example.com/a/b", "git@github.com:onlyone", "file:///tmp/x.git", ""] {
             assert_eq!(parse_remote_url(none), None, "{none}");
         }

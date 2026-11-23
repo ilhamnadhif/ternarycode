@@ -117,7 +117,13 @@ mod linux {
         let stdin = RefCell::new(stdin);
         glib::unix_fd_add_local(0, glib::IOCondition::IN | glib::IOCondition::HUP | glib::IOCondition::ERR, move |_, _| {
             let mut buf = [0u8; 65536];
-            let n = stdin.borrow_mut().read(&mut buf).unwrap_or(0);
+            let n = match stdin.borrow_mut().read(&mut buf) {
+                Ok(n) => n,
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock) => {
+                    return glib::ControlFlow::Continue;
+                }
+                Err(_) => 0,
+            };
             if n == 0 {
                 // The app is gone.
                 gtk::main_quit();
@@ -548,9 +554,17 @@ mod linux {
     }
 
     fn new_window(id: u64, url: String, opener: &webkit2gtk::WebView) -> wry::NewWindowResponse {
-        // An agent's step a moment ago opened it: to its sites only (else the user is asked).
-        let agent = ACTING.with_borrow(|a| a.as_ref().filter(|a| a.at.elapsed() < std::time::Duration::from_secs(3)).map(|a| (a.page, agent_may_open(&url, &a.sites, a.pass.as_deref()))));
-        if let Some((_, false)) = agent {
+        // An agent's step a moment ago opened it on this page (or its pop-up): to its sites only
+        // (else the user is asked).
+        let agent = ACTING.with_borrow(|a| {
+            a.as_ref()
+                .filter(|a| {
+                    a.at.elapsed() < std::time::Duration::from_secs(3)
+                        && (a.page == id || POPUPS.with_borrow(|p| p.get(&a.page).is_some_and(|pop| pop.opener == id)))
+                })
+                .map(|a| agent_may_open(&url, &a.sites, a.pass.as_deref()))
+        });
+        if agent == Some(false) {
             ev(id, "blocked", json!({ "url": url }));
             return wry::NewWindowResponse::Deny;
         }

@@ -58,6 +58,9 @@ pub struct ProfileRuntime {
     pub tokens_out: u64,
     /// Multi-window usage, server-reported 5h / weekly quotas, plan tier, and sign-in status.
     pub usage: tc_agent::sessions::ProfileUsageReport,
+    /// Plan tier observed passively from a live CLI banner when the provider does not write its
+    /// tier to disk (e.g. Antigravity CLI `Google AI Pro` / `Google AI Ultra`).
+    pub live_plan_type: Option<String>,
     pub reset_at: Option<Instant>,
     pub reset_reason: Option<String>,
     pub last_error: Option<String>,
@@ -111,18 +114,29 @@ impl ProfileRuntime {
         (rem > 0).then_some(rem as u64)
     }
 
+    /// Best known plan tier badge (`usage.plan_type` from disk or `live_plan_type` from CLI banner).
+    pub fn effective_plan(&self) -> Option<&str> {
+        self.usage
+            .plan_type
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.live_plan_type.as_deref().filter(|s| !s.is_empty()))
+    }
+
     /// Whether this profile actually has a short (e.g. 5h) quota window to display.
     /// (Plans like ChatGPT Free only have a single 30d window and no 5h quota.)
     pub fn has_window_5h(&self, prof: &AgentProfile) -> bool {
         self.quota_5h_used_pct(prof).is_some()
-            || self.usage.window_5h.window_minutes.is_some()
+            || self.usage.window_5h.tokens.total() > 0
+            || self.usage.window_5h.turns > 0
             || self.usage.window_5h.resets_at_unix.is_some()
     }
 
     /// Whether this profile actually has a long (Weekly / 30d) quota window to display.
     pub fn has_window_weekly(&self, prof: &AgentProfile) -> bool {
         self.quota_weekly_used_pct(prof).is_some()
-            || self.usage.window_weekly.window_minutes.is_some()
+            || self.usage.window_weekly.tokens.total() > 0
+            || self.usage.window_weekly.turns > 0
             || self.usage.window_weekly.resets_at_unix.is_some()
     }
 
@@ -236,9 +250,16 @@ pub struct ProjectSessionItem {
     pub live_pane: Option<PaneId>,
 }
 
-/// Whether `agent` supports isolated multi-account profiles & failover.
-/// Only Claude Code (`CLAUDE_CONFIG_DIR`) and ChatGPT / Codex (`CODEX_HOME` + file-backed auth)
-/// support true per-profile OAuth isolation without colliding in the global OS Keychain.
+/// Whether `agent` has an account profile in Accounts & Usage (usage tracking, monitor popover,
+/// auth status, and failover participation).
+pub fn supports_profile(agent: AgentKind) -> bool {
+    matches!(agent, AgentKind::Claude | AgentKind::Codex | AgentKind::Antigravity)
+}
+
+/// Whether `agent` supports multiple isolated account profiles (separate sign-in folders).
+/// Claude Code (`CLAUDE_CONFIG_DIR`) and ChatGPT / Codex (`CODEX_HOME` + file-backed auth)
+/// support multi-account isolation; Antigravity CLI (`agy`) is strictly limited to 1 account
+/// profile per Google's policy.
 pub fn supports_multi_profile(agent: AgentKind) -> bool {
     matches!(agent, AgentKind::Claude | AgentKind::Codex)
 }
@@ -265,7 +286,48 @@ pub fn default_profiles() -> Vec<AgentProfile> {
             use_default_auth: true,
             ..Default::default()
         },
+        AgentProfile {
+            id: "agy1".into(),
+            name: "Antigravity".into(),
+            agent: AgentKind::Antigravity,
+            fallback_order: 3,
+            enabled: true,
+            use_default_auth: true,
+            ..Default::default()
+        },
     ]
+}
+
+/// Passively extracts Antigravity CLI's displayed plan tier from its terminal header
+/// (e.g. `user@gmail.com (Google AI Pro)` → `"AI Pro"`, `(Google AI Ultra)` → `"AI Ultra"`).
+pub fn detect_agy_plan(screen: &str) -> Option<String> {
+    for line in screen.lines() {
+        let t = line.trim();
+        let Some(open) = t.rfind('(') else { continue };
+        let Some(close) = t[open..].find(')') else { continue };
+        if !t[..open].contains('@') {
+            continue;
+        }
+        let inner = t[open + 1..open + close].trim();
+        let lower = inner.to_ascii_lowercase();
+        let label = if lower.contains("ai ultra") || lower == "ultra" {
+            Some("AI Ultra")
+        } else if lower.contains("ai pro") || lower.contains("ai premium") || lower == "pro" {
+            Some("AI Pro")
+        } else if lower.contains("enterprise") {
+            Some("Enterprise")
+        } else if lower.contains("code assist") {
+            Some("Code Assist")
+        } else if lower.contains("free") {
+            Some("Free")
+        } else {
+            None
+        };
+        if let Some(l) = label {
+            return Some(l.to_string());
+        }
+    }
+    None
 }
 
 pub fn has_custom_config_dir(profile: &AgentProfile) -> bool {
@@ -576,6 +638,7 @@ pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
         "error: 429",
         "too many requests",
         "quota exceeded",
+        "individual quota reached",
         "insufficient_quota",
         "resource_exhausted",
         "resource exhausted",
@@ -882,10 +945,17 @@ mod tests {
         assert_eq!(cenv.get("CODEX_HOME").map(PathBuf::from), Some(data.join("profiles").join("chatgpt2")));
         assert_eq!(cenv.get("OPENAI_API_KEY").map(String::as_str), Some("sk-openai"));
 
+        assert!(supports_profile(AgentKind::Claude));
+        assert!(supports_profile(AgentKind::Codex));
+        assert!(supports_profile(AgentKind::Antigravity));
+        assert!(!supports_profile(AgentKind::OpenCode));
         assert!(supports_multi_profile(AgentKind::Claude));
         assert!(supports_multi_profile(AgentKind::Codex));
         assert!(!supports_multi_profile(AgentKind::Antigravity));
         assert!(!supports_multi_profile(AgentKind::OpenCode));
+        assert_eq!(detect_agy_plan("m.user@gmail.com (Google AI Pro)\nGemini 4").as_deref(), Some("AI Pro"));
+        assert_eq!(detect_agy_plan("m.user@gmail.com (Google AI Ultra)").as_deref(), Some("AI Ultra"));
+        assert_eq!(detect_agy_plan("no email (Google AI Pro)"), None);
     }
 
     #[test]

@@ -523,6 +523,8 @@ pub struct App {
     /// Expandable top-bar Usage & Status telemetry popover.
     pub monitor_popover: bool,
     pub monitor_pill_rect: Option<egui::Rect>,
+    /// Syncs `settings.sidebar_width` into egui's left PanelState for one frame after Settings edits it.
+    pub sidebar_width_sync: bool,
     /// Running embedded Mobile Companion HTTP/SSE server (when Phone Pairing is enabled).
     pub companion: Option<crate::companion::CompanionHandle>,
     pub companion_last_push: Instant,
@@ -822,6 +824,7 @@ impl App {
             zen_mode: false,
             monitor_popover: false,
             monitor_pill_rect: None,
+            sidebar_width_sync: false,
             companion: None,
             companion_last_push: Instant::now(),
             profile_draft: None,
@@ -970,14 +973,10 @@ impl App {
         }
         // Not shown in the Focus view since the app started: nothing to measure against.
         let Some(full) = self.last_full_body else { return };
-        let (editor_stage, drawer_stage) = self.workspace_split(project, full);
-        let body = match drawer_stage {
-            Some(drawer) if editor_stage.is_some() || self.drawer_tab != tc_core::model::DrawerTab::Terminals => {
-                egui::Rect::from_min_max(egui::pos2(drawer.left(), drawer.top() + ui::focus::DRAWER_BAR_H + 2.0), drawer.max)
-            }
-            Some(drawer) => drawer,
-            None => full,
-        };
+        let (stage, _) = self.panel_split(project, full);
+        let Some(stage) = stage else { return };
+        let line_y = stage.top() + ui::focus::TAB_STRIP_H;
+        let body = egui::Rect::from_min_max(egui::pos2(stage.left() + 1.0, line_y + 1.0), egui::pos2(stage.right() - 1.0, stage.bottom() - 1.0));
         let cell = tc_term::widget::cell_size(ctx, self.settings.font_size);
         let Some(p) = self.project(project) else { return };
         let mut sizes = Vec::new();
@@ -1050,20 +1049,46 @@ impl App {
         self.top_order().iter().position(|p| *p == id)
     }
 
-    /// The projects (worktrees aside) in ⌘1–⌘9's order.
-    /// The projects (worktrees aside) in the sidebar's order, the one ⌘1–9 count in.
-    pub fn top_order(&self) -> Vec<ProjectId> {
-        self.projects.iter().filter(|p| !p.is_worktree() || p.parent.and_then(|x| self.project(x)).is_none()).map(|p| p.id).collect()
+    /// Whether a root project is currently listed under the sidebar's Active group.
+    pub fn is_sidebar_active(&self, id: ProjectId) -> bool {
+        match &self.sidebar_hold {
+            Some(held) => held.contains(&id),
+            None => self.sidebar_active_until.contains_key(&id),
+        }
     }
 
-    /// Moves a project one place up or down among the projects (its worktrees go with it).
+    /// The projects (worktrees aside) in the sidebar's order (Active first, then Idle), the one
+    /// ⌘1–9 count in. Falls back to `self.projects` order before the sidebar has drawn.
+    pub fn top_order(&self) -> Vec<ProjectId> {
+        let roots: Vec<ProjectId> = self
+            .projects
+            .iter()
+            .filter(|p| !p.is_worktree() || p.parent.and_then(|x| self.project(x)).is_none())
+            .map(|p| p.id)
+            .collect();
+        if !self.sidebar_order.is_empty() && self.sidebar_order.len() == roots.len() && self.sidebar_order.iter().all(|id| roots.contains(id)) {
+            return self.sidebar_order.clone();
+        }
+        roots
+    }
+
+    /// Moves a project one place up or down within its sidebar group (Active or Idle).
     pub fn move_project(&mut self, id: ProjectId, up: bool) {
-        let tops = self.top_order();
-        let Some(at) = tops.iter().position(|x| *x == id) else { return };
-        let other = if up { at.checked_sub(1) } else { (at + 1 < tops.len()).then_some(at + 1) };
-        let Some(other) = other.map(|k| tops[k]) else { return };
+        let in_active = self.is_sidebar_active(id);
+        let group: Vec<ProjectId> = self
+            .top_order()
+            .into_iter()
+            .filter(|pid| self.is_sidebar_active(*pid) == in_active)
+            .collect();
+        let Some(at) = group.iter().position(|x| *x == id) else { return };
+        let other = if up { at.checked_sub(1) } else { (at + 1 < group.len()).then_some(at + 1) };
+        let Some(other) = other.map(|k| group[k]) else { return };
         let (Some(a), Some(b)) = (self.projects.iter().position(|x| x.id == id), self.projects.iter().position(|x| x.id == other)) else { return };
         self.projects.swap(a, b);
+        self.sort_projects();
+        if let (Some(sa), Some(sb)) = (self.sidebar_order.iter().position(|x| *x == id), self.sidebar_order.iter().position(|x| *x == other)) {
+            self.sidebar_order.swap(sa, sb);
+        }
         self.mark_dirty();
     }
 
@@ -1129,7 +1154,7 @@ impl App {
                     pane.title = info.title.clone();
                     pane.preset = info.preset.clone();
                     pane.active_profile = info.profile.clone().filter(|id| {
-                        info.agent.is_none_or(crate::profiles::supports_multi_profile)
+                        info.agent.is_none_or(crate::profiles::supports_profile)
                             && valid_profiles
                                 .iter()
                                 .any(|p| p.id == *id && info.agent.is_none_or(|a| p.agent == a))
@@ -1460,17 +1485,8 @@ impl App {
         }
         match self.view {
             View::Focus => {
-                if self.zen_mode || self.drawer_tab != tc_core::model::DrawerTab::Terminals {
-                    return None;
-                }
                 let pid = self.active?;
-                let review_here = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
-                let history_here = self.history.as_ref().is_some_and(|h| h.project == pid);
-                let editor_on = review_here || history_here || self.editors.get(&pid).is_some_and(|e| e.visible);
-                if editor_on && !self.settings.drawer_open {
-                    return None;
-                }
-                if self.project(pid).is_some_and(|p| p.panel.open && p.panel.max) {
+                if !self.zen_mode && self.panel_expanded(pid) {
                     return None;
                 }
                 self.current_pane()
@@ -2103,7 +2119,10 @@ impl App {
             return;
         };
         self.active = Some(project);
-        // The editor is in the Focus view.
+        // The editor is in the Focus view's Files panel (clearing Changes/History/Zen so it shows).
+        self.exit_zen_mode();
+        self.review = None;
+        self.history = None;
         self.drawer_maximized = false;
         self.show_focus();
         self.ensure_editor_for_project(project, 0.0);
@@ -2602,7 +2621,7 @@ impl App {
         let proj_id = self.panes.get(&pane).map(|p| p.project);
         let profile = preset
             .agent
-            .filter(|a| crate::profiles::supports_multi_profile(*a))
+            .filter(|a| crate::profiles::supports_profile(*a))
             .and_then(|a| {
                 explicit_profile
                     .as_deref()
@@ -2728,7 +2747,7 @@ impl App {
             .or_else(|| presets.iter().find(|x| x.agent == Some(agent)))
             .cloned()
             .unwrap_or_else(|| self.preset_for_agent(agent));
-        let profile = if crate::profiles::supports_multi_profile(agent) {
+        let profile = if crate::profiles::supports_profile(agent) {
             pane_profile
                 .as_deref()
                 .and_then(|id| self.profile_by_id(id))
@@ -2845,7 +2864,11 @@ impl App {
 
     /// The editor shows a document and no terminal has the keyboard (⌘F then searches it).
     fn doc_has_keyboard(&self, ctx: &egui::Context) -> bool {
-        let Some(e) = self.active.and_then(|id| self.editors.get(&id)) else { return false };
+        let Some(pid) = self.active else { return false };
+        if self.zen_mode || self.panel_tab(pid) != Some(crate::ui::panel::PanelTab::Files) {
+            return false;
+        }
+        let Some(e) = self.editors.get(&pid) else { return false };
         if !e.visible || e.file().and_then(|f| f.doc.as_ref()).is_none() {
             return false;
         }
@@ -3054,7 +3077,9 @@ impl App {
                     .filter_map(|pid| self.panes.get(&pid).and_then(Pane::busy_with))
                     .map(|text| Busy { text, file: false })
                     .collect();
-                busy.extend(self.unsaved_files(Some(id)));
+                for pid in std::iter::once(id).chain(worktrees.iter().copied()) {
+                    busy.extend(self.unsaved_files(Some(pid)));
+                }
                 for w in &worktrees {
                     if let Some(name) = self.project(*w).map(|p| p.name.clone()) {
                         busy.push(Busy { text: tf("{} · worktree, its folder stays", &[&name]), file: false });
@@ -3437,6 +3462,9 @@ impl App {
                         self.grid_pick.clear();
                     }
                 }
+                if v != View::Focus {
+                    self.release_page_keyboard();
+                }
                 if v == View::Focus {
                     self.show_focus();
                 } else {
@@ -3455,18 +3483,21 @@ impl App {
                 self.monitor_popover = false;
                 self.attention_open = false;
                 self.palette = None;
+                self.release_page_keyboard();
                 self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::General));
             }
             Action::Integrations => {
                 self.monitor_popover = false;
                 self.attention_open = false;
                 self.palette = None;
+                self.release_page_keyboard();
                 self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::Integrations));
             }
             Action::About => {
                 self.monitor_popover = false;
                 self.attention_open = false;
                 self.palette = None;
+                self.release_page_keyboard();
                 self.dialog = Some(Dialog::Settings(ui::settings::SettingsPage::About));
             }
             Action::PlanInstall(agent) => {
@@ -3653,23 +3684,21 @@ impl App {
                 self.switch_panel(crate::ui::panel::PanelTab::Files, true);
             }
             Action::ToggleFiles => {
-                // The Files column of the Code Editor: shown with the editor when it was closed,
-                // else shown or hidden. A right-docked editor too narrow for it is widened.
-                self.drawer_maximized = false;
-                let pid = self.active.unwrap_or_default();
-                let drawer_shown = self.editors.get(&pid).is_some_and(|e| e.visible);
+                // The Files tree column inside the Files panel: opens Files when closed, else
+                // shows or hides the tree (widening the panel first if it's too narrow to show it).
+                self.exit_zen_mode();
+                let Some(pid) = self.active else { return };
+                let files_open = self.panel_tab(pid) == Some(crate::ui::panel::PanelTab::Files);
                 let full_rect = self.last_full_body.unwrap_or(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0)));
-                let editor_w = self.workspace_split(pid, full_rect).0.map_or(full_rect.width(), |r| r.width());
-                if !drawer_shown {
-                    if let Some(e) = self.editor_mut() {
-                        e.visible = true;
-                    }
+                let panel_w = self.panel_split(pid, full_rect).1.map_or(full_rect.width(), |(r, _)| r.width());
+                if !files_open {
+                    self.switch_panel(crate::ui::panel::PanelTab::Files, false);
                     self.settings.files_hidden = false;
                 } else if self.settings.files_hidden {
                     self.settings.files_hidden = false;
-                } else if editor_w < crate::ui::editor_ui::FILES_MIN_DRAWER {
-                    if let Some(e) = self.editor_mut() {
-                        e.width = ((crate::ui::editor_ui::FILES_MIN_DRAWER + 40.0) / full_rect.width().max(1.0)).clamp(0.45, 0.85);
+                } else if panel_w < crate::ui::editor_ui::FILES_MIN_DRAWER {
+                    if let Some(panel) = self.panel_mut(pid) {
+                        panel.width = ((crate::ui::editor_ui::FILES_MIN_DRAWER + 40.0) / full_rect.width().max(1.0)).clamp(0.25, 0.75);
                     }
                 } else {
                     self.settings.files_hidden = true;
@@ -4054,7 +4083,7 @@ impl App {
                 let should_live_switch = self.panes.get(&pane).is_some_and(|p| {
                     let is_limited = p.rate_limit.as_ref().is_some_and(|b| b.auto_switched_to.is_none());
                     let is_running_agent = p.alive()
-                        && p.tracker.agent.is_some_and(crate::profiles::supports_multi_profile)
+                        && p.tracker.agent.is_some_and(crate::profiles::supports_profile)
                         && !matches!(p.tracker.fg, tc_core::status::Foreground::Shell | tc_core::status::Foreground::Gone);
                     is_limited || is_running_agent
                 });
@@ -4149,6 +4178,7 @@ impl App {
         self.attention_open = false;
         self.monitor_popover = false;
         self.dialog = None;
+        self.release_page_keyboard();
         if mode == PaletteMode::Files && self.active.is_none() {
             return;
         }

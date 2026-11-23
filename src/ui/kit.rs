@@ -1127,16 +1127,16 @@ pub fn paint_lattice(painter: &egui::Painter, center: egui::Pos2, size: f32, col
     }
 }
 
-/// A project's identity tile (the Project avatar): its letter in its hue, on the hue's tint,
+/// A project's identity tile (the Project avatar): a folder icon in its hue, on the hue's tint,
 /// `rect` square (16 to 32): 20 → radius 5, 16 → 4.
-pub fn paint_project_tile(painter: &egui::Painter, rect: Rect, letters: &str, color: Color32, dark: bool) {
+pub fn paint_project_tile(painter: &egui::Painter, rect: Rect, _letters: &str, color: Color32, dark: bool) {
     let side = rect.width();
     let radius = if side >= 30.0 { 8 } else if side >= 24.0 { 6 } else if side >= 19.0 { 5 } else { 4 };
     let ink = crate::project::hue_for_theme(color, dark);
-    let fill = style::soft(ink, if dark { 0.14 } else { 0.10 });
+    let fill = style::soft(ink, if dark { 0.15 } else { 0.11 });
     painter.rect_filled(rect, CornerRadius::same(radius), fill);
-    let font = if side >= 30.0 { 13.0 } else if side >= 24.0 { 12.0 } else if side >= 19.0 { 11.0 } else { 10.0 };
-    painter.text(rect.center() + vec2(0.0, 0.5), Align2::CENTER_CENTER, letters, style::mono_semibold(font), ink);
+    let icon_size = if side >= 30.0 { 16.5 } else if side >= 24.0 { 13.5 } else if side >= 19.0 { 12.5 } else { 10.5 };
+    painter.text(rect.center(), Align2::CENTER_CENTER, super::icons::FOLDER, style::icon_font(icon_size), ink);
 }
 
 /// A chip in the top bar (branch, changes, server): an icon, text, a hover fill. `mono` sets
@@ -1609,6 +1609,9 @@ pub struct NoticeOut {
 pub const NOTICE_H: f32 = 48.0;
 pub const NOTICE_H_SHORT: f32 = 36.0;
 
+/// Minimum text width preserved before a Notice drops its secondary button.
+pub const NOTICE_MIN_TEXT: f32 = 96.0;
+
 /// The Notice: a glyph, a title, an optional mono second line, then up to two buttons (Secondary,
 /// then Primary with its key) and a dismiss ×, on the tone's tint, `width` wide. Buttons that
 /// don't fit drop out from the left (the primary stays).
@@ -1654,10 +1657,10 @@ pub fn notice(
         out.dismissed = r.clicked();
         right -= 24.0 + 6.0;
     }
-    let min_text = 160.0;
+    let min_text = NOTICE_MIN_TEXT;
     if let Some((label, keys)) = primary {
         let w = button_width(&child, None, label, keys, true);
-        if right - w - (rect.left() + 40.0) > min_text * 0.6 {
+        if right - w - (rect.left() + 40.0) > min_text * 0.75 {
             out.primary = button_keys(&mut child, Kind::Primary, None, label, keys, true).clicked();
             right -= w + 6.0;
         }
@@ -1782,7 +1785,7 @@ pub fn notice_ex(ui: &mut Ui, width: f32, tone: Tone, glyph: Option<&str>, title
     let mut clicked = None;
     for (i, b) in buttons.iter().enumerate().rev() {
         let w = button_width(&child, None, b.label, b.keys, true);
-        let need = if i + 1 == buttons.len() { 100.0 } else { 160.0 };
+        let need = if i + 1 == buttons.len() { 72.0 } else { NOTICE_MIN_TEXT };
         if right - w - (rect.left() + 40.0) < need {
             break;
         }

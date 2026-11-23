@@ -8,7 +8,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -42,7 +42,8 @@ pub struct Client {
     out: mpsc::UnboundedSender<Vec<u8>>,
     next_id: AtomicI64,
     pid: Option<u32>,
-    kill: Mutex<Option<oneshot::Sender<()>>>,
+    kill: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    shutdown_started: AtomicBool,
     shutting: Arc<Mutex<Option<Shutting>>>,
     rt: Handle,
 }
@@ -163,7 +164,8 @@ impl Client {
             out,
             next_id: AtomicI64::new(1),
             pid,
-            kill: Mutex::new(Some(kill_tx)),
+            kill: Arc::new(Mutex::new(Some(kill_tx))),
+            shutdown_started: AtomicBool::new(false),
             shutting,
             rt: rt.clone(),
         })
@@ -197,7 +199,12 @@ impl Client {
     /// wants) and kills it if it is still there a little later. Returns at once: the waiting is
     /// done on the runtime. Only the first call (or none after `kill`) does anything.
     pub fn shutdown(&self) {
-        let Some(kill) = self.kill.lock().take() else { return };
+        if self.shutdown_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if self.kill.lock().is_none() {
+            return;
+        }
         let (answered, answer) = oneshot::channel();
         {
             // Held while sending, so that a quick answer finds who waits for it.
@@ -206,6 +213,7 @@ impl Client {
             *shutting = Some((id, answered));
         }
         let out = self.out.clone();
+        let kill = self.kill.clone();
         self.rt.spawn(async move {
             // A server that does not answer (or is gone) gets `exit` anyway.
             let _ = tokio::time::timeout(SHUTDOWN_ANSWER, answer).await;
@@ -213,7 +221,9 @@ impl Client {
             // Not kept: the server's stdin closes as soon as the client is dropped.
             drop(out);
             tokio::time::sleep(Duration::from_secs(3)).await;
-            let _ = kill.send(());
+            if let Some(kill) = kill.lock().take() {
+                let _ = kill.send(());
+            }
         });
     }
 

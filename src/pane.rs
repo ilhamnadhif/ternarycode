@@ -469,6 +469,7 @@ impl Pane {
             size,
             cell_px: (ws.cell_width, ws.cell_height),
         };
+        let was_dormant = self.dormant();
         self.exit = None;
         self.closing = false;
         self.started = Instant::now();
@@ -482,7 +483,11 @@ impl Pane {
         self.progress = None;
         self.servers.clear();
         self.servers_probe_at = None;
-        self.active_profile = None;
+        if !was_dormant {
+            self.active_profile = None;
+            self.task = None;
+            self.last_words = None;
+        }
         self.rate_limit = None;
         self.last_limit_sig = None;
         self.limit_ignore_until = None;
@@ -877,6 +882,8 @@ impl Pane {
                 self.rate_limit = None;
                 self.last_limit_sig = None;
                 self.limit_ignore_until = None;
+                self.task = None;
+                self.last_words = None;
                 let code = match info {
                     _ if self.closing => Some(0),
                     ExitInfo::Code(c) => Some(c),
@@ -1048,14 +1055,20 @@ impl Pane {
             self.progress = None;
             self.servers.clear();
         }
-        if fg == Foreground::Shell && self.tracker.agent.is_some() && self.pending_command.is_none() {
-            // The agent was quit (and no failover relaunch is queued): clear agent & profile state.
+        if fg == Foreground::Shell
+            && self.tracker.agent.is_some()
+            && self.pending_command.is_none()
+            && self.limit_ignore_until.is_none_or(|u| now >= u)
+        {
+            // The agent was quit (and no failover relaunch is in flight): clear agent & profile state.
             self.last_agent = None;
             self.preset = None;
             self.agent_session = None;
             self.active_profile = None;
             self.rate_limit = None;
             self.last_limit_sig = None;
+            self.task = None;
+            self.last_words = None;
         }
         self.tracker.apply(Event::Foreground(fg), now)
     }

@@ -82,21 +82,35 @@ pub fn log(
     let out = run(&mut cmd)?;
     let mut commits = parse_log_nul(&String::from_utf8_lossy(&out), &unpushed);
 
-    // If `--grep` returned nothing on page 1, also search by author name/email.
-    if commits.is_empty() && exact_sha.is_none() && skip == 0 && let Some(q) = q {
-        let mut acmd = git(root);
-        acmd.args([
-            "log",
-            "-z",
-            &format!("--max-count={fetch_n}"),
-            FMT,
-            "--fixed-strings",
-            "--regexp-ignore-case",
-            &format!("--author={q}"),
-            "--",
-        ]);
-        if let Ok(aout) = run(&mut acmd) {
-            commits = parse_log_nul(&String::from_utf8_lossy(&aout), &unpushed);
+    // If `--grep` returned nothing across the whole history, also search by author name/email.
+    if commits.is_empty() && exact_sha.is_none() && let Some(q) = q {
+        let grep_has_any = skip > 0
+            && run(git(root).args([
+                "log",
+                "-1",
+                "--format=%H",
+                "--fixed-strings",
+                "--regexp-ignore-case",
+                &format!("--grep={q}"),
+                "--",
+            ]))
+            .is_ok_and(|o| !o.is_empty());
+        if !grep_has_any {
+            let mut acmd = git(root);
+            acmd.args([
+                "log",
+                "-z",
+                &format!("--max-count={fetch_n}"),
+                &format!("--skip={skip}"),
+                FMT,
+                "--fixed-strings",
+                "--regexp-ignore-case",
+                &format!("--author={q}"),
+                "--",
+            ]);
+            if let Ok(aout) = run(&mut acmd) {
+                commits = parse_log_nul(&String::from_utf8_lossy(&aout), &unpushed);
+            }
         }
     }
 
@@ -112,16 +126,8 @@ pub fn log(
 
 /// Resolves the branch's configured remote (or `origin` / first remote) when caller passes `None`.
 fn resolve_remote(root: &Path, remote: Option<&str>) -> Option<String> {
-    if let Some(r) = remote.filter(|r| !r.is_empty() && !r.starts_with('-')) {
+    if let Some(r) = remote.filter(|r| !r.is_empty() && !r.starts_with('-') && *r != ".") {
         return Some(r.to_string());
-    }
-    if let Some(b) = super::worktree::current_branch(root)
-        && let Ok(out) = run(git(root).args(["config", "--get", &format!("branch.{b}.remote")]))
-    {
-        let s = String::from_utf8_lossy(&out).trim().to_string();
-        if !s.is_empty() && !s.starts_with('-') {
-            return Some(s);
-        }
     }
     let out = run(git(root).args(["remote"])).ok()?;
     let names: Vec<String> = String::from_utf8_lossy(&out)
@@ -130,6 +136,17 @@ fn resolve_remote(root: &Path, remote: Option<&str>) -> Option<String> {
         .filter(|l| !l.is_empty() && !l.starts_with('-'))
         .map(String::from)
         .collect();
+    if names.is_empty() {
+        return None;
+    }
+    if let Some(b) = super::worktree::current_branch(root)
+        && let Ok(out) = run(git(root).args(["config", "--get", &format!("branch.{b}.remote")]))
+    {
+        let s = String::from_utf8_lossy(&out).trim().to_string();
+        if names.iter().any(|n| n == &s) {
+            return Some(s);
+        }
+    }
     if names.iter().any(|n| n == "origin") {
         Some("origin".into())
     } else {

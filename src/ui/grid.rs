@@ -27,8 +27,8 @@ const TILE_HEADER: f32 = 40.0;
 /// 8 from the tile's sides and bottom.
 const TILE_FOOT_H: f32 = kit::NOTICE_H;
 const FOOT_PAD: f32 = 8.0;
-/// A tile's terminal text against the Focus view's: the data font (11 at the default 13).
-pub const TILE_FONT: f32 = 11.0 / 13.0;
+/// A tile's terminal text matches the Focus view's font size (1:1).
+pub const TILE_FONT: f32 = 1.0;
 const GAP: f32 = style::GAP;
 /// The Grid's scroll bar, and the room between it and the tiles.
 const SCROLL_BAR: f32 = 8.0;
@@ -625,7 +625,7 @@ impl App {
             }
         }
         let left_limit = right - 6.0;
-        let left = painter.with_clip_rect(Rect::from_min_max(header.min, pos2(left_limit, header.max.y)));
+        let left = painter.with_clip_rect(Rect::from_min_max(header.min, pos2(left_limit, header.max.y)).intersect(painter.clip_rect()));
         // Left: the project's tile and name, its branch and what changed, then its tabs.
         let mut x = header.left() + 12.0;
         let tile = Rect::from_min_size(pos2(x, cy - 10.0), vec2(20.0, 20.0));
@@ -1308,12 +1308,10 @@ impl App {
         let (message, label, status) = said.unwrap_or((None, String::new(), Status::Idle));
         let who = pane.and_then(|id| self.panes.get(&id)).and_then(|x| x.tracker.agent.or(x.last_agent)).map_or_else(|| label.clone(), |a| a.label().to_string());
         // What it says: tone, title, second line, the main button (and its key), the other one.
-        let mut approvable = false;
         let (tone, title, body, primary, secondary) = match kind {
             Foot::Wait => {
                 use super::focus::Ask;
                 let ask = super::focus::ask_of(message.as_deref());
-                approvable = !matches!(ask, Ask::Question(_));
                 let (title, body) = match ask {
                     Ask::Permission { tool, target } if tool == "Bash" => (tf("{} wants to run a command", &[&who]), Some(format!("Bash · {target}"))),
                     Ask::Permission { tool, target } => (tf("{} wants to use {}", &[&who, &tool]), Some(format!("{tool} · {target}"))),
@@ -1321,11 +1319,8 @@ impl App {
                     Ask::Question(q) => (tf("{} has a question", &[&who]), Some(q)),
                     Ask::Confirm(said) => (tf("{} needs your confirmation", &[&who]), said),
                 };
-                if approvable {
-                    (kit::Tone::Input, title, body, (t("Approve"), Some("↵")), Some(t("Open")))
-                } else {
-                    (kit::Tone::Input, title, body, (t("Open"), None), None)
-                }
+                // Open the pane so the user answers directly inside the agent's own UI.
+                (kit::Tone::Input, title, body, (t("Open"), None), None)
             }
             Foot::Done => {
                 let title = if status == Status::CommandDone { tf("{} finished", &[&label]) } else { tf("{} finished its turn", &[&who]) };
@@ -1375,18 +1370,6 @@ impl App {
             }
         }
         match kind {
-            Foot::Wait if approvable => {
-                // As in its pane: Enter answers yes.
-                if out.primary
-                    && let Some(x) = pane.and_then(|id| self.panes.get_mut(&id))
-                {
-                    x.entered(Instant::now());
-                    x.input(b"\r".to_vec());
-                }
-                if out.secondary {
-                    self.actions.push(open.clone());
-                }
-            }
             Foot::Wait | Foot::Fail => {
                 if out.primary {
                     self.actions.push(open.clone());

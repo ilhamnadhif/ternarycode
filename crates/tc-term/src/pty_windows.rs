@@ -777,7 +777,10 @@ pub fn start(
                 }
                 _ = close_timer => {
                     close_at = None;
-                    pty.close_console();
+                    // Close off the session task so `chunks.recv()` keeps draining the output
+                    // pipe while `ClosePseudoConsole` waits for the reader to finish.
+                    let pty_close = pty.clone();
+                    tokio::task::spawn_blocking(move || pty_close.close_console());
                 }
             }
         }

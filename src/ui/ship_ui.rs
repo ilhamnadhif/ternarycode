@@ -307,8 +307,8 @@ impl App {
                                 // ↵ takes the way on (the primary) when nothing has the keyboard.
                                 if let Some((_, kit::Kind::Primary, Some("↵"), ask)) = n.buttons.last()
                                     && ui.memory(|m| m.focused().is_none())
-                                    && self.dialog.is_none()
-                                    && self.palette.is_none()
+                                    && !self.overlay_open()
+                                    && !self.updater.dialog_open
                                     && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
                                 {
                                     asks.push(ask.clone());
@@ -564,8 +564,8 @@ impl App {
                                     if run.failed().is_none()
                                         && let Some(pr) = &run.pr
                                         && ui.memory(|m| m.focused().is_none())
-                                        && self.dialog.is_none()
-                                        && self.palette.is_none()
+                                        && !self.overlay_open()
+                                        && !self.updater.dialog_open
                                         && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
                                     {
                                         asks.push(Ask::OpenPr(pr.url.clone()));

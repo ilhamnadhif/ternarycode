@@ -115,11 +115,13 @@ pub(super) fn short_countdown(secs: u64) -> String {
     }
 }
 
-/// One usage window as a meter: its label, a bar, the share used, the tokens and the reset.
+/// One usage window as a meter: its label, a bar (when a quota % is known), the share used,
+/// real tokens/turns and the reset countdown.
 pub(super) struct Meter {
     pub label: String,
     pub pct: Option<f32>,
     pub tokens: Option<String>,
+    pub turns: u32,
     pub reset: Option<String>,
 }
 
@@ -134,9 +136,9 @@ fn meter_color(pct: f32, amber: bool, p: &style::Palette) -> Color32 {
     }
 }
 
-/// Paints a meter with its left edge at `left_center`: the label (24), the bar (`bar_w` ×
-/// `bar_h`), the share (`pct_w`, 0: as wide as it is), the tokens (60) and the reset. Returns its
-/// width.
+/// Paints a meter with its left edge at `left_center`: when a quota percentage is known, draws
+/// label + bar + `%` + optional tokens + reset; when only real token/turn usage is known (e.g.
+/// Antigravity CLI), draws label + tokens/turns + reset without a misleading empty bar.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_meter(painter: &egui::Painter, left_center: egui::Pos2, m: &Meter, bar_w: f32, bar_h: f32, pct_w: f32, amber: bool, p: &style::Palette) -> f32 {
     let font = style::mono(style::DATA);
@@ -145,26 +147,36 @@ pub(super) fn paint_meter(painter: &egui::Painter, left_center: egui::Pos2, m: &
     let g = painter.layout_no_wrap(m.label.clone(), font.clone(), p.text_faint);
     painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
     x += 24.0 + 8.0;
-    let bar = Rect::from_min_size(pos2(x, cy - bar_h / 2.0), vec2(bar_w, bar_h));
-    let r = CornerRadius::same((bar_h / 2.0).ceil() as u8);
-    painter.rect_filled(bar, r, p.subtle);
     if let Some(pct) = m.pct {
+        let bar = Rect::from_min_size(pos2(x, cy - bar_h / 2.0), vec2(bar_w, bar_h));
+        let r = CornerRadius::same((bar_h / 2.0).ceil() as u8);
+        painter.rect_filled(bar, r, p.subtle);
         let f = (pct / 100.0).clamp(0.0, 1.0);
         if f > 0.0 {
             painter.rect_filled(Rect::from_min_size(bar.min, vec2((bar_w * f).max(bar_h), bar_h)), r, meter_color(pct, amber, p));
         }
-    }
-    x += bar_w + 8.0;
-    let pct_text = m.pct.map_or("—".to_string(), |v| format!("{v:.0}%"));
-    let g = painter.layout_no_wrap(pct_text, font.clone(), p.text_muted);
-    let gw = g.size().x;
-    painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_muted);
-    x += if pct_w > 0.0 { pct_w.max(gw) } else { gw } + 8.0;
-    if let Some(tok) = &m.tokens {
-        let g = painter.layout_no_wrap(tok.clone(), font.clone(), p.text_faint);
+        x += bar_w + 8.0;
+        let g = painter.layout_no_wrap(format!("{pct:.0}%"), font.clone(), p.text_muted);
         let gw = g.size().x;
-        painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
-        x += gw.max(60.0) + 8.0;
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_muted);
+        x += if pct_w > 0.0 { pct_w.max(gw) } else { gw } + 8.0;
+        if let Some(tok) = &m.tokens {
+            let g = painter.layout_no_wrap(tok.clone(), font.clone(), p.text_faint);
+            let gw = g.size().x;
+            painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
+            x += gw.max(60.0) + 8.0;
+        }
+    } else {
+        let summary = match (&m.tokens, m.turns) {
+            (Some(tok), n) if n > 0 => format!("{tok} · {}", tf("{} turns", &[&n.to_string()])),
+            (Some(tok), _) => tok.clone(),
+            (None, n) if n > 0 => tf("{} turns", &[&n.to_string()]),
+            (None, _) => "—".to_string(),
+        };
+        let g = painter.layout_no_wrap(summary, font.clone(), p.text_muted);
+        let gw = g.size().x;
+        painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_muted);
+        x += gw + 10.0;
     }
     if let Some(reset) = &m.reset {
         painter.text(pos2(x + 5.5, cy), Align2::CENTER_CENTER, icons::ARROW_COUNTER_CLOCKWISE, style::icon_font(11.0), p.text_faint);
@@ -174,7 +186,7 @@ pub(super) fn paint_meter(painter: &egui::Painter, left_center: egui::Pos2, m: &
         painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text_faint);
         x += gw;
     } else {
-        x -= 8.0;
+        x -= if m.pct.is_some() { 8.0 } else { 10.0 };
     }
     x - left_center.x
 }
@@ -183,13 +195,24 @@ pub(super) fn paint_meter(painter: &egui::Painter, left_center: egui::Pos2, m: &
 fn meter_rest(painter: &egui::Painter, m: &Meter, pct_w: f32) -> f32 {
     let font = style::mono(style::DATA);
     let w = |s: &str| painter.layout_no_wrap(s.to_string(), font.clone(), Color32::PLACEHOLDER).size().x;
-    let pct = w(&m.pct.map_or("—".to_string(), |v| format!("{v:.0}%")));
-    let mut x = 24.0 + 8.0 + 8.0 + if pct_w > 0.0 { pct_w.max(pct) } else { pct };
-    if let Some(tok) = &m.tokens {
-        x += 8.0 + w(tok).max(60.0);
+    let mut x = 24.0 + 8.0;
+    if let Some(pct) = m.pct {
+        let pw = w(&format!("{pct:.0}%"));
+        x += 8.0 + if pct_w > 0.0 { pct_w.max(pw) } else { pw };
+        if let Some(tok) = &m.tokens {
+            x += 8.0 + w(tok).max(60.0);
+        }
+    } else {
+        let summary = match (&m.tokens, m.turns) {
+            (Some(tok), n) if n > 0 => format!("{tok} · {}", tf("{} turns", &[&n.to_string()])),
+            (Some(tok), _) => tok.clone(),
+            (None, n) if n > 0 => tf("{} turns", &[&n.to_string()]),
+            (None, _) => "—".to_string(),
+        };
+        x += w(&summary);
     }
     if let Some(reset) = &m.reset {
-        x += 8.0 + 11.0 + 4.0 + w(reset);
+        x += (if m.pct.is_some() { 8.0 } else { 10.0 }) + 11.0 + 4.0 + w(reset);
     }
     x
 }
@@ -198,21 +221,25 @@ fn meter_rest(painter: &egui::Painter, m: &Meter, pct_w: f32) -> f32 {
 pub(super) fn profile_meters(prof: &AgentProfile, rt: &profiles::ProfileRuntime, now_unix: i64, now: Instant, with_tokens: bool) -> Vec<Meter> {
     let mut out = Vec::new();
     if rt.has_window_5h(prof) {
+        let pct = rt.quota_5h_used_pct(prof);
         let tok = rt.usage.window_5h.tokens.total();
         out.push(Meter {
             label: rt.window_5h_label(),
-            pct: rt.quota_5h_used_pct(prof),
-            tokens: (with_tokens && tok > 0).then(|| tf("{} tok", &[&profiles::format_tokens(tok)])),
+            pct,
+            tokens: ((with_tokens || pct.is_none()) && tok > 0).then(|| tf("{} tok", &[&profiles::format_tokens(tok)])),
+            turns: rt.usage.window_5h.turns,
             reset: rt.window_5h_reset_secs(now_unix, now).map(short_countdown),
         });
     }
     if rt.has_window_weekly(prof) {
+        let pct = rt.quota_weekly_used_pct(prof);
         let tok = rt.usage.window_weekly.tokens.total();
         let label = if rt.window_weekly_label() == "Weekly" { "Wk".to_string() } else { rt.window_weekly_label() };
         out.push(Meter {
             label,
-            pct: rt.quota_weekly_used_pct(prof),
-            tokens: (with_tokens && tok > 0).then(|| tf("{} tok", &[&profiles::format_tokens(tok)])),
+            pct,
+            tokens: ((with_tokens || pct.is_none()) && tok > 0).then(|| tf("{} tok", &[&profiles::format_tokens(tok)])),
+            turns: rt.usage.window_weekly.turns,
             reset: rt.window_weekly_reset_secs(now_unix).map(short_countdown),
         });
     }
@@ -330,9 +357,10 @@ impl App {
             for (i, (label, value, c)) in cells.iter().enumerate() {
                 let x = r.left() + i as f32 * (cell_w + 12.0);
                 let lg = galley(ui, label, FontId::proportional(style::SMALL), p.text_faint, None, 16.0);
-                ui.painter().with_clip_rect(Rect::from_min_size(pos2(x, r.top()), vec2(cell_w, r.height()))).galley(pos2(x, r.top()), lg, p.text_faint);
+                let cell_clip = Rect::from_min_size(pos2(x, r.top()), vec2(cell_w, r.height())).intersect(ui.clip_rect());
+                ui.painter().with_clip_rect(cell_clip).galley(pos2(x, r.top()), lg, p.text_faint);
                 let vg = galley(ui, value, style::semibold(style::TITLE), *c, None, 24.0);
-                ui.painter().galley(pos2(x, r.top() + 20.0), vg, *c);
+                ui.painter().with_clip_rect(cell_clip).galley(pos2(x, r.top() + 20.0), vg, *c);
             }
         });
     }
@@ -489,9 +517,13 @@ impl App {
                     ui.interact(id_rect, egui::Id::new(("profile-id", &prof.id)), Sense::hover()).on_hover_text(tf("Sign-in folder: {}", &[&dir]));
                     x = id_rect.right() + 10.0;
                     let pill_w = profile_pill_width(ui.painter(), rt.state, prof.enabled, &p);
-                    let plan = rt.usage.plan_type.clone().filter(|s| !s.is_empty());
+                    let plan = rt.effective_plan().map(str::to_string);
                     let plan_w = plan.as_ref().map_or(0.0, |s| ui.painter().layout_no_wrap(s.to_uppercase(), style::mono(style::DATA), p.accent_text).size().x + 12.0 + 10.0);
-                    let hint = prof.account_hint.clone().unwrap_or_else(|| prof.name.clone());
+                    let hint = prof
+                        .account_hint
+                        .clone()
+                        .or_else(|| rt.usage.account_email.clone())
+                        .unwrap_or_else(|| prof.name.clone());
                     let hint_room = right - x - plan_w - pill_w - 10.0;
                     if hint_room > 24.0 && !hint.is_empty() {
                         let mut job = egui::text::LayoutJob::simple_singleline(hint, FontId::proportional(style::SMALL), p.text_faint);
@@ -548,7 +580,8 @@ impl App {
                     } else {
                         let (r2, _) = ui.allocate_exact_size(vec2(w, 14.0), Sense::hover());
                         let rest: f32 = meters.iter().map(|m| meter_rest(ui.painter(), m, 36.0)).sum::<f32>() + 24.0 * (meters.len() - 1) as f32;
-                        let bar_w = ((room - rest) / meters.len() as f32).clamp(40.0, 120.0);
+                        let bars = meters.iter().filter(|m| m.pct.is_some()).count().max(1);
+                        let bar_w = ((room - rest) / bars as f32).clamp(40.0, 120.0);
                         let mut x = r2.left() + indent;
                         let painter = ui.painter().with_clip_rect(r2.intersect(ui.clip_rect()));
                         for m in &meters {
@@ -749,6 +782,13 @@ impl App {
         let sanitized_id = profiles::sanitize_id(draft.id.trim());
         let id_empty = draft.id.trim().is_empty();
         let id_dup = !id_empty && existing.iter().any(|x| x.id == sanitized_id && draft.editing_id.as_deref() != Some(x.id.as_str()));
+        let agy_exists = existing.iter().any(|x| x.agent == AgentKind::Antigravity && draft.editing_id.as_deref() != Some(x.id.as_str()));
+        let agy_dup = draft.agent == AgentKind::Antigravity && agy_exists;
+        let single_account = !profiles::supports_multi_profile(draft.agent);
+        if single_account {
+            draft.use_default_auth = true;
+            draft.config_dir.clear();
+        }
         let title = match &draft.editing_id {
             Some(id) => tf("Edit {}", &[id]),
             None => t("New account").to_string(),
@@ -756,14 +796,18 @@ impl App {
         gap(ui);
         group_head(ui, &title, None);
         let resp = card(ui, "", |c| {
-            c.row(t("Agent"), t("Which agent signs in with this account."), |ui| {
-                let providers = [(AgentKind::Claude, "Claude Code"), (AgentKind::Codex, "Codex")];
+            let agent_picker = |ui: &mut Ui, draft: &mut ProfileDraft| {
+                let providers = [
+                    (AgentKind::Claude, "Claude Code"),
+                    (AgentKind::Codex, "Codex"),
+                    (AgentKind::Antigravity, "Antigravity CLI"),
+                ];
                 let names: Vec<&str> = providers.iter().map(|(_, n)| *n).collect();
                 let cur = providers.iter().find(|(k, _)| *k == draft.agent).map_or("Claude Code", |(_, n)| *n);
                 if let Some(i) = kit::select(ui, "prof-agent", cur, &names, 165.0) {
                     let new_agent = providers[i].0;
                     if new_agent != draft.agent {
-                        // A new account's suggested id and name follow the agent (claude2 → chatgpt2).
+                        // A new account's suggested id and name follow the agent (claude2 → chatgpt2 → agy1).
                         if draft.editing_id.is_none() {
                             let (old_id, old_name) = ProfileDraft::suggest_id_and_name(draft.agent, &existing);
                             let (nid, nname) = ProfileDraft::suggest_id_and_name(new_agent, &existing);
@@ -775,9 +819,22 @@ impl App {
                             }
                         }
                         draft.agent = new_agent;
+                        if !profiles::supports_multi_profile(new_agent) {
+                            draft.use_default_auth = true;
+                            draft.config_dir.clear();
+                        }
                     }
                 }
-            });
+            };
+            if agy_dup {
+                c.row_note(t("Agent"), t("Antigravity CLI supports 1 account only (Google policy)."), p.err, |ui| {
+                    agent_picker(ui, &mut draft);
+                });
+            } else {
+                c.row(t("Agent"), t("Which agent signs in with this account."), |ui| {
+                    agent_picker(ui, &mut draft);
+                });
+            }
             if id_dup {
                 c.row_note(t("Account id"), t("Another account has this id."), p.err, |ui| {
                     mono_field(ui, egui::Id::new("prof-id"), &mut draft.id, "claude2", 140.0, false);
@@ -801,15 +858,28 @@ impl App {
                 text(ui, "Wk", style::mono(style::DATA), p.text_faint, 14.0, false);
                 mono_field(ui, egui::Id::new("prof-lim-wk"), &mut draft.limit_weekly_text, "5M", 80.0, false);
             });
-            c.row(t("Use the agent's own sign-in folder"), t("~/.claude or ~/.codex, shared with the agent outside TernaryCode."), |ui| {
-                kit::switch(ui, &mut draft.use_default_auth);
-            });
-            let hint = crate::paths::contract_tilde(&crate::paths::data_dir().join("profiles").join(&sanitized_id));
-            c.row(t("Sign-in folder"), t("Where this account keeps its sign-in."), |ui| {
-                ui.add_enabled_ui(!draft.use_default_auth, |ui| {
-                    kit::field(ui, egui::Id::new("prof-dir"), &mut draft.config_dir, Some(icons::FOLDER), &hint, 260.0, false);
+            if single_account {
+                c.row(
+                    t("Use the agent's own sign-in folder"),
+                    t("Antigravity uses its single system sign-in (~/.gemini/antigravity-cli)."),
+                    |ui| {
+                        ui.add_enabled_ui(false, |ui| {
+                            let mut on = true;
+                            kit::switch(ui, &mut on);
+                        });
+                    },
+                );
+            } else {
+                c.row(t("Use the agent's own sign-in folder"), t("~/.claude or ~/.codex, shared with the agent outside TernaryCode."), |ui| {
+                    kit::switch(ui, &mut draft.use_default_auth);
                 });
-            });
+                let hint = crate::paths::contract_tilde(&crate::paths::data_dir().join("profiles").join(&sanitized_id));
+                c.row(t("Sign-in folder"), t("Where this account keeps its sign-in."), |ui| {
+                    ui.add_enabled_ui(!draft.use_default_auth, |ui| {
+                        kit::field(ui, egui::Id::new("prof-dir"), &mut draft.config_dir, Some(icons::FOLDER), &hint, 260.0, false);
+                    });
+                });
+            }
             c.row(t("API key"), t("Optional: used instead of signing in."), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 key_field(ui, egui::Id::new("prof-key"), &mut draft.api_key, draft.reveal_key, 200.0);
@@ -826,7 +896,7 @@ impl App {
             c.block(&[], egui::Margin::symmetric(16, 12), |ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    let ok = !id_empty && !id_dup;
+                    let ok = !id_empty && !id_dup && !agy_dup;
                     let label = if draft.editing_id.is_some() { t("Save account") } else { t("Add account") };
                     let s = ui.add_enabled_ui(ok, |ui| kit::button_ex(ui, kit::Kind::Primary, None, label, false)).inner;
                     #[cfg(debug_assertions)]
@@ -849,7 +919,7 @@ impl App {
 
         if cancel {
             self.profile_draft = None;
-        } else if save && !id_empty && !id_dup {
+        } else if save && !id_empty && !id_dup && !agy_dup {
             self.ensure_mutable_profiles();
             let editing = draft.editing_id.clone();
             let next_order = self.settings.profiles.iter().map(|x| x.fallback_order).max().unwrap_or(0) + 1;
@@ -1025,7 +1095,7 @@ impl App {
         let profiles = self.effective_profiles();
         let Some((active_id, agent, has_live_agent)) = self.panes.get(&pane_id).and_then(|pane| {
             let agent = pane.tracker.agent.or(pane.last_agent)?;
-            if !profiles::supports_multi_profile(agent) {
+            if !profiles::supports_profile(agent) {
                 return None;
             }
             let id = self.resolved_pane_profile_id(pane, agent, &profiles);
@@ -1053,8 +1123,12 @@ impl App {
         let detail = rt.zip(prof_cfg).and_then(|(r, c)| {
             if let Some(secs) = r.reset_remaining_secs(now) {
                 Some(profiles::format_countdown(secs))
+            } else if let Some(used) = r.quota_5h_used_pct(c) {
+                Some(format!("· {used:.0}%"))
+            } else if r.usage.window_5h.tokens.total() > 0 {
+                Some(format!("· {}", profiles::format_tokens(r.usage.window_5h.tokens.total())))
             } else {
-                r.quota_5h_used_pct(c).map(|used| format!("· {used:.0}%"))
+                None
             }
         });
         let resp = kit::profile_chip(ui, label, detail.as_deref(), dot, false);

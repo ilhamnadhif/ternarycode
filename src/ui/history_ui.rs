@@ -51,7 +51,7 @@ impl App {
             ui.painter().vline(col.right() - 0.5, col.y_range(), Stroke::new(1.0, p.border));
             (col, Rect::from_min_max(pos2(col.right(), body.top()), body.max))
         } else {
-            let y = body.top() + (body.height() * 0.46).clamp(240.0_f32.min(body.height() * 0.6), (body.height() - 180.0).max(120.0));
+            let y = body.top() + stacked_split_h(body.height());
             ui.painter().hline(body.x_range(), y + 0.5, Stroke::new(1.0, p.border));
             (Rect::from_min_max(body.min, pos2(body.right(), y)), Rect::from_min_max(pos2(body.left(), y + 1.0), body.max))
         };
@@ -78,6 +78,9 @@ impl App {
         // `TextEdit::singleline` consumes Enter and gives up the keyboard in the same frame.
         if filter_resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             asks.reload = true;
+        }
+        if filter_resp.has_focus() {
+            ui.memory_mut(|m| m.set_focus_lock_filter(filter_id, egui::EventFilter { escape: true, ..Default::default() }));
         }
         if filter_resp.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
             if !q.is_empty() {
@@ -124,6 +127,9 @@ impl App {
         }
         let mut scroll_selected = false;
         if ui.memory(|m| m.has_focus(keys_id)) && !filter_resp.has_focus() && !self.overlay_open() {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(keys_id, egui::EventFilter { escape: true, vertical_arrows: true, ..Default::default() });
+            });
             let mut step = 0i32;
             let mut esc = false;
             ui.input_mut(|i| {
@@ -790,7 +796,7 @@ fn filtered_refs<'a>(refs: &'a [String], head_branch: Option<&str>, compact: boo
 fn centered(painter: &egui::Painter, rect: Rect, text: &str, color: Color32) {
     let g = painter.layout(text.to_string(), egui::FontId::proportional(style::BODY), color, (rect.width() - 28.0).max(60.0));
     let sz = g.size();
-    painter.with_clip_rect(rect).galley(pos2(rect.center().x - sz.x / 2.0, rect.center().y - sz.y / 2.0), g, color);
+    painter.with_clip_rect(rect.intersect(painter.clip_rect())).galley(pos2(rect.center().x - sz.x / 2.0, rect.center().y - sz.y / 2.0), g, color);
 }
 
 /// A git ref (`HEAD -> main`, `HEAD`, `origin/main`, `tag: v0.2.3`) as a pill's word and colour:
@@ -825,4 +831,25 @@ fn format_commit_time(unix: i64) -> String {
         local.format("%Y-%m-%d %H:%M").to_string()
     };
     format!("{when} · {age}")
+}
+
+/// Height of the top commit list when History is stacked vertically in a narrow panel.
+fn stacked_split_h(body_h: f32) -> f32 {
+    let body_h = body_h.max(0.0);
+    let hi = (body_h - 180.0).max(120.0).min(body_h);
+    let lo = 240.0_f32.min(body_h * 0.6).min(hi);
+    (body_h * 0.46).clamp(lo, hi)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stacked_split_h;
+
+    #[test]
+    fn stacked_split_never_panics_across_heights() {
+        for h in [0.0, 1.0, 50.0, 120.0, 180.0, 200.0, 250.0, 350.0, 400.0, 420.0, 600.0, 1200.0] {
+            let y = stacked_split_h(h);
+            assert!(y >= 0.0 && y <= h, "height={h} produced y={y}");
+        }
+    }
 }

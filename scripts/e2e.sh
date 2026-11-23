@@ -422,11 +422,11 @@ run docs 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOC
 # both pages, then Enter to the second; a sheet's cell (selected); a Word file's words.
 run doc-find 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; open-file $DOCS/report.pdf;; wait-doc kind=pdf state=ready pages=2;; click doc-body;; sleep 200;; action find;; sleep 300;; keys quarterly;; wait-doc matches=2 current=1;; key enter;; wait-doc current=2;; shot e2e-doc-find-pdf;; key esc;; sleep 300;; expect-hidden doc-find;; open-file $DOCS/data.csv;; wait-doc kind=csv state=ready;; click doc-body;; action find;; sleep 300;; keys beta;; wait-doc matches=1 cell=2,0;; key esc;; open-file $DOCS/notes.docx;; wait-doc kind=word state=ready;; click doc-body;; action find;; sleep 300;; keys docs;; wait-doc matches=1 current=1;; shot e2e-doc-find-word;; quit"
 
-# The sidebar's Active group: nothing running, no groups; a program running in beta for 2 s
-# moves it under Active, above alpha, and ⌘1 follows; Idle folds; while the pointer is over the
-# list nothing moves, once it leaves beta goes back (Active lingers 0.6 s here, 30 s normally).
+# The sidebar's Active group: a program running in beta for 2 s moves it under Active, above
+# alpha, and ⌘1 follows; once it stops and the linger expires, beta returns to Idle and
+# Move Up / Move Down reorders within the group (Active lingers 0.6 s here, 30 s normally).
 export TERNARYCODE_ACTIVE_LINGER_MS=600
-run sidebar-order 60 "sleep 1000;; action add-project $P1;; sleep 1000;; action add-project $P2;; sleep 1200;; expect-above project:alpha project:beta;; expect-project beta;; key cmd+alt+up;; sleep 600;; expect-above project:beta project:alpha;; action select 0;; sleep 400;; expect-project beta;; keys sleep 5\\r;; sleep 3000;; expect-above project:beta project:alpha;; key ctrl+c;; action select 1;; sleep 400;; expect-project alpha;; action move-up;; sleep 400;; expect-above project:alpha project:beta;; shot e2e-sidebar-order;; quit"
+run sidebar-order 60 "sleep 1000;; action add-project $P1;; sleep 1000;; action add-project $P2;; sleep 1200;; expect-above project:alpha project:beta;; expect-project beta;; key cmd+alt+up;; sleep 600;; expect-above project:beta project:alpha;; action select 0;; sleep 400;; expect-project beta;; keys sleep 5\\r;; sleep 3000;; expect-shown sidebar-group:active;; expect-shown sidebar-group:idle;; expect-above project:beta project:alpha;; key ctrl+c;; sleep 1000;; expect-hidden sidebar-group:active;; action select 1;; sleep 400;; expect-project alpha;; action move-up;; sleep 400;; expect-above project:alpha project:beta;; shot e2e-sidebar-order;; quit"
 unset TERNARYCODE_ACTIVE_LINGER_MS
 
 # The sidebar keeps the width it is dragged to (it used to shrink back to its narrowest).

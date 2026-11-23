@@ -90,6 +90,9 @@ _tc_preexec() {
 }
 
 _tc_deferred_init() {
+    # Capture the user's `prompt_percent` before `emulate -L zsh` resets it for this function.
+    builtin local _tc_init_percent=0
+    [[ -o prompt_percent ]] && _tc_init_percent=1
     builtin emulate -L zsh
     precmd_functions=(_tc_precmd ${precmd_functions:#_tc_deferred_init})
     if builtin autoload -Uz +X add-zsh-hook 2>/dev/null; then
@@ -124,7 +127,7 @@ _tc_deferred_init() {
     fi
     # This prompt's round of hooks is already running without them.
     _tc_precmd
-    _tc_precmd_ps1
+    (( _tc_init_percent )) && _tc_precmd_ps1
 }
 
 builtin typeset -ga precmd_functions

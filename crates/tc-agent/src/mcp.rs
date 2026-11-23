@@ -238,8 +238,11 @@ pub(crate) fn call_app(p: &Pane, name: &str, args: &Value) -> Value {
         let mut pipe = loop {
             match std::fs::OpenOptions::new().read(true).write(true).open(&p.sock) {
                 Ok(pipe) => break pipe,
-                // Every instance busy for a moment (the app makes the next as one connects).
-                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && start.elapsed() < std::time::Duration::from_secs(2) => {
+                // Every instance busy or momentarily between accept instances on Windows.
+                Err(e)
+                    if (e.raw_os_error() == Some(ERROR_PIPE_BUSY) || e.kind() == std::io::ErrorKind::NotFound)
+                        && start.elapsed() < std::time::Duration::from_secs(2) =>
+                {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Err(e) => return Err(e),

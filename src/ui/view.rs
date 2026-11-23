@@ -65,19 +65,23 @@ impl App {
         }
         if !self.zen_mode && !self.settings.sidebar_compact {
             let mut visible = !self.settings.sidebar_hidden;
-            let response = egui::Panel::left("sidebar")
+            let sync = std::mem::take(&mut self.sidebar_width_sync);
+            let mut panel = egui::Panel::left("sidebar")
                 .show_separator_line(false)
-                .resizable(true)
+                .resizable(!sync)
                 .default_size(self.settings.sidebar_width)
-                .size_range(200.0..=360.0)
-                .frame(egui::Frame::NONE.fill(p.chrome))
-                .show_collapsible(ui, &mut visible, |ui| {
-                    ui.spacing_mut().item_spacing = spacing;
-                    // The panel keeps the size its content uses: claim all of it, or the sidebar
-                    // shrinks a little every frame until it is at its narrowest.
-                    ui.expand_to_include_rect(ui.max_rect());
-                    self.sidebar(ui)
-                });
+                .size_range(200.0..=420.0)
+                .frame(egui::Frame::NONE.fill(p.chrome));
+            if sync {
+                panel = panel.exact_size(self.settings.sidebar_width);
+            }
+            let response = panel.show_collapsible(ui, &mut visible, |ui| {
+                ui.spacing_mut().item_spacing = spacing;
+                // The panel keeps the size its content uses: claim all of it, or the sidebar
+                // shrinks a little every frame until it is at its narrowest.
+                ui.expand_to_include_rect(ui.max_rect());
+                self.sidebar(ui)
+            });
             // Dragged shut past its narrowest (or open again from the edge): remember it, or the
             // panel would spring back next frame.
             if visible == self.settings.sidebar_hidden {
@@ -90,7 +94,7 @@ impl App {
                 #[cfg(debug_assertions)]
                 crate::devtest::record("sidebar", r.response.rect);
                 let w = r.response.rect.width();
-                if (w - self.settings.sidebar_width).abs() > 1.0 {
+                if !sync && (w - self.settings.sidebar_width).abs() > 1.0 {
                     self.settings.sidebar_width = w;
                     self.settings_changed();
                 }

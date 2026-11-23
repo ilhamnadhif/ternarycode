@@ -130,7 +130,8 @@ impl App {
     pub fn open_history(&mut self) {
         let Some(pid) = self.active else { return };
         let Some(folder) = self.project(pid).map(|p| p.path.clone()) else { return };
-        // Close any active Review (inline or full-screen) so History is always visible.
+        // Close any active Review (inline or full-screen) and Zen Mode so History is always visible.
+        self.exit_zen_mode();
         self.review = None;
         self.review_close = false;
         self.drawer_maximized = false;

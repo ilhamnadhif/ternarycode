@@ -38,32 +38,46 @@ impl ServerScanner {
 
     /// The local addresses in `bytes`, in order.
     pub fn scan(&mut self, bytes: &[u8], out: &mut Vec<Found>) {
+        if bytes.is_empty() {
+            return;
+        }
         // An address cut at the end of the last chunk: its `://` was there, but it was not
         // complete without this one; or its `://` is at the start of this one, its scheme
         // (`ht` | `tp://`) in the last, which this chunk alone does not see. The rest is found
         // below.
-        if !self.tail.is_empty() {
-            let mut joint = std::mem::take(&mut self.tail);
-            let from_tail = joint.len();
-            joint.extend_from_slice(&bytes[..bytes.len().min(TAIL)]);
-            for at in scheme_end().find_iter(&joint) {
+        let mut joint = if !self.tail.is_empty() {
+            let mut j = std::mem::take(&mut self.tail);
+            let from_tail = j.len();
+            j.extend_from_slice(&bytes[..bytes.len().min(TAIL)]);
+            for at in scheme_end().find_iter(&j) {
                 let missed = if at < from_tail {
-                    parse(&joint[..from_tail], at).is_none()
+                    parse(&j[..from_tail], at).is_none()
                 } else {
                     at < from_tail + "https".len() && parse(bytes, at - from_tail).is_none()
                 };
-                if missed && let Some(f) = parse(&joint, at) {
+                if missed && let Some(f) = parse(&j, at) {
                     out.push(f);
                 }
             }
-        }
+            Some(j)
+        } else {
+            None
+        };
         for at in scheme_end().find_iter(bytes) {
             if let Some(f) = parse(bytes, at) {
                 out.push(f);
             }
         }
-        let keep = bytes.len().min(TAIL);
-        self.tail = bytes[bytes.len() - keep..].to_vec();
+        if bytes.len() >= TAIL {
+            self.tail = bytes[bytes.len() - TAIL..].to_vec();
+        } else if let Some(j) = joint.take() {
+            // Preserve prior tail bytes when small chunks arrive one after another (e.g. an
+            // address split across 3+ reads).
+            let keep = j.len().min(TAIL);
+            self.tail = j[j.len() - keep..].to_vec();
+        } else {
+            self.tail = bytes.to_vec();
+        }
     }
 }
 
@@ -107,25 +121,33 @@ fn parse(b: &[u8], at: usize) -> Option<Found> {
     if i >= b.len() {
         return None;
     }
-    // The path, up to what an address never has.
+    // After the port, only a path/query/fragment (`/`, `?`, `#`) continues the URL; letters or
+    // word characters like `http://localhost:3000ms` are not a port boundary, while whitespace
+    // and punctuation end the URL cleanly.
     let mut path = String::new();
-    while let Some(&c) = b.get(i) {
-        if c == 0x1b {
-            let next = skip_sgr(b, i);
-            if next == i {
-                break;
+    match b[i] {
+        b'/' | b'?' | b'#' => {
+            while let Some(&c) = b.get(i) {
+                if c == 0x1b {
+                    let next = skip_sgr(b, i);
+                    if next == i {
+                        break;
+                    }
+                    i = next;
+                    continue;
+                }
+                if !(c.is_ascii_alphanumeric() || b"-._~/?#[]@!$&'()*+,;=%".contains(&c)) {
+                    break;
+                }
+                path.push(c as char);
+                i += 1;
             }
-            i = next;
-            continue;
+            while path.ends_with(['.', ',', ';', ':', '!', '?', ')', ']', '\'']) {
+                path.pop();
+            }
         }
-        if !(c.is_ascii_alphanumeric() || b"-._~/?#[]@!$&'()*+,;=%".contains(&c)) {
-            break;
-        }
-        path.push(c as char);
-        i += 1;
-    }
-    while path.ends_with(['.', ',', ';', ':', '!', '?', ')', ']', '\'']) {
-        path.pop();
+        c if c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'~') => return None,
+        _ => {}
     }
     let host = if host == "0.0.0.0" { "localhost" } else { host };
     let path = if path.is_empty() { "/".to_string() } else { path };
@@ -212,5 +234,23 @@ mod tests {
     fn other_addresses_are_not_servers_here() {
         assert!(found(&[b"see https://example.com:443/x and localhost:3000 and ftp://localhost:21\r\n"]).is_empty());
         assert!(found(&[b"http://localhost/ http://localhost:99999/ xhttp://localhost:80/\r\n"]).is_empty());
+        assert!(found(&[b"http://localhost:3000ms http://localhost:3000foo\r\n"]).is_empty());
+    }
+
+    #[test]
+    fn multi_chunk_and_delimited_addresses() {
+        // Address split across 4 tiny chunks still assembles and matches once.
+        assert_eq!(
+            found(&[b"http://", b"local", b"host:51", b"73/\r\n"]),
+            vec![("http://localhost:5173/".into(), 5173)]
+        );
+        // Punctuation directly after port ends the URL cleanly instead of gluing onto port.
+        assert_eq!(
+            found(&[b"open http://localhost:3000,foo or http://localhost:4000(dev)\r\n"]),
+            vec![
+                ("http://localhost:3000/".into(), 3000),
+                ("http://localhost:4000/".into(), 4000),
+            ]
+        );
     }
 }

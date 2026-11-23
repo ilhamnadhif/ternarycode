@@ -67,15 +67,15 @@ impl Sheet {
         let mut cells = Vec::new();
         let mut grid: Vec<Vec<Cell>> = Vec::new();
         let mut cols = 0;
-        let mut kept = 0usize;
         let mut truncated = false;
         for row in rows {
-            if kept + row.len().max(cols) > MAX_CELLS {
+            let new_cols = cols.max(row.len());
+            let eff_cols = new_cols.max(1);
+            if (grid.len() + 1).checked_mul(eff_cols).is_none_or(|t| t > MAX_CELLS) {
                 truncated = true;
                 break;
             }
-            kept += row.len().max(cols);
-            cols = cols.max(row.len());
+            cols = new_cols;
             grid.push(row);
         }
         // Trailing empty rows and columns are noise (a stray format far down the sheet).
@@ -153,7 +153,9 @@ fn cell_of(d: &Data) -> Cell {
             let v = dt.as_f64();
             if dt.is_duration() {
                 let secs = (v * 86400.0).round() as i64;
-                Cell::Number(format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60).into())
+                let sign = if secs < 0 { "-" } else { "" };
+                let abs = secs.unsigned_abs();
+                Cell::Number(format!("{sign}{}:{:02}:{:02}", abs / 3600, abs / 60 % 60, abs % 60).into())
             } else {
                 let (y, mo, d, h, mi, s, _) = dt.to_ymd_hms_milli();
                 let text = if v.fract() == 0.0 {
@@ -202,17 +204,23 @@ fn sheet_of_cells(name: String, mut cells: Vec<Placed>, more: bool) -> Sheet {
         return Sheet::from_rows(name, (0, 0), std::iter::empty());
     };
     let c0 = cells.iter().map(|c| c.0.1).min().unwrap_or(0);
-    let width = (cells.iter().map(|c| c.0.1).max().unwrap_or(0) - c0) as usize + 1;
+    let max_c = cells.iter().map(|c| c.0.1).max().unwrap_or(0);
+    let full_width = u64::from(max_c - c0) + 1;
+    let width = full_width.min(MAX_CELLS as u64) as usize;
+    let col_truncated = full_width > width as u64;
     let mut it = cells.into_iter().peekable();
     let rows = (first..=last).map(move |r| {
         let mut row = vec![Cell::Empty; width];
         while let Some(((_, c), cell)) = it.next_if(|((row, _), _)| *row == r) {
-            row[(c - c0) as usize] = cell;
+            let idx = (c - c0) as usize;
+            if idx < width {
+                row[idx] = cell;
+            }
         }
         row
     });
     let mut sheet = Sheet::from_rows(name, (first, c0), rows);
-    sheet.truncated |= more;
+    sheet.truncated |= more || col_truncated;
     sheet
 }
 
@@ -413,5 +421,17 @@ mod tests {
         assert_eq!(s.origin, (1, 1));
         assert_eq!(s.cell(0, 0), &Cell::Text("hello".into()));
         assert_eq!(s.cell(0, 1), &Cell::Number("2.5".into()));
+    }
+
+    #[test]
+    fn negative_durations_and_ragged_sheets_behave_safely() {
+        let neg = calamine::ExcelDateTime::new(-((3600.0 + 30.0 * 60.0 + 5.0) / 86400.0), calamine::ExcelDateTimeType::TimeDelta, false);
+        assert_eq!(cell_of(&Data::DateTime(neg)), Cell::Number("-1:30:05".into()));
+
+        // Ragged rows whose retroactive rectangle would exceed MAX_CELLS must truncate cleanly.
+        let rows = (0..1000).map(|i| if i == 999 { vec![Cell::Text("x".into()); 3000] } else { vec![Cell::Text("a".into())] });
+        let s = Sheet::from_rows("ragged".into(), (0, 0), rows);
+        assert!(s.truncated);
+        assert!(s.rows * s.cols <= MAX_CELLS);
     }
 }

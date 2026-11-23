@@ -470,7 +470,8 @@ impl App {
         let edit = self.explorers.get_mut(&pid)?.edit.as_mut()?;
         let p = style::pal(ui);
         let dark = ui.visuals().dark_mode;
-        let box_rect = Rect::from_min_max(pos2(rect.left(), rect.top() + 1.0), pos2(rect.right(), rect.bottom() - 1.0));
+        let left = rect.left().min((rect.right() - 48.0).max(rect.left()));
+        let box_rect = Rect::from_min_max(pos2(left, rect.top() + 1.0), pos2(rect.right().max(left + 20.0), rect.bottom() - 1.0));
         let fill = if dark { p.inset } else { egui::Color32::WHITE };
         ui.painter().rect_stroke(
             box_rect.expand(1.5),
@@ -524,6 +525,9 @@ impl App {
             } else {
                 EditOutcome::Commit
             });
+        }
+        if !r.has_focus() {
+            return Some(EditOutcome::Cancel);
         }
         None
     }
