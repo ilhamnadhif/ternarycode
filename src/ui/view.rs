@@ -5,7 +5,7 @@ use eframe::egui::{self, Ui};
 use super::style;
 use crate::app::App;
 
-pub const STATUS_H: f32 = 28.0;
+pub const STATUS_H: f32 = 26.0;
 
 /// Empty space that moves the window (macOS, where the title bar is hidden and the content runs
 /// under it); a double click zooms, like a title bar. Add it before the widgets on top of it.
@@ -39,20 +39,6 @@ impl App {
         self.monitor_pill_rect = None;
         let spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        if !self.zen_mode {
-            egui::Panel::bottom("status-bar")
-                .show_separator_line(false)
-                .frame(
-                    egui::Frame::NONE
-                        .fill(p.chrome)
-                        .inner_margin(egui::Margin { left: 14, right: 12, top: 0, bottom: 0 }),
-                )
-                .exact_size(STATUS_H)
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = spacing;
-                    self.status_bar(ui)
-                });
-        }
         // Windows: the title bar the app draws (the system's is off), across the window.
         if crate::platform::custom_caption() {
             egui::Panel::top("title-bar")
@@ -83,7 +69,7 @@ impl App {
                 .show_separator_line(false)
                 .resizable(true)
                 .default_size(self.settings.sidebar_width)
-                .size_range(180.0..=420.0)
+                .size_range(200.0..=360.0)
                 .frame(egui::Frame::NONE.fill(p.chrome))
                 .show_collapsible(ui, &mut visible, |ui| {
                     ui.spacing_mut().item_spacing = spacing;
@@ -110,7 +96,18 @@ impl App {
                 }
             }
         }
-        // The window's base: the sheets (panes, drawers, panels, tiles) are drawn on it.
+        // The status bar, under the main column (the sidebar runs the window's height).
+        if !self.zen_mode {
+            egui::Panel::bottom("status-bar")
+                .show_separator_line(false)
+                .frame(egui::Frame::NONE.fill(p.chrome).inner_margin(egui::Margin { left: 4, right: 12, top: 0, bottom: 0 }))
+                .exact_size(STATUS_H)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = spacing;
+                    self.status_bar(ui)
+                });
+        }
+        // The window's base: the sheets (panes, panels, tiles) are drawn on it.
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(p.chrome))
             .show(ui, |ui| {
@@ -137,7 +134,6 @@ impl App {
             && !self.attention_open
             && !self.monitor_popover
             && !self.updater.dialog_open
-            && !self.zen_mode
             && self.browser_focus.is_none()
             && self.pane_search.is_none()
             && !crate::ade::is_management_view(self.view)

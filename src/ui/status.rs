@@ -71,11 +71,12 @@ pub fn paint_glyph(painter: &egui::Painter, center: egui::Pos2, s: Status, p: &P
     }
 }
 
-/// The running glyph: Phosphor's circle-notch, drawn as an arc that turns once a second.
+/// The running glyph: Phosphor's circle-notch, drawn as an arc that turns once a second in
+/// eight steps (a frame every 125 ms, not every one: running agents keep the app cheap).
 pub fn paint_spinner(painter: &egui::Painter, center: egui::Pos2, size: f32, color: Color32) {
     let t = painter.ctx().input(|i| i.time) as f32;
     let r = size * 0.36;
-    let start = t * std::f32::consts::TAU;
+    let start = (t * 8.0).floor() / 8.0 * std::f32::consts::TAU;
     let sweep = std::f32::consts::TAU * 0.72;
     let n = 24;
     let pts: Vec<egui::Pos2> = (0..=n)
@@ -85,7 +86,7 @@ pub fn paint_spinner(painter: &egui::Painter, center: egui::Pos2, size: f32, col
         })
         .collect();
     painter.add(egui::Shape::line(pts, egui::Stroke::new((size * 0.11).max(1.3), color)));
-    painter.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    painter.ctx().request_repaint_after(std::time::Duration::from_millis(125));
 }
 
 pub fn source(src: Source) -> String {

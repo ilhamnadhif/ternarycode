@@ -15,122 +15,164 @@ use crate::i18n::{t, tf};
 const LIST_W: f32 = 600.0;
 
 impl App {
+    /// The status bar under the terminals (26 high, quiet). Left: where you are (the branch,
+    /// the language server, problems). Right: agents not connected, an update, what waits for
+    /// you (⌘J), how many agents run, the memory TernaryCode uses.
     pub fn status_bar(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
-        let queue = self.attention_queue();
         let bar = ui.max_rect();
-        let wide = bar.width() >= 920.0;
-        // Right side laid out first so left items never collide or push it off-screen on narrow windows.
-        let right_used = ui
-            .scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(bar)
-                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
-                |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    let key = kit::keys(&Action::Palette).unwrap_or_default();
-                    let commands = commands_item(ui, &p, key);
-                    if commands.on_hover_text(t("Everything TernaryCode can do, searchable")).clicked() {
-                        self.actions.push(Action::Palette);
-                    }
-                    dot_sep(ui, &p);
-                    let now = Instant::now();
-                    if self.mem_bytes.1.is_none_or(|t| now.duration_since(t) > Duration::from_secs(2)) {
-                        self.mem_bytes = (tc_agent::proc::own_resident_bytes(), Some(now));
-                        self.browser_bytes = self.browsers_resident_bytes();
-                    }
-                    let mut mem = if wide {
-                        self.mem_bytes.0.map(|b| format!(" · {} MB", b / (1024 * 1024))).unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    // The pages' own processes (WebKit's), when there are any.
-                    if wide && let Some(b) = self.browser_bytes.filter(|b| *b > 0) {
-                        mem.push_str(&tf(" · pages {} MB", &[&(b / (1024 * 1024)).to_string()]));
-                    }
-                    let counts = format!(
-                        "{} · {}{mem}",
-                        crate::i18n::count(self.projects.iter().filter(|x| !x.is_worktree()).count(), t("1 project"), t("{} projects")),
-                        crate::i18n::count(self.panes.len(), t("1 pane"), t("{} panes")),
-                    );
-                    let g = ui.painter().layout_no_wrap(counts, style::mono(10.5), p.text_faint);
-                    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 8.0, 20.0), Sense::hover());
-                    ui.painter().galley(pos2(r.left() + 4.0, r.center().y - g.size().y / 2.0), g, p.text_faint);
-                    resp.on_hover_text(t("Memory TernaryCode uses (programs in the panes not counted)"));
-                    if let Some(target) = self.keyboard_target() {
-                        let avail = (ui.min_rect().left() - bar.left() - 160.0).max(0.0);
-                        if avail >= 90.0 {
-                            dot_sep(ui, &p);
-                            let keys = kit::keys(&Action::OpenGridTile);
-                            if item(ui, Some(icons::KEYBOARD), &target, p.accent_text, None, keys, avail.min(280.0), true)
-                                .on_hover_text(t("Where your typing goes. Click (or press the keys) to open it in Focus."))
-                                .clicked()
-                            {
-                                self.actions.push(Action::OpenGridTile);
-                            }
-                        }
-                    }
-                    self.update_status_item(ui);
-                    ui.min_rect()
-                },
-            )
-            .inner;
-
-        let left_max = (right_used.left() - 8.0).max(bar.left());
-        let left_rect = Rect::from_min_max(bar.min, pos2(left_max, bar.bottom()));
+        let waiting = self.attention_queue().len();
+        let running = self.panes.values().filter(|x| x.tracker.status == Status::Running && x.tracker.agent.is_some()).count();
         let unconnected = self.unconnected_agents();
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(left_rect)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| {
-                ui.set_clip_rect(left_rect.intersect(ui.clip_rect()));
-                ui.spacing_mut().item_spacing.x = 2.0;
-                let left_w = left_rect.width();
-                let unc_reserve = if unconnected.is_empty() { 0.0 } else { 145.0_f32.min(left_w * 0.42) };
-                let lead_room = (left_w - unc_reserve).max(80.0);
-                // Left: the most urgent pane waiting for the user ("Next:" when that one is the pane
-                // in view: ⌘J goes past it), or that none is.
-                let here = if self.view == tc_core::model::View::Focus { self.current_pane() } else { None };
-                let next = queue.iter().find(|e| Some(e.pane) != here).or(queue.first());
-                match next.and_then(|e| self.panes.get(&e.pane).map(|pane| (e, pane))) {
-                    Some((e, pane)) => {
-                        let s = pane.tracker.status;
-                        let project = self.project_label(pane.project);
-                        let skipped = queue.first().is_some_and(|f| f.pane != e.pane);
-                        let (who, what, code) = super::sidebar::attention_sentence(pane);
-                        let more = queue.len() - 1 - usize::from(skipped);
-                        let r = lead(ui, &p, s, skipped, &project, &who, &what, code.as_deref(), more, lead_room);
-                        #[cfg(debug_assertions)]
-                        crate::devtest::record("attention-summary", r.rect);
-                        let tip = format!("{}\n{}", status::described(&pane.tracker), t("Show everything that waits for you"));
-                        if r.on_hover_text(tip).clicked() {
-                            self.actions.push(Action::ToggleAttention);
-                        }
-                    }
-                    None => {
-                        let r = item(ui, Some(icons::CHECK_CIRCLE), t("No agent is waiting for you."), p.text_faint, None, None, lead_room.min(400.0), true);
-                        if r.on_hover_text(t("Agents that need you show up here")).clicked() {
-                            self.actions.push(Action::ToggleAttention);
-                        }
-                    }
+        let right_used = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                let now = Instant::now();
+                if self.mem_bytes.1.is_none_or(|t| now.duration_since(t) > Duration::from_secs(2)) {
+                    self.mem_bytes = (tc_agent::proc::own_resident_bytes(), Some(now));
+                    self.browser_bytes = self.browsers_resident_bytes();
                 }
-                // Agents that can't say when they need the user (started without the hooks).
+                if let Some(b) = self.mem_bytes.0 {
+                    let mut tip = t("Memory TernaryCode uses (programs in the panes not counted)").to_string();
+                    if let Some(pb) = self.browser_bytes.filter(|b| *b > 0) {
+                        tip.push_str(&format!("\n{}", tf("Pages: {} MB", &[&(pb / (1024 * 1024)).to_string()])));
+                    }
+                    ui.label(RichText::new(format!("{} MB", b / (1024 * 1024))).font(style::mono(style::DATA)).color(p.text_faint)).on_hover_text(tip);
+                }
+                let r = bar_item(
+                    ui,
+                    |painter, at| {
+                        if running > 0 {
+                            status::paint_glyph(painter, at, Status::Running, &p, 12.0);
+                        } else {
+                            painter.text(at, Align2::CENTER_CENTER, icons::CIRCLE_NOTCH, style::icon_font(12.0), p.text_faint);
+                        }
+                    },
+                    &tf("{} running", &[&running.to_string()]),
+                    egui::FontId::proportional(style::SMALL),
+                    if running > 0 { p.text_muted } else { p.text_faint },
+                    None,
+                );
+                #[cfg(debug_assertions)]
+                crate::devtest::record("status-running", r.rect);
+                r.on_hover_text(t("Agents at work in every project"));
+                let r = if waiting > 0 {
+                    let keys = kit::keys(&Action::BackAttention);
+                    bar_item(ui, |painter, at| status::paint_glyph(painter, at, Status::NeedsInput, &p, 12.0), &tf("{} waiting", &[&waiting.to_string()]), style::medium(style::SMALL), p.warn, keys)
+                } else {
+                    bar_item(ui, |painter, at| { painter.text(at, Align2::CENTER_CENTER, icons::CHECK, style::icon_font(12.0), p.text_faint); }, t("Nothing waiting"), egui::FontId::proportional(style::SMALL), p.text_faint, None)
+                };
+                #[cfg(debug_assertions)]
+                crate::devtest::record("attention-summary", r.rect);
+                if r.on_hover_text(t("Show everything that waits for you")).clicked() {
+                    self.actions.push(Action::ToggleAttention);
+                }
+                self.update_status_item(ui);
                 if !unconnected.is_empty() {
-                    let rem = (left_rect.right() - ui.cursor().min.x - 14.0).max(0.0);
-                    if rem >= 72.0 {
-                        dot_sep(ui, &p);
-                        let text = crate::i18n::count(unconnected.len(), t("1 agent not connected"), t("{} agents not connected"));
-                        let r = item(ui, Some(icons::PLUGS_CONNECTED), &text, p.warn, None, None, rem.min(260.0), true);
-                        #[cfg(debug_assertions)]
-                        crate::devtest::record("unconnected", r.rect);
-                        if r.on_hover_text(self.unconnected_tip(&unconnected)).clicked() {
-                            self.connect_agents(&unconnected);
-                        }
+                    let text = crate::i18n::count(unconnected.len(), t("1 agent not connected"), t("{} agents not connected"));
+                    let r = bar_item(ui, |painter, at| { painter.text(at, Align2::CENTER_CENTER, icons::PLUGS, style::icon_font(12.0), p.warn); }, &text, egui::FontId::proportional(style::SMALL), p.warn, None);
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record("unconnected", r.rect);
+                    if r.on_hover_text(self.unconnected_tip(&unconnected)).clicked() {
+                        self.connect_agents(&unconnected);
                     }
                 }
-            },
-        );
+                if self.view == tc_core::model::View::Grid
+                    && let Some(target) = self.keyboard_target()
+                {
+                    let keys = kit::keys(&Action::OpenGridTile);
+                    let r = bar_item(ui, |painter, at| { painter.text(at, Align2::CENTER_CENTER, icons::KEYBOARD, style::icon_font(12.0), p.accent_text); }, &target, egui::FontId::proportional(style::SMALL), p.accent_text, keys);
+                    if r.on_hover_text(t("Where your typing goes. Click (or press the keys) to open it in Focus.")).clicked() {
+                        self.actions.push(Action::OpenGridTile);
+                    }
+                }
+                ui.min_rect().left()
+            })
+            .inner;
+        // Left: the project in view.
+        let Some(pid) = self.active.filter(|_| self.view == tc_core::model::View::Focus) else { return };
+        let left = Rect::from_min_max(bar.min, pos2((right_used - 16.0).max(bar.left()), bar.bottom()));
+        let git = self.project(pid).and_then(|x| x.git.as_ref()).map(|g| (g.branch.clone(), g.ahead, g.behind));
+        let root = self.project(pid).map(|x| x.path.clone()).unwrap_or_default();
+        let server = self
+            .lsp
+            .servers
+            .iter()
+            .filter(|(k, _)| k.root.starts_with(&root) || root.starts_with(&k.root))
+            .map(|(k, s)| (k.name, s.state.clone(), s.progress.clone()))
+            .min_by_key(|(name, ..)| *name);
+        let (errs, warns) = self.project_diagnostic_counts(pid);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(left).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            ui.set_clip_rect(left.intersect(ui.clip_rect()));
+            ui.spacing_mut().item_spacing.x = 16.0;
+            if let Some((branch, ahead, behind)) = git {
+                let mut job = egui::text::LayoutJob::default();
+                job.append(&branch, 0.0, egui::TextFormat::simple(style::mono(style::DATA), p.text_muted));
+                if ahead + behind > 0 {
+                    job.append(&format!("↑{ahead} ↓{behind}"), 5.0, egui::TextFormat::simple(style::mono(style::DATA), p.text_faint));
+                }
+                let g = ui.painter().layout_job(job);
+                let (r, resp) = ui.allocate_exact_size(vec2(12.0 + 5.0 + g.size().x, 20.0), Sense::click());
+                ui.painter().text(pos2(r.left() + 6.0, r.center().y), Align2::CENTER_CENTER, icons::GIT_BRANCH, style::icon_font(12.0), p.text_faint);
+                ui.painter().galley(pos2(r.left() + 17.0, r.center().y - g.size().y / 2.0), g, p.text_muted);
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(kit::tip(t("History"), Action::History)).clicked() {
+                    self.actions.push(Action::History);
+                }
+            }
+            if let Some((name, state, progress)) = &server {
+                let (dot, tip) = match &state {
+                    crate::lsp::ServerState::Ready => (p.ok, progress.clone().unwrap_or_else(|| t("Ready").to_string())),
+                    crate::lsp::ServerState::Starting => (p.info, t("Starting…").to_string()),
+                    crate::lsp::ServerState::Failed(why) => (p.err, why.clone()),
+                    crate::lsp::ServerState::Missing => (p.text_ghost, t("Not installed").to_string()),
+                };
+                let g = ui.painter().layout_no_wrap(name.to_string(), style::mono(style::DATA), p.text_faint);
+                let (r, resp) = ui.allocate_exact_size(vec2(6.0 + 5.0 + g.size().x, 20.0), Sense::hover());
+                ui.painter().circle_filled(pos2(r.left() + 3.0, r.center().y), 3.0, dot);
+                ui.painter().galley(pos2(r.left() + 11.0, r.center().y - g.size().y / 2.0), g, p.text_faint);
+                resp.on_hover_text(tip);
+            }
+            if server.is_some() || errs + warns > 0 {
+                let mut job = egui::text::LayoutJob::default();
+                job.append(&errs.to_string(), 0.0, egui::TextFormat::simple(style::mono(style::DATA), if errs > 0 { p.err } else { p.text_faint }));
+                let eg = ui.painter().layout_job(job);
+                let wg = ui.painter().layout_no_wrap(warns.to_string(), style::mono(style::DATA), if warns > 0 { p.warn } else { p.text_faint });
+                let w = 12.0 + 4.0 + eg.size().x + 6.0 + 12.0 + 4.0 + wg.size().x;
+                let (r, resp) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+                let cy = r.center().y;
+                let mut x = r.left();
+                ui.painter().text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, icons::X_CIRCLE, style::icon_font(12.0), p.text_faint);
+                x += 16.0;
+                let ew = eg.size().x;
+                ui.painter().galley(pos2(x, cy - eg.size().y / 2.0), eg, p.text_faint);
+                x += ew + 6.0;
+                ui.painter().text(pos2(x + 6.0, cy), Align2::CENTER_CENTER, icons::WARNING, style::icon_font(12.0), p.text_faint);
+                x += 16.0;
+                ui.painter().galley(pos2(x, cy - wg.size().y / 2.0), wg, p.text_faint);
+                resp.on_hover_text(tf("{} errors, {} warnings in this project", &[&errs.to_string(), &warns.to_string()]));
+            }
+        });
+    }
+
+    /// Errors and warnings the language servers report for files of `pid`.
+    fn project_diagnostic_counts(&self, pid: tc_core::ProjectId) -> (usize, usize) {
+        let Some(root) = self.project(pid).map(|x| &x.path) else {
+            return (0, 0);
+        };
+        let mut errs = 0usize;
+        let mut warns = 0usize;
+        for (path, (_, diags)) in &self.lsp.diagnostics {
+            if path.starts_with(root) {
+                for d in diags {
+                    match d.severity {
+                        Some(tc_lsp::types::DiagnosticSeverity::ERROR) => errs += 1,
+                        Some(tc_lsp::types::DiagnosticSeverity::WARNING) => warns += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        (errs, warns)
     }
 
     /// The attention list (⌥⌘J, or a click on the status bar's summary): everything that waits,
@@ -487,120 +529,26 @@ pub fn paint_key_hints(ui: &Ui, rect: Rect, hints: &[(&[&str], &str)], right: Op
     }
 }
 
-/// An item of the status bar: an icon, a text, then quieter extra text and a key hint,
-/// highlighted on hover when it can be clicked. Texts longer than `max` are cut with "…".
-#[allow(clippy::too_many_arguments)]
-fn item(ui: &mut Ui, icon: Option<&str>, text: &str, color: egui::Color32, extra: Option<&str>, key: Option<&str>, max: f32, click: bool) -> egui::Response {
+
+
+
+
+
+/// A status bar item: a 12 px mark (painted by `mark` at its centre), its text, its keys.
+fn bar_item(ui: &mut Ui, mark: impl FnOnce(&egui::Painter, egui::Pos2), text: &str, font: egui::FontId, color: egui::Color32, keys: Option<&str>) -> egui::Response {
     let p = style::pal(ui);
-    let pad = 6.0;
-    let gap = 5.0;
-    let small = egui::FontId::proportional(style::LABEL);
-    let icon_g = icon.map(|i| ui.painter().layout_no_wrap(i.to_string(), style::icon_font(12.0), color));
-    let extra_g = extra.map(|e| ui.painter().layout_no_wrap(e.to_string(), small.clone(), p.text_faint));
-    let key_g = key.filter(|k| !k.is_empty()).map(|k| ui.painter().layout_no_wrap(k.to_string(), small.clone(), p.text_faint));
-    let fixed = icon_g.as_ref().map_or(0.0, |g| g.size().x + gap)
-        + extra_g.as_ref().map_or(0.0, |g| g.size().x + gap)
-        + key_g.as_ref().map_or(0.0, |g| g.size().x + gap)
-        + pad * 2.0;
-    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), small, color);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((max - fixed).max(24.0));
-    let text_g = ui.painter().layout_job(job);
-    let size = vec2(fixed + text_g.size().x, 20.0);
-    let (rect, resp) = ui.allocate_exact_size(size, if click { Sense::click() } else { Sense::hover() });
-    if ui.is_rect_visible(rect) {
-        if click && resp.hovered() {
-            ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
-        }
-        let mut x = rect.left() + pad;
-        let cy = rect.center().y;
-        for (g, c) in [(icon_g, color), (Some(text_g), color), (extra_g, p.text_faint), (key_g, p.text_faint)].into_iter() {
-            if let Some(g) = g {
-                let w = g.size();
-                ui.painter().galley(pos2(x, cy - w.y / 2.0), g, c);
-                x += w.x + gap;
-            }
-        }
-    }
-    if click && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    resp
-}
-
-/// A quiet "·" between groups of the status bar.
-fn dot_sep(ui: &mut Ui, p: &style::Palette) {
-    let (rect, _) = ui.allocate_exact_size(vec2(12.0, 20.0), Sense::hover());
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "·", egui::FontId::proportional(style::LABEL), p.text_ghost);
-}
-
-/// "⌕ Commands ⌘K" at the right end of the status bar.
-fn commands_item(ui: &mut Ui, p: &style::Palette, key: &str) -> egui::Response {
-    let font = egui::FontId::proportional(style::LABEL);
-    let label = ui.painter().layout_no_wrap(t("Commands").to_string(), font, p.text_muted);
-    let kw = if key.is_empty() { 0.0 } else { kit::kbd_width(ui.painter(), key).max(16.0) + 6.0 };
-    let (rect, resp) = ui.allocate_exact_size(vec2(6.0 + 12.0 + 6.0 + label.size().x + kw + 6.0, 20.0), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    let cy = rect.center().y;
-    ui.painter().text(pos2(rect.left() + 6.0 + 6.0, cy), Align2::CENTER_CENTER, icons::MAGNIFYING_GLASS, style::icon_font(12.0), p.text_muted);
-    let lw = label.size().x;
-    ui.painter().galley(pos2(rect.left() + 24.0, cy - label.size().y / 2.0), label, if resp.hovered() { p.text } else { p.text_muted });
-    if !key.is_empty() {
-        kit::paint_kbd_sized(ui.painter(), pos2(rect.left() + 24.0 + lw + 6.0, cy), key, p, 16.0);
-    }
-    resp
-}
-
-/// The status bar's lead: the status glyph, the project, what waits there ("Claude Code wants to
-/// run `flutter test`"), how many more, and ⌘J (with "Next:" and ⇧⌘J when the pane in view was
-/// skipped).
-#[allow(clippy::too_many_arguments)]
-fn lead(ui: &mut Ui, p: &style::Palette, s: Status, next: bool, project: &str, who: &str, what: &str, code: Option<&str>, more: usize, max: f32) -> egui::Response {
-    let font = egui::FontId::proportional(style::LABEL);
-    let mut job = egui::text::LayoutJob::default();
-    let fmt = |f: egui::FontId, c: egui::Color32| egui::TextFormat::simple(f, c);
-    if next {
-        job.append(t("Next:"), 0.0, fmt(font.clone(), p.text_faint));
-        job.append(project, 6.0, fmt(style::medium(style::LABEL), p.text));
-    } else {
-        job.append(project, 0.0, fmt(style::medium(style::LABEL), p.text));
-    }
-    job.append("·", 6.0, fmt(font.clone(), p.text_faint));
-    job.append(&format!("{who} {what}"), 6.0, fmt(font.clone(), p.text_muted));
-    if let Some(code) = code {
-        job.append(code, 5.0, fmt(style::mono(10.5), p.text));
-    }
-    if more > 0 {
-        job.append(&crate::i18n::tf("+{} more", &[&more.to_string()]), 6.0, fmt(font.clone(), p.text_faint));
-    }
-    let keys = kit::keys(&Action::NextAttention).unwrap_or_default();
-    let back = if next { kit::keys(&Action::BackAttention) } else { None };
-    let kw = |k: &str| kit::kbd_width(ui.painter(), k).max(16.0);
-    let tail = if keys.is_empty() { 0.0 } else { 6.0 + kw(keys) } + back.map_or(0.0, |b| 8.0 + kw(b) + 4.0 + ui.painter().layout_no_wrap(t("back").to_string(), font.clone(), p.text_ghost).size().x);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((max - 18.0 - tail - 8.0).max(40.0));
-    let g = ui.painter().layout_job(job);
-    let (rect, resp) = ui.allocate_exact_size(vec2(4.0 + 12.0 + 6.0 + g.size().x + tail + 6.0, 20.0), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(5), p.hover);
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    let cy = rect.center().y;
-    super::status::paint_glyph(ui.painter(), pos2(rect.left() + 4.0 + 6.0, cy), s, p, 12.0);
-    let mut x = rect.left() + 4.0 + 12.0 + 6.0;
+    let g = ui.painter().layout_no_wrap(text.to_string(), font, color);
+    let kw = keys.map_or(0.0, |k| kit::kbd_width(ui.painter(), k) + 6.0);
+    let (r, resp) = ui.allocate_exact_size(vec2(12.0 + 6.0 + g.size().x + kw, 20.0), Sense::click());
+    let cy = r.center().y;
+    mark(ui.painter(), pos2(r.left() + 6.0, cy));
     let gw = g.size().x;
-    ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
-    x += gw;
-    if !keys.is_empty() {
-        x += 6.0;
-        x += kit::paint_kbd_sized(ui.painter(), pos2(x, cy), keys, p, 16.0);
+    ui.painter().galley(pos2(r.left() + 18.0, cy - g.size().y / 2.0), g, color);
+    if let Some(k) = keys {
+        kit::paint_kbd_text(ui.painter(), pos2(r.left() + 18.0 + gw + 6.0, cy), k, &p);
     }
-    if let Some(b) = back {
-        x += 8.0;
-        x += kit::paint_kbd_sized(ui.painter(), pos2(x, cy), b, p, 16.0) + 4.0;
-        ui.painter().text(pos2(x, cy), Align2::LEFT_CENTER, t("back"), font, p.text_ghost);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp
 }
-

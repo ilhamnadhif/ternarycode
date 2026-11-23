@@ -81,7 +81,7 @@ pub struct Panel {
 }
 
 /// The share of the area a panel takes by default, and its bounds.
-pub const PANEL_SHARE: f32 = 0.45;
+pub const PANEL_SHARE: f32 = 0.42;
 /// The least width a panel gets (a page narrower than this is a phone's).
 pub const PANEL_MIN: f32 = 440.0;
 

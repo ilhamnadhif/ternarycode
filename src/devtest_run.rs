@@ -592,6 +592,8 @@ impl App {
                     "pick" => Some(Action::PickPreset),
                     "files-scope" => Some(Action::QuickOpen),
                     "grid" => Some(Action::SetView(tc_core::model::View::Grid)),
+                    "history" => Some(Action::History),
+                    "expand-panel" => Some(Action::TogglePanelExpanded),
                     "grid-all" => Some(Action::GridFilter(tc_core::model::GridFilter::All)),
                     "grid-waiting" => Some(Action::GridFilter(tc_core::model::GridFilter::Waiting)),
                     "ide" => {
@@ -776,9 +778,14 @@ impl App {
                 }
             }
             "hook" => {
-                // `hook PANE AGENT EVENT [KIND [MESSAGE…]]`: the real hook program, for any pane.
+                // `hook PANE AGENT EVENT [KIND [MESSAGE…]]`: the real hook program, for any pane
+                // (`.`: the one in view).
                 let mut parts = arg.split_whitespace();
-                let pane: u64 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+                // `.` is the pane in view.
+                let pane: u64 = match parts.next() {
+                    Some(".") => self.current_pane().unwrap_or(0),
+                    p => p.and_then(|p| p.parse().ok()).unwrap_or(0),
+                };
                 let (agent, event, kind) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next());
                 let message = parts.collect::<Vec<_>>().join(" ");
                 let message = if message.is_empty() { "Allow Bash: cargo test --workspace".to_string() } else { message };

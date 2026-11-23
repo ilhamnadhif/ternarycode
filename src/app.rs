@@ -239,6 +239,8 @@ pub struct PaneSearch {
     pub current: Option<tc_term::alacritty_terminal::term::search::Match>,
     pub opened: bool,
     pub missing: bool,
+    /// Where the current match is among all of them (1 = the newest) and how many there are.
+    pub count: Option<(usize, usize)>,
 }
 
 /// Git status runs at once for at most this many projects (more wait their turn).
@@ -306,6 +308,8 @@ pub struct App {
     /// What the sidebar's project search holds, and the row of its results the keyboard is on.
     pub project_filter: String,
     pub project_filter_sel: usize,
+    /// The keyboard moved the sidebar search's choice: scroll it into view.
+    pub project_filter_reveal: bool,
     /// The rows the sidebar's list showed last frame that ↑ ↓ and Enter choose from, in the
     /// order they show (Active first, folded groups left out).
     pub project_filter_rows: Vec<ProjectId>,
@@ -696,6 +700,7 @@ impl App {
             inbox_rect: None,
             project_filter: String::new(),
             project_filter_sel: 0,
+            project_filter_reveal: false,
             project_filter_rows: Vec::new(),
             close_after_save: Vec::new(),
             session_lists: HashMap::new(),
@@ -1031,13 +1036,20 @@ impl App {
     }
 
     /// The projects (worktrees aside) in ⌘1–⌘9's order.
+    /// The projects (worktrees aside) in the sidebar's order, the one ⌘1–9 count in.
     pub fn top_order(&self) -> Vec<ProjectId> {
-        let listed: Vec<ProjectId> = self.projects.iter().filter(|p| !p.is_worktree()).map(|p| p.id).collect();
-        if !self.settings.sidebar_hidden && self.sidebar_order.len() == listed.len() && listed.iter().all(|id| self.sidebar_order.contains(id)) {
-            self.sidebar_order.clone()
-        } else {
-            listed
-        }
+        self.projects.iter().filter(|p| !p.is_worktree() || p.parent.and_then(|x| self.project(x)).is_none()).map(|p| p.id).collect()
+    }
+
+    /// Moves a project one place up or down among the projects (its worktrees go with it).
+    pub fn move_project(&mut self, id: ProjectId, up: bool) {
+        let tops = self.top_order();
+        let Some(at) = tops.iter().position(|x| *x == id) else { return };
+        let other = if up { at.checked_sub(1) } else { (at + 1 < tops.len()).then_some(at + 1) };
+        let Some(other) = other.map(|k| tops[k]) else { return };
+        let (Some(a), Some(b)) = (self.projects.iter().position(|x| x.id == id), self.projects.iter().position(|x| x.id == other)) else { return };
+        self.projects.swap(a, b);
+        self.mark_dirty();
     }
 
     pub(crate) fn show_focus(&mut self) {
@@ -2995,6 +3007,7 @@ impl App {
                     self.mark_dirty();
                 }
             }
+            Action::MoveProject(id, up) => self.move_project(id, up),
             Action::SelectProjectIndex(i) => {
                 if let Some(id) = self.top_order().get(i).copied() {
                     self.dispatch(ctx, Action::SelectProject(id));
@@ -3765,6 +3778,7 @@ impl App {
                         current: None,
                         opened: true,
                         missing: false,
+                        count: None,
                     });
                 }
             }
@@ -4188,6 +4202,18 @@ impl App {
         for (i, key) in digits.iter().enumerate() {
             if ctx.input_mut(|inp| inp.consume_shortcut(&KeyboardShortcut::new(cmd, *key))) {
                 self.actions.push(Action::SelectProjectIndex(i));
+            }
+        }
+        // ⌥⌘↑ / ⌥⌘↓ (Ctrl+Alt elsewhere): the project in view moves up or down the sidebar.
+        let move_mods = if cfg!(target_os = "macos") { Modifiers::MAC_CMD | Modifiers::ALT } else { Modifiers::CTRL | Modifiers::ALT };
+        if !self.overlay_open()
+            && let Some(id) = self.active.and_then(|id| self.root_project(id)).map(|x| x.id)
+        {
+            if ctx.input_mut(|inp| inp.consume_shortcut(&KeyboardShortcut::new(move_mods, Key::ArrowUp))) {
+                self.actions.push(Action::MoveProject(id, true));
+            }
+            if ctx.input_mut(|inp| inp.consume_shortcut(&KeyboardShortcut::new(move_mods, Key::ArrowDown))) {
+                self.actions.push(Action::MoveProject(id, false));
             }
         }
         // Shift+1 reads as "!" where egui knows that key (the other digits fall back to the

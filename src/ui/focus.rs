@@ -396,6 +396,8 @@ impl App {
         self.last_full_body = Some(body);
 
         // ----- the stage (terminals) and the right panel (Changes, Files, History, Browser) -----
+        // The page in front follows the terminal the user picks.
+        self.panel_follow(pid);
         let (stage, panel) = self.panel_split(pid, body);
         if let Some((rect, tab)) = panel {
             self.right_panel(ui, pid, rect, tab);
@@ -533,11 +535,28 @@ impl App {
         // Beside the panel, panes side by side too narrow for a terminal show stacked instead.
         let cell = style.cell;
         let (mut rects, mut dividers) = tab.layout.arrange(panes_area);
+        let kept_side = self.panel_of(pid).is_some_and(|x| x.side_by_side);
         let too_narrow = rects.len() > 1
             && panel.is_some()
+            && !kept_side
             && rects.iter().any(|(_, r)| widget::grid_for(term_rect(*r, false), cell).cols < super::browser_panel::MIN_COLS);
         if too_narrow {
             (rects, dividers) = tab.layout.stacked().arrange(panes_area);
+        }
+        // Told once per run (a tile lays its panes the same way).
+        let told = self.panel_of(pid).is_some_and(|x| x.told_stacked);
+        let browser_beside = panel.is_some_and(|(_, t)| t == super::panel::PanelTab::Browser);
+        if let Some(x) = self.panel_mut(pid) {
+            x.stacked = too_narrow && browser_beside;
+            x.floating = false;
+            x.told_stacked |= too_narrow && browser_beside;
+        }
+        if too_narrow && browser_beside && !told {
+            self.toast_with(
+                crate::app::ToastKind::Info,
+                t("Terminals stacked while the browser is open").to_string(),
+                Some((t("Keep side by side").to_string(), Action::PanelSideBySide(pid))),
+            );
         }
         let single = rects.len() == 1;
         // Where panes go, for sizing new ones before they start (no resize right after).
@@ -966,75 +985,92 @@ impl App {
         let mut close = take_keys && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         // Kept inside the pane, however narrow (else it covers the pane beside it, or leaves the
         // window): the field gives up width first.
-        let field_w = (rect.width() - 200.0).clamp(60.0, 170.0);
+        let field_w = (rect.width() - 230.0).clamp(60.0, 150.0);
         let dark = ui.visuals().dark_mode;
         egui::Area::new(egui::Id::new("find-bar"))
             .order(egui::Order::Foreground)
-            .fixed_pos(pos2((rect.right() - 330.0).max(rect.left() + 6.0), rect.top() + 6.0))
+            .fixed_pos(pos2((rect.right() - 340.0).max(rect.left() + 6.0), rect.top() + 8.0))
             .constrain_to(rect)
             .show(ui.ctx(), |ui| {
                 egui::Frame::NONE
-                    .fill(p.overlay)
+                    .fill(p.menu)
                     .stroke(Stroke::new(1.0, p.border_strong))
-                    .corner_radius(CornerRadius::same(8))
-                    .shadow(egui::epaint::Shadow {
-                        offset: [0, 8],
-                        blur: 20,
-                        spread: 0,
-                        color: egui::Color32::from_black_alpha(if dark { 120 } else { 32 }),
-                    })
-                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .corner_radius(CornerRadius::same(9))
+                    .shadow(egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: egui::Color32::from_black_alpha(if dark { 89 } else { 26 }) })
+                    .inner_margin(egui::Margin { left: 10, right: 4, top: 0, bottom: 0 })
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
+                        ui.set_height(36.0);
+                        ui.horizontal_centered(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            let r = kit::field(
-                                ui,
-                                egui::Id::new("pane-find-input"),
-                                &mut search.query,
-                                Some(icons::MAGNIFYING_GLASS),
-                                t("Find in this pane"),
-                                field_w,
-                                true,
+                            ui.label(RichText::new(icons::MAGNIFYING_GLASS).font(style::icon_font(14.0)).color(p.text_faint));
+                            let fid = egui::Id::new("pane-find-input");
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut search.query)
+                                    .id(fid)
+                                    .frame(egui::Frame::NONE)
+                                    .hint_text(RichText::new(t("Find")).color(p.text_faint))
+                                    .font(egui::FontId::proportional(style::BODY))
+                                    .text_color(p.text)
+                                    .desired_width(field_w),
                             );
-                        if search.opened {
-                            r.request_focus();
-                            search.opened = false;
-                        }
-                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        let shift = ui.input(|i| i.modifiers.shift);
-                        let mut go: Option<bool> = None;
-                        if r.changed() {
-                            search.current = None;
-                            go = Some(true);
-                        }
-                        if enter {
-                            go = Some(!shift);
-                            r.request_focus();
-                        }
-                        if kit::icon_button(ui, icons::ARROW_UP, t("Older")).clicked() {
-                            go = Some(true);
-                        }
-                        if kit::icon_button(ui, icons::ARROW_DOWN, t("Newer")).clicked() {
-                            go = Some(false);
-                        }
-                        if let Some(backward) = go {
-                            match tc_term::search::find(&shared, &search.query, search.current.as_ref(), backward) {
-                                Some(m) => {
-                                    tc_term::search::reveal(&shared, &m);
-                                    search.current = Some(m);
-                                    search.missing = false;
-                                }
-                                None => search.missing = !search.query.is_empty(),
+                            if search.opened {
+                                r.request_focus();
+                                search.opened = false;
                             }
-                        }
-                        if search.missing {
-                            ui.label(RichText::new(t("Not found")).size(style::SMALL).color(p.err));
-                        }
-                        if kit::icon_button(ui, icons::X, t("Close")).clicked() {
-                            close = true;
-                        }
+                            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            let mut go: Option<bool> = None;
+                            if r.changed() {
+                                search.current = None;
+                                go = Some(true);
+                            }
+                            if enter {
+                                go = Some(!shift);
+                                r.request_focus();
+                            }
+                            // "3 of 12", or that nothing matches.
+                            let (count, c) = match (search.count, search.missing) {
+                                (_, true) => (t("No results").to_string(), p.err),
+                                (Some((at, n)), _) => (tf("{} of {}", &[&at.to_string(), &n.to_string()]), p.text_muted),
+                                (None, _) => (String::new(), p.text_muted),
+                            };
+                            ui.label(RichText::new(count).font(style::mono(style::DATA)).color(c));
+                            // Capitals in the query make it match case.
+                            let cased = search.query.chars().any(char::is_uppercase);
+                            let (ar, _) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::hover());
+                            if cased {
+                                ui.painter().rect_filled(ar, CornerRadius::same(5), p.accent_soft);
+                            }
+                            ui.painter().text(ar.center(), Align2::CENTER_CENTER, "Aa", style::medium(style::SMALL), if cased { p.text } else { p.text_muted });
+                            ui.interact(ar, fid.with("case"), Sense::hover()).on_hover_text(t("Matches case when the query has capitals"));
+                            let (sep, _) = ui.allocate_exact_size(vec2(1.0, 16.0), Sense::hover());
+                            ui.painter().vline(sep.center().x, sep.y_range(), Stroke::new(1.0, p.border_strong));
+                            if kit::icon_button_ex(ui, icons::CARET_UP, t("Older"), false, 24.0).clicked() {
+                                go = Some(true);
+                            }
+                            if kit::icon_button_ex(ui, icons::CARET_DOWN, t("Newer"), false, 24.0).clicked() {
+                                go = Some(false);
+                            }
+                            if let Some(backward) = go {
+                                match tc_term::search::find(&shared, &search.query, search.current.as_ref(), backward) {
+                                    Some(m) => {
+                                        tc_term::search::reveal(&shared, &m);
+                                        let all = tc_term::search::find_all(&shared, &search.query, 999);
+                                        search.count = all.iter().position(|(x, _)| x == &m).map(|i| (i + 1, all.len()));
+                                        search.current = Some(m);
+                                        search.missing = false;
+                                    }
+                                    None => {
+                                        search.missing = !search.query.is_empty();
+                                        search.count = None;
+                                    }
+                                }
+                            }
+                            if kit::icon_button_ex(ui, icons::X, t("Close"), false, 24.0).clicked() {
+                                close = true;
+                            }
+                        });
                     });
-                });
             });
         if close {
             let pane = search.pane;
@@ -1275,8 +1311,8 @@ impl App {
         let who = pane.tracker.agent.map_or_else(|| t("The agent").to_string(), |a| a.label().to_string());
         let ask = ask_of(pane.tracker.message.as_deref());
         let (title, body, primary, secondary) = match &ask {
-            Ask::Permission { tool, target } if tool == "Bash" => (tf("{} wants to run a command", &[&who]), Some(target.clone()), t("Approve"), Some(t("Reject"))),
-            Ask::Permission { tool, target } => (tf("{} wants to use {}", &[&who, tool]), Some(target.clone()), t("Approve"), Some(t("Reject"))),
+            Ask::Permission { tool, target } if tool == "Bash" => (tf("{} wants to run a command", &[&who]), Some(format!("Bash · {target}")), t("Approve"), Some(t("Reject"))),
+            Ask::Permission { tool, target } => (tf("{} wants to use {}", &[&who, tool]), Some(format!("{tool} · {target}")), t("Approve"), Some(t("Reject"))),
             Ask::Plan(plan) => (tf("{} wants to apply its plan", &[&who]), Some(plan.clone()), t("Approve"), Some(t("Reject"))),
             Ask::Question(q) => (tf("{} has a question", &[&who]), Some(q.clone()), t("Answer in terminal"), None),
             Ask::Confirm(said) => (tf("{} needs your confirmation", &[&who]), said.clone(), t("Approve"), Some(t("Reject"))),

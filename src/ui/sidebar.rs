@@ -1,121 +1,618 @@
-//! The sidebar: where and who. The Focus | Grid switch, the inbox of what waits for the user
-//! (only while something does), the project list (FR-P3) by name with a search over it, each
-//! project with its most urgent status, a dot per pane and a count of what it has that was not
-//! seen yet (right-click for the rest), and Settings at the bottom. Files live in the Code drawer
-//! at the right.
+//! The sidebar (Slate): the places on top (Search, Inbox, Overview), then the projects in the
+//! order the user chose (⌘1–9 never move), the selected one opening its sessions (its tabs) and
+//! worktrees, then the account in use as one meter and Settings at the foot. Narrow (⌥⌘B), a
+//! rail of tiles. Typing in Search filters the projects in place.
 
 use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use super::{icons, kit, status, style};
 use crate::actions::Action;
 use crate::app::{App, Dialog};
-use crate::i18n::t;
-use crate::project::COLORS;
+use crate::i18n::{t, tf};
 use tc_core::model::View;
 use tc_core::status::Status;
 
-/// A project: its name over a line about it.
-const PROJECT_H: f32 = 48.0;
-/// A worktree under its project: its name over its branch.
-const WORKTREE_H: f32 = 42.0;
-/// Height of the row at the top of the sidebar and of the project header beside it.
+/// Height of the project bar beside the title row (the Focus view's top bar).
 pub const TOP_H: f32 = 44.0;
-/// The narrow sidebar (⌥⌘B): project tiles only.
-pub const COMPACT_W: f32 = 64.0;
-/// Height of a section title ("Projects").
-pub const SECTION_H: f32 = 30.0;
-/// The row at the bottom (Settings).
-const FOOT_H: f32 = 42.0;
+/// The title row (the window's buttons on macOS, Hide Sidebar).
+const TITLE_H: f32 = 40.0;
+/// The narrow sidebar (⌥⌘B): a rail of tiles.
+pub const COMPACT_W: f32 = 76.0;
+/// A section's header ("Projects").
+pub const SECTION_H: f32 = 28.0;
 const PAD: f32 = 8.0;
-/// A group's line in the project list (Active, Idle).
-const GROUP_H: f32 = 28.0;
+const GAP: f32 = 10.0;
+const NAV_H: f32 = 30.0;
+const SEARCH_H: f32 = 30.0;
+const PROJECT_H: f32 = 32.0;
+const SESSION_H: f32 = 28.0;
+const FOOT_H: f32 = 30.0;
+const USAGE_H: f32 = 68.0;
 
-/// How long a project stays under Active after it went quiet (it does not leave just as you
-/// reach for it). The end-to-end checks make it shorter.
-fn active_linger() -> std::time::Duration {
-    #[cfg(debug_assertions)]
-    if let Some(ms) = std::env::var("TERNARYCODE_ACTIVE_LINGER_MS").ok().and_then(|v| v.parse().ok()) {
-        return std::time::Duration::from_millis(ms);
-    }
-    std::time::Duration::from_secs(30)
-}
-
-/// A line of the project list: a group's header (Active or not), or a project's row (its index,
-/// the letters found, dimmed, another worktree after it).
+/// A line of the project list.
 enum Line {
-    Group(bool),
-    Row((usize, Vec<bool>, bool, bool)),
+    /// A project (index), the letters the search found, dimmed (shown for a worktree found
+    /// under it).
+    Project(usize, Vec<bool>, bool),
+    /// A tab of the selected project (its index in the project's tabs).
+    Session(tc_core::ProjectId, usize),
+    /// A worktree under its project, the letters found.
+    Worktree(usize, Vec<bool>),
 }
-/// At most this many waiting panes are listed in the queue (the rest: "N more…").
-const INBOX_MAX: usize = 5;
+
+/// What a session row shows.
+struct SessionRow {
+    title: String,
+    agent: Option<tc_core::agent::AgentKind>,
+    meta: String,
+    status: Option<Status>,
+    on: bool,
+}
 
 impl App {
-    /// The narrow sidebar: the toggle, then a tile per project (the one in view raised; a dot
-    /// when it waits for the user, failed or finished unseen), Settings at the foot. Hovering a
-    /// tile names it; a click shows it.
+    pub fn sidebar(&mut self, ui: &mut Ui) {
+        let p = style::pal(ui);
+        let full = ui.max_rect();
+        let inner_l = full.left() + PAD;
+        let inner_r = full.right() - PAD;
+
+        // ----- title row: the window's buttons, the drag area, Hide Sidebar -----------------
+        let title = Rect::from_min_size(full.min, vec2(full.width(), TITLE_H));
+        super::view::window_drag_area(ui, title, "sidebar-top");
+        let toggle = Rect::from_center_size(pos2(full.right() - 6.0 - 13.0, title.center().y), vec2(26.0, 26.0));
+        let r = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(toggle), |ui| {
+                kit::icon_button_ex(ui, icons::SIDEBAR_SIMPLE, &kit::tip(t("Hide Sidebar"), Action::ToggleSidebar), false, 26.0)
+            })
+            .inner;
+        #[cfg(debug_assertions)]
+        crate::devtest::record("hide-sidebar", toggle);
+        if r.clicked() {
+            self.actions.push(Action::ToggleSidebar);
+        }
+        let mut y = title.bottom();
+
+        // ----- Search: filters the projects here (⌘K searches everything) --------------------
+        let search = Rect::from_min_size(pos2(inner_l, y), vec2(inner_r - inner_l, SEARCH_H));
+        let typing = self.sidebar_search(ui, search);
+        y = search.bottom() + GAP;
+        let searching = typing || !self.project_filter.trim().is_empty();
+
+        // ----- Inbox, Overview ---------------------------------------------------------------
+        if !searching {
+            let waiting = self.attention_queue().len();
+            let inbox = Rect::from_min_size(pos2(inner_l, y), vec2(inner_r - inner_l, NAV_H));
+            let r = nav_item(ui, inbox, icons::TRAY, t("Inbox"), (waiting > 0).then_some(waiting), None, self.attention_open, &p);
+            #[cfg(debug_assertions)]
+            crate::devtest::record("nav:inbox", inbox);
+            if r.on_hover_text(kit::tip(t("Everything that waits for you"), Action::ToggleAttention)).clicked() {
+                self.actions.push(Action::ToggleAttention);
+            }
+            let overview = inbox.translate(vec2(0.0, NAV_H + 2.0));
+            let keys = kit::keys(&Action::ToggleGrid);
+            let r = nav_item(ui, overview, icons::SQUARES_FOUR, t("Overview"), None, keys, self.view == View::Grid && !self.attention_open, &p);
+            #[cfg(debug_assertions)]
+            crate::devtest::record("nav:overview", overview);
+            if r.on_hover_text(t("Every project at once")).clicked() {
+                self.actions.push(Action::SetView(if self.view == View::Grid { View::Focus } else { View::Grid }));
+            }
+            y = overview.bottom() + GAP;
+        }
+
+        // ----- foot: the account in use, Settings (while searching: the keys) -------------------
+        let bottom = full.bottom() - 10.0;
+        let list_bottom = if searching {
+            let hint = Rect::from_min_max(pos2(inner_l, bottom - 18.0), pos2(inner_r, bottom));
+            ui.painter().text(pos2(hint.left() + 2.0, hint.center().y), Align2::LEFT_CENTER, t("↑↓ choose · ↵ open · esc clear"), egui::FontId::proportional(style::SMALL), p.text_faint);
+            hint.top() - GAP
+        } else {
+            let foot = Rect::from_min_max(pos2(inner_l, bottom - FOOT_H), pos2(inner_r, bottom));
+            self.sidebar_footer(ui, foot);
+            let mut top = foot.top() - GAP;
+            if let Some(meter) = self.usage_meter_data() {
+                let rect = Rect::from_min_max(pos2(inner_l, top - USAGE_H), pos2(inner_r, top));
+                if rect.top() > y + SECTION_H + 3.0 * PROJECT_H {
+                    self.usage_meter(ui, rect, &meter);
+                    top = rect.top() - GAP;
+                }
+            }
+            top
+        };
+
+        // ----- projects ---------------------------------------------------------------------
+        let list = Rect::from_min_max(pos2(full.left(), y.min(list_bottom)), pos2(full.right(), list_bottom.max(y)));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
+            ui.set_clip_rect(list.intersect(ui.clip_rect()));
+            self.project_list(ui, searching)
+        });
+    }
+
+    /// The search field at the top: a magnifier, what is typed (or "Search…" and ⌘K), × to
+    /// empty it. While it has the keyboard ↑ ↓ choose a project, ↵ opens it, Esc empties it and
+    /// lets go. Returns whether it has the keyboard.
+    fn sidebar_search(&mut self, ui: &mut Ui, rect: Rect) -> bool {
+        let p = style::pal(ui);
+        let fid = egui::Id::new("project-filter");
+        let typing = ui.memory(|m| m.has_focus(fid));
+        #[cfg(debug_assertions)]
+        crate::devtest::record("project-filter", rect);
+        let found = std::mem::take(&mut self.project_filter_rows);
+        let n = found.len();
+        let mut sel = self.project_filter_sel.min(n.saturating_sub(1));
+        let mut open = None;
+        if typing && !self.overlay_open() {
+            use egui::{Key, Modifiers};
+            let (down, up, enter, esc) = ui.input_mut(|i| {
+                (
+                    i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                    i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                    i.consume_key(Modifiers::NONE, Key::Enter),
+                    i.consume_key(Modifiers::NONE, Key::Escape),
+                )
+            });
+            if down && n > 0 {
+                sel = (sel + 1) % n;
+                self.project_filter_reveal = true;
+            }
+            if up && n > 0 {
+                sel = (sel + n - 1) % n;
+                self.project_filter_reveal = true;
+            }
+            if enter && let Some(&id) = found.get(sel) {
+                open = Some(id);
+            }
+            if esc || open.is_some() {
+                self.project_filter.clear();
+                sel = 0;
+                ui.memory_mut(|m| m.surrender_focus(fid));
+            }
+        }
+        let typing = ui.memory(|m| m.has_focus(fid));
+        // The field: inset with the accent ring while typed into, else a quiet fill.
+        let painter = ui.painter();
+        if typing {
+            painter.rect(rect.expand(3.0), CornerRadius::same(11), egui::Color32::TRANSPARENT, Stroke::new(3.0, style::soft(p.ring, 0.25)), StrokeKind::Inside);
+            painter.rect(rect, CornerRadius::same(8), p.inset, Stroke::new(1.0, p.accent), StrokeKind::Inside);
+        } else {
+            painter.rect(rect, CornerRadius::same(8), p.hover, Stroke::new(1.0, p.border), StrokeKind::Inside);
+        }
+        painter.text(pos2(rect.left() + 10.0 + 7.0, rect.center().y), Align2::CENTER_CENTER, icons::MAGNIFYING_GLASS, style::icon_font(14.0), if typing { p.text_muted } else { p.text_faint });
+        let text_rect = Rect::from_min_max(pos2(rect.left() + 10.0 + 14.0 + 8.0, rect.top()), pos2(rect.right() - 30.0, rect.bottom()));
+        let mut text = self.project_filter.clone();
+        let edit = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .id(fid)
+                        .frame(egui::Frame::NONE)
+                        .font(egui::FontId::proportional(style::BODY))
+                        .text_color(p.text)
+                        .desired_width(text_rect.width())
+                        .vertical_align(egui::Align::Center)
+                        .min_size(vec2(text_rect.width(), text_rect.height())),
+                )
+            })
+            .inner;
+        if edit.changed() {
+            self.project_filter = text;
+            sel = 0;
+            self.project_filter_reveal = true;
+        }
+        if edit.has_focus() {
+            ui.memory_mut(|m| m.set_focus_lock_filter(fid, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, escape: true, ..Default::default() }));
+        }
+        if self.project_filter.is_empty() {
+            ui.painter().text(pos2(text_rect.left(), rect.center().y), Align2::LEFT_CENTER, t("Search…"), egui::FontId::proportional(style::BODY), p.text_faint);
+            if !typing && let Some(k) = kit::keys(&Action::Palette) {
+                let kw = kit::kbd_width(ui.painter(), k);
+                kit::paint_kbd_text(ui.painter(), pos2(rect.right() - 6.0 - kw, rect.center().y), k, &p);
+            }
+        } else {
+            let x = Rect::from_center_size(pos2(rect.right() - 8.0 - 9.0, rect.center().y), vec2(18.0, 18.0));
+            let r = ui.interact(x, fid.with("clear"), Sense::click()).on_hover_text(t("Clear"));
+            let c = if r.hovered() { p.text } else { p.text_faint };
+            ui.painter().text(x.center(), Align2::CENTER_CENTER, icons::X_CIRCLE, style::icon_fill(14.0), c);
+            if r.clicked() {
+                self.project_filter.clear();
+                sel = 0;
+                ui.memory_mut(|m| m.request_focus(fid));
+            }
+        }
+        self.project_filter_sel = sel;
+        if let Some(id) = open {
+            self.actions.push(Action::SelectProject(id));
+        }
+        ui.memory(|m| m.has_focus(fid))
+    }
+
+    /// Settings at the foot, ⌘, at its right.
+    fn sidebar_footer(&mut self, ui: &mut Ui, rect: Rect) {
+        let p = style::pal(ui);
+        let label = t("Settings");
+        let g = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(style::BODY), p.text_muted);
+        let b = Rect::from_min_size(rect.min, vec2(8.0 + 16.0 + 10.0 + g.size().x + 8.0, FOOT_H));
+        let r = ui.interact(b, egui::Id::new("sidebar-settings"), Sense::click());
+        #[cfg(debug_assertions)]
+        crate::devtest::record("sidebar-settings", b);
+        let painter = ui.painter();
+        let hot = r.hovered();
+        if hot {
+            painter.rect_filled(b, CornerRadius::same(style::RADIUS_ROW), p.hover);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let ink = if hot { p.text } else { p.text_muted };
+        painter.text(pos2(b.left() + 8.0 + 8.0, b.center().y), Align2::CENTER_CENTER, icons::GEAR_SIX, style::icon_font(16.0), ink);
+        painter.galley(pos2(b.left() + 8.0 + 16.0 + 10.0, b.center().y - g.size().y / 2.0), g, ink);
+        if let Some(k) = kit::keys(&Action::Settings) {
+            painter.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, k, style::mono(style::DATA), p.text_ghost);
+        }
+        if r.clicked() {
+            self.actions.push(Action::Settings);
+        }
+    }
+
+    /// The account the meter at the foot shows: the one the agent in view uses, else the one
+    /// most used in its short window (only accounts whose usage is known).
+    fn usage_meter_data(&self) -> Option<UsageMeter> {
+        let profiles = self.effective_profiles();
+        let pick_id = self.current_pane().and_then(|id| self.panes.get(&id)).and_then(|x| x.active_profile.clone());
+        let candidates = profiles.iter().filter(|pr| pr.enabled).filter_map(|pr| {
+            let rt = self.profiles_rt.get(&pr.id)?;
+            let pct = rt.quota_5h_used_pct(pr).or_else(|| rt.quota_weekly_used_pct(pr))?;
+            Some((pr, rt, pct))
+        });
+        let mut best: Option<(&tc_core::model::AgentProfile, &crate::profiles::ProfileRuntime, f32)> = None;
+        for c in candidates {
+            if pick_id.as_deref() == Some(c.0.id.as_str()) {
+                best = Some(c);
+                break;
+            }
+            if best.as_ref().is_none_or(|b| c.2 > b.2) {
+                best = Some(c);
+            }
+        }
+        let (pr, rt, pct) = best?;
+        let now = std::time::Instant::now();
+        let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        let short = rt.quota_5h_used_pct(pr).is_some();
+        let (window, reset) = if short {
+            (rt.window_5h_label(), rt.window_5h_reset_secs(now_unix, now))
+        } else {
+            (rt.window_weekly_label(), rt.window_weekly_reset_secs(now_unix))
+        };
+        Some(UsageMeter {
+            agent: pr.agent,
+            label: format!("{} · {}", short_agent(pr.agent), pr.id),
+            pct,
+            window,
+            reset: reset.map(|s| tf("resets {}", &[&crate::profiles::format_countdown(s)])),
+            limited: matches!(rt.state, crate::profiles::ProfileState::RateLimited | crate::profiles::ProfileState::Cooldown),
+        })
+    }
+
+    /// The meter: the agent's mark, "Claude · claude1", how much is used, a bar, the window and
+    /// when it resets. A click opens Accounts & usage.
+    fn usage_meter(&mut self, ui: &mut Ui, rect: Rect, m: &UsageMeter) {
+        let p = style::pal(ui);
+        let r = ui.interact(rect, egui::Id::new("usage-meter"), Sense::click());
+        #[cfg(debug_assertions)]
+        crate::devtest::record("usage-meter", rect);
+        let painter = ui.painter();
+        let open = self.monitor_popover;
+        painter.rect_filled(rect, CornerRadius::same(8), if r.hovered() || open { p.subtle } else { p.hover });
+        if r.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let inner = rect.shrink(10.0);
+        let row1 = inner.top() + 8.0;
+        kit::paint_agent_avatar(painter, Rect::from_center_size(pos2(inner.left() + 8.0, row1), vec2(16.0, 16.0)), Some(m.agent), &p);
+        let pct = format!("{}%", m.pct.round() as u32);
+        let pg = painter.layout_no_wrap(pct, style::mono(style::DATA), p.text_muted);
+        let pw = pg.size().x;
+        painter.galley(pos2(inner.right() - pw, row1 - pg.size().y / 2.0), pg, p.text_muted);
+        let mut job = egui::text::LayoutJob::simple_singleline(m.label.clone(), style::medium(style::SMALL), p.text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((inner.width() - 24.0 - pw - 8.0).max(20.0));
+        let g = painter.layout_job(job);
+        painter.galley(pos2(inner.left() + 24.0, row1 - g.size().y / 2.0), g, p.text);
+        let track = Rect::from_min_size(pos2(inner.left(), row1 + 8.0 + 7.0), vec2(inner.width(), 4.0));
+        painter.rect_filled(track, CornerRadius::same(2), p.subtle);
+        let fill_c = if m.limited || m.pct >= 90.0 { p.rate_limited } else { p.accent };
+        let fw = (track.width() * (m.pct / 100.0).clamp(0.0, 1.0)).max(if m.pct > 0.0 { 4.0 } else { 0.0 });
+        painter.rect_filled(Rect::from_min_size(track.min, vec2(fw, 4.0)), CornerRadius::same(2), fill_c);
+        let row3 = track.bottom() + 7.0 + 7.0;
+        painter.text(pos2(inner.left(), row3), Align2::LEFT_CENTER, tf("{} window", &[&m.window]), egui::FontId::proportional(style::LABEL), p.text_faint);
+        if let Some(reset) = &m.reset {
+            painter.text(pos2(inner.right(), row3), Align2::RIGHT_CENTER, reset, egui::FontId::proportional(style::LABEL), p.text_faint);
+        }
+        if r.on_hover_text(t("Accounts & usage")).clicked() {
+            self.monitor_popover = !self.monitor_popover;
+        }
+        self.monitor_pill_rect = Some(rect);
+    }
+
+    /// The projects: "Projects", how many, Search and Add; then each project in its place, the
+    /// selected one with its sessions and worktrees under it. While searching: what was found,
+    /// the keyboard's row with ↵.
+    fn project_list(&mut self, ui: &mut Ui, searching: bool) {
+        let p = style::pal(ui);
+        let dark = ui.visuals().dark_mode;
+        let area = ui.max_rect();
+        let total = self.projects.iter().filter(|x| !x.is_worktree()).count();
+        let fid = egui::Id::new("project-filter");
+        let typing = ui.memory(|m| m.has_focus(fid));
+
+        // Header.
+        let head = Rect::from_min_size(pos2(area.left() + PAD, area.top()), vec2(area.width() - 2.0 * PAD, SECTION_H));
+        let g = kit::section_galley(ui.painter(), t("Projects"), p.text_faint);
+        let gw = g.size().x;
+        ui.painter().galley(pos2(head.left() + 8.0, head.center().y - g.size().y / 2.0), g, p.text_faint);
+        if !searching {
+            ui.painter().text(pos2(head.left() + 8.0 + gw + 6.0, head.center().y), Align2::LEFT_CENTER, total.to_string(), style::mono(style::DATA), p.text_ghost);
+            let add = Rect::from_center_size(pos2(head.right() - 6.0 - 11.0, head.center().y), vec2(22.0, 22.0));
+            #[cfg(debug_assertions)]
+            crate::devtest::record("add-project", add);
+            let r = ui.scope_builder(egui::UiBuilder::new().max_rect(add), |ui| kit::icon_button_ex(ui, icons::PLUS, &kit::tip(t("Add Project…"), Action::AddProject), false, 22.0)).inner;
+            if r.clicked() {
+                self.actions.push(Action::AddProject);
+            }
+            if total > 0 {
+                let find = add.translate(vec2(-24.0, 0.0));
+                let r = ui.scope_builder(egui::UiBuilder::new().max_rect(find), |ui| kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS, t("Search Projects"), false, 22.0)).inner;
+                if r.clicked() {
+                    ui.memory_mut(|m| m.request_focus(fid));
+                }
+            }
+        }
+        let list = Rect::from_min_max(pos2(area.left(), head.bottom() + 2.0), area.max);
+        if total == 0 {
+            self.no_projects_card(ui, Rect::from_min_size(pos2(area.left() + PAD, list.top() + 2.0), vec2(area.width() - 2.0 * PAD, 150.0)));
+            self.project_filter_rows.clear();
+            return;
+        }
+
+        // The lines.
+        let query = self.project_filter.trim().to_string();
+        let filtering = !query.is_empty();
+        let mut lines: Vec<Line> = Vec::new();
+        if filtering {
+            for (i, dim) in self.project_matches() {
+                let pr = &self.projects[i];
+                let marks = if dim { Vec::new() } else { super::palette::matched(&query, &pr.name) };
+                if pr.is_worktree() {
+                    lines.push(Line::Worktree(i, marks));
+                } else {
+                    lines.push(Line::Project(i, marks, dim));
+                }
+            }
+        } else {
+            let active_root = self.active.and_then(|id| self.root_project(id)).map(|x| x.id);
+            for (i, pr) in self.projects.iter().enumerate().filter(|(_, x)| !x.is_worktree() || x.parent.and_then(|id| self.project(id)).is_none()) {
+                lines.push(Line::Project(i, Vec::new(), false));
+                if active_root != Some(pr.id) {
+                    continue;
+                }
+                // The selected project: its tabs, then its worktrees.
+                for k in 0..pr.tabs.len() {
+                    lines.push(Line::Session(pr.id, k));
+                }
+                for (j, _) in self.projects.iter().enumerate().filter(|(_, x)| x.parent == Some(pr.id)) {
+                    lines.push(Line::Worktree(j, Vec::new()));
+                }
+            }
+        }
+        if filtering && lines.is_empty() {
+            ui.painter().text(pos2(list.left() + PAD + 8.0, list.top() + 14.0), Align2::LEFT_CENTER, t("No matching projects."), egui::FontId::proportional(style::SMALL), p.text_faint);
+            self.project_filter_rows.clear();
+            return;
+        }
+        let sel = self.project_filter_sel;
+        let reveal = std::mem::take(&mut self.project_filter_reveal);
+        let top_indices: std::collections::HashMap<tc_core::ProjectId, usize> = self.top_order().into_iter().enumerate().map(|(idx, pid)| (pid, idx)).collect();
+        let mut order = Vec::new();
+        let mut pick: Option<Action> = None;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(vec2(PAD, 0.0))), |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(if filtering { "project-list-found" } else { "project-list" })
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let mut found = 0usize;
+                    for line in &lines {
+                        match line {
+                            Line::Project(i, marks, dim) => {
+                                let pr = &self.projects[*i];
+                                let id = pr.id;
+                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), PROJECT_H), Sense::click());
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record(format!("project:{}", pr.name), rect);
+                                let chosen = typing && !dim && found == sel;
+                                if !dim {
+                                    found += 1;
+                                    order.push(id);
+                                }
+                                if chosen && reveal {
+                                    ui.scroll_to_rect(rect, None);
+                                }
+                                if !ui.is_rect_visible(rect) {
+                                    continue;
+                                }
+                                let selected = !filtering && self.active == Some(id) && self.view == View::Focus && !self.attention_open;
+                                let row = self.project_row(pr, &p);
+                                paint_project_row(ui, rect, &row, &pr.letters(), pr.color32(), marks, selected, resp.hovered() || chosen, *dim, chosen, dark, &p);
+                                if resp.clicked() {
+                                    pick = Some(Action::SelectProject(id));
+                                }
+                                let name = row.name.clone();
+                                let index = top_indices.get(&id).copied().unwrap_or(usize::MAX);
+                                let resp = resp.on_hover_ui(|ui| self.project_tooltip(ui, id, index));
+                                resp.context_menu(|ui| self.project_menu(ui, id, &name));
+                            }
+                            Line::Worktree(j, marks) => {
+                                let pr = &self.projects[*j];
+                                let id = pr.id;
+                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SESSION_H), Sense::click());
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record(format!("project:{}", pr.name), rect);
+                                let chosen = typing && found == sel;
+                                found += 1;
+                                order.push(id);
+                                if chosen && reveal {
+                                    ui.scroll_to_rect(rect, None);
+                                }
+                                if !ui.is_rect_visible(rect) {
+                                    continue;
+                                }
+                                let selected = !filtering && self.active == Some(id) && self.view == View::Focus && !self.attention_open;
+                                let st = self.project_status(pr).map(|(s, _)| s).filter(|s| shows_status(*s));
+                                let branch = pr.git.as_ref().map(|g| g.branch.clone()).unwrap_or_default();
+                                paint_worktree_row(ui, rect, &pr.name, &branch, marks, st, selected, resp.hovered() || chosen, &p);
+                                if resp.clicked() {
+                                    pick = Some(Action::SelectProject(id));
+                                }
+                                resp.context_menu(|ui| self.worktree_menu(ui, id));
+                            }
+                            Line::Session(pid, k) => {
+                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SESSION_H), Sense::click());
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record(format!("session:{pid}:{k}"), rect);
+                                if !ui.is_rect_visible(rect) {
+                                    continue;
+                                }
+                                let Some(s) = self.session_row(*pid, *k) else { continue };
+                                paint_session_row(ui, rect, &s, resp.hovered(), &p);
+                                if resp.on_hover_text(&s.title).clicked() {
+                                    pick = Some(Action::SelectTab(*k));
+                                    if self.active != Some(*pid) {
+                                        self.actions.push(Action::SelectProject(*pid));
+                                    }
+                                    if self.view != View::Focus {
+                                        self.actions.push(Action::SetView(View::Focus));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+        });
+        self.project_filter_rows = order;
+        if let Some(a) = pick {
+            if self.attention_open {
+                self.attention_open = false;
+            }
+            self.actions.push(a);
+        }
+    }
+
+    /// A tab of a project as a session row: who works there, what it is called, how long it
+    /// has been at it (or the port its server listens on), its status.
+    fn session_row(&self, project: tc_core::ProjectId, k: usize) -> Option<SessionRow> {
+        let pr = self.project(project)?;
+        let tab = pr.tabs.get(k)?;
+        let pane = self.panes.get(&tab.focused);
+        let title = tab.title.clone().unwrap_or_else(|| self.leaf_label(tab.focused));
+        let urgent = tab
+            .layout
+            .panes()
+            .iter()
+            .filter_map(|id| self.panes.get(id))
+            .filter_map(|x| Some(x.tracker.status).filter(|s| shows_status(*s)))
+            .min_by_key(|s| s.priority());
+        let server = self.project_servers(project).into_iter().find(|(id, _)| tab.layout.panes().contains(id)).map(|(_, s)| s.url);
+        let meta = match (&server, pane) {
+            (Some(url), _) => super::focus::server_label(url).rsplit_once(':').map_or_else(|| super::focus::server_label(url).to_string(), |(_, port)| format!(":{port}")),
+            (None, Some(x)) if x.tracker.agent.is_some() && !matches!(x.tracker.status, Status::Idle | Status::Unknown | Status::Ended) => short_age(x.tracker.since.elapsed().as_secs()),
+            _ => String::new(),
+        };
+        Some(SessionRow {
+            title,
+            agent: pane.and_then(|x| x.tracker.agent.or(x.last_agent)),
+            meta,
+            status: urgent,
+            on: self.view == View::Focus && pr.active_tab == k && self.active == Some(project) && !self.attention_open,
+        })
+    }
+
+    /// No projects yet: a dashed card with Add project.
+    fn no_projects_card(&mut self, ui: &mut Ui, rect: Rect) {
+        let p = style::pal(ui);
+        let painter = ui.painter();
+        kit::dashed_rect(painter, rect, 10.0, p.border_strong);
+        let cx = rect.center().x;
+        let mut y = rect.top() + 24.0;
+        painter.text(pos2(cx, y + 10.0), Align2::CENTER_CENTER, icons::FOLDER_SIMPLE_PLUS, style::icon_font(20.0), p.text_faint);
+        y += 20.0 + 8.0;
+        painter.text(pos2(cx, y + 9.0), Align2::CENTER_CENTER, t("No projects yet"), style::medium(style::BODY), p.text);
+        y += 18.0 + 8.0;
+        let mut job = egui::text::LayoutJob::simple(t("Drop a folder here, or add one.").to_string(), egui::FontId::proportional(style::SMALL), p.text_muted, 180.0);
+        job.halign = egui::Align::Center;
+        let g = painter.layout_job(job);
+        let gh = g.size().y;
+        painter.galley(pos2(cx, y), g, p.text_muted);
+        y += gh + 8.0;
+        let keys = kit::keys(&Action::AddProject);
+        let w = kit::button_width(ui, None, t("Add project"), keys, true);
+        let b = Rect::from_min_size(pos2(cx - w / 2.0, y), vec2(w, kit::BUTTON_S));
+        let r = ui.scope_builder(egui::UiBuilder::new().max_rect(b), |ui| kit::button_keys(ui, kit::Kind::Secondary, None, t("Add project"), keys, true)).inner;
+        #[cfg(debug_assertions)]
+        crate::devtest::record("add-project-card", r.rect);
+        if r.clicked() {
+            self.actions.push(Action::AddProject);
+        }
+    }
+
+    /// The narrow sidebar: Search, Inbox (its count on it), Overview, then a tile per project
+    /// (the selected one raised, a dot when it waits, failed or finished unseen), Settings at
+    /// the foot. Hovering a tile names it.
     pub fn sidebar_compact(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
         let dark = ui.visuals().dark_mode;
         let full = ui.max_rect();
-        let top = Rect::from_min_size(full.min, vec2(full.width(), TOP_H));
-        super::view::window_drag_area(ui, top, "sidebar-top");
-        // The window's buttons take the top row on macOS: the toggle goes under them.
-        let fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-        let lights = crate::platform::traffic_light_inset(fullscreen) > 0.0;
-        let toggle_y = if lights { top.bottom() + 4.0 + 12.0 } else { top.center().y };
-        let toggle = Rect::from_center_size(pos2(full.center().x, toggle_y), vec2(26.0, 26.0));
-        let r = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(toggle), |ui| {
-                kit::icon_button_ex(ui, icons::SIDEBAR_SIMPLE, &kit::tip(t("Full Sidebar"), Action::ToggleCompactSidebar), false, 26.0)
-            })
-            .inner;
+        let title = Rect::from_min_size(full.min, vec2(full.width(), TITLE_H));
+        super::view::window_drag_area(ui, title, "sidebar-top");
+        let cx = full.center().x;
+        let cell = |y: f32| Rect::from_min_size(pos2(cx - 18.0, y), vec2(36.0, 32.0));
+        let mut y = title.bottom();
+        // Search (the full sidebar comes back with the field in it).
+        let r = rail_button(ui, cell(y), icons::MAGNIFYING_GLASS, &kit::tip(t("Search"), Action::Palette), false, true, &p);
         if r.clicked() {
-            self.actions.push(Action::ToggleCompactSidebar);
+            self.actions.push(Action::Palette);
         }
-        const COMPACT_FOOT_H: f32 = 104.0;
-        let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - COMPACT_FOOT_H), full.max);
-        ui.painter().hline(foot.x_range(), foot.top() + 0.5, Stroke::new(1.0, p.border));
-        let cx = foot.center().x;
-        let (_, limited, _, _) = self.telemetry_summary();
-        let prof_r = Rect::from_center_size(pos2(cx, foot.top() + 20.0), vec2(28.0, 28.0));
-        let pr_btn = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(prof_r), |ui| {
-                kit::icon_button_ex(ui, icons::USER, t("Agent Profiles"), self.view == View::Profiles, 28.0)
-            })
-            .inner;
+        y += 32.0 + 8.0;
+        let waiting = self.attention_queue().len();
+        let r = rail_button(ui, cell(y), icons::TRAY, &kit::tip(t("Inbox"), Action::ToggleAttention), self.attention_open, false, &p);
         #[cfg(debug_assertions)]
-        crate::devtest::record("sidebar-profiles", prof_r);
-        if limited > 0 {
-            ui.painter().circle_filled(pos2(prof_r.right() - 5.0, prof_r.top() + 5.0), 3.0, p.rate_limited);
+        crate::devtest::record("nav:inbox", r.rect);
+        if waiting > 0 {
+            let text = waiting.to_string();
+            let g = ui.painter().layout_no_wrap(text, style::mono_semibold(style::DATA - 1.0), egui::Color32::from_rgb(0x11, 0x11, 0x13));
+            let w = (g.size().x + 6.0).max(14.0);
+            let badge = Rect::from_min_size(pos2(r.rect.left() + 22.0, r.rect.top() - 3.0), vec2(w, 14.0));
+            ui.painter().rect_filled(badge, CornerRadius::same(7), p.warn);
+            ui.painter().galley(badge.center() - g.size() / 2.0, g, egui::Color32::BLACK);
         }
-        if pr_btn.clicked() {
-            self.actions.push(Action::OpenProfiles);
+        if r.clicked() {
+            self.actions.push(Action::ToggleAttention);
         }
-        let pair_r = Rect::from_center_size(pos2(cx, foot.top() + 52.0), vec2(28.0, 28.0));
-        let pair_btn = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(pair_r), |ui| {
-                kit::icon_button_ex(ui, icons::DEVICE_MOBILE, t("Phone Pairing"), self.view == View::Pairing, 28.0)
-            })
-            .inner;
+        y += 32.0 + 8.0;
+        let r = rail_button(ui, cell(y), icons::SQUARES_FOUR, &kit::tip(t("Overview"), Action::ToggleGrid), self.view == View::Grid && !self.attention_open, false, &p);
         #[cfg(debug_assertions)]
-        crate::devtest::record("sidebar-pairing", pair_r);
-        if self.companion.is_some() {
-            ui.painter().circle_filled(pos2(pair_r.right() - 5.0, pair_r.top() + 5.0), 3.0, p.ok);
+        crate::devtest::record("nav:overview", r.rect);
+        if r.clicked() {
+            self.actions.push(Action::SetView(if self.view == View::Grid { View::Focus } else { View::Grid }));
         }
-        if pair_btn.clicked() {
-            self.actions.push(Action::OpenPhonePairing);
-        }
-        let gear = Rect::from_center_size(pos2(cx, foot.top() + 84.0), vec2(28.0, 28.0));
-        let g = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(gear), |ui| kit::icon_button_ex(ui, icons::GEAR_SIX, &kit::tip(t("Settings"), Action::Settings), false, 28.0))
-            .inner;
+        y += 32.0 + 8.0;
+        ui.painter().hline((cx - 14.0)..=(cx + 14.0), y + 0.5, Stroke::new(1.0, p.border));
+        y += 1.0 + 8.0;
+        let gear = Rect::from_min_size(pos2(cx - 18.0, full.bottom() - 10.0 - 32.0), vec2(36.0, 32.0));
+        let r = rail_button(ui, gear, icons::GEAR_SIX, &kit::tip(t("Settings"), Action::Settings), false, false, &p);
         #[cfg(debug_assertions)]
-        crate::devtest::record("sidebar-settings", g.rect);
-        if g.clicked() {
+        crate::devtest::record("sidebar-settings", gear);
+        if r.clicked() {
             self.actions.push(Action::Settings);
         }
         // The projects (a worktree shows as its project).
-        let list = Rect::from_min_max(pos2(full.left(), toggle.bottom() + 10.0), pos2(full.right(), foot.top() - 6.0));
+        let list = Rect::from_min_max(pos2(full.left(), y), pos2(full.right(), gear.top() - 8.0));
         let active_root = self.active.and_then(|id| self.root_project(id)).map(|x| x.id);
         let rows: Vec<(tc_core::ProjectId, String, String, egui::Color32, Option<egui::Color32>)> = self
             .projects
@@ -144,29 +641,28 @@ impl App {
             .collect();
         let mut pick = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
-            ui.set_clip_rect(list);
+            ui.set_clip_rect(list.intersect(ui.clip_rect()));
             egui::ScrollArea::vertical()
                 .id_salt("sidebar-compact")
                 .auto_shrink([false, false])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.spacing_mut().item_spacing.y = 8.0;
                     for (id, name, letters, color, dot) in &rows {
-                        let (cell, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
-                        let on = active_root == Some(*id);
-                        let back = Rect::from_center_size(cell.center(), vec2(38.0, 38.0));
+                        let (cell, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+                        let on = active_root == Some(*id) && self.view == View::Focus && !self.attention_open;
+                        let back = Rect::from_center_size(cell.center(), vec2(36.0, 36.0));
                         if on {
-                            ui.painter().rect(back, CornerRadius::same(9), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-                            kit::paint_highlight(ui.painter(), back, 9, &p);
+                            raised(ui.painter(), back, 8, &p);
                         } else if resp.hovered() {
-                            ui.painter().rect_filled(back, CornerRadius::same(9), p.hover);
+                            ui.painter().rect_filled(back, CornerRadius::same(8), p.hover);
                         }
-                        let tile = Rect::from_center_size(cell.center(), vec2(24.0, 24.0));
+                        let tile = Rect::from_center_size(cell.center(), vec2(20.0, 20.0));
                         kit::paint_project_tile(ui.painter(), tile, letters, *color, dark);
                         if let Some(c) = dot {
-                            let at = pos2(tile.right() + 1.0, tile.top() - 1.0);
-                            ui.painter().circle_filled(at, 5.5, p.chrome);
-                            ui.painter().circle_filled(at, 3.5, *c);
+                            let at = pos2(back.left() + 27.0 + 4.0, back.top() + 1.0 + 4.0);
+                            ui.painter().circle_filled(at, 5.0, p.chrome);
+                            ui.painter().circle_filled(at, 3.0, *c);
                         }
                         #[cfg(debug_assertions)]
                         crate::devtest::record(format!("project:{name}"), cell);
@@ -177,855 +673,9 @@ impl App {
                 });
         });
         if let Some(id) = pick {
+            self.attention_open = false;
             self.actions.push(Action::SelectProject(id));
         }
-    }
-
-    pub fn sidebar(&mut self, ui: &mut Ui) {
-        let full = ui.max_rect();
-
-        // ----- top row: room for the window buttons, the window drag area, the toggle ----------
-        let top = Rect::from_min_size(full.min, vec2(full.width(), TOP_H));
-        super::view::window_drag_area(ui, top, "sidebar-top");
-        let toggle = Rect::from_center_size(pos2(top.right() - PAD - 2.0 - 11.0, top.center().y), vec2(22.0, 22.0));
-        let r = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(toggle), |ui| {
-                kit::icon_button_ex(ui, icons::SIDEBAR_SIMPLE, &kit::tip(t("Hide Sidebar"), Action::ToggleSidebar), false, 22.0)
-            })
-            .inner;
-        if r.clicked() {
-            self.actions.push(Action::ToggleSidebar);
-        }
-
-        // ----- the switch, the queue ------------------------------------------------------------
-        // Without window buttons in the top row (Windows, Linux, full screen) the switch goes
-        // up into it.
-        let mut y = top.bottom();
-        let fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-        let lights = crate::platform::traffic_light_inset(fullscreen) > 0.0;
-        if !self.projects.is_empty() {
-            if lights {
-                let row = Rect::from_min_size(pos2(full.left() + PAD, y + 2.0), vec2(full.width() - 2.0 * PAD, kit::SEGMENTED_H));
-                self.view_switch(ui, row);
-                y = row.bottom() + 10.0;
-            } else {
-                let row = Rect::from_min_max(pos2(full.left() + PAD, top.center().y - kit::SEGMENTED_H / 2.0), pos2(toggle.left() - 8.0, top.center().y + kit::SEGMENTED_H / 2.0));
-                self.view_switch(ui, row);
-                y = top.bottom() + 2.0;
-            }
-        }
-        // ----- the footer: Settings ---------------------------------------------------------------
-        let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - FOOT_H), full.max);
-        self.sidebar_footer(ui, foot);
-
-        if let Some(b) = self.inbox(ui, Rect::from_min_max(pos2(full.left() + PAD, y), pos2(full.right() - PAD, (foot.top() - 8.0).max(y)))) {
-            y = b + 10.0;
-        }
-
-        // ----- projects -------------------------------------------------------------------------
-        let list_top = y.min(foot.top());
-        let list = Rect::from_min_max(pos2(full.left(), list_top), pos2(full.right(), foot.top()));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
-            ui.set_clip_rect(list);
-            self.project_list(ui)
-        });
-    }
-
-    /// What waits for the user, in the order ⌘J takes (the attention queue), at most five
-    /// rows under the switch: the status glyph, the project, the agent and what it asks, how
-    /// long. The pane in view is marked "here"; the one ⌘J goes to next is tinted. Nothing at all
-    /// when nothing waits. Returns its bottom.
-    ///
-    /// ⌥⌘J opens it in full (instead of the attention list over the window, which is for a
-    /// hidden sidebar): every row, the keyboard's row with what can be done with it, and the keys
-    /// (`App::attention_panel` takes them).
-    fn inbox(&mut self, ui: &mut Ui, area: Rect) -> Option<f32> {
-        let queue = self.attention_queue();
-        if queue.is_empty() {
-            return None;
-        }
-        let p = style::pal(ui);
-        let dark = ui.visuals().dark_mode;
-        let here = if self.view == View::Focus { self.current_pane() } else { None };
-        struct Item {
-            pane: tc_core::PaneId,
-            status: Status,
-            project: String,
-            agent: Option<tc_core::agent::AgentKind>,
-            what: String,
-            age: String,
-        }
-        let items: Vec<Item> = queue
-            .iter()
-            .filter_map(|e| {
-                let pane = self.panes.get(&e.pane)?;
-                Some(Item {
-                    pane: e.pane,
-                    status: e.status,
-                    project: self.project_label(pane.project),
-                    agent: pane.tracker.agent.filter(|a| super::agent_logo::has(*a)),
-                    what: attention_short(pane),
-                    age: status::short_age(e.since),
-                })
-            })
-            .collect();
-        let n = items.len();
-        if n == 0 {
-            return None;
-        }
-        // The row ⌘J goes to: the first one that is not the pane in view.
-        let next = items.iter().position(|it| Some(it.pane) != here);
-        const HEAD_H: f32 = 30.0;
-        const ROW_H: f32 = 50.0;
-        const GAP: f32 = 1.0;
-        const MORE_H: f32 = 28.0;
-        // The keyboard's row, open: its buttons under it; the keys at the bottom.
-        const ACT_H: f32 = 36.0;
-        const KEYS_H: f32 = 30.0;
-        let expanded = self.attention_open;
-        if self.attention_sel >= n {
-            self.attention_sel = n - 1;
-        }
-        let sel = self.attention_sel;
-        let (first, shown, more) = if expanded {
-            let room = ((area.height() * 0.6 - HEAD_H - ACT_H - KEYS_H) / (ROW_H + GAP)).floor().max(1.0) as usize;
-            let shown = n.min(room);
-            if sel < self.inbox_scroll {
-                self.inbox_scroll = sel;
-            } else if sel >= self.inbox_scroll + shown {
-                self.inbox_scroll = sel + 1 - shown;
-            }
-            self.inbox_scroll = self.inbox_scroll.min(n - shown);
-            (self.inbox_scroll, shown, 0)
-        } else {
-            let max_fit = ((area.height() * 0.55 - HEAD_H - MORE_H) / (ROW_H + GAP)).floor().max(1.0) as usize;
-            let shown = n.min(INBOX_MAX).min(max_fit);
-            (0, shown, n - shown)
-        };
-        let h = HEAD_H
-            + shown as f32 * (ROW_H + GAP)
-            + if expanded { ACT_H + KEYS_H } else { 0.0 }
-            + if more > 0 { MORE_H } else { 0.0 };
-        let rect = Rect::from_min_size(area.min, vec2(area.width(), h));
-        #[cfg(debug_assertions)]
-        crate::devtest::record("inbox", rect);
-        if expanded {
-            self.inbox_rect = Some(rect);
-            ui.painter().rect(rect.expand2(vec2(4.0, 2.0)), CornerRadius::same(10), p.surface, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
-        }
-
-        // Header: "Waiting for you" and how many; it opens and closes in full (⌥⌘J).
-        let head = Rect::from_min_size(rect.min, vec2(rect.width(), HEAD_H));
-        let hr = ui.interact(head, egui::Id::new("inbox-head"), Sense::click());
-        if hr.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        let tip = if expanded { t("Close") } else { t("Show All") };
-        if hr.on_hover_text(kit::tip(tip, Action::ToggleAttention)).clicked() {
-            self.actions.push(Action::ToggleAttention);
-        }
-        let painter = ui.painter();
-        let cy = head.center().y;
-        let g = kit::section_galley(painter, t("Waiting for you"), p.text_faint);
-        let gw = g.size().x;
-        painter.galley(pos2(head.left() + 8.0, cy - g.size().y / 2.0), g, p.text_faint);
-        let count = n.to_string();
-        let bw = kit::paint_badge(painter, pos2(10_000.0, cy), &count, egui::Color32::TRANSPARENT, egui::Color32::TRANSPARENT, 16.0).width();
-        kit::paint_badge(painter, pos2(head.left() + 8.0 + gw + 8.0 + bw, cy), &count, p.warn, kit::badge_text(p.warn, &p, dark), 16.0);
-        if expanded {
-            let k = kit::kbd_width(painter, "esc");
-            kit::paint_kbd_text(painter, pos2(head.right() - 6.0 - k, cy), "esc", &p);
-            let all = Rect::from_center_size(pos2(head.right() - 6.0 - k - 6.0 - 11.0, cy), vec2(22.0, 22.0));
-            let r = ui
-                .scope_builder(egui::UiBuilder::new().max_rect(all), |ui| kit::icon_button_ex(ui, icons::CHECK, t("Mark All Seen"), false, 22.0))
-                .inner;
-            if r.clicked() {
-                self.actions.push(Action::MarkAllSeen);
-            }
-        } else if let Some(k) = kit::keys(&Action::ToggleAttention) {
-            let w = kit::kbd_width(painter, k);
-            kit::paint_kbd_text(painter, pos2(head.right() - 6.0 - w, cy), k, &p);
-        }
-
-        // Rows.
-        let mut top = head.bottom();
-        let mut chosen: Option<(usize, super::statusbar::Choice)> = None;
-        for (i, it) in items.iter().enumerate().skip(first).take(shown) {
-            let open = expanded && i == sel;
-            let row = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), ROW_H));
-            let r = ui.interact(row, egui::Id::new(("inbox-row", it.pane)), Sense::click());
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("inbox:{}", it.pane), row);
-            #[cfg(debug_assertions)]
-            if expanded {
-                crate::devtest::record(format!("att:{}", it.pane), row);
-            }
-            let is_here = Some(it.pane) == here;
-            let is_next = !expanded && next == Some(i);
-            let painter = ui.painter();
-            let radius = CornerRadius::same(8);
-            if open {
-                painter.rect(row, radius, p.subtle, Stroke::new(1.0, p.border), StrokeKind::Inside);
-            } else if is_here && !expanded {
-                painter.rect(row, radius, p.surface, Stroke::new(1.0, if dark { p.border } else { p.border_strong }), StrokeKind::Inside);
-                kit::paint_highlight(painter, row, 8, &p);
-                // An amber mark at the sidebar's edge.
-                let bar = Rect::from_min_max(pos2(row.left() - PAD, row.top() + 10.0), pos2(row.left() - PAD + 2.0, row.bottom() - 10.0));
-                painter.rect_filled(bar, CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 }, p.warn);
-            } else if is_next {
-                painter.rect(row, radius, style::soft(p.warn, 0.09), Stroke::new(1.0, style::soft(p.warn, 0.22)), StrokeKind::Inside);
-            } else if r.hovered() {
-                painter.rect_filled(row, radius, p.hover);
-            }
-            if r.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            let l1 = row.top() + 7.0 + 9.0;
-            let l2 = row.top() + 7.0 + 18.0 + 2.0 + 8.0;
-            status::paint_glyph(painter, pos2(row.left() + 8.0 + 8.0, l1 + 1.0), it.status, &p, 14.0);
-            let tx = row.left() + 8.0 + 18.0 + 8.0;
-            let right = row.right() - 8.0;
-            // At the right of the first line: how long, and ⌘J (next) or "here".
-            let age_g = painter.layout_no_wrap(it.age.clone(), style::mono(10.5), p.text_faint);
-            let mut rx = right - age_g.size().x;
-            painter.galley(pos2(rx, l1 - age_g.size().y / 2.0), age_g, p.text_faint);
-            if is_next && let Some(k) = kit::keys(&Action::NextAttention) {
-                rx -= 6.0 + kit::kbd_width(painter, k);
-                kit::paint_kbd_text(painter, pos2(rx, l1), k, &p);
-            } else if is_here && !expanded {
-                let g = painter.layout_no_wrap(t("here").to_string(), style::medium(10.5), p.text_faint);
-                rx -= 6.0 + g.size().x;
-                painter.galley(pos2(rx, l1 - g.size().y / 2.0), g, p.text_faint);
-            }
-            let mut job = egui::text::LayoutJob::simple_singleline(it.project.clone(), style::medium(13.0), p.text);
-            job.wrap = egui::text::TextWrapping::truncate_at_width((rx - 6.0 - tx).max(10.0));
-            let g = painter.layout_job(job);
-            painter.galley(pos2(tx, l1 - g.size().y / 2.0), g, p.text);
-            // Second line: the agent's logo and what it asks.
-            let mut wx = tx;
-            if let Some(a) = it.agent {
-                super::agent_logo::paint(painter, Rect::from_center_size(pos2(wx + 6.0, l2), vec2(12.0, 12.0)), a, p.text_muted, false);
-                wx += 12.0 + 5.0;
-            } else {
-                painter.text(pos2(wx + 6.0, l2), Align2::CENTER_CENTER, icons::TERMINAL_WINDOW, style::icon_font(12.0), p.text_faint);
-                wx += 12.0 + 5.0;
-            }
-            let mut job = egui::text::LayoutJob::simple_singleline(it.what.clone(), egui::FontId::proportional(12.0), p.text_muted);
-            job.wrap = egui::text::TextWrapping::truncate_at_width((right - wx).max(10.0));
-            let g = painter.layout_job(job);
-            painter.galley(pos2(wx, l2 - g.size().y / 2.0), g, p.text_muted);
-            if r.clicked() {
-                if expanded {
-                    chosen = Some((i, super::statusbar::Choice::Jump));
-                } else {
-                    self.actions.push(Action::FocusPane(it.pane));
-                }
-            } else if expanded && r.hovered() && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
-                self.attention_sel = i;
-            }
-            top = row.bottom() + GAP;
-            if open {
-                // What can be done with it: jump there, review it (when done), mark it as seen.
-                use super::statusbar::Choice;
-                let cy = top + ACT_H / 2.0;
-                let max_x = rect.right() - 6.0;
-                let mut bx = tx.min(max_x);
-                let button = |ui: &mut Ui, bx: &mut f32, kind: kit::Kind, icon: Option<&str>, text: &str, keys: Option<&str>| {
-                    let mut k = keys;
-                    let mut w = kit::button_width(ui, icon, text, k, true);
-                    if *bx + w > max_x {
-                        k = None;
-                        w = kit::button_width(ui, icon, text, None, true).min((max_x - *bx).max(0.0));
-                    }
-                    let r = Rect::from_min_size(pos2(*bx, cy - 12.0), vec2(w, 24.0));
-                    *bx += w + 6.0;
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
-                        ui.set_clip_rect(r.intersect(rect));
-                        kit::button_keys(ui, kind, icon, text, k, true)
-                    })
-                    .inner
-                };
-                if button(ui, &mut bx, kit::Kind::Primary, None, t("Jump"), Some("↵")).clicked() {
-                    chosen = Some((i, Choice::Jump));
-                }
-                if it.status == Status::Done && bx + 48.0 <= max_x {
-                    let b = button(ui, &mut bx, kit::Kind::Secondary, Some(icons::GIT_DIFF), t("Review"), None);
-                    #[cfg(debug_assertions)]
-                    crate::devtest::record(format!("att-review:{}", it.pane), b.rect);
-                    if b.clicked() {
-                        chosen = Some((i, Choice::Review));
-                    }
-                }
-                if bx + 44.0 <= max_x && button(ui, &mut bx, kit::Kind::Secondary, None, t("Mark as Seen"), Some("⌫")).clicked() {
-                    chosen = Some((i, Choice::Seen));
-                }
-                top += ACT_H;
-            }
-        }
-        if expanded {
-            // The keys at the bottom.
-            let keys = Rect::from_min_max(pos2(rect.left(), top), pos2(rect.right(), top + KEYS_H));
-            ui.painter().hline(keys.x_range(), keys.top() + 0.5, Stroke::new(1.0, p.border));
-            let inner = Rect::from_min_max(pos2(keys.left() + 8.0, keys.top()), pos2(keys.right() - 8.0, keys.bottom()));
-            // R only for a finished agent; what does not fit is left out (the row's buttons say it).
-            let done = items.get(sel).is_some_and(|x| x.status == Status::Done);
-            let mut hints: Vec<(&[&str], &str)> = vec![(&["↑", "↓"], t("choose"))];
-            if done {
-                hints.push((&["R"], t("review")));
-            }
-            hints.push((&["⌫"], t("seen")));
-            while hints.len() > 1 && super::statusbar::key_hints_width(ui, &hints) > inner.width() {
-                hints.remove(if done && hints.len() == 3 { 1 } else { hints.len() - 1 });
-            }
-            super::statusbar::paint_key_hints(ui, inner, &hints, None);
-            if let Some(c) = chosen {
-                let mut close = false;
-                self.attention_choose(&queue, c, &mut close);
-                if close {
-                    self.attention_open = false;
-                }
-            }
-        } else if more > 0 {
-            let row = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), MORE_H));
-            let r = ui.interact(row, egui::Id::new("inbox-more"), Sense::click());
-            let painter = ui.painter();
-            if r.hovered() {
-                painter.rect_filled(row, CornerRadius::same(8), p.hover);
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            painter.text(
-                pos2(row.left() + 8.0 + 18.0 + 8.0, row.center().y),
-                Align2::LEFT_CENTER,
-                crate::i18n::tf("{} more…", &[&more.to_string()]),
-                egui::FontId::proportional(12.0),
-                p.text_muted,
-            );
-            if r.clicked() {
-                self.actions.push(Action::ToggleAttention);
-            }
-        }
-        Some(rect.bottom())
-    }
-
-    /// The second line of something waiting: who, and what it says or what happened
-    /// ("Claude Code · Bash: flutter test", "zsh · Failed (code 1)").
-    pub fn attention_detail(&self, pane: &crate::pane::Pane) -> String {
-        format!("{} · {}", pane.label(), attention_what(pane))
-    }
-
-    fn sidebar_footer(&mut self, ui: &mut Ui, rect: Rect) {
-        let p = style::pal(ui);
-        ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.border));
-        let label = t("Settings");
-        let g = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(12.5), p.text_muted);
-        let full_w = 8.0 + 15.0 + 8.0 + g.size().x + 8.0;
-        let nav_w = 2.0 * 28.0 + 8.0;
-        let narrow = rect.width() - 2.0 * PAD - nav_w < full_w;
-        if narrow {
-            let b = Rect::from_min_size(pos2(rect.left() + PAD, rect.center().y - 13.0), vec2(26.0, 26.0));
-            let r = ui
-                .scope_builder(egui::UiBuilder::new().max_rect(b), |ui| {
-                    kit::icon_button_ex(ui, icons::GEAR_SIX, &kit::tip(t("Settings"), Action::Settings), false, 26.0)
-                })
-                .inner;
-            #[cfg(debug_assertions)]
-            crate::devtest::record("sidebar-settings", b);
-            if r.clicked() {
-                self.actions.push(Action::Settings);
-            }
-        } else {
-            let b = Rect::from_min_size(pos2(rect.left() + PAD, rect.center().y - 14.0), vec2(full_w, 28.0));
-            let r = ui.interact(b, egui::Id::new("sidebar-settings"), Sense::click());
-            #[cfg(debug_assertions)]
-            crate::devtest::record("sidebar-settings", b);
-            let painter = ui.painter();
-            let hot = r.hovered();
-            if hot {
-                painter.rect_filled(b, CornerRadius::same(style::RADIUS), p.hover);
-            }
-            painter.text(pos2(b.left() + 8.0 + 7.5, b.center().y), Align2::CENTER_CENTER, icons::GEAR_SIX, style::icon_font(15.0), if hot { p.text } else { p.text_faint });
-            let gw = g.size();
-            painter.galley(pos2(b.left() + 8.0 + 15.0 + 8.0, b.center().y - gw.y / 2.0), g, if hot { p.text } else { p.text_muted });
-            if r.clicked() {
-                self.actions.push(Action::Settings);
-            }
-        }
-
-        // Compact ADE navigation icons at the right of the footer: Profiles and Phone Pairing.
-        // (Usage & Status Monitor lives exclusively in the top-right telemetry pill — zero duplicates.)
-        let mut rx = rect.right() - PAD - 2.0;
-        let mut nav_btn = |ui: &mut Ui, icon: &str, tip: &str, active: bool, dev_id: &str, dot: Option<egui::Color32>| -> bool {
-            let _ = dev_id;
-            let r = Rect::from_center_size(pos2(rx - 13.0, rect.center().y), vec2(26.0, 26.0));
-            rx -= 28.0;
-            let resp = ui
-                .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| kit::icon_button_ex(ui, icon, tip, active, 26.0))
-                .inner;
-            #[cfg(debug_assertions)]
-            crate::devtest::record(dev_id, r);
-            if let Some(c) = dot {
-                ui.painter().circle_filled(pos2(r.right() - 5.0, r.top() + 5.0), 3.0, c);
-            }
-            resp.clicked()
-        };
-        let phone_dot = self.companion.as_ref().map(|_| p.ok);
-        if nav_btn(ui, icons::DEVICE_MOBILE, t("Phone Pairing"), self.view == View::Pairing, "sidebar-pairing", phone_dot) {
-            self.actions.push(Action::OpenPhonePairing);
-        }
-        let (_, limited, _, _) = self.telemetry_summary();
-        let prof_dot = (limited > 0).then_some(p.rate_limited);
-        if nav_btn(ui, icons::USER, t("Agent Profiles"), self.view == View::Profiles, "sidebar-profiles", prof_dot) {
-            self.actions.push(Action::OpenProfiles);
-        }
-    }
-
-    fn project_list(&mut self, ui: &mut Ui) {
-        let p = style::pal(ui);
-        let area = ui.max_rect();
-        let total = self.projects.len();
-
-        // Title: "Projects", how many (how many found, while searching: below), and at the
-        // right the search and +.
-        let title = Rect::from_min_size(area.min, vec2(area.width(), SECTION_H));
-        let g = kit::section_galley(ui.painter(), t("Projects"), p.text_faint);
-        let count_at = pos2(title.left() + PAD + 8.0 + g.size().x + 6.0, title.center().y);
-        ui.painter().galley(pos2(title.left() + PAD + 8.0, title.center().y - g.size().y / 2.0), g, p.text_faint);
-        let paint_count = |ui: &Ui, text: String| ui.painter().text(count_at, Align2::LEFT_CENTER, text, style::mono(10.5), p.text_ghost);
-        let add = Rect::from_center_size(pos2(title.right() - PAD - 6.0 - 11.0, title.center().y), vec2(22.0, 22.0));
-        let find = add.translate(vec2(-24.0, 0.0));
-        #[cfg(debug_assertions)]
-        crate::devtest::record("add-project", add);
-        if ui
-            .scope_builder(egui::UiBuilder::new().max_rect(add), |ui| {
-                kit::icon_button_ex(ui, icons::PLUS, &kit::tip(t("Add Project…"), Action::AddProject), false, 22.0)
-            })
-            .inner
-            .clicked()
-        {
-            self.actions.push(Action::AddProject);
-        }
-        if total == 0 {
-            paint_count(ui, "0".into());
-            // An empty list explains itself.
-            let card_w = (area.width() - 2.0 * PAD).max(60.0);
-            let mut job = egui::text::LayoutJob::default();
-            job.append(t("Drop a folder here, or press"), 0.0, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.text_muted));
-            job.wrap.max_width = (card_w - 24.0).max(20.0);
-            let g = ui.painter().layout_job(job);
-            let key = kit::keys(&Action::AddProject);
-            let kw = key.map_or(0.0, |k| kit::kbd_width(ui.painter(), k));
-            let last_line_w = g.rows.last().map_or(0.0, |r| r.size.x);
-            let inline_key = key.is_some() && last_line_w + 6.0 + kw <= card_w - 24.0;
-            let extra_key_h = if key.is_some() && !inline_key { kit::KBD_H + 6.0 } else { 0.0 };
-            let card_h = (36.0 + g.size().y + extra_key_h + 14.0).max(66.0);
-            let card = Rect::from_min_size(pos2(area.left() + PAD, title.bottom() + 4.0), vec2(card_w, card_h));
-            let cp = ui.painter_at(card);
-            cp.rect(card, CornerRadius::same(8), egui::Color32::TRANSPARENT, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
-            cp.text(pos2(card.left() + 12.0, card.top() + 20.0), Align2::LEFT_CENTER, t("No projects yet."), style::medium(12.5), p.text);
-            let text_top = card.top() + 34.0;
-            let text_bottom = text_top + g.size().y;
-            let last_row_cy = g.rows.last().map_or(text_top + 8.0, |r| text_top + r.rect().center().y);
-            cp.galley(pos2(card.left() + 12.0, text_top), g, p.text_muted);
-            if let Some(k) = key {
-                if inline_key {
-                    kit::paint_kbd_text(&cp, pos2(card.left() + 12.0 + last_line_w + 5.0, last_row_cy), k, &p);
-                } else {
-                    kit::paint_kbd_text(&cp, pos2(card.left() + 12.0, text_bottom + 4.0 + kit::KBD_H / 2.0), k, &p);
-                }
-            }
-            return;
-        }
-
-        // The search: a magnifier in the title opens a field under it. While it has the
-        // keyboard: ↑ ↓ choose a project, Enter opens it (and empties the search), Esc empties
-        // the search, gives the keyboard back and closes the field.
-        let fid = egui::Id::new("project-filter");
-        let open_id = egui::Id::new("project-filter-open");
-        let typing = ui.memory(|m| m.has_focus(fid));
-        let mut search_open = typing || !self.project_filter.is_empty() || ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
-        let was_open = search_open;
-        let fr_find = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(find), |ui| {
-                kit::icon_button_ex(ui, icons::MAGNIFYING_GLASS, t("Search Projects"), search_open, 22.0)
-            })
-            .inner;
-        if fr_find.clicked() {
-            search_open = !was_open;
-            if search_open {
-                ui.memory_mut(|m| m.request_focus(fid));
-            } else {
-                self.project_filter.clear();
-                ui.memory_mut(|m| m.surrender_focus(fid));
-            }
-        }
-        let field = Rect::from_min_size(pos2(area.left() + PAD, title.bottom()), vec2(area.width() - 2.0 * PAD, if search_open { 30.0 } else { 0.0 }));
-        #[cfg(debug_assertions)]
-        crate::devtest::record("project-filter", if search_open { field } else { find });
-        // The rows as they show (the search's order is not theirs: Active comes first).
-        let found = std::mem::take(&mut self.project_filter_rows);
-        let n = found.len();
-        let mut sel = self.project_filter_sel.min(n.saturating_sub(1));
-        let mut reveal = false;
-        let mut open = None;
-        if typing && !self.overlay_open() {
-            use egui::{Key, Modifiers};
-            let (down, up, enter, esc) = ui.input_mut(|i| {
-                (
-                    i.consume_key(Modifiers::NONE, Key::ArrowDown),
-                    i.consume_key(Modifiers::NONE, Key::ArrowUp),
-                    i.consume_key(Modifiers::NONE, Key::Enter),
-                    i.consume_key(Modifiers::NONE, Key::Escape),
-                )
-            });
-            if down && n > 0 {
-                sel = (sel + 1) % n;
-                reveal = true;
-            }
-            if up && n > 0 {
-                sel = (sel + n - 1) % n;
-                reveal = true;
-            }
-            if enter && let Some(&id) = found.get(sel) {
-                open = Some(id);
-            }
-            if esc || open.is_some() {
-                self.project_filter.clear();
-                sel = 0;
-                search_open = false;
-                ui.memory_mut(|m| m.surrender_focus(fid));
-            }
-        }
-        let mut text = self.project_filter.clone();
-        let fr = if search_open {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
-                kit::field(ui, fid, &mut text, Some(icons::MAGNIFYING_GLASS), t("Search projects"), field.width(), false)
-            })
-            .inner
-        } else {
-            ui.interact(Rect::NOTHING, fid.with("closed"), Sense::hover())
-        };
-        // Opened by the magnifier: the field, made this frame, saw that click as one outside it
-        // and let the keyboard go; it takes it again.
-        if fr_find.clicked() && search_open {
-            fr.request_focus();
-        }
-        // Closed again once it neither has the keyboard nor holds letters.
-        let still_open = search_open && (ui.memory(|m| m.has_focus(fid)) || !text.is_empty() || fr_find.clicked());
-        ui.data_mut(|d| d.insert_temp(open_id, still_open));
-        if fr.changed() {
-            self.project_filter = text;
-            sel = 0;
-            reveal = true;
-        }
-        // Esc and ↑ ↓ are the field's (egui would otherwise take the keyboard away on them).
-        if fr.has_focus() {
-            ui.memory_mut(|m| {
-                m.set_focus_lock_filter(fid, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, escape: true, ..Default::default() })
-            });
-        }
-        // An × empties it (and keeps the keyboard there).
-        if search_open && !self.project_filter.is_empty() {
-            let x = Rect::from_center_size(pos2(field.right() - 13.0, field.center().y), vec2(18.0, 18.0));
-            let r = ui.interact(x, fid.with("clear"), Sense::click()).on_hover_text(t("Clear"));
-            let c = if r.hovered() { p.text } else { p.text_faint };
-            ui.painter().text(x.center(), Align2::CENTER_CENTER, icons::X_CIRCLE, style::icon_font(14.0), c);
-            if r.clicked() {
-                self.project_filter.clear();
-                sel = 0;
-                ui.memory_mut(|m| m.request_focus(fid));
-            }
-        }
-        self.project_filter_sel = sel;
-        if let Some(id) = open {
-            self.actions.push(Action::SelectProject(id));
-        }
-        // The list follows what is in the field now (typed, or emptied by Enter, Esc or ×).
-        let shown = self.project_matches();
-        let query = self.project_filter.trim().to_string();
-        let filtering = !query.is_empty();
-        let typing = ui.memory(|m| m.has_focus(fid));
-        let tops = self.projects.iter().filter(|p| !p.is_worktree()).count();
-        let found_tops = shown.iter().filter(|(i, dim)| !dim && !self.projects[*i].is_worktree()).count();
-        paint_count(ui, if filtering { crate::i18n::tf("{} of {}", &[&found_tops.to_string(), &tops.to_string()]) } else { tops.to_string() });
-
-        let list = Rect::from_min_max(pos2(area.left(), field.bottom() + if search_open { 6.0 } else { 0.0 }), area.max);
-        if shown.is_empty() {
-            ui.painter().text(
-                pos2(list.left() + PAD + 8.0, list.top() + 14.0),
-                Align2::LEFT_CENTER,
-                t("No matching projects."),
-                egui::FontId::proportional(12.0),
-                p.text_faint,
-            );
-            return;
-        }
-        // Each row: its project, the letters found, dimmed (a project shown for a worktree found
-        // under it), and for a worktree whether another one follows it. What a row shows is
-        // worked out only when it is in view.
-        let rows: Vec<(usize, Vec<bool>, bool, bool)> = shown
-            .iter()
-            .enumerate()
-            .map(|(k, &(i, dim))| {
-                let pr = &self.projects[i];
-                let marks = if filtering && !dim { super::palette::matched(&query, &pr.name) } else { Vec::new() };
-                let more = pr.is_worktree() && shown.get(k + 1).is_some_and(|&(j, _)| self.projects[j].parent == pr.parent);
-                (i, marks, dim, more)
-            })
-            .collect();
-        // Projects where something runs or waits first, under Active (the Grid's rule), each
-        // with its worktrees. While the pointer is over the list nothing moves.
-        let hold = ui.rect_contains_pointer(list) || typing;
-        let active = if self.settings.group_active { self.sidebar_active(hold) } else { std::collections::HashSet::new() };
-        let top_of = |i: usize| {
-            let pr = &self.projects[i];
-            pr.parent.filter(|x| self.project(*x).is_some()).unwrap_or(pr.id)
-        };
-        let grouped = !active.is_empty();
-        let (first, second): (Vec<_>, Vec<_>) = rows.into_iter().partition(|(i, ..)| grouped && active.contains(&top_of(*i)));
-        if !filtering {
-            self.sidebar_order = first.iter().chain(second.iter()).filter(|(i, ..)| !self.projects[*i].is_worktree()).map(|(i, ..)| self.projects[*i].id).collect();
-        }
-        let tops = |v: &[(usize, Vec<bool>, bool, bool)]| v.iter().filter(|(i, _, dim, _)| !dim && !self.projects[*i].is_worktree()).count();
-        let counts = (tops(&first), tops(&second));
-        let summary = if grouped { self.group_summary(&active) } else { [0; 4] };
-        let mut lines: Vec<Line> = Vec::new();
-        if grouped && !first.is_empty() {
-            lines.push(Line::Group(true));
-            if !self.sidebar_folded.contains("active") {
-                lines.extend(first.into_iter().map(Line::Row));
-            }
-        }
-        if grouped && !second.is_empty() {
-            lines.push(Line::Group(false));
-            if !self.sidebar_folded.contains("idle") {
-                lines.extend(second.into_iter().map(Line::Row));
-            }
-        } else if !grouped {
-            lines.extend(second.into_iter().map(Line::Row));
-        }
-        let mut toggle_group: Option<&str> = None;
-        let mut order = Vec::new();
-        let top_indices: std::collections::HashMap<tc_core::ProjectId, usize> = self
-            .top_order()
-            .into_iter()
-            .enumerate()
-            .map(|(idx, pid)| (pid, idx))
-            .collect();
-        ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(vec2(PAD, 0.0))), |ui| {
-            ui.set_clip_rect(list);
-            // The search's results scroll on their own: the whole list keeps its place.
-            egui::ScrollArea::vertical()
-                .id_salt(if filtering { "project-list-found" } else { "project-list" })
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    let mut result = 0;
-                    let mut groups_seen = 0;
-                    for line in lines.iter() {
-                        let (i, marks, dim, more) = match line {
-                            Line::Group(is_active) => {
-                                // Subtle hairline + breathing space before the second group (`Idle`).
-                                if groups_seen > 0 {
-                                    let (sep_r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
-                                    if ui.is_rect_visible(sep_r) {
-                                        ui.painter().hline(
-                                            (sep_r.left() + 8.0)..=(sep_r.right() - 8.0),
-                                            sep_r.center().y,
-                                            Stroke::new(1.0, p.border),
-                                        );
-                                    }
-                                }
-                                groups_seen += 1;
-                                let key = if *is_active { "active" } else { "idle" };
-                                let folded = self.sidebar_folded.contains(key);
-                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), GROUP_H), Sense::click());
-                                #[cfg(debug_assertions)]
-                                crate::devtest::record(format!("sidebar-group:{key}"), rect);
-                                let (label, count) = if *is_active { (t("Active"), counts.0) } else { (t("Idle"), counts.1) };
-                                let summary: &[(Status, usize)] = if *is_active {
-                                    &[(Status::Running, summary[0]), (Status::NeedsInput, summary[3]), (Status::Done, summary[1]), (Status::Failed(1), summary[2])]
-                                } else {
-                                    &[]
-                                };
-                                paint_group_head(ui, rect, label, count, folded, resp.hovered(), summary, &p);
-                                let resp = if *is_active { resp.on_hover_text(t("Only projects where something runs or waits, or an agent can be resumed")) } else { resp };
-                                if resp.clicked() {
-                                    toggle_group = Some(key);
-                                }
-                                continue;
-                            }
-                            Line::Row(row) => (&row.0, &row.1, &row.2, &row.3),
-                        };
-                        let worktree = self.projects[*i].is_worktree();
-                        let id = self.projects[*i].id;
-                        let sessions_expanded = !worktree && !filtering && self.projects[*i].sessions_expanded;
-                        let h = if worktree { WORKTREE_H } else { PROJECT_H };
-                        // Wrap each project + its nested sessions in a stable ID scope and ALWAYS
-                        // allocate expanded session rows regardless of whether the parent header
-                        // scrolled off the top edge so total scroll height never jumps!
-                        ui.push_id(id, |ui| {
-                            let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
-                            #[cfg(debug_assertions)]
-                            crate::devtest::record(format!("project:{}", self.projects[*i].name), rect);
-                            let active = self.view == View::Focus && self.active == Some(id);
-                            // The keyboard's row (while the search has it) looks hovered, with ↵.
-                            let chosen = typing && !dim && result == sel;
-                            if !dim {
-                                result += 1;
-                                order.push(id);
-                            }
-                            if chosen && reveal {
-                                ui.scroll_to_rect(rect, None);
-                            }
-                            let sessions = if sessions_expanded {
-                                Some(self.merged_project_sessions(id))
-                            } else {
-                                None
-                            };
-                            if ui.is_rect_visible(rect) {
-                                let row = &self.project_row(&self.projects[*i], &p);
-                                let sessions_count = match &sessions {
-                                    Some(v) => v.len(),
-                                    None if !worktree && !filtering => self.project_sessions_count(&self.projects[*i]),
-                                    None => 0,
-                                };
-                                let hovered = response.hovered() || ui.rect_contains_pointer(rect) || chosen;
-                                let mut sub_clicked = false;
-                                if worktree {
-                                    let keys = chosen.then_some("↵");
-                                    paint_worktree_row(ui, rect, row, marks, active, hovered, *more, keys, &p);
-                                } else {
-                                    let top_ix = top_indices.get(&id).copied();
-                                    let keys = if chosen { Some("↵") } else { top_ix.and_then(|t| kit::keys(&Action::SelectProjectIndex(t))) };
-                                    let letters = self.projects[*i].letters();
-                                    let (toggle, sess_toggle) = paint_project_row(
-                                        ui,
-                                        rect,
-                                        row,
-                                        &letters,
-                                        marks,
-                                        active,
-                                        hovered,
-                                        keys,
-                                        *dim,
-                                        sessions_count,
-                                        self.projects[*i].sessions_expanded,
-                                        !filtering,
-                                        &p,
-                                    );
-                                    // "⑂ 2 ˅": folds and unfolds its worktrees.
-                                    if let Some(fold) = toggle {
-                                        let tr = ui.interact(fold, egui::Id::new(("fold-worktrees", id)), Sense::click());
-                                        #[cfg(debug_assertions)]
-                                        crate::devtest::record(format!("fold:{}", row.name), fold);
-                                        let tip = if row.folded { t("Show Worktrees") } else { t("Hide Worktrees") };
-                                        if tr.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
-                                            self.actions.push(Action::ToggleWorktrees(id));
-                                            sub_clicked = true;
-                                        }
-                                    }
-                                    // Inline disclosure chevron for project-nested agent sessions.
-                                    if let Some(stog) = sess_toggle {
-                                        let sr = ui.interact(stog, egui::Id::new(("fold-sessions", id)), Sense::click());
-                                        #[cfg(debug_assertions)]
-                                        crate::devtest::record(format!("sessions-toggle:{}", row.name), stog);
-                                        let tip = if self.projects[*i].sessions_expanded { t("Hide Agent Sessions") } else { t("Show Agent Sessions") };
-                                        if sr.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
-                                            self.actions.push(Action::ToggleProjectSessions(id));
-                                            sub_clicked = true;
-                                        }
-                                    }
-                                }
-                                if response.clicked() && !sub_clicked {
-                                    self.actions.push(Action::SelectProject(id));
-                                }
-                                let name = row.name.clone();
-                                let index = top_indices.get(&id).copied().unwrap_or(usize::MAX);
-                                let response = response.on_hover_ui(|ui| self.project_tooltip(ui, id, index));
-                                if worktree {
-                                    response.context_menu(|ui| self.worktree_menu(ui, id));
-                                } else {
-                                    response.context_menu(|ui| self.project_menu(ui, id, &name));
-                                }
-                            }
-
-                            // Project-nested agent session history (ALWAYS allocated while expanded so scroll height is invariant).
-                            if let Some(sessions) = sessions {
-                                let has_worktrees = !self.projects[*i].folded
-                                    && self.projects.iter().any(|x| x.parent == Some(id));
-                                self.paint_project_sessions(ui, id, &sessions, has_worktrees, &p);
-                            }
-                        });
-                    }
-                });
-        });
-        self.project_filter_rows = order;
-        if let Some(key) = toggle_group {
-            if !self.sidebar_folded.remove(key) {
-                self.sidebar_folded.insert(key.to_string());
-            }
-            self.mark_dirty();
-        }
-    }
-
-    /// The projects (worktrees aside) under the sidebar's Active: something runs or waits in
-    /// them or their worktrees now (the Grid's rule), or did less than `active_linger` ago.
-    /// While `hold` (the pointer over the list, the search typed into) it stays as it was.
-    fn sidebar_active(&mut self, hold: bool) -> std::collections::HashSet<tc_core::ProjectId> {
-        use super::grid::Activity;
-        let now = std::time::Instant::now();
-        let linger = active_linger();
-        let mut wake: Option<std::time::Duration> = None;
-        // One pass: a worktree's activity counts for the project it belongs to.
-        for k in 0..self.projects.len() {
-            let pr = &self.projects[k];
-            let top = pr.parent.filter(|x| self.project(*x).is_some()).unwrap_or(pr.id);
-            match self.project_activity(pr.id, now) {
-                Activity::Active => {
-                    self.sidebar_active_until.insert(top, now + linger);
-                }
-                Activity::Soon(d) => wake = Some(wake.map_or(d, |w| w.min(d))),
-                Activity::Idle => {}
-            }
-        }
-        let projects = &self.projects;
-        self.sidebar_active_until.retain(|id, until| *until > now && projects.iter().any(|p| p.id == *id && !p.is_worktree()));
-        // Drawn again when a program has run long enough, or a quiet project leaves.
-        if let Some(d) = self.sidebar_active_until.values().map(|u| *u - now).min() {
-            wake = Some(wake.map_or(d, |w| w.min(d)));
-        }
-        if let Some(d) = wake {
-            self.ctx.request_repaint_after(d);
-        }
-        let live: std::collections::HashSet<tc_core::ProjectId> = self.sidebar_active_until.keys().copied().collect();
-        if hold {
-            self.sidebar_hold.get_or_insert(live).clone()
-        } else {
-            self.sidebar_hold = None;
-            live
-        }
-    }
-
-    /// How many of these projects are, at their most pressing: running, done, failed, waiting
-    /// for the user (in that order).
-    fn group_summary(&self, ids: &std::collections::HashSet<tc_core::ProjectId>) -> [usize; 4] {
-        let mut out = [0; 4];
-        for &id in ids {
-            let mut rank = 0;
-            for pid in std::iter::once(id).chain(self.worktrees_of(id)) {
-                let Some(pr) = self.project(pid) else { continue };
-                for pane in pr.panes().iter().filter_map(|x| self.panes.get(x)).filter(|x| x.tracker.wants_attention()) {
-                    rank = rank.max(match pane.tracker.status {
-                        Status::NeedsInput => 3,
-                        Status::Failed(_) => 2,
-                        Status::Done | Status::CommandDone => 1,
-                        _ => 0,
-                    });
-                }
-            }
-            out[rank] += 1;
-        }
-        out
     }
 
     /// The rows of the project list (indexes into `projects`, and whether a row is only there
@@ -1105,45 +755,26 @@ impl App {
         ui.label(egui::RichText::new(format!("{keys}{}", t("Right-click for more"))).size(style::SMALL).color(p.text_faint));
     }
 
-    /// The switch between the two views, at the top of the list: Focus (the active project on its
-    /// own) and Grid (every project). A project in the list opens in Focus.
-    fn view_switch(&mut self, ui: &mut Ui, rect: Rect) {
-        let focus_tip = kit::tip(t("Focus View"), Action::ToggleGrid);
-        let grid_tip = kit::tip(t("Grid of All Projects"), Action::ToggleGrid);
-        let options = [
-            kit::Seg::new(t("Focus"), &focus_tip).icon(icons::TERMINAL_WINDOW),
-            kit::Seg::new(t("Grid"), &grid_tip).icon(icons::SQUARES_FOUR),
-        ];
-        #[cfg(debug_assertions)]
-        for (r, name) in kit::segment_rects(rect, 2).into_iter().zip(["view:focus", "view:grid"]) {
-            crate::devtest::record(name, r);
-        }
-        let on = match self.view {
-            View::Focus => 0,
-            View::Grid => 1,
-            _ => usize::MAX,
-        };
-        if let Some(i) = kit::segmented_in(ui, rect, egui::Id::new("sidebar-views"), &options, on) {
-            self.actions.push(Action::SetView(if i == 1 { View::Grid } else { View::Focus }));
-        }
-    }
-
     pub(super) fn project_menu(&mut self, ui: &mut Ui, id: u64, name: &str) {
         kit::menu_body(ui);
-        let expanded = self.project(id).is_some_and(|p| p.sessions_expanded);
-        let sess_label = if expanded { t("Hide Agent Sessions") } else { t("Show Agent Sessions") };
-        if kit::menu_item(ui, Some(icons::CLOCK_COUNTER_CLOCKWISE), sess_label, None, false).clicked() {
-            self.actions.push(Action::ToggleProjectSessions(id));
-            ui.close();
-        }
+        ui.set_min_width(250.0);
         if kit::menu_item(ui, Some(icons::PLAY), t("Run Agent…"), kit::keys(&Action::PickPreset), false).clicked() {
             self.actions.push(Action::SelectProject(id));
             self.actions.push(Action::PickPreset);
             ui.close();
         }
-        if kit::menu_item(ui, Some(icons::GIT_DIFF), t("Review Changes…"), None, false).clicked() {
+        if kit::menu_item(ui, Some(icons::GIT_DIFF), t("Review Changes…"), kit::keys(&Action::Review), false).clicked() {
             self.actions.push(Action::SelectProject(id));
             self.actions.push(Action::Review);
+            ui.close();
+        }
+        let git = self.project(id).is_some_and(|x| x.git.is_some());
+        if git && kit::menu_item(ui, Some(icons::GIT_FORK), t("New Worktree…"), None, false).clicked() {
+            if let Some(pr) = self.projects.iter_mut().find(|x| x.id == id) {
+                pr.new_worktree = true;
+            }
+            self.actions.push(Action::SelectProject(id));
+            self.actions.push(Action::PickPreset);
             ui.close();
         }
         kit::menu_sep(ui);
@@ -1152,25 +783,27 @@ impl App {
             ui.close();
         }
         let current = self.project(id).map(|x| x.color).unwrap_or_default() as usize;
-        let color = kit::submenu_item(ui, Some(icons::PALETTE), t("Color"));
+        let letters = self.project(id).map(|x| x.letters()).unwrap_or_default();
+        let color = kit::submenu_item(ui, Some(icons::PALETTE), t("Colour"));
         egui::containers::menu::SubMenu::new().show(ui, &color, |ui| {
+            let p = style::pal(ui);
+            let dark = ui.visuals().dark_mode;
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 7.0;
-                ui.add_space(3.0);
-                for (ci, (r, g, b)) in COLORS.iter().enumerate() {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (ci, (r, g, b)) in crate::project::COLORS.iter().enumerate().take(6) {
                     let c = egui::Color32::from_rgb(*r, *g, *b);
-                    let (rect, resp) = ui.allocate_exact_size(vec2(16.0, 22.0), Sense::click());
-                    let center = rect.center();
+                    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
                     if ci == current {
-                        ui.painter().circle_stroke(center, 10.0, Stroke::new(1.5, style::pal(ui).accent));
+                        ui.painter().rect_stroke(rect, CornerRadius::same(7), Stroke::new(2.0, p.accent), StrokeKind::Inside);
+                    } else if resp.hovered() {
+                        ui.painter().rect_filled(rect, CornerRadius::same(7), p.hover);
                     }
-                    ui.painter().circle_filled(center, if resp.hovered() { 8.5 } else { 8.0 }, c);
+                    kit::paint_project_tile(ui.painter(), Rect::from_center_size(rect.center(), vec2(20.0, 20.0)), &letters, c, dark);
                     if resp.clicked() {
                         self.actions.push(Action::SetProjectColor(id, ci as u8));
                         ui.close();
                     }
                 }
-                ui.add_space(3.0);
             });
         });
         let reveal = if cfg!(target_os = "macos") {
@@ -1186,6 +819,19 @@ impl App {
             if let Some(path) = self.project(id).map(|x| x.path.to_string_lossy().into_owned()) {
                 ui.ctx().copy_text(path);
             }
+            ui.close();
+        }
+        kit::menu_sep(ui);
+        let tops: Vec<tc_core::ProjectId> = self.top_order();
+        let at = tops.iter().position(|x| *x == id);
+        let first = at == Some(0);
+        let last = at.is_some_and(|i| i + 1 == tops.len());
+        if ui.add_enabled_ui(!first, |ui| kit::menu_item(ui, Some(icons::ARROW_UP), t("Move Up"), kit::keys(&Action::MoveProject(id, true)), false)).inner.clicked() {
+            self.actions.push(Action::MoveProject(id, true));
+            ui.close();
+        }
+        if ui.add_enabled_ui(!last, |ui| kit::menu_item(ui, Some(icons::ARROW_DOWN), t("Move Down"), kit::keys(&Action::MoveProject(id, false)), false)).inner.clicked() {
+            self.actions.push(Action::MoveProject(id, false));
             ui.close();
         }
         kit::menu_sep(ui);
@@ -1310,296 +956,245 @@ impl RowMark {
     }
 }
 
-/// A group's line: ˅ or ›, its name and how many projects, and (Active) how many run, wait,
-/// are done or failed, each with its glyph.
+
+/// The account in use, for the meter at the foot.
+struct UsageMeter {
+    agent: tc_core::agent::AgentKind,
+    label: String,
+    pct: f32,
+    window: String,
+    reset: Option<String>,
+    limited: bool,
+}
+
+/// An agent's short name in the meter ("Claude", "Codex").
+fn short_agent(a: tc_core::agent::AgentKind) -> &'static str {
+    let l = a.label();
+    l.split_whitespace().next().unwrap_or(l)
+}
+
+/// "2m", "14m", "1h", "3d".
+fn short_age(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m", secs / 60),
+        3600..86400 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86400),
+    }
+}
+
+/// The statuses a row shows a glyph for (quiet ones show nothing).
+fn shows_status(s: Status) -> bool {
+    !matches!(s, Status::Idle | Status::Unknown | Status::Ended)
+}
+
+/// Something selected in the sidebar: the raised surface, its hairline and a soft shadow.
+fn raised(painter: &egui::Painter, rect: Rect, radius: u8, p: &style::Palette) {
+    let shadow = egui::epaint::Shadow { offset: [0, 1], blur: 2, spread: 0, color: egui::Color32::from_black_alpha(64) };
+    painter.add(shadow.as_shape(rect, CornerRadius::same(radius)));
+    painter.rect(rect, CornerRadius::same(radius), p.surface, Stroke::new(1.0, p.border), StrokeKind::Inside);
+}
+
+/// A place at the top (Inbox, Overview): its icon, its name, a count of what waits, its keys.
 #[allow(clippy::too_many_arguments)]
-fn paint_group_head(ui: &Ui, rect: Rect, label: &str, count: usize, folded: bool, hovered: bool, summary: &[(Status, usize)], p: &style::Palette) {
+fn nav_item(ui: &mut Ui, rect: Rect, icon: &str, label: &str, count: Option<usize>, keys: Option<&str>, on: bool, p: &style::Palette) -> egui::Response {
+    let r = ui.interact(rect, egui::Id::new(("nav", label)), Sense::click());
     let painter = ui.painter();
-    if hovered {
-        painter.rect_filled(rect, CornerRadius::same(6), p.hover);
+    if on {
+        raised(painter, rect, style::RADIUS_ROW, p);
+    } else if r.hovered() {
+        painter.rect_filled(rect, CornerRadius::same(style::RADIUS_ROW), p.hover);
     }
+    if r.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let ink = if on || r.hovered() { p.text } else { p.text_muted };
     let cy = rect.center().y;
-    painter.text(pos2(rect.left() + 8.0 + 5.0, cy), Align2::CENTER_CENTER, if folded { icons::CARET_RIGHT } else { icons::CARET_DOWN }, style::icon_font(10.0), p.text_ghost);
-    let g = kit::section_galley(painter, label, p.text_faint);
-    let gw = g.size().x;
-    painter.galley(pos2(rect.left() + 8.0 + 16.0, cy - g.size().y / 2.0), g, p.text_faint);
-    painter.text(pos2(rect.left() + 8.0 + 16.0 + gw + 6.0, cy), Align2::LEFT_CENTER, count.to_string(), style::mono(10.5), p.text_ghost);
-    // The summary, from the right: each count after its glyph.
-    let mut x = rect.right() - 8.0;
-    for (s, n) in summary.iter().rev().filter(|s| s.1 > 0) {
-        let color = status::color(*s, p);
-        let num = painter.layout_no_wrap(n.to_string(), style::mono(10.5), color);
-        x -= num.size().x;
-        painter.galley(pos2(x, cy - num.size().y / 2.0), num, color);
-        x -= 4.0;
-        if *s == Status::Running {
-            kit::paint_lattice(painter, pos2(x - 5.0, cy), 10.0, color, true);
-            x -= 10.0;
-        } else {
-            status::paint_glyph(painter, pos2(x - 5.5, cy), *s, p, 11.0);
-            x -= 11.0;
-        }
-        x -= 8.0;
+    painter.text(pos2(rect.left() + 8.0 + 8.0, cy), Align2::CENTER_CENTER, icon, style::icon_font(16.0), ink);
+    let font = if on { style::medium(style::BODY) } else { egui::FontId::proportional(style::BODY) };
+    painter.text(pos2(rect.left() + 8.0 + 16.0 + 10.0, cy), Align2::LEFT_CENTER, label, font, ink);
+    let mut right = rect.right() - 8.0;
+    if let Some(n) = count {
+        right -= count_pill(painter, pos2(right, cy), n, p, ui.visuals().dark_mode);
     }
+    if let Some(k) = keys
+        && count.is_none()
+    {
+        painter.text(pos2(right, cy), Align2::RIGHT_CENTER, k, style::mono(style::DATA), p.text_faint);
+    }
+    r
 }
 
-/// The status at the right of a row's second line: its mark and text in its colour, at most
-/// `max` wide. Returns where it starts.
-fn paint_row_status(painter: &egui::Painter, right: f32, cy: f32, chip: &(RowMark, String, egui::Color32), max: f32, p: &style::Palette) -> f32 {
-    let (mark, text, c) = chip;
-    let mut job = egui::text::LayoutJob::simple_singleline(text.clone(), style::medium(11.5), *c);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((max - 16.0).max(20.0));
-    let g = painter.layout_job(job);
-    let mut x = right - g.size().x;
-    painter.galley(pos2(x, cy - g.size().y / 2.0), g, *c);
-    x -= 5.0 + 11.0;
-    mark.paint(painter, pos2(x + 5.5, cy), *c, p);
-    x
+/// The amber count of what waits, ending at `right_center`; returns its width.
+fn count_pill(painter: &egui::Painter, right_center: egui::Pos2, n: usize, p: &style::Palette, dark: bool) -> f32 {
+    let g = painter.layout_no_wrap(n.to_string(), style::mono_semibold(style::DATA), p.warn);
+    let w = (g.size().x + 10.0).max(18.0);
+    let rect = Rect::from_min_size(pos2(right_center.x - w, right_center.y - 9.0), vec2(w, 18.0));
+    painter.rect_filled(rect, CornerRadius::same(9), style::tint(p.warn, dark));
+    painter.galley(rect.center() - g.size() / 2.0, g, p.warn);
+    w
 }
 
-/// The branch on a row's second line: its icon, its name and "+N" changed, in the data font.
-fn paint_row_branch(painter: &egui::Painter, x: f32, cy: f32, room: f32, name: &str, changed: usize, p: &style::Palette) {
-    if room < 24.0 {
-        return;
+/// A button of the rail (36 × 32): raised when on, the hover fill under the pointer.
+fn rail_button(ui: &mut Ui, rect: Rect, icon: &str, tip: &str, on: bool, filled: bool, p: &style::Palette) -> egui::Response {
+    let r = ui.interact(rect, egui::Id::new(("rail", icon)), Sense::click()).on_hover_text(tip);
+    let painter = ui.painter();
+    if on {
+        raised(painter, rect, style::RADIUS_ROW, p);
+    } else if r.hovered() || filled {
+        painter.rect_filled(rect, CornerRadius::same(style::RADIUS_ROW), if r.hovered() && filled { p.subtle } else { p.hover });
     }
-    painter.text(pos2(x + 5.5, cy), Align2::CENTER_CENTER, icons::GIT_BRANCH, style::icon_font(11.0), p.text_faint);
-    let plus = (changed > 0).then(|| painter.layout_no_wrap(format!("+{changed}"), style::mono(10.5), p.text_muted));
-    let plus_w = plus.as_ref().map_or(0.0, |g| g.size().x + 6.0);
-    let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), style::mono(10.5), p.text_faint);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((room - 16.0 - plus_w).max(8.0));
-    let g = painter.layout_job(job);
-    let gw = g.size().x;
-    painter.galley(pos2(x + 16.0, cy - g.size().y / 2.0), g, p.text_faint);
-    if let Some(pg) = plus {
-        painter.galley(pos2(x + 16.0 + gw + 6.0, cy - pg.size().y / 2.0), pg, p.text_muted);
-    }
+    let ink = if on || r.hovered() { p.text } else { p.text_muted };
+    painter.text(rect.center(), Align2::CENTER_CENTER, icon, style::icon_font(16.0), ink);
+    r
 }
 
-/// The fill of a row: raised and outlined when it is the project in view, the hover fill when
-/// pointed at.
-fn paint_row_fill(painter: &egui::Painter, rect: Rect, active: bool, hovered: bool, p: &style::Palette) {
-    let dark = p.chrome.r() < 0x80;
-    if active {
-        painter.rect(rect, CornerRadius::same(8), p.surface, Stroke::new(1.0, if dark { p.border } else { p.border_strong }), StrokeKind::Inside);
-        kit::paint_highlight(painter, rect, 8, p);
-        // Subtle Linear/Zed-style left accent indicator for the active workspace.
-        let bar = Rect::from_center_size(pos2(rect.left() + 2.0, rect.center().y), vec2(2.5, (rect.height() - 18.0).max(12.0)));
-        painter.rect_filled(bar, CornerRadius::same(2), p.accent);
-    } else if hovered {
-        painter.rect_filled(rect, CornerRadius::same(8), p.hover);
-    }
-}
-
-/// A name with the letters a search matched in the accent.
-fn name_job(name: &str, marks: &[bool], font: egui::FontId, color: egui::Color32, p: &style::Palette) -> egui::text::LayoutJob {
-    if marks.iter().any(|m| *m) {
-        let mut job = egui::text::LayoutJob::default();
-        for (ci, ch) in name.chars().enumerate() {
-            let hit = marks.get(ci).copied().unwrap_or(false);
-            let (f, c) = if hit { (style::semibold(font.size), p.accent_text) } else { (font.clone(), color) };
-            job.append(&ch.to_string(), 0.0, egui::TextFormat::simple(f, c));
-        }
-        job
-    } else {
-        egui::text::LayoutJob::simple_singleline(name.to_string(), font, color)
-    }
-}
-
-/// Paints a project's row: its tile; the name, pane dots and the count not seen (or its
-/// shortcut, hovered) on the first line; the branch and changes, and what is at work or
-/// waits, on the second.
-///
-/// A project with worktrees has "⑂ 2 ˅" after its dots, which folds them: returns where.
+/// A project's row: its tile, its name (the letters found in the accent), how many wait,
+/// its status.
 #[allow(clippy::too_many_arguments)]
 fn paint_project_row(
     ui: &Ui,
     rect: Rect,
     row: &ProjectRow,
     letters: &str,
+    color: egui::Color32,
     marks: &[bool],
-    active: bool,
+    selected: bool,
     hovered: bool,
-    keys: Option<&str>,
     dim: bool,
-    sessions_count: usize,
-    sessions_expanded: bool,
-    allow_sessions_toggle: bool,
+    chosen: bool,
+    dark: bool,
     p: &style::Palette,
-) -> (Option<Rect>, Option<Rect>) {
-    let painter = ui.painter_at(rect);
-    let dark = ui.visuals().dark_mode;
-    // Shown only for a worktree found under it: quieter.
-    let p = &if dim { p.dimmed() } else { *p };
-    paint_row_fill(&painter, rect, active, hovered, p);
-    let (r, g, b) = COLORS[row.color as usize % COLORS.len()];
-    let tile = Rect::from_min_size(pos2(rect.left() + 8.0, rect.center().y - 12.0), vec2(24.0, 24.0));
-    kit::paint_project_tile(&painter, tile, letters, egui::Color32::from_rgb(r, g, b).gamma_multiply(if dim { 0.7 } else { 1.0 }), dark);
-    let x = tile.right() + 10.0;
-    let right_edge = rect.right() - 8.0;
-    let l1 = rect.top() + 14.5;
-    let l2 = rect.top() + 34.5;
-
-    // Right of the first line: pin the sessions disclosure chevron at the fixed right edge FIRST
-    // so hovering the row never shifts it horizontally out from under the cursor!
-    let attention = row.waiting > 0;
-    let mut right = right_edge;
-    let mut sess_toggle = None;
-    if allow_sessions_toggle {
-        let caret = painter.layout_no_wrap(if sessions_expanded { icons::CARET_DOWN } else { icons::CARET_RIGHT }.to_string(), style::icon_font(9.5), p.text_faint);
-        let cnt = (sessions_count > 0).then(|| painter.layout_no_wrap(sessions_count.to_string(), style::mono(10.0), p.text_ghost));
-        let sw = (caret.size().x + cnt.as_ref().map_or(0.0, |c| 3.0 + c.size().x) + 10.0).max(20.0);
-        if right - sw > x + 56.0 {
-            let sr = Rect::from_min_max(pos2(right - sw, l1 - 11.0), pos2(right, l1 + 11.0));
-            let hot = ui.rect_contains_pointer(sr);
-            if hot {
-                painter.rect_filled(sr, CornerRadius::same(5), if dark { p.subtle } else { p.inset });
-            }
-            let caret_color = if hot {
-                p.text
-            } else if sessions_expanded || hovered || active || sessions_count > 0 {
-                p.text_faint
-            } else {
-                p.text_ghost
-            };
-            let cx = sr.left() + 5.0;
-            painter.galley(pos2(cx, l1 - caret.size().y / 2.0 + 0.5), caret.clone(), caret_color);
-            if let Some(cnt) = cnt {
-                painter.galley(pos2(cx + caret.size().x + 3.0, l1 - cnt.size().y / 2.0), cnt, if hot { p.text_muted } else { p.text_ghost });
-            }
-            sess_toggle = Some(sr);
-            right = sr.left() - 4.0;
+) {
+    let painter = ui.painter();
+    if selected {
+        raised(painter, rect, style::RADIUS_ROW, p);
+    } else if hovered {
+        painter.rect_filled(rect, CornerRadius::same(style::RADIUS_ROW), p.hover);
+    }
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let cy = rect.center().y;
+    let tile = Rect::from_min_size(pos2(rect.left() + 6.0, cy - 10.0), vec2(20.0, 20.0));
+    kit::paint_project_tile(painter, tile, letters, color, dark);
+    let mut right = rect.right() - 8.0;
+    if chosen {
+        let kw = kit::kbd_width(painter, "↵");
+        kit::paint_kbd_text(painter, pos2(right - kw, cy), "↵", p);
+        right -= kw + 8.0;
+    } else if !dim {
+        if let Some(s) = row.status.filter(|s| shows_status(*s)) {
+            status::paint_glyph(painter, pos2(right - 7.0, cy), s, p, 14.0);
+            right -= 14.0 + 9.0;
+        } else if row.asleep {
+            painter.circle_filled(pos2(right - 3.0, cy), 2.5, p.text_ghost);
+            right -= 6.0 + 9.0;
+        }
+        if row.waiting > 0 {
+            right -= count_pill(painter, pos2(right, cy), row.waiting, p, dark) + 9.0;
         }
     }
-    if attention {
-        let c = row.status.map_or(p.warn, |s| status::color(s, p));
-        let b = kit::paint_badge(&painter, pos2(right, l1), &row.waiting.to_string(), c, kit::badge_text(c, p, dark), 16.0);
-        right = b.left() - 6.0;
-    } else if hovered && sess_toggle.is_none_or(|sr| !ui.rect_contains_pointer(sr)) && let Some(k) = keys {
-        let g = kit::keys_galley(&painter, k, p.text_faint);
-        if right - g.size().x > x + 64.0 {
-            right -= g.size().x;
-            painter.galley(pos2(right, l1 - g.size().y / 2.0), g, p.text_faint);
-            right -= 6.0;
-        }
-    }
-    // Reserve width for pane dots, browser globe, and worktrees fold button so long names truncate cleanly.
-    let wt_galleys = (row.worktrees > 0).then(|| {
-        let fork = painter.layout_no_wrap(icons::GIT_FORK.to_string(), style::icon_font(11.0), p.text_faint);
-        let count = painter.layout_no_wrap(row.worktrees.to_string(), style::mono(10.5), p.text_faint);
-        let caret = painter.layout_no_wrap(if row.folded { icons::CARET_RIGHT } else { icons::CARET_DOWN }.to_string(), style::icon_font(9.5), p.text_faint);
-        let w = fork.size().x + 2.0 + count.size().x + 2.0 + caret.size().x;
-        (fork, count, caret, w)
-    });
-    let wt_w = wt_galleys.as_ref().map_or(0.0, |(_, _, _, w)| *w + 10.0);
-    let dots_w = if row.dots.is_empty() { 0.0 } else { row.dots.len() as f32 * 8.0 - 3.0 + 6.0 } + if row.web.is_some() { 14.0 } else { 0.0 };
-    let name_color = if row.asleep && !active { p.text_muted } else { p.text };
-    let mut job = name_job(&row.name, marks, style::medium(13.0), name_color, p);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x - dots_w - wt_w).max(20.0));
+    let x = tile.right() + 9.0;
+    let ink = if dim { p.text_faint } else if selected || hovered { p.text } else { p.text_muted };
+    let font = if selected { style::medium(style::BODY) } else { egui::FontId::proportional(style::BODY) };
+    let mut job = name_job(&row.name, marks, font, ink, p);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(16.0));
     let g = painter.layout_job(job);
-    let name_w = g.size().x;
-    painter.galley(pos2(x, l1 - g.size().y / 2.0), g, name_color);
-    let mut dx = x + name_w + 6.0 + 2.5;
-    for c in &row.dots {
-        if dx + 2.5 <= right {
-            painter.circle_filled(pos2(dx, l1 + 0.5), 2.5, *c);
-        }
-        dx += 8.0;
-    }
-    // Its browser: a globe, in the info colour while an agent uses it.
-    if let Some(driven) = row.web {
-        let gx = if row.dots.is_empty() { x + name_w + 6.0 } else { dx - 2.5 + 1.0 };
-        if gx + 10.0 <= right {
-            painter.text(pos2(gx + 5.0, l1 + 0.5), Align2::CENTER_CENTER, icons::GLOBE, style::icon_font(10.5), if driven { p.info } else { p.text_faint });
-        }
-        dx = gx + 12.0 + 2.5;
-    }
-    // Its worktrees: how many, and the caret that folds them.
-    let mut toggle = None;
-    if let Some((fork, count, caret, w)) = wt_galleys {
-        let start = if row.dots.is_empty() && row.web.is_none() { x + name_w + 6.0 } else { dx - 2.5 + 3.0 };
-        if start + w <= right {
-            let mut cx = start;
-            painter.galley(pos2(cx, l1 - fork.size().y / 2.0), fork.clone(), p.text_faint);
-            cx += fork.size().x + 2.0;
-            painter.galley(pos2(cx, l1 - count.size().y / 2.0), count.clone(), p.text_faint);
-            cx += count.size().x + 2.0;
-            painter.galley(pos2(cx, l1 - caret.size().y / 2.0 + 0.5), caret, p.text_faint);
-            toggle = Some(Rect::from_min_max(pos2(start - 3.0, l1 - 9.0), pos2(start + w + 3.0, l1 + 9.0)));
-        }
-    }
-
-    // Second line: the status at the right (it keeps its width), the branch in what is left.
-    let mut line_right = right_edge;
-    if let Some(chip) = &row.chip {
-        line_right = paint_row_status(&painter, right_edge, l2, chip, 128.0, p) - 6.0;
-    }
-    let room = (line_right - x).max(0.0);
-    if let Some((name, changed)) = &row.branch {
-        paint_row_branch(&painter, x - 2.0, l2, room + 2.0, name, *changed, p);
-    } else {
-        let mut job = egui::text::LayoutJob::simple_singleline(row.place.clone(), style::mono(10.5), p.text_faint);
-        job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(10.0));
-        let g = painter.layout_job(job);
-        painter.galley(pos2(x, l2 - g.size().y / 2.0), g, p.text_faint);
-    }
-    (toggle, sess_toggle)
+    painter.galley(pos2(x, cy - g.size().y / 2.0), g, ink);
 }
 
-/// Paints a worktree's row under its project: the elbow from the project's tile, a fork icon,
-/// its name (letters found in the accent) and the count not seen (or ↵ for the search's
-/// keyboard); under them its branch, commits ahead and what is at work or waits. `more`:
-/// another worktree follows (the line goes on down).
+/// A worktree under its project: the rail, ⑂, its name, its branch, its status.
 #[allow(clippy::too_many_arguments)]
-fn paint_worktree_row(ui: &Ui, rect: Rect, row: &ProjectRow, marks: &[bool], active: bool, hovered: bool, more: bool, keys: Option<&str>, p: &style::Palette) {
-    let painter = ui.painter_at(rect.expand2(vec2(0.0, 12.0)));
-    let dark = ui.visuals().dark_mode;
-    let merged = row.chip.as_ref().is_some_and(|c| c.1 == t("Merged"));
-    let p = &if merged && !active { p.dimmed() } else { *p };
-    paint_row_fill(&painter, rect, active, hovered, p);
-    // The elbow: down from the project's tile (on to the next worktree), then to the icon.
-    let line = Stroke::new(1.0, p.border_heavy);
-    let lx = rect.left() + 19.5;
-    let cy = rect.top() + 12.5;
-    painter.line_segment([pos2(lx, rect.top() - 10.0), pos2(lx, cy - 6.0)], line);
-    painter.add(egui::Shape::QuadraticBezier(egui::epaint::QuadraticBezierShape::from_points_stroke(
-        [pos2(lx, cy - 6.0), pos2(lx, cy), pos2(lx + 6.0, cy)],
-        false,
-        egui::Color32::TRANSPARENT,
-        line,
-    )));
-    painter.line_segment([pos2(lx + 6.0, cy), pos2(lx + 11.0, cy)], line);
-    if more {
-        painter.line_segment([pos2(lx, cy - 6.0), pos2(lx, rect.bottom() + 6.0)], line);
+fn paint_worktree_row(ui: &Ui, rect: Rect, name: &str, branch: &str, marks: &[bool], st: Option<Status>, selected: bool, hovered: bool, p: &style::Palette) {
+    let painter = ui.painter();
+    let body = Rect::from_min_max(pos2(rect.left() + 6.0 + 18.0 - 4.0, rect.top()), rect.max);
+    if selected {
+        painter.rect_filled(body, CornerRadius::same(6), p.accent_soft);
+    } else if hovered {
+        painter.rect_filled(body, CornerRadius::same(6), p.hover);
     }
-    let icon_x = rect.left() + 34.0;
-    painter.text(pos2(icon_x + 8.0, cy), Align2::CENTER_CENTER, icons::GIT_FORK, style::icon_font(13.0), p.text_faint);
-    let x = icon_x + 16.0 + 8.0;
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let cy = rect.center().y;
+    painter.vline(rect.left() + 6.0 + 9.0, (rect.top() - 1.0)..=(rect.bottom() + 1.0), Stroke::new(1.0, p.border_strong));
+    let mut x = rect.left() + 6.0 + 18.0 + 4.0;
+    painter.text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, icons::GIT_FORK, style::icon_font(14.0), p.text_faint);
+    x += 14.0 + 7.0;
     let mut right = rect.right() - 8.0;
-    // At the right: what was not seen (a count), else ↵ for the search's keyboard.
-    if row.waiting > 0 {
-        let c = row.status.map_or(p.warn, |s| status::color(s, p));
-        let b = kit::paint_badge(&painter, pos2(right, cy), &row.waiting.to_string(), c, kit::badge_text(c, p, dark), 16.0);
-        right = b.left() - 6.0;
-    } else if let Some(k) = keys {
-        let g = kit::keys_galley(&painter, k, p.text_faint);
+    if let Some(s) = st {
+        status::paint_glyph(painter, pos2(right - 6.0, cy), s, p, 12.0);
+        right -= 12.0 + 7.0;
+    }
+    if !branch.is_empty() && branch != name {
+        let room = ((right - x) * 0.45).max(0.0);
+        let mut job = egui::text::LayoutJob::simple_singleline(branch.to_string(), style::mono(style::DATA), p.text_faint);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let g = painter.layout_job(job);
+        if g.size().x > 12.0 {
+            right -= g.size().x;
+            painter.galley(pos2(right, cy - g.size().y / 2.0), g, p.text_faint);
+            right -= 7.0;
+        }
+    }
+    let ink = if selected || hovered { p.text } else { p.text_muted };
+    let mut job = name_job(name, marks, egui::FontId::proportional(style::SMALL), ink, p);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(16.0));
+    let g = painter.layout_job(job);
+    painter.galley(pos2(x, cy - g.size().y / 2.0), g, ink);
+}
+
+/// A session (a tab) under the selected project: the rail, who works there, its title, how
+/// long or where, its status.
+fn paint_session_row(ui: &Ui, rect: Rect, s: &SessionRow, hovered: bool, p: &style::Palette) {
+    let painter = ui.painter();
+    let body = Rect::from_min_max(pos2(rect.left() + 6.0 + 18.0 - 4.0, rect.top()), rect.max);
+    if s.on {
+        painter.rect_filled(body, CornerRadius::same(6), p.accent_soft);
+    } else if hovered {
+        painter.rect_filled(body, CornerRadius::same(6), p.hover);
+    }
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let cy = rect.center().y;
+    painter.vline(rect.left() + 6.0 + 9.0, (rect.top() - 1.0)..=(rect.bottom() + 1.0), Stroke::new(1.0, p.border_strong));
+    let mut x = rect.left() + 6.0 + 18.0 + 4.0;
+    kit::paint_agent_avatar(painter, Rect::from_center_size(pos2(x + 8.0, cy), vec2(16.0, 16.0)), s.agent, p);
+    x += 16.0 + 7.0;
+    let mut right = rect.right() - 8.0;
+    if let Some(st) = s.status {
+        status::paint_glyph(painter, pos2(right - 6.0, cy), st, p, 12.0);
+        right -= 12.0 + 7.0;
+    }
+    if !s.meta.is_empty() {
+        let g = painter.layout_no_wrap(s.meta.clone(), style::mono(style::DATA), p.text_faint);
         right -= g.size().x;
         painter.galley(pos2(right, cy - g.size().y / 2.0), g, p.text_faint);
-        right -= 6.0;
+        right -= 7.0;
     }
-    let name_color = p.text;
-    let mut job = name_job(&row.name, marks, style::medium(12.5), name_color, p);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(10.0));
+    let ink = if s.on || hovered { p.text } else { p.text_muted };
+    let mut job = egui::text::LayoutJob::simple_singleline(s.title.clone(), egui::FontId::proportional(style::SMALL), ink);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(16.0));
     let g = painter.layout_job(job);
-    painter.galley(pos2(x, cy - g.size().y / 2.0), g, name_color);
-    // Second line: the branch and how far ahead, the status at the right.
-    let l2 = rect.top() + 30.0;
-    let mut line_right = rect.right() - 8.0;
-    if let Some(chip) = &row.chip {
-        line_right = paint_row_status(&painter, line_right, l2, chip, 110.0, p) - 6.0;
+    painter.galley(pos2(x, cy - g.size().y / 2.0), g, ink);
+}
+
+/// A name with the letters the search found set in the accent (medium).
+fn name_job(name: &str, marks: &[bool], font: egui::FontId, color: egui::Color32, p: &style::Palette) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    if marks.is_empty() {
+        job.append(name, 0.0, egui::TextFormat::simple(font, color));
+        return job;
     }
-    if let Some((branch, changed)) = &row.branch {
-        paint_row_branch(&painter, x - 2.0, l2, line_right - x + 2.0, branch, *changed, p);
+    let found = style::medium(font.size);
+    for (k, ch) in name.chars().enumerate() {
+        let on = marks.get(k).copied().unwrap_or(false);
+        let f = if on { egui::TextFormat::simple(found.clone(), p.accent_text) } else { egui::TextFormat::simple(font.clone(), color) };
+        job.append(&ch.to_string(), 0.0, f);
     }
+    job
 }
 
 /// Where a project lives, short: its parent folder (`~/Developments`), or its last two names
@@ -1707,185 +1302,6 @@ impl App {
             }
         }
         row
-    }
-
-    /// Renders live and historical agent sessions directly nested under their parent project node
-    /// in the sidebar tree, with status indicator, profile badge, timestamp, and 1-click resume.
-    fn paint_project_sessions(
-        &mut self,
-        ui: &mut Ui,
-        project_id: tc_core::ProjectId,
-        sessions: &[crate::profiles::ProjectSessionItem],
-        has_worktrees: bool,
-        p: &style::Palette,
-    ) {
-        let dark = ui.visuals().dark_mode;
-        let current_pane = self.current_pane();
-        const MAX_COLLAPSED: usize = 3;
-        let all_id = egui::Id::new(("sessions-show-all", project_id));
-        let show_all = ui.data(|d| d.get_temp::<bool>(all_id).unwrap_or(false));
-        let has_toggle = sessions.len() > MAX_COLLAPSED;
-        let shown = if show_all { sessions.len() } else { sessions.len().min(MAX_COLLAPSED) };
-        let hidden = sessions.len().saturating_sub(shown);
-        if sessions.is_empty() && self.sessions_running.contains(&project_id) {
-            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-            if ui.is_rect_visible(rect) {
-                let painter = ui.painter_at(rect);
-                let end_y = if has_worktrees { rect.bottom() } else { rect.center().y };
-                painter.vline(rect.left() + 19.5, rect.top()..=end_y, Stroke::new(1.0, p.border));
-                painter.text(pos2(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, t("Loading sessions…"), egui::FontId::proportional(11.0), p.text_faint);
-            }
-            return;
-        }
-        if shown == 0 {
-            return;
-        }
-        let rail_stroke = Stroke::new(1.0, p.border);
-        // Subtle 3px top breathing room so the first session never collides with the active project row.
-        let (gap_r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 3.0), Sense::hover());
-        if ui.is_rect_visible(gap_r) {
-            ui.painter_at(gap_r).vline(gap_r.left() + 19.5, gap_r.y_range(), rail_stroke);
-        }
-        for (idx, item) in sessions.iter().take(shown).enumerate() {
-            let is_last = idx + 1 == shown && !has_toggle && !has_worktrees;
-            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
-            if !ui.is_rect_visible(rect) {
-                continue;
-            }
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("project-session:{project_id}:{idx}"), rect);
-            let is_current = item.live_pane.is_some() && item.live_pane == current_pane && self.view == View::Focus;
-            let painter = ui.painter_at(rect);
-            let guide_x = rect.left() + 19.5;
-            let cy = rect.center().y;
-            let guide_end = if is_last { cy } else { rect.bottom() };
-            painter.vline(guide_x, rect.top()..=guide_end, rail_stroke);
-            painter.hline(guide_x..=(guide_x + 4.5), cy, rail_stroke);
-
-            let row_r = Rect::from_min_max(pos2(rect.left() + 25.0, rect.top() + 1.0), pos2(rect.right(), rect.bottom() - 1.0));
-            if is_current {
-                painter.rect_filled(row_r, CornerRadius::same(6), p.accent_tint);
-                let bar = Rect::from_center_size(pos2(row_r.left() + 1.5, cy), vec2(2.0, 12.0));
-                painter.rect_filled(bar, CornerRadius::same(1), p.accent);
-            } else if resp.hovered() {
-                painter.rect_filled(row_r, CornerRadius::same(6), p.hover);
-            }
-            if resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-
-            let mut x = row_r.left() + 7.0;
-            // Always show the agent's real brand logo crisply (Antigravity, Claude, Codex, Gemini, OpenCode).
-            let mark = Rect::from_center_size(pos2(x + 6.0, cy), vec2(12.0, 12.0));
-            let ink = if item.live_pane.is_some() || resp.hovered() { p.text } else { p.text_muted };
-            if !super::agent_logo::paint(&painter, mark, item.agent, ink, false) {
-                if item.live_pane.is_some() {
-                    status::paint_glyph(&painter, pos2(x + 6.0, cy), item.status, p, 11.0);
-                } else {
-                    painter.circle_filled(pos2(x + 6.0, cy), 2.5, p.idle);
-                }
-            }
-            x += 18.0;
-
-            // Right edge: sleek live pill or quiet relative age + subtle borderless account tag.
-            let mut right = row_r.right() - 6.0;
-            if item.live_pane.is_some() {
-                let live_c = match item.status {
-                    Status::NeedsInput => p.warn,
-                    Status::Failed(_) => p.err,
-                    Status::Done => p.ok,
-                    _ => p.info,
-                };
-                let ag = painter.layout_no_wrap(t("live").to_string(), style::mono_medium(9.5), live_c);
-                let pill_w = 6.0 + 4.5 + 4.0 + ag.size().x + 6.0;
-                let pill = Rect::from_center_size(pos2(right - pill_w / 2.0, cy), vec2(pill_w, 16.0));
-                painter.rect_filled(pill, CornerRadius::same(4), style::tint(live_c, dark));
-                painter.circle_filled(pos2(pill.left() + 7.5, cy), 2.2, live_c);
-                painter.galley(pos2(pill.left() + 13.5, cy - ag.size().y / 2.0), ag, live_c);
-                right = pill.left() - 6.0;
-            } else {
-                let ag = painter.layout_no_wrap(super::dialogs::ago(item.updated), style::mono(9.5), p.text_ghost);
-                right -= ag.size().x;
-                painter.galley(pos2(right, cy - ag.size().y / 2.0), ag, p.text_ghost);
-                right -= 6.0;
-            }
-
-            // Quiet borderless monospace profile label (eliminates repetitive heavy pill walls).
-            if let Some(prof) = &item.profile_id {
-                let prof_c = if is_current || resp.hovered() { p.text_muted } else { p.text_ghost };
-                let pg = painter.layout_no_wrap(prof.clone(), style::mono(9.5), prof_c);
-                let pw = pg.size().x;
-                if right - pw > x + 56.0 {
-                    right -= pw;
-                    painter.galley(pos2(right, cy - pg.size().y / 2.0), pg, prof_c);
-                    right -= 6.0;
-                }
-            }
-
-            let room = (right - x).max(16.0);
-            let title_c = if is_current || item.live_pane.is_some() || resp.hovered() { p.text } else { p.text_muted };
-            let title_font = if is_current { style::medium(11.5) } else { egui::FontId::proportional(11.5) };
-            let mut job = egui::text::LayoutJob::simple_singleline(item.title.clone(), title_font, title_c);
-            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-            let g = painter.layout_job(job);
-            painter.galley(pos2(x, cy - g.size().y / 2.0), g, title_c);
-
-            let tip = if item.live_pane.is_some() {
-                format!("{} · {}", item.agent.label(), t("Click to focus live session"))
-            } else {
-                format!("{} · {}", item.agent.label(), t("Click to resume session"))
-            };
-            if resp.on_hover_text(tip).clicked() {
-                if let Some(pane_id) = item.live_pane {
-                    if !self.settings.drawer_open {
-                        self.settings.drawer_open = true;
-                        self.settings_changed();
-                    }
-                    self.drawer_tab = tc_core::model::DrawerTab::Terminals;
-                    self.actions.push(Action::FocusPane(pane_id));
-                } else {
-                    self.actions.push(Action::ResumeProjectSession {
-                        project: project_id,
-                        agent: item.agent,
-                        session_id: item.id.clone(),
-                        profile_id: item.profile_id.clone(),
-                    });
-                }
-            }
-        }
-        if has_toggle {
-            let (toggle_r, toggle_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
-            #[cfg(debug_assertions)]
-            crate::devtest::record(format!("project-sessions-toggle:{project_id}"), toggle_r);
-            if ui.is_rect_visible(toggle_r) {
-                let painter = ui.painter_at(toggle_r);
-                let guide_x = toggle_r.left() + 19.5;
-                let end_y = if has_worktrees { toggle_r.bottom() } else { toggle_r.center().y };
-                painter.vline(guide_x, toggle_r.top()..=end_y, rail_stroke);
-                painter.hline(guide_x..=(guide_x + 4.5), toggle_r.center().y, rail_stroke);
-                let row_r = Rect::from_min_max(pos2(toggle_r.left() + 25.0, toggle_r.top() + 1.0), pos2(toggle_r.right(), toggle_r.bottom() - 1.0));
-                if toggle_resp.hovered() {
-                    painter.rect_filled(row_r, CornerRadius::same(6), p.hover);
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                let ink = if toggle_resp.hovered() { p.text_muted } else { p.text_faint };
-                let (caret, text) = if show_all {
-                    (icons::CARET_UP, t("Show less").to_string())
-                } else {
-                    (icons::CARET_DOWN, crate::i18n::tf("{} more…", &[&hidden.to_string()]))
-                };
-                painter.text(pos2(row_r.left() + 10.0, row_r.center().y), Align2::CENTER_CENTER, caret, style::icon_font(10.0), ink);
-                painter.text(pos2(row_r.left() + 20.0, row_r.center().y), Align2::LEFT_CENTER, text, egui::FontId::proportional(11.0), ink);
-                if toggle_resp.clicked() {
-                    ui.data_mut(|d| d.insert_temp(all_id, !show_all));
-                }
-            }
-        }
-        // Clean 4px breathing space between an expanded session tree and the next project.
-        let (tail_r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
-        if has_worktrees && ui.is_rect_visible(tail_r) {
-            ui.painter_at(tail_r).vline(tail_r.left() + 19.5, tail_r.y_range(), rail_stroke);
-        }
     }
 }
 

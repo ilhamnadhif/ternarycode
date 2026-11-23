@@ -145,7 +145,7 @@ impl App {
         if self.panel_expanded(project) || self.zen_mode {
             return if self.zen_mode { (Some(body), None) } else { (None, Some((body, tab))) };
         }
-        let share = self.panel_of(project).map_or(0.42, |p| p.width).clamp(0.25, 0.75);
+        let share = self.panel_of(project).map_or(crate::project::PANEL_SHARE, |p| p.share()).clamp(0.25, 0.75);
         let max_w = (body.width() - MIN_STAGE - style::GAP).max(MIN_W.min(body.width() * 0.5));
         let w = (body.width() * share).max(MIN_W).min(max_w).round();
         let panel = Rect::from_min_max(pos2(body.right() - w, body.top()), body.max);

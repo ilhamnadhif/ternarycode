@@ -41,10 +41,10 @@ impl App {
         let caption = Rect::from_min_max(pos2(bar.right() - CAPTION_W, bar.top()), bar.max);
         caption_buttons(ui, caption, self.window_focused);
 
-        let text = if self.window_focused { p.text } else { p.text_faint };
+        let text = if self.window_focused { p.text_muted } else { p.text_faint };
         let mark = Rect::from_center_size(pos2(bar.left() + 12.0 + 8.0, bar.center().y), vec2(16.0, 16.0));
         super::settings::paint_logo(ui.painter(), mark, &p);
-        let name = ui.painter().layout_no_wrap("TernaryCode".to_string(), style::medium(12.5), text);
+        let name = ui.painter().layout_no_wrap("TernaryCode".to_string(), style::medium(style::SMALL), text);
         let name_at = pos2(mark.right() + 8.0, bar.center().y - name.size().y / 2.0);
         let name_w = name.size().x;
         ui.painter().galley(name_at, name, text);
@@ -123,18 +123,19 @@ impl App {
                 Some((t("Show/Hide Sidebar"), A::ToggleSidebar)),
                 Some((t("Narrow Sidebar"), A::ToggleCompactSidebar)),
                 Some((t("Zen Mode"), A::ToggleZenMode)),
-                Some((t("Show/Hide Code"), A::ToggleEditor)),
-                Some((t("Show/Hide Terminal Panel"), A::ToggleDrawer)),
-                Some((t("Show/Hide Files"), A::ToggleFiles)),
+                Some((t("Files"), A::ToggleEditor)),
+                Some((t("Show/Hide Panel"), A::ToggleDrawer)),
+                Some((t("Expand Panel"), A::TogglePanelExpanded)),
+                Some((t("Show/Hide File Tree"), A::ToggleFiles)),
                 None,
                 Some((t("Browser"), A::ShowBrowser)),
                 Some((t("Open Address"), A::BrowserAddress)),
                 Some((t("Reload Page"), A::BrowserReload)),
                 None,
                 Some((t("Focus View"), A::SetView(View::Focus))),
-                Some((t("Grid of All Projects"), A::ToggleGrid)),
-                Some((t("Agent Profiles…"), A::OpenProfiles)),
-                Some((t("Phone Pairing…"), A::OpenPhonePairing)),
+                Some((t("Overview"), A::ToggleGrid)),
+                Some((t("Accounts & Usage…"), A::OpenProfiles)),
+                Some((t("Phone…"), A::OpenPhonePairing)),
                 None,
                 Some((t("Split Right"), A::SplitRight)),
                 Some((t("Split Down"), A::SplitDown)),
@@ -155,7 +156,7 @@ impl App {
                 None,
                 Some((t("Go to Next Waiting Agent"), A::NextAttention)),
                 Some((t("Back to Where I Was"), A::BackAttention)),
-                Some((t("Show Attention List"), A::ToggleAttention)),
+                Some((t("Inbox"), A::ToggleAttention)),
             ]);
         });
         ui.menu_button(t("Window"), |ui| {

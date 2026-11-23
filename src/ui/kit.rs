@@ -34,6 +34,8 @@ pub fn key_labels(action: &crate::actions::Action) -> Option<(&'static str, &'st
         A::ToggleZenMode => ("⌥⌘Z", "Ctrl+Alt+Z"),
         A::ToggleDrawer => ("⇧⌘L", "Ctrl+Shift+L"),
         A::TogglePanelExpanded => ("⇧⌘E", "Ctrl+Shift+Alt+E"),
+        A::MoveProject(_, true) => ("⌥⌘↑", "Ctrl+Alt+Up"),
+        A::MoveProject(_, false) => ("⌥⌘↓", "Ctrl+Alt+Down"),
         A::QuickOpen => ("⌘O", "Ctrl+Shift+O"),
         A::AddProject => ("⇧⌘O", "Ctrl+Shift+N"),
         A::PickPreset => ("⇧⌘A", "Ctrl+Shift+A"),
@@ -202,6 +204,31 @@ impl Size {
             Size::Large => 8,
         }
     }
+}
+
+/// A small button's height.
+pub const BUTTON_S: f32 = 24.0;
+
+/// A rounded rectangle outlined in 4 px dashes (empty places that take a drop).
+pub fn dashed_rect(painter: &egui::Painter, rect: Rect, radius: f32, color: Color32) {
+    let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
+    let rect = rect.shrink(0.5);
+    let mut pts: Vec<egui::Pos2> = Vec::new();
+    let corners = [
+        (egui::pos2(rect.right() - r, rect.top() + r), -90.0_f32),
+        (egui::pos2(rect.right() - r, rect.bottom() - r), 0.0),
+        (egui::pos2(rect.left() + r, rect.bottom() - r), 90.0),
+        (egui::pos2(rect.left() + r, rect.top() + r), 180.0),
+    ];
+    pts.push(egui::pos2(rect.left() + r, rect.top()));
+    for (c, start) in corners {
+        for k in 0..=8 {
+            let a = (start + 90.0 * k as f32 / 8.0).to_radians();
+            pts.push(egui::pos2(c.x + r * a.cos(), c.y + r * a.sin()));
+        }
+    }
+    pts.push(egui::pos2(rect.left() + r, rect.top()));
+    painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.0, color), 4.0, 4.0));
 }
 
 /// Width a button takes (for placing it before drawing).
