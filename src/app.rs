@@ -1197,7 +1197,7 @@ impl App {
             self.watch_later.push((project.id, project.path.clone()));
             self.projects.push(project);
         }
-        // Listed by name, however the workspace was saved.
+        // In the saved order, each worktree after its project.
         self.sort_projects();
         self.active = ws
             .active

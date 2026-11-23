@@ -495,17 +495,17 @@ impl Project {
     }
 }
 
-/// The order of the project list (sidebar, Grid): projects by name, each followed by its
-/// worktrees by name. Returns the projects' places in `names` in that order; a worktree whose
-/// project is gone is listed as a project.
+/// The order of the project list (sidebar, Overview, ⌘1–⌘9): projects in the order they are in
+/// (the order the user chose: a new one comes last, Move Up/Down change it), each followed by
+/// its worktrees by name. Returns the projects' places in `items` in that order; a worktree
+/// whose project is gone is listed as a project.
 pub fn list_order(items: &[(ProjectId, Option<ProjectId>, &str, &Path)]) -> Vec<usize> {
     let known: HashSet<ProjectId> = items.iter().map(|x| x.0).collect();
     let by_name = |a: &usize, b: &usize| {
         let (x, y) = (&items[*a], &items[*b]);
         name_order(x.2, y.2).then_with(|| x.3.cmp(y.3))
     };
-    let mut tops: Vec<usize> = (0..items.len()).filter(|&i| items[i].1.is_none_or(|p| !known.contains(&p))).collect();
-    tops.sort_by(by_name);
+    let tops: Vec<usize> = (0..items.len()).filter(|&i| items[i].1.is_none_or(|p| !known.contains(&p))).collect();
     let mut out = Vec::with_capacity(items.len());
     for t in tops {
         out.push(t);
@@ -823,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn worktrees_follow_their_project() {
+    fn projects_keep_their_order_and_worktrees_follow_their_project() {
         let p = Path::new("/x");
         let items = [
             (1, None, "ternary-engine", p),
@@ -834,7 +834,7 @@ mod tests {
             (6, None, "web", p),
         ];
         let order: Vec<u64> = list_order(&items).into_iter().map(|i| items[i].0).collect();
-        assert_eq!(order, [3, 5, 1, 4, 2, 6]);
+        assert_eq!(order, [1, 4, 2, 3, 5, 6]);
     }
 
     #[test]
