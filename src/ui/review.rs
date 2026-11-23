@@ -567,7 +567,7 @@ impl App {
                     ui.min_rect().right()
                 })
                 .inner;
-            if !loading && has_box {
+            if !loading && has_box && nfiles > 0 {
                 let text = format!("{} · +{adds} −{dels}", crate::i18n::count(nfiles, t("1 file"), t("{} files")));
                 let g = ui.painter().layout_no_wrap(text, style::mono(style::DATA), p.text_faint);
                 if seg_right + 12.0 + g.size().x <= row.right() {
