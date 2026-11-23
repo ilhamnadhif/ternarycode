@@ -141,17 +141,10 @@ impl App {
     }
 
     fn central(&mut self, ui: &mut Ui) {
-        // Management views work even before the first project is added.
-        match self.view {
-            tc_core::model::View::Profiles | tc_core::model::View::Monitor => {
-                self.profiles_view(ui);
-                return;
-            }
-            tc_core::model::View::Pairing => {
-                self.pairing_view(ui);
-                return;
-            }
-            _ => {}
+        // Accounts and the phone are Settings pages now: the views they had fall back to the
+        // work (a state saved by an older version).
+        if crate::ade::is_management_view(self.view) {
+            self.view = if crate::ade::is_management_view(self.prev_view) { tc_core::model::View::Focus } else { self.prev_view };
         }
         if self.projects.is_empty() {
             let full = ui.max_rect();

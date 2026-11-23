@@ -1,12 +1,16 @@
-//! Settings: a modal with its pages at the left (General, Appearance, Terminal, Agents, Editor,
-//! Notifications, Updates, About), a search that narrows them, and each page as groups of rows
-//! (what a setting is and a line about it at the left, its control at the right). Saved as they
-//! change.
+//! Settings: one home for every setting. A modal with its pages at the left (General …
+//! Notifications, Phone, then Updates and About), a search that narrows them, and each page as
+//! groups of rows: what a setting is and one line about it at the left, its control at the
+//! right. Saved as they change. Accounts (`profiles_ui.rs`) and Phone (`pairing_ui.rs`) draw their
+//! pages with the rows and groups of this file.
 
-use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use std::sync::Arc;
+
+use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Galley, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use tc_agent::integrate::InstallRecord;
 use tc_core::agent::{AgentKind, Preset};
 use tc_core::model::{CursorShape, Integration, Language, ThemeMode};
+use tc_core::status::Status;
 
 use super::{icons, kit, style};
 use crate::actions::Action;
@@ -18,241 +22,384 @@ pub enum SettingsPage {
     General,
     Appearance,
     Terminal,
-    /// Browser panes: where web pages open, sleeping, logins.
-    Browser,
     /// Presets and how each agent reports to TernaryCode (its hooks).
     Agents,
+    /// Agent accounts (profiles), their usage and the failover policy.
+    Accounts,
+    /// Browser panes: where web pages open, sleeping, logins, what agents may do.
+    Browser,
     Editor,
     Notifications,
+    /// The phone companion: its server, pairing and paired phones.
+    Phone,
     Updates,
     About,
     /// Opens Agents (kept for "Agent Integrations…").
     Integrations,
 }
 
-const W: f32 = 1040.0;
-const H: f32 = 768.0;
-const NAV_W: f32 = 236.0;
+/// The modal: 1000 wide, as tall as its page (at least 640, at most the screen).
+const W: f32 = 1000.0;
+const MIN_H: f32 = 640.0;
+const NAV_W: f32 = 232.0;
+/// The page's padding: 32 at the sides, 26 above, 30 below.
+const PAD_X: f32 = 32.0;
+const PAD_TOP: f32 = 26.0;
+const PAD_BOTTOM: f32 = 30.0;
+/// Between the head and the groups, and between groups.
+const GAP: f32 = 24.0;
 
-/// The pages, their icons, and the rows on each (for the search).
-fn pages() -> [(SettingsPage, &'static str, &'static str, &'static [&'static str]); 9] {
-    [
-        (SettingsPage::General, icons::GEAR_SIX, "General", &["Command line", "Data folder", "Group active projects at the top", "Worktrees"]),
-        (SettingsPage::Appearance, icons::PAINT_BRUSH, "Appearance", &["Theme", "Language", "With the dark theme", "With the light theme", "Font", "Size", "Cursor", "Blinking cursor"]),
-        (
-            SettingsPage::Terminal,
-            icons::TERMINAL,
-            "Terminal",
+/// The nav, in order (None: the line before Updates), with each page's icon and name.
+const NAV: [Option<(SettingsPage, &str, &str)>; 12] = [
+    Some((SettingsPage::General, icons::GEAR_SIX, "General")),
+    Some((SettingsPage::Appearance, icons::PALETTE, "Appearance")),
+    Some((SettingsPage::Terminal, icons::TERMINAL_WINDOW, "Terminal")),
+    Some((SettingsPage::Agents, icons::SPARKLE, "Agents")),
+    Some((SettingsPage::Accounts, icons::USER_CIRCLE, "Accounts")),
+    Some((SettingsPage::Browser, icons::GLOBE_SIMPLE, "Browser")),
+    Some((SettingsPage::Editor, icons::CODE, "Editor")),
+    Some((SettingsPage::Notifications, icons::BELL_SIMPLE, "Notifications")),
+    Some((SettingsPage::Phone, icons::DEVICE_MOBILE, "Phone")),
+    None,
+    Some((SettingsPage::Updates, icons::ARROW_CIRCLE_UP, "Updates")),
+    Some((SettingsPage::About, icons::INFO, "About")),
+];
+
+/// The rows of each page, for the search (their titles and labels; what the user adds, such as
+/// accounts and presets, is matched by `App::page_matches`).
+fn page_rows(page: SettingsPage) -> &'static [&'static str] {
+    match page {
+        SettingsPage::General => &["Command line", "Data folder", "Group active projects at the top", "Worktrees", "Where new worktrees go", "Branch names start with", "When a branch is merged"],
+        SettingsPage::Appearance => &["Theme", "Language", "Terminal colours", "Dark theme", "Light theme", "Terminal text", "Font", "Size", "Cursor", "Blinking cursor"],
+        SettingsPage::Terminal => {
             if cfg!(target_os = "macos") {
                 &["Scrollback per pane", "Scrollback memory for all panes", "Option key as Meta", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]
             } else {
                 &["Scrollback per pane", "Scrollback memory for all panes", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]
-            },
-        ),
-        (SettingsPage::Browser, icons::GLOBE, "Browser", &["Open web pages in TernaryCode", "When an agent opens a page", "Put browsers to sleep after", "Pages in Grid tiles", "Logins & cookies", "Agents can use the browser", "Ask before agents open a site", "Sites agents may open without asking", "Agents may run JavaScript in pages"]),
-        (SettingsPage::Agents, icons::PLUGS_CONNECTED, "Agents", &["Command", "Resume", "Status signals", "Add Preset", "Hooks"]),
-        (SettingsPage::Editor, icons::CODE, "Editor", &["Language features", "Start servers only when needed", "Completion while typing", "Format on save"]),
-        (
-            SettingsPage::Notifications,
-            icons::BELL,
-            "Notifications",
+            }
+        }
+        SettingsPage::Agents | SettingsPage::Integrations => &["Command", "Resume", "Environment", "Status signals", "Browser tools", "Add preset", "Hook program"],
+        SettingsPage::Accounts => &["Agents running", "Healthy accounts", "Rate-limited", "When an account hits its limit", "Switch", "Fall back to another provider", "Retry a limited account after", "Accounts, in failover order", "Add account", "Active sessions", "Recent events"],
+        SettingsPage::Browser => &["Open web pages in TernaryCode", "When an agent opens a page", "Put pages to sleep after", "Pages in Grid tiles", "Logins & cookies", "Agents can use the browser", "Ask before agents open a site", "Sites agents may open without asking", "Agents may run JavaScript in pages", "Sites added for a project"],
+        SettingsPage::Editor => &["Language features", "Start servers only when needed", "Completion while typing", "Format on save", "Found on this computer"],
+        SettingsPage::Notifications => {
             if cfg!(target_os = "macos") {
-                &["An agent needs input", "A process failed", "An agent finished its turn", "A long command finished", "Badge on the Dock icon"]
+                &["An agent needs you", "Something failed", "An agent finished its turn", "A long command finished", "Badge on the Dock icon"]
             } else {
-                &["An agent needs input", "A process failed", "An agent finished its turn", "A long command finished"]
-            },
-        ),
-        (SettingsPage::Updates, icons::ARROW_CIRCLE_UP, "Updates", &["Check for updates automatically", "Version"]),
-        (SettingsPage::About, icons::INFO, "About", &["License"]),
-    ]
+                &["An agent needs you", "Something failed", "An agent finished its turn", "A long command finished"]
+            }
+        }
+        SettingsPage::Phone => &["Companion server", "Port", "Tunnel address", "Scan with your phone's camera", "Paired phones"],
+        SettingsPage::Updates => &["Check for updates automatically", "Install update", "Releases"],
+        SettingsPage::About => &["MIT license", "Releases"],
+    }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Rows and groups (also used by Accounts and Phone)
+// ---------------------------------------------------------------------------------------------
+
 /// Whether a row's label or note matches the search.
-fn hit(search: &str, label: &str, note: &str) -> bool {
+pub(super) fn hit(search: &str, label: &str, note: &str) -> bool {
     let q = search.trim().to_lowercase();
     q.is_empty() || label.to_lowercase().contains(&q) || note.to_lowercase().contains(&q)
 }
 
-/// A page's title and the line under it: drawn by the sheet's head (`settings_ui`), which
-/// reads them from here.
-fn page_head(ui: &mut Ui, title: &str, lead: &str) {
-    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("settings-head"), (title.to_string(), lead.to_string())));
+/// Whether any of `labels` matches.
+pub(super) fn any_hit(search: &str, labels: &[(&str, &str)]) -> bool {
+    labels.iter().any(|(l, n)| hit(search, l, n))
 }
 
-/// The title over a group of rows.
-fn group(ui: &mut Ui, text: &str) {
+/// `text` laid out in `font`, wrapped at `wrap` (one line when None), each line `line_h` high
+/// (the type style's line height: Body 18, Small 16, Mono Small 14).
+pub(super) fn galley(ui: &Ui, text: &str, font: FontId, color: Color32, wrap: Option<f32>, line_h: f32) -> Arc<Galley> {
+    let mut job = egui::text::LayoutJob::default();
+    let mut f = egui::TextFormat::simple(font, color);
+    f.line_height = Some(line_h);
+    job.append(text, 0.0, f);
+    job.wrap.max_width = wrap.unwrap_or(f32::INFINITY);
+    ui.painter().layout_job(job)
+}
+
+/// A label in a type style, as a widget (`wrap`: it wraps in the room left).
+pub(super) fn text(ui: &mut Ui, text: &str, font: FontId, color: Color32, line_h: f32, wrap: bool) -> egui::Response {
+    let g = galley(ui, text, font, color, wrap.then(|| ui.available_width()), line_h);
+    let (r, resp) = ui.allocate_exact_size(g.size(), Sense::hover());
+    ui.painter().galley(r.min, g, color);
+    resp
+}
+
+/// The room above a group: 24 unless it is the first thing on the page.
+pub(super) fn gap(ui: &mut Ui) {
+    if ui.min_rect().height() > 0.5 {
+        ui.add_space(GAP);
+    }
+}
+
+/// A group's title (Small Strong, secondary) with an optional note at its right, 8 above its card.
+pub(super) fn group_head(ui: &mut Ui, title: &str, note: Option<&str>) {
     let p = style::pal(ui);
-    ui.add_space(16.0);
-    let g = ui.painter().layout_no_wrap(text.to_string(), style::medium(12.0), p.text_muted);
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), g.size().y), Sense::hover());
-    ui.painter().galley(r.min + vec2(2.0, 0.0), g, p.text_muted);
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
+    let g = galley(ui, title, style::medium(style::SMALL), p.text_muted, None, 16.0);
+    ui.painter().galley(r.left_top(), g, p.text_muted);
+    if let Some(n) = note {
+        let g = galley(ui, n, FontId::proportional(style::SMALL), p.text_faint, None, 16.0);
+        ui.painter().galley(pos2(r.right() - g.size().x, r.top()), g, p.text_faint);
+    }
     ui.add_space(8.0);
 }
 
+/// A group: its title (when it has one) over a card of rows, shown when the search matches one
+/// of `labels` (or the title: then all its rows show). Returns whether it was drawn.
+pub(super) fn section(ui: &mut Ui, search: &str, title: Option<&str>, note: Option<&str>, labels: &[(&str, &str)], add: impl FnOnce(&mut Card)) -> bool {
+    let title_hit = title.is_some_and(|t| !search.trim().is_empty() && hit(search, t, ""));
+    if !title_hit && !any_hit(search, labels) {
+        return false;
+    }
+    gap(ui);
+    if let Some(title) = title {
+        group_head(ui, title, note);
+    }
+    card(ui, if title_hit { "" } else { search }, add);
+    true
+}
+
+/// A card of rows (raised, a hairline, radius 10), the rows edge to edge with hairlines between.
+pub(super) fn card(ui: &mut Ui, search: &str, add: impl FnOnce(&mut Card)) -> egui::Response {
+    let p = style::pal(ui);
+    egui::Frame::NONE
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(style::RADIUS_CARD))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let mut c = Card { ui, search: search.to_string(), first: true };
+            add(&mut c);
+        })
+        .response
+}
+
+/// A raised card of its own content (`pad` inside): the usage summary, the QR code, an update.
+pub(super) fn raised(ui: &mut Ui, pad: i8, add: impl FnOnce(&mut Ui)) -> egui::Response {
+    let p = style::pal(ui);
+    gap(ui);
+    egui::Frame::NONE
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(style::RADIUS_CARD))
+        .inner_margin(egui::Margin::same(pad))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        })
+        .response
+}
+
 /// Rows in a card: each the setting's name and a line about it at the left, its control at the
-/// right, a line between rows.
-struct Card<'a> {
-    ui: &'a mut Ui,
+/// right (padding 12 / 16, 14 between), a hairline between rows.
+pub(super) struct Card<'a> {
+    pub ui: &'a mut Ui,
     search: String,
     first: bool,
-    rows: usize,
-    /// An icon before the next row's name (a status, on Notifications).
-    icon: Option<(&'static str, Color32)>,
 }
 
 impl Card<'_> {
-    fn row(&mut self, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
-        self.row_with(label, note, false, control);
+    pub fn row(&mut self, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
+        self.row_full(None, label, note, None, control);
     }
 
-    fn row_icon(&mut self, icon: &'static str, color: Color32, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
-        self.icon = Some((icon, color));
-        self.row_with(label, note, false, control);
-        self.icon = None;
+    /// A row with a status icon before its name (Notifications).
+    pub fn row_icon(&mut self, icon: &'static str, color: Color32, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
+        self.row_full(Some((icon, color)), label, note, None, control);
     }
 
-    /// A row of only its control (the label is for the search), with the row's padding.
-    fn bare(&mut self, label: &str, control: impl FnOnce(&mut Ui)) {
-        self.bare_hit(label, "", control);
+    /// A row whose note is in `color` (an error under a field).
+    pub fn row_note(&mut self, label: &str, note: &str, color: Color32, control: impl FnOnce(&mut Ui)) {
+        self.row_full(None, label, note, Some(color), control);
     }
 
-    fn bare_hit(&mut self, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
+    /// Content of its own, the card's width, with `pad` around it; shown when one of `labels`
+    /// matches (always with none).
+    pub fn block(&mut self, labels: &[(&str, &str)], pad: egui::Margin, add: impl FnOnce(&mut Ui)) {
+        if !labels.is_empty() && !any_hit(&self.search, labels) {
+            return;
+        }
+        self.divider();
+        egui::Frame::NONE.inner_margin(pad).show(self.ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
+    }
+
+    /// The hairline between rows (none before the first).
+    pub fn divider(&mut self) {
+        if !self.first {
+            let p = style::pal(self.ui);
+            let y = self.ui.cursor().top();
+            let x = self.ui.max_rect().x_range();
+            self.ui.painter().hline(x, y + 0.5, Stroke::new(1.0, p.border));
+        }
+        self.first = false;
+    }
+
+    /// The search this card filters by.
+    pub fn search(&self) -> &str {
+        &self.search
+    }
+
+    /// The row: the text at the left (as wide as the control leaves; the control's size is the
+    /// one it had last frame), the control at the right, both centred in the row.
+    fn row_full(&mut self, icon: Option<(&'static str, Color32)>, label: &str, note: &str, note_color: Option<Color32>, control: impl FnOnce(&mut Ui)) {
         if !hit(&self.search, label, note) {
             return;
         }
         self.divider();
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 14, top: 14, bottom: 12 }).show(self.ui, |ui| {
-            ui.set_width(ui.available_width());
-            control(ui);
-        });
-    }
-
-    /// A row without padding, shown when any of `labels` matches (rows of its own inside).
-    fn bare_hit_flush(&mut self, labels: &[(&str, &str)], control: impl FnOnce(&mut Ui)) {
-        if !labels.iter().any(|(l, n)| hit(&self.search, l, n)) {
-            return;
-        }
-        self.divider();
-        self.ui.scope(|ui| {
-            ui.set_width(ui.available_width());
-            control(ui);
-        });
-    }
-
-    /// The line between rows (none before the first).
-    fn divider(&mut self) {
         let ui = &mut *self.ui;
         let p = style::pal(ui);
-        if !self.first {
-            let y = ui.cursor().top();
-            let x = ui.max_rect().x_range();
-            ui.painter().hline(x, y + 0.5, Stroke::new(1.0, p.border));
+        let w = ui.available_width();
+        let key = ui.id().with(("settings-row", label));
+        let ctrl: Vec2 = ui.data(|d| d.get_temp(key)).unwrap_or(Vec2::ZERO);
+        let icon_w = if icon.is_some() { 16.0 + 14.0 } else { 0.0 };
+        let ctrl_room = if ctrl.x > 0.0 { ctrl.x + 14.0 } else { 0.0 };
+        let text_w = (w - 32.0 - icon_w - ctrl_room).max(80.0);
+        let lg = galley(ui, label, FontId::proportional(style::BODY), p.text, Some(text_w), 18.0);
+        let note_c = note_color.unwrap_or(p.text_faint);
+        let ng = (!note.is_empty()).then(|| galley(ui, note, FontId::proportional(style::SMALL), note_c, Some(text_w), 16.0));
+        let label_h = lg.size().y;
+        let text_h = label_h + ng.as_ref().map_or(0.0, |g| 3.0 + g.size().y);
+        let inner_h = text_h.max(ctrl.y);
+        let (rect, _) = ui.allocate_exact_size(vec2(w, inner_h + 24.0), Sense::hover());
+        let mut x = rect.left() + 16.0;
+        if let Some((i, c)) = icon {
+            ui.painter().text(pos2(x + 8.0, rect.center().y), Align2::CENTER_CENTER, i, style::icon_fill(16.0), c);
+            x += icon_w;
         }
-        self.first = false;
-        self.rows += 1;
+        let ty = rect.top() + 12.0 + (inner_h - text_h) / 2.0;
+        ui.painter().galley(pos2(x, ty), lg, p.text);
+        if let Some(g) = ng {
+            ui.painter().galley(pos2(x, ty + label_h + 3.0), g, note_c);
+        }
+        let cr = Rect::from_min_max(pos2(rect.right() - 16.0 - ctrl.x, rect.top() + 12.0), pos2(rect.right() - 16.0, rect.bottom() - 12.0));
+        let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("settings-ctrl", label)).max_rect(cr).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        child.spacing_mut().item_spacing = vec2(10.0, 6.0);
+        control(&mut child);
+        let used = child.min_rect().size();
+        if (used - ctrl).abs().max_elem() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(key, used));
+            ui.ctx().request_repaint();
+        }
     }
+}
 
-    /// `stacked`: the control under the text (a wide one, such as a grid of schemes).
-    fn row_with(&mut self, label: &str, note: &str, stacked: bool, control: impl FnOnce(&mut Ui)) {
-        if !hit(&self.search, label, note) {
-            return;
-        }
-        let ui = &mut *self.ui;
-        let p = style::pal(ui);
-        if !self.first {
-            let y = ui.cursor().top();
-            let x = ui.max_rect().x_range();
-            ui.painter().hline(x, y + 0.5, Stroke::new(1.0, p.border));
-        }
-        self.first = false;
-        self.rows += 1;
-        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 14, top: 12, bottom: 12 }).show(ui, |ui| {
-            let row_w = ui.available_width();
-            ui.set_width(row_w);
-            ui.set_min_height(26.0);
-            let icon = self.icon;
-            let text = |ui: &mut Ui| {
-                // Respect the space shrunk by `Sides::shrink_left()` — never expand past `available_width()`!
-                let max_text_w = ui.available_width().clamp(80.0, 600.0);
-                ui.set_max_width(max_text_w);
-                ui.vertical(|ui| {
-                    ui.set_max_width(max_text_w);
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    match icon {
-                        Some((i, c)) => {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
-                                ui.label(RichText::new(i).font(style::icon_fill(13.0)).color(c));
-                                ui.add(egui::Label::new(RichText::new(label).size(13.0).color(p.text)).wrap());
-                            });
-                        }
-                        None => {
-                            ui.add(egui::Label::new(RichText::new(label).size(13.0).color(p.text)).wrap());
-                        }
-                    }
-                    if !note.is_empty() {
-                        ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint).line_height(Some(17.4))).wrap());
-                    }
-                });
-            };
-            if stacked || row_w < 430.0 {
-                text(ui);
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    control(ui);
-                });
-            } else {
-                egui::Sides::new().height(26.0).spacing(18.0).shrink_left().wrap().show(
-                    ui,
-                    |ui| text(ui),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        control(ui)
-                    },
-                );
-            }
-        });
+/// A text field in the data font (30 high, the inset fill, radius 7), `width` wide (the room
+/// left when 0); `multi`: as many lines as it has.
+pub(super) fn mono_field(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, width: f32, multi: bool) -> egui::Response {
+    let p = style::pal(ui);
+    let w = if width > 0.0 { width } else { ui.available_width() };
+    let lines = if multi { text.lines().count().max(1) + usize::from(text.ends_with('\n')) } else { 1 };
+    let h = 30.0 + (lines.saturating_sub(1)) as f32 * 16.0;
+    let (rect, outer) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+    if outer.clicked() {
+        ui.memory_mut(|m| m.request_focus(id));
     }
+    let focused = ui.memory(|m| m.has_focus(id));
+    if focused {
+        ui.painter().rect_stroke(rect.expand(3.0), CornerRadius::same(10), Stroke::new(3.0, style::soft(p.accent, 0.25)), StrokeKind::Inside);
+    }
+    let line = if focused { p.accent } else { p.border_strong };
+    ui.painter().rect(rect, CornerRadius::same(7), p.inset, Stroke::new(1.0, line), StrokeKind::Inside);
+    let inner = Rect::from_min_max(pos2(rect.left() + 10.0, rect.top() + 7.0), pos2(rect.right() - 10.0, rect.bottom() - 6.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Min)));
+    let edit = if multi { egui::TextEdit::multiline(text).desired_rows(1) } else { egui::TextEdit::singleline(text) };
+    child.add_sized(
+        inner.size(),
+        edit.id(id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .font(style::mono(12.0))
+            .hint_text(RichText::new(hint).font(style::mono(12.0)).color(p.text_faint)),
+    )
+}
+
+/// What a page says when nothing on it matches the search.
+fn no_match(ui: &mut Ui, search: &str) {
+    let p = style::pal(ui);
+    let msg = tf("Nothing on this page matches “{}”.", &[search.trim()]);
+    text(ui, &msg, FontId::proportional(style::SMALL), p.text_faint, 16.0, true);
 }
 
 /// A site in the list agents may open without asking, with × to take it out. Returns whether ×
 /// was clicked.
 fn site_chip(ui: &mut Ui, site: &str) -> bool {
     let p = style::pal(ui);
-    let g = ui.painter().layout_no_wrap(site.to_string(), egui::FontId::monospace(11.5), p.text);
-    let (rect, _) = ui.allocate_exact_size(vec2(g.size().x + 10.0 + 18.0, 24.0), Sense::hover());
-    ui.painter().rect(rect, CornerRadius::same(style::RADIUS), p.subtle, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    let g = ui.painter().layout_no_wrap(site.to_string(), style::mono(11.0), p.text);
+    let (rect, _) = ui.allocate_exact_size(vec2(8.0 + g.size().x + 6.0 + 10.0 + 8.0, 24.0), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(6), p.subtle);
     ui.painter().galley(pos2(rect.left() + 8.0, rect.center().y - g.size().y / 2.0), g, p.text);
-    let x = Rect::from_center_size(pos2(rect.right() - 11.0, rect.center().y), vec2(16.0, 16.0));
+    let x = Rect::from_center_size(pos2(rect.right() - 8.0 - 5.0, rect.center().y), vec2(16.0, 16.0));
     let r = ui.interact(x, ui.id().with(("site-x", site)), Sense::click()).on_hover_text(t("Remove"));
     let c = if r.hovered() { p.text } else { p.text_faint };
-    ui.painter().text(x.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(11.0), c);
-    r.clicked()
+    ui.painter().text(x.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), c);
+    r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
-/// A card of rows: drawn only when one of them matches the search. Returns whether it was.
-fn card(ui: &mut Ui, search: &str, labels: &[(&str, &str)], add: impl FnOnce(&mut Card)) -> bool {
-    if !labels.iter().any(|(l, n)| hit(search, l, n)) {
-        return false;
+/// The title and the line under it of each page.
+fn page_head_text(page: SettingsPage) -> (&'static str, String) {
+    match page {
+        SettingsPage::General => (t("General"), t("The app itself.").into()),
+        SettingsPage::Appearance => (t("Appearance"), t("How TernaryCode and its terminals look.").into()),
+        SettingsPage::Terminal => (t("Terminal"), t("How panes behave.").into()),
+        SettingsPage::Agents | SettingsPage::Integrations => {
+            (t("Agents"), tf("Presets you start with {}, and how each agent tells TernaryCode it needs you.", &[kit::keys(&Action::PickPreset).unwrap_or("")]))
+        }
+        SettingsPage::Accounts => (t("Accounts & usage"), t("Several sign-ins per agent, their limits, and what happens when one runs out.").into()),
+        SettingsPage::Browser => (t("Browser"), t("Web pages beside your terminals, for you and your agents.").into()),
+        SettingsPage::Editor => (t("Editor"), t("For reading code, and small edits.").into()),
+        SettingsPage::Notifications => (t("Notifications"), t("Only when you are not already looking. The keyboard never moves by itself.").into()),
+        SettingsPage::Phone => (t("Phone"), t("Watch agents, answer them and switch accounts from your phone on the same Wi-Fi.").into()),
+        SettingsPage::Updates => (t("Updates"), t("TernaryCode updates itself from its GitHub releases.").into()),
+        SettingsPage::About => (t("About"), t("Every project and its agents, in one window.").into()),
     }
-    let p = style::pal(ui);
-    let dark = ui.visuals().dark_mode;
-    let r = egui::Frame::NONE
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, if dark { p.border } else { p.border_strong }))
-        .corner_radius(CornerRadius::same(10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let mut c = Card { ui, search: search.to_string(), first: true, rows: 0, icon: None };
-            add(&mut c);
-        });
-    kit::paint_highlight(ui.painter(), Rect::from_min_size(r.response.rect.min, vec2(r.response.rect.width(), 1.0)), 10, &p);
-    true
 }
+
+// ---------------------------------------------------------------------------------------------
+// The modal
+// ---------------------------------------------------------------------------------------------
 
 impl App {
+    /// Opens Settings at `page` (the entry for Accounts, Phone, Agents, About…): what was
+    /// floating closes first.
+    pub fn open_settings_at(&mut self, page: SettingsPage) {
+        self.monitor_popover = false;
+        self.attention_open = false;
+        self.palette = None;
+        if page == SettingsPage::Accounts {
+            // Fresh usage numbers for the page.
+            self.usage_scan_at = None;
+        }
+        self.dialog = Some(crate::app::Dialog::Settings(page));
+    }
+
+    /// Whether the search matches something on `page`, its rows or what the user added there
+    /// (accounts, presets, phones, sites).
+    fn page_matches(&self, page: SettingsPage, search: &str) -> bool {
+        if search.trim().is_empty() {
+            return false;
+        }
+        let (title, _) = page_head_text(page);
+        if hit(search, title, "") || page_rows(page).iter().any(|r| hit(search, t(r), "")) {
+            return true;
+        }
+        match page {
+            SettingsPage::Accounts => self.effective_profiles().iter().any(|p| hit(search, &p.id, &p.name) || p.account_hint.as_deref().is_some_and(|h| hit(search, h, ""))),
+            SettingsPage::Agents => self.settings.presets().iter().any(|p| hit(search, &p.name, &p.command)),
+            SettingsPage::Phone => self.settings.companion.devices.iter().any(|d| hit(search, &d.name, &d.ip)),
+            SettingsPage::Browser => self.settings.browser_agent_sites.iter().any(|s| hit(search, s, "")),
+            _ => false,
+        }
+    }
+
     /// Draws the settings dialog; returns false when it should close.
     pub fn settings_ui(&mut self, ui: &mut Ui, page: &mut SettingsPage) -> bool {
         if *page == SettingsPage::Integrations {
@@ -260,7 +407,10 @@ impl App {
         }
         let screen = ui.ctx().content_rect();
         let w = W.min((screen.width() - 32.0).max(360.0));
-        let h = H.min((screen.height() - 48.0).max(360.0));
+        let max_h = (screen.height() - 48.0).max(360.0);
+        let height_id = egui::Id::new(("settings-height", *page as u8));
+        let wanted = ui.data(|d| d.get_temp::<f32>(height_id)).unwrap_or(MIN_H);
+        let h = wanted.max(MIN_H).min(max_h);
         let nav_w = if w < 760.0 { 184.0 } else { NAV_W };
         ui.set_width(w);
         ui.set_height(h);
@@ -268,176 +418,183 @@ impl App {
         let mut keep = true;
         let p = style::pal(ui);
         let full = Rect::from_min_size(ui.max_rect().min, vec2(w, h));
-        kit::paint_highlight(ui.painter(), Rect::from_min_size(full.min, vec2(w, 1.0)), style::RADIUS_DIALOG, &p);
 
-        // ----- the pages at the left: "Settings", the search, the pages, the version ----------
+        // ----- the nav: "Settings", the search, the pages, the version ----------------------
         let nav = Rect::from_min_max(full.min, pos2(full.left() + nav_w, full.bottom()));
-        let nav_fill = style::over(p.overlay, p.chrome, 0.45);
-        ui.painter().rect_filled(nav, CornerRadius { nw: style::RADIUS_DIALOG, ne: 0, sw: style::RADIUS_DIALOG, se: 0 }, nav_fill);
-        ui.painter().vline(nav.right() - 0.5, nav.y_range(), Stroke::new(1.0, p.border));
-        let mut job = egui::text::LayoutJob::default();
-        let mut f = egui::TextFormat::simple(style::semibold(15.0), p.text);
-        f.extra_letter_spacing = -0.15;
-        job.append(t("Settings"), 0.0, f);
-        let g = ui.painter().layout_job(job);
-        ui.painter().galley(pos2(nav.left() + 18.0, nav.top() + 18.0), g, p.text);
-        let search_rect = Rect::from_min_size(pos2(nav.left() + 10.0, nav.top() + 18.0 + 22.0 + 10.0), vec2(nav_w - 20.0, 30.0));
+        let r = style::RADIUS_DIALOG;
+        ui.painter().rect_filled(nav, CornerRadius { nw: r, ne: 0, sw: r, se: 0 }, p.hover);
+        ui.painter().vline(nav.right() + 0.5, nav.y_range(), Stroke::new(1.0, p.border));
+        let inner = Rect::from_min_max(pos2(nav.left() + 12.0, nav.top() + 18.0), pos2(nav.right() - 12.0, nav.bottom() - 14.0));
+        let g = galley(ui, t("Settings"), style::semibold(style::TITLE), p.text, None, 24.0);
+        ui.painter().galley(inner.left_top(), g, p.text);
+        let search_rect = Rect::from_min_size(pos2(inner.left(), inner.top() + 24.0 + 14.0), vec2(inner.width(), 30.0));
         let sid = egui::Id::new("settings-search");
         if ui.memory(|m| m.has_focus(sid)) {
-            ui.memory_mut(|m| {
-                m.set_focus_lock_filter(sid, egui::EventFilter { escape: true, ..Default::default() });
-            });
+            ui.memory_mut(|m| m.set_focus_lock_filter(sid, egui::EventFilter { escape: true, ..Default::default() }));
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.settings_search.clear();
                 ui.memory_mut(|m| m.surrender_focus(sid));
             }
         }
-        let mut search = self.settings_search.clone();
-        ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect), |ui| {
-            kit::field(ui, sid, &mut search, Some(icons::MAGNIFYING_GLASS), t("Search settings"), nav_w - 20.0, false)
-        });
-        self.settings_search = search.clone();
-        // ⌘F, at the right of the empty field.
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             ui.memory_mut(|m| m.request_focus(sid));
         }
-        if search.is_empty() && !ui.memory(|m| m.has_focus(sid)) && nav_w >= 210.0 {
-            let keys = kit::keys(&Action::Find).unwrap_or("");
-            if !keys.is_empty() && keys.chars().count() <= 4 {
-                let w = kit::kbd_width(ui.painter(), keys);
-                kit::paint_kbd_text(ui.painter(), pos2(search_rect.right() - 8.0 - w, search_rect.center().y), keys, &p);
-            }
-        }
-        // The version at the bottom (placed before nav list so nav scrolls safely above it).
-        let ver = Rect::from_min_max(pos2(nav.left() + 10.0, nav.bottom() - 12.0 - 38.0), pos2(nav.right() - 10.0, nav.bottom() - 12.0));
-        ui.painter().hline(ver.x_range(), ver.top() + 0.5, Stroke::new(1.0, p.border));
-        let logo = Rect::from_min_size(pos2(ver.left() + 8.0, ver.top() + 10.0), vec2(26.0, 26.0));
-        paint_logo(ui.painter(), logo, &p);
-        let ver_x = logo.right() + 10.0;
-        let ver_room = (ver.right() - ver_x).max(20.0);
-        ui.painter().text(pos2(ver_x, logo.top() + 1.0), Align2::LEFT_TOP, "TernaryCode", style::medium(12.0), p.text_muted);
-        let version = match self.updater.available_version() {
-            Some(v) => format!("{} · {}", env!("CARGO_PKG_VERSION"), tf("{} is out", &[&v])),
-            None => env!("CARGO_PKG_VERSION").to_string(),
-        };
-        let mut ver_job = egui::text::LayoutJob::simple_singleline(version, style::mono(10.5), p.text_faint);
-        ver_job.wrap = egui::text::TextWrapping::truncate_at_width(ver_room);
-        let ver_g = ui.painter().layout_job(ver_job);
-        ui.painter().galley(pos2(ver_x, logo.bottom() + 1.0 - ver_g.size().y), ver_g, p.text_faint);
+        let mut search = self.settings_search.clone();
+        nav_search(ui, search_rect, sid, &mut search);
+        self.settings_search = search.clone();
 
-        let nav_list = Rect::from_min_max(
-            pos2(nav.left() + 10.0, search_rect.bottom() + 10.0),
-            pos2(nav.right() - 10.0, (ver.top() - 8.0).max(search_rect.bottom() + 10.0)),
-        );
-        ui.scope_builder(egui::UiBuilder::new().max_rect(nav_list), |ui| {
-            ui.set_clip_rect(nav_list);
+        // The version at the bottom: the logo, "TernaryCode", the version (and the one that is out).
+        let ver_h = 16.0 + 1.0 + 14.0;
+        let ver = Rect::from_min_max(pos2(inner.left(), inner.bottom() - ver_h), inner.max);
+        let logo = Rect::from_min_size(pos2(ver.left(), ver.center().y - 12.0), vec2(24.0, 24.0));
+        paint_logo(ui.painter(), logo, &p);
+        let vx = logo.right() + 10.0;
+        let g = galley(ui, "TernaryCode", style::medium(style::SMALL), p.text, None, 16.0);
+        ui.painter().galley(pos2(vx, ver.top()), g, p.text);
+        let (version, vc) = match self.updater.available_version() {
+            Some(v) => (format!("{} · {}", crate::update::CURRENT, tf("{} is out", &[&v])), p.accent_text),
+            None => (crate::update::CURRENT.to_string(), p.text_faint),
+        };
+        let mut job = egui::text::LayoutJob::simple_singleline(version, style::mono(style::DATA), vc);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((ver.right() - vx).max(20.0));
+        let g = ui.painter().layout_job(job);
+        ui.painter().galley(pos2(vx, ver.top() + 17.0), g, vc);
+
+        let list = Rect::from_min_max(pos2(inner.left(), search_rect.bottom() + 14.0), pos2(inner.right(), (ver.top() - 14.0).max(search_rect.bottom() + 14.0)));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
+            ui.set_clip_rect(list.intersect(ui.clip_rect()));
             egui::ScrollArea::vertical()
                 .id_salt("settings-nav-scroll")
                 .auto_shrink([false, false])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    for (i, (pg, icon, name, rows)) in pages().into_iter().enumerate() {
-                        if i == 7 {
-                            let (sr, _) = ui.allocate_exact_size(vec2(nav_w - 20.0, 14.0), Sense::hover());
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for entry in NAV {
+                        let Some((pg, icon, name)) = entry else {
+                            let (sr, _) = ui.allocate_exact_size(vec2(list.width(), 13.0), Sense::hover());
                             ui.painter().hline((sr.left() + 8.0)..=(sr.right() - 8.0), sr.center().y, Stroke::new(1.0, p.border));
-                        }
-                        let label = t(name);
-                        let matches = !search.trim().is_empty() && rows.iter().any(|r| hit(&search, t(r), ""));
-                        let (item, r) = ui.allocate_exact_size(vec2(nav_w - 20.0, 31.0), Sense::click());
+                            continue;
+                        };
+                        let (item, resp) = ui.allocate_exact_size(vec2(list.width(), 30.0), Sense::click());
                         #[cfg(debug_assertions)]
                         crate::devtest::record(format!("settings:{name}"), item);
                         let on = *page == pg;
                         if on {
-                            ui.painter().rect(item, CornerRadius::same(7), p.surface, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-                            kit::paint_highlight(ui.painter(), item, 7, &p);
-                        } else if r.hovered() {
-                            ui.painter().rect_filled(item, CornerRadius::same(7), p.hover);
+                            ui.painter().rect(item, CornerRadius::same(style::RADIUS_ROW), p.surface, Stroke::new(1.0, p.border), StrokeKind::Inside);
+                        } else if resp.hovered() {
+                            ui.painter().rect_filled(item, CornerRadius::same(style::RADIUS_ROW), p.hover);
                         }
-                        let (ic, tc) = if on || r.hovered() { (p.text, p.text) } else { (p.text_faint, p.text_muted) };
-                        ui.painter().text(pos2(item.left() + 10.0 + 8.0, item.center().y), Align2::CENTER_CENTER, icon, style::icon_font(15.0), ic);
-                        ui.painter().text(pos2(item.left() + 10.0 + 16.0 + 10.0, item.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.0), tc);
-                        // At the right: what a page has for the user (an update, agents without hooks).
-                        let mut badge_right = item.right() - 10.0;
-                        if pg == SettingsPage::Updates && self.updater.available_version().is_some() {
-                            ui.painter().circle_filled(pos2(badge_right - 3.0, item.center().y), 3.0, p.accent_text);
-                            badge_right -= 12.0;
+                        if resp.hovered() && !on {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
+                        let (ic, tc) = if on || resp.hovered() { (p.text, p.text) } else { (p.text_muted, p.text_muted) };
+                        ui.painter().text(pos2(item.left() + 10.0 + 8.0, item.center().y), Align2::CENTER_CENTER, icon, style::icon_font(16.0), ic);
+                        let font = if on { style::medium(style::BODY) } else { FontId::proportional(style::BODY) };
+                        ui.painter().text(pos2(item.left() + 10.0 + 16.0 + 10.0, item.center().y), Align2::LEFT_CENTER, t(name), font, tc);
+                        // At the right: what a page has for the user (agents without hooks, an
+                        // update), and a dot when the search matches something there.
+                        let mut right = item.right() - 10.0;
                         if pg == SettingsPage::Agents {
                             let n = self.agents_without_hooks();
                             if n > 0 {
-                                let b = kit::paint_badge(ui.painter(), pos2(item.right() - 8.0, item.center().y), &n.to_string(), style::soft(p.warn, 0.15), p.warn, 16.0);
-                                badge_right = b.left() - 6.0;
+                                let g = ui.painter().layout_no_wrap(n.to_string(), style::mono_semibold(style::DATA), p.warn);
+                                let bw = (g.size().x + 8.0).max(16.0);
+                                let b = Rect::from_min_size(pos2(right - bw, item.center().y - 8.0), vec2(bw, 16.0));
+                                ui.painter().rect_filled(b, CornerRadius::same(8), style::tint(p.warn, ui.visuals().dark_mode));
+                                ui.painter().galley(b.center() - g.size() / 2.0, g, p.warn);
+                                right = b.left() - 6.0;
                             }
                         }
-                        if matches {
-                            ui.painter().circle_filled(pos2(badge_right - 2.0, item.center().y), 3.0, p.accent);
+                        if pg == SettingsPage::Updates && self.updater.available_version().is_some() {
+                            ui.painter().circle_filled(pos2(right - 3.5, item.center().y), 3.5, p.accent);
+                            right -= 7.0 + 6.0;
                         }
-                        if r.clicked() {
+                        if self.page_matches(pg, &search) {
+                            ui.painter().circle_filled(pos2(right - 3.0, item.center().y), 3.0, p.accent_text);
+                        }
+                        if resp.clicked() && !on {
                             *page = pg;
+                            if pg == SettingsPage::Accounts {
+                                self.usage_scan_at = None;
+                            }
                         }
                     }
                 });
         });
 
-        // ----- the page's head: its title and line, "Saved as you change them", × -------------
-        let main_full = Rect::from_min_max(pos2(nav.right(), full.top()), full.max);
-        let head = Rect::from_min_size(main_full.min, vec2(main_full.width(), 24.0 + 26.0 + 5.0 + 18.0 + 6.0));
-        let close = Rect::from_center_size(pos2(head.right() - 18.0 - 11.0, head.top() + 24.0 + 12.0), vec2(22.0, 22.0));
-        if ui.scope_builder(egui::UiBuilder::new().max_rect(close), |ui| kit::icon_button_ex(ui, icons::X, t("Close"), false, 22.0)).inner.clicked() {
+        // ----- the page's head: its title and line, "Saved as you change them", × -----------
+        let body = Rect::from_min_max(pos2(nav.right() + 1.0, full.top()), full.max);
+        let hx = body.left() + PAD_X;
+        let close = Rect::from_min_size(pos2(body.right() - PAD_X - 24.0, body.top() + PAD_TOP), vec2(24.0, 24.0));
+        if ui.scope_builder(egui::UiBuilder::new().max_rect(close), |ui| kit::icon_button_ex(ui, icons::X, t("Close"), false, 24.0)).inner.clicked() {
             keep = false;
         }
-        let pad_x: i8 = if main_full.width() < 560.0 { 18 } else { 34 };
-        let show_saved = main_full.width() >= 480.0;
-        let sx = if show_saved {
-            let saved = ui.painter().layout_no_wrap(t("Saved as you change them").to_string(), egui::FontId::proportional(11.5), p.text_faint);
-            let x = close.left() - 12.0 - saved.size().x;
-            ui.painter().galley(pos2(x, close.center().y - saved.size().y / 2.0), saved, p.text_faint);
-            ui.painter().text(pos2(x - 5.0, close.center().y), Align2::RIGHT_CENTER, icons::CHECK, style::icon_font(12.0), p.ok);
-            x - 16.0
-        } else {
-            close.left() - 10.0
-        };
-        // ----- the page -------------------------------------------------------------------------
-        let main = Rect::from_min_max(pos2(nav.right(), head.bottom()), full.max);
+        let mut saved_x = close.left() - 12.0;
+        if body.width() >= 480.0 {
+            let g = galley(ui, t("Saved as you change them"), FontId::proportional(style::SMALL), p.text_faint, None, 16.0);
+            saved_x -= g.size().x;
+            ui.painter().galley(pos2(saved_x, body.top() + PAD_TOP), g, p.text_faint);
+            ui.painter().text(pos2(saved_x - 5.0 - 6.0, body.top() + PAD_TOP + 8.0), Align2::CENTER_CENTER, icons::CHECK, style::icon_font(12.0), p.ok);
+            saved_x -= 5.0 + 12.0 + 12.0;
+        }
+        let (title, lead) = page_head_text(*page);
+        let mut job = egui::text::LayoutJob::default();
+        let mut f = egui::TextFormat::simple(style::semibold(style::DISPLAY), p.text);
+        f.line_height = Some(30.0);
+        f.extra_letter_spacing = -0.3;
+        job.append(title, 0.0, f);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((saved_x - hx).max(60.0));
+        let tg = ui.painter().layout_job(job);
+        let title_h = tg.size().y;
+        ui.painter().galley(pos2(hx, body.top() + PAD_TOP), tg, p.text);
+        let lg = galley(ui, &lead, FontId::proportional(style::BODY), p.text_muted, Some((saved_x - hx).max(120.0)), 18.0);
+        let lead_h = lg.size().y;
+        ui.painter().galley(pos2(hx, body.top() + PAD_TOP + title_h + 4.0), lg, p.text_muted);
+        let head_h = title_h + 4.0 + lead_h;
+
+        // ----- the page -----------------------------------------------------------------------
+        let main = Rect::from_min_max(pos2(body.left(), body.top() + PAD_TOP + head_h + GAP), body.max);
         #[cfg(debug_assertions)]
         crate::devtest::record("settings-body", main);
         let before = self.settings.clone();
-        ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
-            egui::ScrollArea::vertical().id_salt(("settings-page", *page as u8)).auto_shrink([false, false]).show(ui, |ui| {
-                egui::Frame::NONE.inner_margin(egui::Margin { left: pad_x, right: pad_x, top: 4, bottom: 30 }).show(ui, |ui| {
-                    ui.set_width((main.width() - f32::from(pad_x) * 2.0).max(160.0));
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    match *page {
-                        SettingsPage::General => self.general_page(ui, &search),
-                        SettingsPage::Appearance => self.appearance_page(ui, &search),
-                        SettingsPage::Terminal => self.terminal_page(ui, &search),
-                        SettingsPage::Browser => self.browser_page(ui, &search),
-                        SettingsPage::Agents | SettingsPage::Integrations => self.agents_page(ui, &search),
-                        SettingsPage::Editor => self.editor_page(ui, &search),
-                        SettingsPage::Notifications => self.notifications_page(ui, &search),
-                        SettingsPage::Updates => self.updates_page(ui, &search),
-                        SettingsPage::About => self.about_page(ui),
-                    }
-                });
-            });
-        });
-        // The head's title and line, given by the page just drawn.
-        if let Some((title, lead)) = ui.ctx().data(|d| d.get_temp::<(String, String)>(egui::Id::new("settings-head"))) {
-            let hx = head.left() + f32::from(pad_x);
-            let max_head_w = (sx - 12.0 - hx).max(60.0);
-            let max_lead_w = (close.left() - 12.0 - hx).max(60.0);
-            let mut job = egui::text::LayoutJob::default();
-            let mut f = egui::TextFormat::simple(style::semibold(21.0), p.text);
-            f.extra_letter_spacing = -0.42;
-            job.append(&title, 0.0, f);
-            job.wrap = egui::text::TextWrapping::truncate_at_width(max_head_w);
-            let g = ui.painter().layout_job(job);
-            ui.painter().galley(pos2(hx, head.top() + 24.0), g, p.text);
-            let mut job = egui::text::LayoutJob::simple_singleline(lead, egui::FontId::proportional(13.0), p.text_muted);
-            job.wrap = egui::text::TextWrapping::truncate_at_width(max_lead_w);
-            let g = ui.painter().layout_job(job);
-            ui.painter().galley(pos2(hx, head.top() + 24.0 + 26.0 + 5.0), g, p.text_muted);
+        let content_h = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
+                ui.set_clip_rect(main.intersect(ui.clip_rect()));
+                egui::ScrollArea::vertical()
+                    .id_salt(("settings-page", *page as u8))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let m = egui::Margin { left: PAD_X as i8, right: PAD_X as i8, top: 0, bottom: PAD_BOTTOM as i8 };
+                        egui::Frame::NONE.inner_margin(m).show(ui, |ui| {
+                            ui.set_width((main.width() - PAD_X * 2.0).max(160.0));
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            match *page {
+                                SettingsPage::General => self.general_page(ui, &search),
+                                SettingsPage::Appearance => self.appearance_page(ui, &search),
+                                SettingsPage::Terminal => self.terminal_page(ui, &search),
+                                SettingsPage::Agents | SettingsPage::Integrations => self.agents_page(ui, &search),
+                                SettingsPage::Accounts => self.accounts_page(ui, &search),
+                                SettingsPage::Browser => self.browser_page(ui, &search),
+                                SettingsPage::Editor => self.editor_page(ui, &search),
+                                SettingsPage::Notifications => self.notifications_page(ui, &search),
+                                SettingsPage::Phone => self.phone_page(ui, &search),
+                                SettingsPage::Updates => self.updates_page(ui, &search),
+                                SettingsPage::About => self.about_page(ui, &search),
+                            }
+                            if ui.min_rect().height() < 0.5 && !search.trim().is_empty() {
+                                no_match(ui, &search);
+                            }
+                        });
+                    })
+                    .content_size
+                    .y
+            })
+            .inner;
+        // As tall as the page wants (head and padding included), next frame.
+        let wanted_now = PAD_TOP + head_h + GAP + content_h;
+        if (wanted_now - wanted).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(height_id, wanted_now));
+            ui.ctx().request_repaint();
         }
 
         ui.allocate_rect(full, Sense::hover());
@@ -476,16 +633,23 @@ impl App {
             .count()
     }
 
+    // -----------------------------------------------------------------------------------------
+    // General
+    // -----------------------------------------------------------------------------------------
+
     fn general_page(&mut self, ui: &mut Ui, search: &str) {
         let p = style::pal(ui);
-        page_head(ui, t("General"), t("The app itself."));
-        let labels = [(t("Command line"), ""), (t("Data folder"), ""), (t("Group active projects at the top"), "")];
-        card(ui, search, &labels, |c| {
-            let cli_note = tf("{} in any terminal opens that folder here.", &["ternarycode ."]);
+        let cli_note = tf("Type {} in any terminal to open that folder here.", &["ternarycode ."]);
+        let dir = crate::paths::contract_tilde(crate::paths::data_dir());
+        let labels = [(t("Command line"), cli_note.as_str()), (t("Data folder"), dir.as_str()), (t("Group active projects at the top"), "")];
+        section(ui, search, None, None, &labels, |c| {
             c.row(t("Command line"), &cli_note, |ui| match crate::cli::installed() {
                 Some(path) => {
-                    ui.label(RichText::new(format!("→ {}", crate::paths::contract_tilde(path.parent().unwrap_or(&path)))).font(egui::FontId::monospace(11.5)).color(p.text_muted))
-                        .on_hover_text(t("Type ternarycode <folder or project name> in any terminal to open it here."));
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    text(ui, &format!("→ {}", crate::paths::contract_tilde(&path)), style::mono(style::DATA), p.text_faint, 14.0, false);
+                    let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
+                    ui.painter().text(r.center(), Align2::CENTER_CENTER, icons::CHECK_CIRCLE, style::icon_font(14.0), p.text_muted);
+                    resp.on_hover_text(t("Type ternarycode <folder or project name> in any terminal to open it here."));
                 }
                 None => {
                     #[cfg(target_os = "macos")]
@@ -496,12 +660,18 @@ impl App {
                         }
                     }
                     #[cfg(not(target_os = "macos"))]
-                    ui.label(RichText::new(t("Not on PATH (works in TernaryCode's own panes)")).size(style::SMALL).color(p.text_muted));
+                    text(ui, t("Not on PATH (works in TernaryCode's own panes)"), FontId::proportional(style::SMALL), p.text_muted, 16.0, false);
                 }
             });
-            let dir = crate::paths::contract_tilde(crate::paths::data_dir());
             c.row(t("Data folder"), &dir, |ui| {
-                if kit::button_ex(ui, kit::Kind::Secondary, None, t("Show"), true).clicked() {
+                let label = if cfg!(target_os = "macos") {
+                    t("Show in Finder")
+                } else if cfg!(windows) {
+                    t("Show in Explorer")
+                } else {
+                    t("Show in Files")
+                };
+                if kit::button_ex(ui, kit::Kind::Secondary, None, label, true).clicked() {
                     crate::platform::reveal(crate::paths::data_dir());
                 }
             });
@@ -514,32 +684,29 @@ impl App {
         let beside = tf("Beside the repository: {}", &["‹repo›.worktrees/‹name›"]);
         let prefix = self.settings.worktrees.prefix.clone();
         let examples = format!("{prefix}generics, {prefix}lexer-fix…");
-        let labels = [
-            (t("Where new worktrees go"), beside.as_str()),
-            (t("Branch names start with"), examples.as_str()),
-            (t("When a branch is merged"), t("Offer to remove its worktree.")),
-        ];
-        if labels.iter().any(|(l, n)| hit(search, l, n)) {
-            group(ui, t("Worktrees"));
-        }
         let place_note = match self.settings.worktrees.place {
             tc_core::model::WorktreePlace::Beside => beside.clone(),
             tc_core::model::WorktreePlace::DataFolder => tf("In TernaryCode's data folder: {}", &[&crate::paths::contract_tilde(&crate::paths::data_dir().join("worktrees"))]),
         };
-        card(ui, search, &labels, |c| {
+        let labels = [
+            (t("Where new worktrees go"), place_note.as_str()),
+            (t("Branch names start with"), examples.as_str()),
+            (t("When a branch is merged"), t("Offer to remove its worktree.")),
+        ];
+        section(ui, search, Some(t("Worktrees")), None, &labels, |c| {
             c.row(t("Where new worktrees go"), &place_note, |ui| {
                 let options = [t("Beside the repository"), t("In TernaryCode's data folder")];
                 let current = match self.settings.worktrees.place {
                     tc_core::model::WorktreePlace::Beside => 0,
                     tc_core::model::WorktreePlace::DataFolder => 1,
                 };
-                if let Some(i) = kit::select(ui, "worktree-place", options[current], &options, 200.0) {
+                if let Some(i) = kit::select(ui, "worktree-place", options[current], &options, 220.0) {
                     self.settings.worktrees.place = if i == 0 { tc_core::model::WorktreePlace::Beside } else { tc_core::model::WorktreePlace::DataFolder };
                 }
             });
             c.row(t("Branch names start with"), &examples, |ui| {
                 let mut text = self.settings.worktrees.prefix.clone();
-                let r = kit::field(ui, egui::Id::new("worktree-prefix"), &mut text, None, "tc/", 90.0, true);
+                let r = mono_field(ui, egui::Id::new("worktree-prefix"), &mut text, "tc/", 90.0, false);
                 // Only what a branch name can hold (empty: no prefix).
                 if r.changed() && (text.is_empty() || tc_git::worktree::valid_branch(&format!("{text}x"))) {
                     self.settings.worktrees.prefix = text;
@@ -551,19 +718,21 @@ impl App {
         });
     }
 
+    // -----------------------------------------------------------------------------------------
+    // Appearance
+    // -----------------------------------------------------------------------------------------
+
     fn appearance_page(&mut self, ui: &mut Ui, search: &str) {
-        page_head(ui, t("Appearance"), t("How TernaryCode and its terminals look."));
         let labels = [(t("Theme"), ""), (t("Language"), t("System follows the language of your computer."))];
-        if labels.iter().any(|(l, n)| hit(search, l, n)) {
-            group(ui, t("Theme"));
-        }
-        card(ui, search, &labels, |c| {
-            c.bare(t("Theme"), |ui| {
-                ui.spacing_mut().item_spacing.x = 14.0;
-                let w = ((ui.available_width() - 28.0) / 3.0).floor();
+        section(ui, search, Some(t("Theme")), None, &labels, |c| {
+            c.block(&[(t("Theme"), "")], egui::Margin::same(16), |ui| {
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 20.0;
                     for (mode, name) in [(ThemeMode::System, t("System")), (ThemeMode::Light, t("Light")), (ThemeMode::Dark, t("Dark"))] {
-                        if theme_card(ui, mode, name, self.settings.theme == mode, w).clicked() {
+                        let r = theme_card(ui, mode, name, self.settings.theme == mode);
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record(format!("theme:{mode:?}"), r.rect);
+                        if r.clicked() {
                             self.settings.theme = mode;
                         }
                     }
@@ -587,103 +756,41 @@ impl App {
                 }
             });
         });
-        let labels = [(t("With the dark theme"), t("Also used in Grid tiles and previews.")), (t("With the light theme"), "")];
-        if labels.iter().any(|(l, n)| hit(search, l, n)) {
-            group(ui, t("Terminal colors"));
-        }
-        card(ui, search, &labels, |c| {
+
+        let labels = [(t("Dark theme"), ""), (t("Light theme"), "")];
+        section(ui, search, Some(t("Terminal colours")), None, &labels, |c| {
             for dark in [true, false] {
-                let (label, note) = if dark { (t("With the dark theme"), t("Also used in Grid tiles and previews.")) } else { (t("With the light theme"), "") };
-                c.bare_hit(label, note, |ui| {
-                    let p = style::pal(ui);
-                    let current = self.scheme(dark).name;
-                    let schemes: Vec<&'static tc_term::scheme::Scheme> = tc_term::scheme::SCHEMES.iter().filter(|s| s.dark == dark).collect();
-                    let open_id = egui::Id::new(("schemes-open", dark));
-                    let open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
-                    let mut shown: Vec<&'static tc_term::scheme::Scheme> = if open { schemes.clone() } else { schemes.iter().take(4).copied().collect() };
-                    if !open && !shown.iter().any(|s| s.name == current)
-                        && let Some(s) = schemes.iter().find(|s| s.name == current)
-                    {
-                        shown.pop();
-                        shown.push(s);
-                    }
-                    let more = schemes.len().saturating_sub(4);
-                    let mut draw_tiles = |ui: &mut Ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = vec2(6.0, 10.0);
-                            for s in &shown {
-                                if scheme_tile(ui, s, s.name == current).clicked() {
-                                    if dark {
-                                        self.settings.scheme_dark = s.name.to_string();
-                                    } else {
-                                        self.settings.scheme_light = s.name.to_string();
-                                    }
-                                }
-                            }
-                            if more > 0 {
-                                let label = if open { t("Fewer").to_string() } else { tf("{} more", &[&more.to_string()]) };
-                                if more_tile(ui, &label).clicked() {
-                                    ui.data_mut(|d| d.insert_temp(open_id, !open));
-                                }
-                            }
-                        });
-                    };
-                    if ui.available_width() < 520.0 {
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 4.0;
-                            ui.label(RichText::new(label).size(13.0).color(p.text));
-                            if !note.is_empty() {
-                                ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint).line_height(Some(17.4))).wrap());
-                            }
-                            ui.add_space(6.0);
-                            draw_tiles(ui);
-                        });
-                    } else {
-                        ui.horizontal_top(|ui| {
-                            ui.spacing_mut().item_spacing.x = 12.0;
-                            ui.vertical(|ui| {
-                                ui.set_width(180.0);
-                                ui.spacing_mut().item_spacing.y = 2.0;
-                                ui.label(RichText::new(label).size(13.0).color(p.text));
-                                if !note.is_empty() {
-                                    ui.add(egui::Label::new(RichText::new(note).size(12.0).color(p.text_faint).line_height(Some(17.4))).wrap());
-                                }
-                            });
-                            draw_tiles(ui);
-                        });
-                    }
-                });
+                let label = if dark { t("Dark theme") } else { t("Light theme") };
+                c.block(&[(label, "")], egui::Margin::same(16), |ui| self.scheme_row(ui, label, dark));
             }
         });
-        let labels = [(t("Font"), t("Monospace fonts installed on this computer.")), (t("Size"), ""), (t("Cursor"), t("New panes take it.")), (t("Blinking cursor"), "")];
-        if labels.iter().any(|(l, n)| hit(search, l, n)) {
-            group(ui, t("Terminal text"));
-        }
-        card(ui, search, &labels, |c| {
+
+        let labels = [(t("Font"), ""), (t("Size"), ""), (t("Cursor"), t("New panes take it.")), (t("Blinking cursor"), "")];
+        section(ui, search, Some(t("Terminal text")), None, &labels, |c| {
+            let search = c.search().to_string();
             // The settings at the left, a live preview at the right (in the terminal's font and
             // colours).
-            c.bare_hit_flush(&labels, |ui| {
+            c.block(&[], egui::Margin::ZERO, |ui| {
                 let full = ui.available_width();
-                let preview_w = if full > 640.0 { 294.0 } else { 0.0 };
+                let preview_w = if full > 600.0 { 300.0 + 32.0 } else { 0.0 };
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let left = ui
                         .vertical(|ui| {
-                            ui.set_width(full - preview_w - if preview_w > 0.0 { 8.0 } else { 0.0 });
+                            ui.set_width(full - preview_w);
                             ui.spacing_mut().item_spacing.y = 0.0;
-                            let mut c = Card { ui, search: search.to_string(), first: true, rows: 0, icon: None };
+                            let mut c = Card { ui, search: search.clone(), first: true };
                             c.row(t("Font"), "", |ui| {
                                 let fonts: Vec<&'static str> = tc_term::fonts::PRESETS.iter().filter(|f| tc_term::fonts::is_available(f)).map(|f| f.name).collect();
                                 let current = tc_term::fonts::effective_choice(&tc_term::prefs::FontChoice { name: self.settings.font_name.clone(), path: self.settings.font_path.clone(), index: 0 }).name;
-                                if let Some(i) = kit::select(ui, "font", &current, &fonts, 200.0) {
+                                if let Some(i) = kit::select(ui, "font", &current, &fonts, 180.0) {
                                     self.settings.font_name = fonts[i].to_string();
                                     self.settings.font_path = None;
                                 }
                             });
                             c.row(t("Size"), "", |ui| {
                                 let size = self.settings.font_size;
-                                let text = if size.fract() == 0.0 { format!("{size:.0}") } else { format!("{size:.1}") };
-                                match kit::stepper(ui, &text) {
+                                match kit::number_stepper(ui, &format!("{} pt", size_text(size)), 70.0) {
                                     -1 => self.settings.font_size = (size - 0.5).max(9.0),
                                     1 => self.settings.font_size = (size + 0.5).min(24.0),
                                     _ => {}
@@ -703,8 +810,8 @@ impl App {
                         .response
                         .rect;
                     if preview_w > 0.0 {
-                        let r = Rect::from_min_size(pos2(left.right() + 0.0, left.top() + 8.0), vec2(preview_w, (left.height() - 16.0).max(150.0)));
-                        ui.allocate_rect(Rect::from_min_size(left.right_top(), vec2(preview_w + 8.0, left.height())), Sense::hover());
+                        let (r, _) = ui.allocate_exact_size(vec2(preview_w, left.height().max(150.0)), Sense::hover());
+                        let r = Rect::from_min_size(r.min + vec2(16.0, 16.0), vec2(300.0, r.height() - 32.0));
                         let dark = ui.visuals().dark_mode;
                         terminal_preview(ui, r, self.scheme(dark), self.settings.font_size, self.settings.cursor_shape);
                     }
@@ -713,197 +820,72 @@ impl App {
         });
     }
 
-    fn browser_page(&mut self, ui: &mut Ui, search: &str) {
-        page_head(ui, t("Browser"), t("Web pages beside your terminals, for you and your agents."));
-        let labels = [
-            (t("Open web pages in TernaryCode"), ""),
-            (t("When an agent opens a page"), ""),
-            (t("Put browsers to sleep after"), ""),
-            (t("Pages in Grid tiles"), ""),
-            (t("Logins & cookies"), ""),
-        ];
-        card(ui, search, &labels, |c| {
-            c.row(t("Open web pages in TernaryCode"), t("Server chips, ⌘-clicked links, HTML files and programs that open a browser. Hold ⌥ for your default browser."), |ui| {
-                kit::switch(ui, &mut self.settings.browser_here);
-            });
-            c.row(t("When an agent opens a page"), t("Its page goes in the project's Browser panel, at the right of the terminals. The keyboard never moves."), |ui| {
-                let options = [t("Show the panel"), t("Light the Browser button")];
-                let current = options[usize::from(!self.settings.browser_agent_beside)];
-                if let Some(i) = kit::select(ui, "browser-agent-place", current, &options, 150.0) {
-                    self.settings.browser_agent_beside = i == 0;
-                }
-            });
-            c.row(t("Put browsers to sleep after"), t("Out of view and unused. Never while it plays sound, uses the camera or microphone, has a form being filled in, or an agent uses it."), |ui| {
-                const STEPS: [u32; 7] = [1, 5, 10, 15, 30, 60, 120];
-                let n = self.settings.browser_sleep_minutes;
-                let at = STEPS.iter().position(|s| *s >= n).unwrap_or(STEPS.len() - 1);
-                match kit::stepper(ui, &tf("{} min", &[&n.to_string()])) {
-                    -1 => self.settings.browser_sleep_minutes = STEPS[at.saturating_sub(1)],
-                    1 => self.settings.browser_sleep_minutes = STEPS[(at + 1).min(STEPS.len() - 1)],
-                    _ => {}
-                }
-            });
-            c.row(t("Pages in Grid tiles"), t("Smaller, a page keeps the layout it has in Focus. Fitting the tile, a site may switch to its phone layout."), |ui| {
-                let options = [t("Keep their layout, smaller"), t("Fit the tile")];
-                let current = options[usize::from(!self.settings.browser_grid_zoom)];
-                if let Some(i) = kit::select(ui, "browser-grid-zoom", current, &options, 190.0) {
-                    self.settings.browser_grid_zoom = i == 0;
-                }
-            });
-            c.row(t("Logins & cookies"), t("One profile for every project: log in once and stay logged in, through restarts and updates."), |ui| {
-                if kit::button_ex(ui, kit::Kind::Secondary, None, t("Clear…"), true).clicked() {
-                    self.dialog = Some(crate::app::Dialog::ConfirmClearBrowsing);
-                }
-            });
-        });
-
-        // Agents: whether they get the tools, whether they ask before a site (and which sites
-        // they open without asking then), scripts.
-        let labels = [
-            (t("Agents can use the browser"), t("Only agents in TernaryCode panes, each in its own project’s browser. Agents in other terminals don’t see the tools.")),
-            (t("Sites agents may open without asking"), t("Every project. A project’s own sites are added from the question (“Always for …”).")),
-            (t("Agents may run JavaScript in pages"), ""),
-            (t("Ask before agents open a site"), t("Off: agents open any site at once. On: a site not listed below waits for Allow Once, Always or Block.")),
-        ];
-        if labels.iter().any(|(l, n)| hit(search, l, n)) {
-            group(ui, t("Agents"));
-        }
-        let mut tools_changed = false;
-        let mut remove_site = None;
-        let mut add_site = None;
-        let mut install = None;
-        let statuses: Vec<(AgentKind, bool, String)> = [AgentKind::Claude, AgentKind::Codex, AgentKind::OpenCode, AgentKind::Antigravity].into_iter().map(|a| self.browser_tools_status(a)).collect();
-        card(ui, search, &labels, |c| {
-            c.row(labels[0].0, labels[0].1, |ui| {
-                tools_changed = kit::switch(ui, &mut self.settings.browser_agents).changed();
-            });
-            c.row(labels[3].0, labels[3].1, |ui| {
-                kit::switch(ui, &mut self.settings.browser_agent_ask);
-            });
-            if self.settings.browser_agent_ask {
-                c.row_with(labels[1].0, labels[1].1, true, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                        for site in &self.settings.browser_agent_sites {
-                            if site_chip(ui, site) {
-                                remove_site = Some(site.clone());
-                            }
-                        }
-                        let id = egui::Id::new("browser-add-site");
-                        let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
-                        let r = kit::field(ui, id.with("field"), &mut text, Some(icons::PLUS), t("Add Site"), 150.0, false);
-                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if enter && !text.trim().is_empty() {
-                            add_site = Some(text.trim().to_string());
-                            text.clear();
-                        }
-                        ui.data_mut(|d| d.insert_temp(id, text));
-                    });
-                });
-            }
-            c.row(labels[2].0, t("browser_evaluate: anything a page’s own scripts can do, cookies included."), |ui| {
-                kit::switch(ui, &mut self.settings.browser_agent_js);
-            });
-            for (agent, ok, status) in &statuses {
-                c.row_icon(icons::PLUGS_CONNECTED, if *ok { style::pal(c.ui).ok } else { style::pal(c.ui).text_faint }, agent.label(), status, |ui| {
-                    if !ok && !matches!(*agent, AgentKind::Claude | AgentKind::Antigravity) && kit::button_ex(ui, kit::Kind::Secondary, None, t("Install…"), true).clicked() {
-                        install = Some(*agent);
-                    }
-                });
-            }
-        });
-        if tools_changed {
-            // The next agent run gets (or no longer gets) the tools.
-            let codex_config = std::fs::read_to_string(crate::paths::home_dir().join(".codex/config.toml")).ok();
-            let _ = self.hook_bin.pane_env(&crate::paths::integrations_dir(), self.settings.browser_agents, codex_config.as_deref());
-        }
-        if let Some(site) = remove_site {
-            self.settings.browser_agent_sites.retain(|s| *s != site);
-        }
-        if let Some(site) = add_site {
-            let site = crate::browser::host_of(&site).trim_start_matches("*.").to_string();
-            let site = if site.is_empty() { String::new() } else { site };
-            if !site.is_empty() && !self.settings.browser_agent_sites.contains(&site) {
-                self.settings.browser_agent_sites.push(site);
-            }
-        }
-        if let Some(agent) = install {
-            self.actions.push(Action::PlanInstall(agent));
-        }
-
-        // The sites one project's agents may open (added from the question in its browser).
-        let sites: Vec<(tc_core::ProjectId, String, String)> =
-            self.projects.iter().flat_map(|p| p.sites.iter().map(|s| (p.id, p.name.clone(), s.clone()))).collect();
-        if sites.is_empty() || !self.settings.browser_agent_ask {
-            return;
-        }
-        let mut labels: Vec<(&str, &str)> = vec![(t("Sites added for a project"), "")];
-        for (_, project, site) in &sites {
-            labels.push((site.as_str(), project.as_str()));
-        }
-        if labels.iter().any(|(l, n)| hit(search, l, n)) {
-            group(ui, t("Sites added for a project"));
-        }
-        let mut remove = None;
-        card(ui, search, &labels, |c| {
-            for (id, project, site) in &sites {
-                c.row(site, project, |ui| {
-                    if kit::button_ex(ui, kit::Kind::Ghost, None, t("Remove"), true).clicked() {
-                        remove = Some((*id, site.clone()));
-                    }
-                });
-            }
-        });
-        if let Some((id, site)) = remove
-            && let Some(p) = self.projects.iter_mut().find(|p| p.id == id)
+    /// One theme's terminal schemes: the row's name, four tiles and "+N More" (all of them when
+    /// opened).
+    fn scheme_row(&mut self, ui: &mut Ui, label: &str, dark: bool) {
+        let p = style::pal(ui);
+        let current = self.scheme(dark).name;
+        // TernaryCode's own first, then Dracula, Nord and Gruvbox (as the design lists them),
+        // then the rest.
+        const FIRST: [&str; 4] = ["Dracula", "Nord", "Gruvbox Dark", "Tomorrow Night"];
+        let mut schemes: Vec<&'static tc_term::scheme::Scheme> = tc_term::scheme::SCHEMES.iter().filter(|s| s.dark == dark).collect();
+        schemes.sort_by_key(|s| if s.name.starts_with("TernaryCode") { 0 } else { FIRST.iter().position(|f| *f == s.name).map_or(10, |i| i + 1) });
+        let open_id = egui::Id::new(("schemes-open", dark));
+        let open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        let w = ui.available_width();
+        let label_w = 120.0;
+        let fit = (((w - label_w - 12.0 - 72.0) / (104.0 + 12.0)).floor() as usize).max(1);
+        let mut shown: Vec<&'static tc_term::scheme::Scheme> = if open { schemes.clone() } else { schemes.iter().take(fit).copied().collect() };
+        if !open
+            && !shown.iter().any(|s| s.name == current)
+            && let Some(s) = schemes.iter().find(|s| s.name == current)
         {
-            p.sites.retain(|s| *s != site);
-            self.mark_dirty();
+            shown.pop();
+            shown.push(s);
         }
+        let more = schemes.len().saturating_sub(fit);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            let (lr, _) = ui.allocate_exact_size(vec2(label_w, 18.0), Sense::hover());
+            let g = galley(ui, label, FontId::proportional(style::BODY), p.text, None, 18.0);
+            ui.painter().galley(lr.min, g, p.text);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
+                for s in &shown {
+                    if scheme_tile(ui, s, s.name == current).clicked() {
+                        if dark {
+                            self.settings.scheme_dark = s.name.to_string();
+                        } else {
+                            self.settings.scheme_light = s.name.to_string();
+                        }
+                    }
+                }
+                if more > 0 && more_tile(ui, open_id, open, more).clicked() {
+                    ui.data_mut(|d| d.insert_temp(open_id, !open));
+                }
+            });
+        });
     }
 
-    /// Whether `agent` gets the browser tools, and how that reads in Settings → Browser.
-    fn browser_tools_status(&self, agent: AgentKind) -> (AgentKind, bool, String) {
-        let mode = self.settings.integration(agent);
-        let installed = self.installed(agent);
-        let has_server = |rec: &Option<InstallRecord>| {
-            rec.as_ref().and_then(|r| std::fs::read_to_string(&r.path).ok()).is_some_and(|text| {
-                text.contains("ternarycode-hook")
-                    && (text.contains("\"mcpServers\"")
-                        // Codex asks before each call of a server not approved.
-                        || (text.contains("mcp_servers.ternarycode") && text.contains("default_tools_approval_mode")))
-            })
-        };
-        let (ok, text) = match (agent, mode) {
-            (AgentKind::Claude | AgentKind::Codex, Integration::PerLaunch) => (true, t("Added to each run it starts from a preset")),
-            (AgentKind::Claude, _) => (false, t("Only with Per launch (Settings → Agents)")),
-            // In every pane (`OPENCODE_CONFIG_CONTENT`), whatever its hooks.
-            (AgentKind::OpenCode, _) => (true, t("In every TernaryCode pane, typed by hand too")),
-            // Its MCP servers are in its own files only; it has a browser of its own.
-            (AgentKind::Antigravity, _) => (false, t("Not added for Antigravity CLI yet")),
-            (_, Integration::Installed) if has_server(&installed) => (true, t("Browser tools installed")),
-            (_, Integration::Installed) => (false, t("Installed before the browser tools: install again")),
-            _ => (false, t("Hooks not installed")),
-        };
-        (agent, ok, text.to_string())
-    }
+    // -----------------------------------------------------------------------------------------
+    // Terminal
+    // -----------------------------------------------------------------------------------------
 
     fn terminal_page(&mut self, ui: &mut Ui, search: &str) {
-        page_head(ui, t("Terminal"), t("How panes behave."));
         let mut labels = vec![
             (t("Scrollback per pane"), t("Applies to new panes.")),
-            (t("Scrollback memory for all panes"), ""),
+            (t("Scrollback memory for all panes"), t("Older lines are dropped first when it fills.")),
             (t("Copy on select"), ""),
-            (t("Programs may copy to the clipboard"), ""),
-            (t("Shell integration"), ""),
+            (t("Programs may copy to the clipboard"), t("vim, tmux and agents copy through OSC 52. They can never read it.")),
+            (t("Shell integration"), t("Marks prompts and commands (zsh, bash, fish, PowerShell) so failures and long commands are noticed.")),
         ];
         if cfg!(target_os = "macos") {
             labels.push((t("Option key as Meta"), ""));
         }
-        card(ui, search, &labels, |c| {
+        section(ui, search, None, None, &labels, |c| {
             c.row(t("Scrollback per pane"), t("Applies to new panes."), |ui| {
                 let n = self.settings.scrollback;
-                match kit::stepper(ui, &tf("{} lines", &[&group_digits(n)])) {
+                match kit::number_stepper(ui, &group_digits(n), 70.0) {
                     -1 => self.settings.scrollback = n.saturating_sub(1000).max(1000),
                     1 => self.settings.scrollback = (n + 1000).min(100_000),
                     _ => {}
@@ -911,7 +893,7 @@ impl App {
             });
             c.row(t("Scrollback memory for all panes"), t("Older lines are dropped first when it fills."), |ui| {
                 let mb = self.settings.scrollback_budget_mb;
-                match kit::stepper(ui, &format!("{mb} MB")) {
+                match kit::number_stepper(ui, &format!("{mb} MB"), 70.0) {
                     -1 => self.settings.scrollback_budget_mb = mb.saturating_sub(64).max(64),
                     1 => self.settings.scrollback_budget_mb = (mb + 64).min(16_384),
                     _ => {}
@@ -934,34 +916,193 @@ impl App {
         });
     }
 
-    fn editor_page(&mut self, ui: &mut Ui, search: &str) {
-        let p = style::pal(ui);
-        page_head(ui, t("Editor"), t("For reading and small edits."));
+    // -----------------------------------------------------------------------------------------
+    // Browser
+    // -----------------------------------------------------------------------------------------
+
+    fn browser_page(&mut self, ui: &mut Ui, search: &str) {
         let labels = [
-            (t("Language features"), ""),
-            (t("Start servers only when needed"), ""),
+            (t("Open web pages in TernaryCode"), t("Server links, ⌘-clicked URLs and programs that open a browser. Hold ⌥ for your default browser.")),
+            (t("When an agent opens a page"), t("Its page goes in the project's Browser panel. The keyboard never moves.")),
+            (t("Put pages to sleep after"), t("Never while they play sound, use the camera, have a form being filled in, or an agent uses them.")),
+            (t("Pages in Grid tiles"), t("Smaller, a page keeps the layout it has in Focus. Fitting the tile, a site may switch to its phone layout.")),
+            (t("Logins & cookies"), t("One profile for every project: sign in once.")),
+        ];
+        section(ui, search, None, None, &labels, |c| {
+            c.row(labels[0].0, labels[0].1, |ui| {
+                kit::switch(ui, &mut self.settings.browser_here);
+            });
+            c.row(labels[1].0, labels[1].1, |ui| {
+                let options = [t("Show the panel"), t("Light the Browser button")];
+                let current = options[usize::from(!self.settings.browser_agent_beside)];
+                if let Some(i) = kit::select(ui, "browser-agent-place", current, &options, 170.0) {
+                    self.settings.browser_agent_beside = i == 0;
+                }
+            });
+            c.row(labels[2].0, labels[2].1, |ui| {
+                const STEPS: [u32; 7] = [1, 5, 10, 15, 30, 60, 120];
+                let n = self.settings.browser_sleep_minutes;
+                let at = STEPS.iter().position(|s| *s >= n).unwrap_or(STEPS.len() - 1);
+                match kit::number_stepper(ui, &tf("{} min", &[&n.to_string()]), 70.0) {
+                    -1 => self.settings.browser_sleep_minutes = STEPS[at.saturating_sub(1)],
+                    1 => self.settings.browser_sleep_minutes = STEPS[(at + 1).min(STEPS.len() - 1)],
+                    _ => {}
+                }
+            });
+            c.row(labels[3].0, labels[3].1, |ui| {
+                let options = [t("Keep their layout, smaller"), t("Fit the tile")];
+                let current = options[usize::from(!self.settings.browser_grid_zoom)];
+                if let Some(i) = kit::select(ui, "browser-grid-zoom", current, &options, 190.0) {
+                    self.settings.browser_grid_zoom = i == 0;
+                }
+            });
+            c.row(labels[4].0, labels[4].1, |ui| {
+                if kit::button_ex(ui, kit::Kind::Secondary, None, t("Clear…"), true).clicked() {
+                    self.dialog = Some(crate::app::Dialog::ConfirmClearBrowsing);
+                }
+            });
+        });
+
+        // Agents: whether they get the tools, whether they ask before a site (and which sites
+        // they open without asking then), scripts.
+        let labels = [
+            (t("Agents can use the browser"), t("Only agents in TernaryCode panes, each in its own project's browser.")),
+            (t("Ask before agents open a site"), t("Sites not on the list wait for Allow once, Always or Block.")),
+            (t("Sites agents may open without asking"), ""),
+            (t("Agents may run JavaScript in pages"), t("browser_evaluate can do anything the page's own scripts can.")),
+        ];
+        let mut tools_changed = false;
+        let mut remove_site = None;
+        let mut add_site = None;
+        section(ui, search, Some(t("Agents")), None, &labels, |c| {
+            c.row(labels[0].0, labels[0].1, |ui| {
+                tools_changed = kit::switch(ui, &mut self.settings.browser_agents).changed();
+            });
+            c.row(labels[1].0, labels[1].1, |ui| {
+                kit::switch(ui, &mut self.settings.browser_agent_ask);
+            });
+            if self.settings.browser_agent_ask {
+                let sites_hit = self.settings.browser_agent_sites.iter().any(|s| hit(c.search(), s, ""));
+                let wanted: &[(&str, &str)] = if sites_hit { &[] } else { &[(labels[2].0, "")] };
+                c.block(wanted, egui::Margin::symmetric(16, 12), |ui| {
+                    let p = style::pal(ui);
+                    text(ui, labels[2].0, FontId::proportional(style::BODY), p.text, 18.0, false);
+                    ui.add_space(10.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                        for site in &self.settings.browser_agent_sites {
+                            if site_chip(ui, site) {
+                                remove_site = Some(site.clone());
+                            }
+                        }
+                        let id = egui::Id::new("browser-add-site");
+                        let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
+                        let r = kit::field(ui, id.with("field"), &mut text, None, t("+ Add site"), 150.0, false);
+                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if enter && !text.trim().is_empty() {
+                            add_site = Some(text.trim().to_string());
+                            text.clear();
+                        }
+                        ui.data_mut(|d| d.insert_temp(id, text));
+                    });
+                });
+            }
+            c.row(labels[3].0, labels[3].1, |ui| {
+                kit::switch(ui, &mut self.settings.browser_agent_js);
+            });
+        });
+        if tools_changed {
+            // The next agent run gets (or no longer gets) the tools.
+            let codex_config = std::fs::read_to_string(crate::paths::home_dir().join(".codex/config.toml")).ok();
+            let _ = self.hook_bin.pane_env(&crate::paths::integrations_dir(), self.settings.browser_agents, codex_config.as_deref());
+        }
+        if let Some(site) = remove_site {
+            self.settings.browser_agent_sites.retain(|s| *s != site);
+        }
+        if let Some(site) = add_site {
+            let site = crate::browser::host_of(&site).trim_start_matches("*.").to_string();
+            if !site.is_empty() && !self.settings.browser_agent_sites.contains(&site) {
+                self.settings.browser_agent_sites.push(site);
+            }
+        }
+
+        // The sites one project's agents may open (added from the question in its browser).
+        let sites: Vec<(tc_core::ProjectId, String, String)> =
+            self.projects.iter().flat_map(|p| p.sites.iter().map(|s| (p.id, p.name.clone(), s.clone()))).collect();
+        if sites.is_empty() || !self.settings.browser_agent_ask {
+            return;
+        }
+        let labels: Vec<(&str, &str)> = sites.iter().map(|(_, project, site)| (site.as_str(), project.as_str())).collect();
+        let mut remove = None;
+        section(ui, search, Some(t("Sites added for a project")), None, &labels, |c| {
+            for (id, project, site) in &sites {
+                c.row(site, project, |ui| {
+                    if kit::button_ex(ui, kit::Kind::Ghost, None, t("Remove"), true).clicked() {
+                        remove = Some((*id, site.clone()));
+                    }
+                });
+            }
+        });
+        if let Some((id, site)) = remove
+            && let Some(p) = self.projects.iter_mut().find(|p| p.id == id)
+        {
+            p.sites.retain(|s| *s != site);
+            self.mark_dirty();
+        }
+    }
+
+    /// Whether `agent` gets the browser tools, and how that reads (Settings → Agents).
+    fn browser_tools_status(&self, agent: AgentKind) -> (bool, &'static str) {
+        let mode = self.settings.integration(agent);
+        let installed = self.installed(agent);
+        let has_server = |rec: &Option<InstallRecord>| {
+            rec.as_ref().and_then(|r| std::fs::read_to_string(&r.path).ok()).is_some_and(|text| {
+                text.contains("ternarycode-hook")
+                    && (text.contains("\"mcpServers\"")
+                        // Codex asks before each call of a server not approved.
+                        || (text.contains("mcp_servers.ternarycode") && text.contains("default_tools_approval_mode")))
+            })
+        };
+        match (agent, mode) {
+            (AgentKind::Claude | AgentKind::Codex, Integration::PerLaunch) => (true, t("Added to each run")),
+            (AgentKind::Claude, _) => (false, t("Only with Per launch")),
+            // In every pane (`OPENCODE_CONFIG_CONTENT`), whatever its hooks.
+            (AgentKind::OpenCode, _) => (true, t("In every TernaryCode pane, typed by hand too")),
+            // Its MCP servers are in its own files only; it has a browser of its own.
+            (AgentKind::Antigravity, _) => (false, t("Not added for Antigravity CLI yet")),
+            (_, Integration::Installed) if has_server(&installed) => (true, t("Browser tools installed")),
+            (_, Integration::Installed) => (false, t("Installed before the browser tools: install again")),
+            _ => (false, t("Hooks not installed")),
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Editor
+    // -----------------------------------------------------------------------------------------
+
+    fn editor_page(&mut self, ui: &mut Ui, search: &str) {
+        let labels = [
+            (t("Language features"), t("Uses the language servers installed on this computer.")),
+            (t("Start servers only when needed"), t("A file you only read costs nothing.")),
             (t("Completion while typing"), ""),
             (t("Format on save"), ""),
         ];
-        card(ui, search, &labels, |c| {
-            c.row(t("Language features"), t("Uses the language servers installed on this computer."), |ui| {
+        section(ui, search, None, None, &labels, |c| {
+            c.row(labels[0].0, labels[0].1, |ui| {
                 kit::switch(ui, &mut self.settings.lsp);
             });
             let on = self.settings.lsp;
-            c.row(t("Start servers only when needed"), t("A file you only read costs nothing."), |ui| {
+            c.row(labels[1].0, labels[1].1, |ui| {
                 ui.add_enabled_ui(on, |ui| kit::switch(ui, &mut self.settings.lsp_on_demand));
             });
-            c.row(t("Completion while typing"), "", |ui| {
+            c.row(labels[2].0, "", |ui| {
                 ui.add_enabled_ui(on, |ui| kit::switch(ui, &mut self.settings.auto_complete));
             });
-            c.row(t("Format on save"), "", |ui| {
+            c.row(labels[3].0, "", |ui| {
                 ui.add_enabled_ui(on, |ui| kit::switch(ui, &mut self.settings.format_on_save));
             });
         });
-        if !search.trim().is_empty() {
-            return;
-        }
-        group(ui, t("Found on this computer"));
+
         let path = self.lsp.path_env.clone().or_else(|| std::env::var_os("PATH")).unwrap_or_default();
         let servers: Vec<(&'static tc_lsp::servers::Spec, bool, Option<bool>)> = tc_lsp::servers::SERVERS
             .iter()
@@ -971,38 +1112,37 @@ impl App {
                 (spec, found, running)
             })
             .collect();
-        egui::Frame::NONE
-            .fill(p.canvas)
-            .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(CornerRadius::same(9))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for (i, (spec, found, running)) in servers.iter().enumerate() {
-                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
-                    if i > 0 {
-                        ui.painter().hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, p.border));
-                    }
+        let labels: Vec<(&str, &str)> = servers.iter().map(|(s, _, _)| (s.name, "")).collect();
+        let mut copied = false;
+        section(ui, search, Some(t("Found on this computer")), None, &labels, |c| {
+            for (spec, found, running) in &servers {
+                c.block(&[(spec.name, "")], egui::Margin::ZERO, |ui| {
+                    let p = style::pal(ui);
+                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0 + 20.0), Sense::hover());
                     let (dot, note) = match (found, running) {
-                        (_, Some(true)) => (Some(p.ok), t("running").to_string()),
-                        (true, _) => (None, t("ready").to_string()),
-                        (false, _) => (Some(p.warn), t("not installed").to_string()),
+                        (_, Some(true)) => (Some(p.ok), t("running")),
+                        (true, _) => (None, t("ready")),
+                        (false, _) => (Some(p.warn), t("not installed")),
                     };
                     let cy = r.center().y;
+                    let dc = pos2(r.left() + 16.0 + 4.0, cy);
                     match dot {
                         Some(c) => {
-                            ui.painter().circle_filled(pos2(r.left() + 14.0 + 3.0, cy), 3.0, c);
+                            ui.painter().circle_filled(dc, 4.0, c);
                         }
                         None => {
-                            ui.painter().circle_stroke(pos2(r.left() + 14.0 + 3.0, cy), 2.5, Stroke::new(1.0, p.text_faint));
+                            ui.painter().circle_stroke(dc, 3.5, Stroke::new(1.0, p.border_heavy));
                         }
                     }
-                    ui.painter().text(pos2(r.left() + 14.0 + 6.0 + 10.0, cy), Align2::LEFT_CENTER, spec.name, style::medium(12.5), p.text);
-                    let mut right = r.right() - 14.0;
+                    let ng = galley(ui, spec.name, FontId::proportional(style::BODY), p.text, None, 18.0);
+                    let nx = r.left() + 16.0 + 8.0 + 10.0;
+                    let nw = ng.size().x;
+                    ui.painter().galley(pos2(nx, cy - 9.0), ng, p.text);
+                    let sg = galley(ui, note, FontId::proportional(style::SMALL), p.text_faint, None, 16.0);
+                    ui.painter().galley(pos2(nx + nw + 10.0, cy - 8.0), sg, p.text_faint);
                     if !found {
-                        let g = ui.painter().layout_no_wrap(t("Copy install command").to_string(), egui::FontId::proportional(style::SMALL), p.accent_text);
-                        right -= g.size().x;
-                        let lr = Rect::from_min_size(pos2(right, cy - g.size().y / 2.0), g.size());
+                        let g = galley(ui, t("Copy install command"), style::medium(style::SMALL), p.accent_text, None, 16.0);
+                        let lr = Rect::from_min_size(pos2(r.right() - 16.0 - g.size().x, cy - 8.0), g.size());
                         ui.painter().galley(lr.min, g, p.accent_text);
                         let resp = ui.interact(lr, egui::Id::new(("copy-install", spec.name)), Sense::click()).on_hover_text(spec.install);
                         if resp.hovered() {
@@ -1010,151 +1150,248 @@ impl App {
                         }
                         if resp.clicked() {
                             ui.ctx().copy_text(spec.install.to_string());
-                            self.toast_ok(t("Install command copied.").into());
+                            copied = true;
                         }
-                        right -= 10.0;
                     }
-                    ui.painter().text(pos2(right, cy), Align2::RIGHT_CENTER, note, egui::FontId::proportional(style::SMALL), p.text_faint);
-                }
-            });
+                });
+            }
+        });
+        if copied {
+            self.toast_ok(t("Install command copied.").into());
+        }
     }
+
+    // -----------------------------------------------------------------------------------------
+    // Notifications
+    // -----------------------------------------------------------------------------------------
 
     fn notifications_page(&mut self, ui: &mut Ui, search: &str) {
         let p = style::pal(ui);
-        page_head(ui, t("Notifications"), t("Only when you are not already looking. Keyboard focus never moves by itself."));
         let mut labels = vec![
-            (t("An agent needs input"), ""),
-            (t("A process failed"), ""),
+            (t("An agent needs you"), t("A permission request, a question or a plan.")),
+            (t("Something failed"), t("An agent, a command that ran long, or a shell.")),
             (t("An agent finished its turn"), ""),
-            (t("A long command finished"), ""),
+            (t("A long command finished"), t("Long means at least this long.")),
         ];
         if cfg!(target_os = "macos") {
-            labels.push((t("Badge on the Dock icon"), ""));
+            labels.push((t("Badge on the Dock icon"), t("Counts what waits for you.")));
         }
-        card(ui, search, &labels, |c| {
-            let icon_row = |c: &mut Card, icon: &'static str, color: Color32, label: &str, note: &str, on: &mut bool| {
-                c.row_icon(icon, color, label, note, |ui| {
-                    kit::switch(ui, on);
-                });
-            };
+        section(ui, search, None, None, &labels, |c| {
             let n = &mut self.settings.notifications;
-            icon_row(c, icons::BELL, p.warn, t("An agent needs input"), "", &mut n.needs_input);
-            icon_row(c, icons::X_CIRCLE, p.err, t("A process failed"), "", &mut n.failed);
-            icon_row(c, icons::CHECK_CIRCLE, p.ok, t("An agent finished its turn"), "", &mut n.done);
+            c.row_icon(icons::CHAT_CIRCLE_DOTS, p.warn, labels[0].0, labels[0].1, |ui| {
+                kit::switch(ui, &mut n.needs_input);
+            });
+            c.row_icon(icons::X_CIRCLE, p.err, labels[1].0, labels[1].1, |ui| {
+                kit::switch(ui, &mut n.failed);
+            });
+            c.row_icon(icons::CHECK_CIRCLE, p.ok, labels[2].0, "", |ui| {
+                kit::switch(ui, &mut n.done);
+            });
             let secs = self.settings.long_command_secs;
-            let mut long_on = n.command_done;
-            c.row_icon(icons::CHECK_CIRCLE, p.ok, t("A long command finished"), &tf("“Long” means at least {} s", &[&secs.to_string()]), |ui| {
-                kit::switch(ui, &mut long_on);
-                ui.add_space(10.0);
-                match kit::stepper(ui, &format!("{secs} s")) {
-                    -1 => self.settings.long_command_secs = secs.saturating_sub(1).max(3),
-                    1 => self.settings.long_command_secs = (secs + 1).min(600),
+            let mut long_on = self.settings.notifications.command_done;
+            let mut new_secs = secs;
+            c.row_icon(icons::CLOCK, p.text_muted, labels[3].0, labels[3].1, |ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                let step = ui.add_enabled_ui(long_on, |ui| kit::number_stepper(ui, &format!("{secs} s"), 70.0)).inner;
+                match step {
+                    -1 => new_secs = secs.saturating_sub(1).max(3),
+                    1 => new_secs = (secs + 1).min(600),
                     _ => {}
                 }
+                kit::switch(ui, &mut long_on);
             });
+            self.settings.long_command_secs = new_secs;
             self.settings.notifications.command_done = long_on;
             if cfg!(target_os = "macos") {
-                c.row(t("Badge on the Dock icon"), t("Counts agents waiting for input."), |ui| {
+                c.row_icon(icons::APP_WINDOW, p.text_muted, t("Badge on the Dock icon"), t("Counts what waits for you."), |ui| {
                     kit::switch(ui, &mut self.settings.notifications.dock_badge);
                 });
             }
         });
     }
 
+    // -----------------------------------------------------------------------------------------
+    // Updates and About
+    // -----------------------------------------------------------------------------------------
+
     fn updates_page(&mut self, ui: &mut Ui, search: &str) {
-        page_head(ui, t("Updates"), t("TernaryCode updates itself from its GitHub releases."));
-        let labels = [(t("Version"), ""), (t("Check for updates automatically"), "")];
-        card(ui, search, &labels, |c| {
-            let version = format!("TernaryCode {}", crate::update::CURRENT);
-            let available = self.updater.available_version();
-            let note = match &available {
-                Some(v) => tf("Version {} is available.", &[v]),
-                None => version.clone(),
-            };
-            c.row(t("Version"), &note, |ui| {
-                if available.is_some() {
-                    if kit::button_ex(ui, kit::Kind::Primary, None, t("Install Update…"), true).clicked() {
-                        self.actions.push(Action::ShowUpdate);
+        let p = style::pal(ui);
+        if hit(search, t("Install update"), "") || hit(search, t("Updates"), "") {
+            let release = self.updater.available_release().cloned();
+            raised(ui, 16, |ui| {
+                ui.spacing_mut().item_spacing.y = 14.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 14.0;
+                    let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
+                    paint_logo(ui.painter(), r, &p);
+                    let (title, sub) = match &release {
+                        Some(r) => {
+                            let mut sub = tf("you have {}", &[crate::update::CURRENT]);
+                            if let Some(d) = &r.date {
+                                sub.push_str(&format!(" · {}", tf("released {}", &[d.get(..10).unwrap_or(d)])));
+                            }
+                            if let Some(a) = &r.download {
+                                sub.push_str(&format!(" · {}", super::update_ui::human_size(a.size)));
+                            }
+                            (tf("TernaryCode {} is available", &[&r.version]), sub)
+                        }
+                        None => {
+                            let checked = match self.settings.last_update_check {
+                                Some(at) => tf("checked {}", &[&ago(at)]),
+                                None => t("not checked yet").to_string(),
+                            };
+                            (tf("TernaryCode {}", &[crate::update::CURRENT]), checked)
+                        }
+                    };
+                    let bw = if release.is_some() {
+                        kit::button_width(ui, None, &self.update_button_label(), None, false)
+                    } else {
+                        kit::button_width(ui, None, t("Check for updates"), None, false)
+                    };
+                    let tw = (ui.available_width() - bw - 14.0).max(80.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(tw);
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        text(ui, &title, style::semibold(style::HEADING), p.text, 20.0, true);
+                        text(ui, &sub, style::mono(style::DATA), p.text_faint, 14.0, true);
+                    });
+                    let clicked = if release.is_some() {
+                        let label = self.update_button_label();
+                        kit::button_ex(ui, kit::Kind::Primary, None, &label, false).clicked()
+                    } else {
+                        kit::button_ex(ui, kit::Kind::Secondary, None, t("Check for updates"), false).clicked()
+                    };
+                    if clicked {
+                        self.actions.push(if release.is_some() { Action::ShowUpdate } else { Action::CheckForUpdates });
                     }
-                } else if kit::button_ex(ui, kit::Kind::Secondary, None, t("Check for Updates"), true).clicked() {
-                    self.actions.push(Action::CheckForUpdates);
+                });
+                if let Some(r) = &release {
+                    let notes = note_lines(&r.notes);
+                    if !notes.is_empty() {
+                        egui::Frame::NONE.fill(p.inset).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.spacing_mut().item_spacing.y = 8.0;
+                            for (tag, line) in notes.iter().take(8) {
+                                release_note(ui, tag, line, &p);
+                            }
+                        });
+                    }
+                    let promise = if crate::update::restarts_in_place() {
+                        t("Agents and programs keep running through the update: TernaryCode restarts in place.")
+                    } else {
+                        t("Your projects and tabs come back after the update.")
+                    };
+                    egui::Frame::NONE.fill(p.accent_tint).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            let (ir, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                            ui.painter().text(ir.center(), Align2::CENTER_CENTER, icons::LIGHTNING, style::icon_font(16.0), p.accent_text);
+                            text(ui, promise, FontId::proportional(style::SMALL), p.text, 16.0, true);
+                        });
+                    });
                 }
             });
-            c.row(t("Check for updates automatically"), t("At launch and every few hours. The only network connection TernaryCode makes."), |ui| {
+        }
+        let labels = [(t("Check for updates automatically"), t("At launch and every few hours. The only connection TernaryCode makes on its own."))];
+        section(ui, search, None, None, &labels, |c| {
+            c.row(labels[0].0, labels[0].1, |ui| {
                 kit::switch(ui, &mut self.settings.check_updates);
             });
         });
-    }
-
-    fn about_page(&mut self, ui: &mut Ui) {
-        page_head(ui, t("About"), "");
-        let p = style::pal(ui);
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
-            paint_logo(ui.painter(), r, &p);
-            ui.add_space(14.0);
-            ui.vertical(|ui| {
-                ui.add_space(4.0);
-                ui.label(RichText::new("TernaryCode").font(style::semibold(17.0)).color(p.text));
-                ui.label(RichText::new(tf("Version {}", &[crate::update::CURRENT])).size(12.5).color(p.text_muted));
-            });
-        });
-        ui.add_space(16.0);
-        ui.label(RichText::new(t("Every project and its agents, in one window.")).size(13.0).color(p.text));
-        ui.add_space(6.0);
-        ui.label(RichText::new(t("MIT license. Fonts: Inter (SIL OFL 1.1) and Phosphor icons (MIT).")).size(style::SMALL).color(p.text_faint));
-        ui.add_space(14.0);
-        if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Open Releases Page"), true).clicked() {
-            crate::update::open_page(&format!("https://github.com/{}/releases/latest", crate::update::REPO));
+        if hit(search, t("Releases"), t("MIT license · Inter (OFL) · JetBrains Mono (OFL) · Phosphor icons (MIT)")) {
+            credits(ui, &p);
         }
     }
 
+    /// The update card's button: what Install update does next.
+    fn update_button_label(&self) -> String {
+        if self.updater.prepared().is_some() {
+            t("Restart to update").to_string()
+        } else if self.updater.downloading() {
+            self.updater.status_text().unwrap_or_else(|| t("Updating…").to_string())
+        } else {
+            t("Install update").to_string()
+        }
+    }
+
+    fn about_page(&mut self, ui: &mut Ui, search: &str) {
+        let p = style::pal(ui);
+        if !search.trim().is_empty() && !hit(search, "TernaryCode", t("MIT license · Inter (OFL) · JetBrains Mono (OFL) · Phosphor icons (MIT)")) && !hit(search, t("Releases"), "") {
+            return;
+        }
+        raised(ui, 16, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 14.0;
+                let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
+                paint_logo(ui.painter(), r, &p);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.add_space(2.0);
+                    text(ui, "TernaryCode", style::semibold(style::HEADING), p.text, 20.0, false);
+                    text(ui, &tf("Version {}", &[crate::update::CURRENT]), style::mono(style::DATA), p.text_faint, 14.0, false);
+                });
+            });
+        });
+        credits(ui, &p);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Agents
+    // -----------------------------------------------------------------------------------------
+
     fn agents_page(&mut self, ui: &mut Ui, search: &str) {
         let p = style::pal(ui);
-        page_head(ui, t("Agents"), &tf("Presets you can run with {}, and how each agent tells TernaryCode that it needs you.", &[kit::keys(&Action::PickPreset).unwrap_or("")]));
+        let dark = ui.visuals().dark_mode;
         let mut presets = self.settings.presets();
         let mut changed = false;
         let mut remove = None;
         let open_id = egui::Id::new("settings-agent-open");
+        let confirm_id = egui::Id::new("settings-preset-delete");
+        let mut confirm: Option<String> = ui.data(|d| d.get_temp(confirm_id));
         let mut open: Option<String> = ui.data(|d| d.get_temp(open_id)).unwrap_or(Some("claude".to_string()));
+        let rows_hit = page_rows(SettingsPage::Agents).iter().any(|r| hit(search, t(r), ""));
+        let mut drawn = 0;
         for (i, preset) in presets.iter_mut().enumerate() {
-            if !hit(search, &preset.name, &preset.command) && !hit(search, t("Command"), "") {
+            if !hit(search, &preset.name, &preset.command) && !rows_hit {
                 continue;
             }
+            if drawn > 0 {
+                ui.add_space(8.0);
+            }
+            drawn += 1;
             let agent = preset.agent.unwrap_or(AgentKind::Custom);
             let expanded = open.as_deref() == Some(preset.id.as_str());
             let hooks = self.agent_hooks(agent);
-            let dark = ui.visuals().dark_mode;
             egui::Frame::NONE
-                .fill(p.canvas)
-                .stroke(Stroke::new(1.0, p.border_strong))
-                .corner_radius(CornerRadius::same(10))
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, if expanded { p.border_strong } else { p.border }))
+                .corner_radius(CornerRadius::same(style::RADIUS_CARD))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    // Header: mark, name, how it reports, the command; at the right how many
-                    // panes run it (or Install / Uninstall), and the chevron. A click opens it.
-                    let (head, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 57.0), Sense::click());
+                    // Head: the agent, its name and how it reports, its commands; at the right
+                    // how many panes run it (or Install / Uninstall), and the caret. A click
+                    // opens it.
+                    let (head, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0 + 35.0 + 12.0), Sense::click());
                     #[cfg(debug_assertions)]
                     crate::devtest::record(format!("agent-card:{}", preset.id), head);
-                    let cy = head.center().y;
-                    let tile = Rect::from_center_size(pos2(head.left() + 13.0 + 17.0, cy), vec2(34.0, 34.0));
-                    ui.painter().rect(tile, CornerRadius::same(9), if dark { p.inset } else { Color32::WHITE }, Stroke::new(1.0, p.border), StrokeKind::Inside);
-                    let logo = Rect::from_center_size(tile.center(), vec2(18.0, 18.0));
-                    if !preset.agent.is_some_and(|a| super::agent_logo::paint(ui.painter(), logo, a, p.text, false)) {
-                        ui.painter().text(tile.center(), Align2::CENTER_CENTER, agent_mark(preset), style::mono_semibold(11.0), p.text_muted);
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-                    let chevron_x = head.right() - 14.0 - 8.0;
-                    ui.painter().text(pos2(chevron_x, cy), Align2::CENTER_CENTER, if expanded { icons::CARET_UP } else { icons::CARET_DOWN }, style::icon_font(12.0), p.text_faint);
-                    let mut right = chevron_x - 8.0 - 14.0;
-                    if !hooks.hooked && hooks.can_install && self.installed(agent).is_none() {
+                    let cy = head.center().y;
+                    let avatar = Rect::from_center_size(pos2(head.left() + 16.0 + 14.0, cy), vec2(28.0, 28.0));
+                    super::profiles_ui::paint_agent_tile(ui.painter(), avatar, preset.agent, &agent_mark(preset), &p);
+                    let caret_x = head.right() - 16.0 - 6.0;
+                    ui.painter().text(pos2(caret_x, cy), Align2::CENTER_CENTER, if expanded { icons::CARET_UP } else { icons::CARET_DOWN }, style::icon_font(12.0), p.text_faint);
+                    let mut right = caret_x - 6.0 - 12.0;
+                    if !hooks.hooked && hooks.can_install && self.installed(agent).is_none() && !hooks.off {
                         let w = kit::button_width(ui, None, t("Install…"), None, true);
                         let br = Rect::from_min_size(pos2(right - w, cy - 12.0), vec2(w, 24.0));
                         if ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| kit::button_ex(ui, kit::Kind::Primary, None, t("Install…"), true)).inner.clicked() {
                             self.actions.push(Action::PlanInstall(agent));
                         }
-                        right = br.left() - 10.0;
+                        right = br.left() - 12.0;
                     } else if hooks.installed && !matches!(agent, AgentKind::Claude | AgentKind::Codex) && !expanded {
                         // An agent whose hooks are only ever installed: Uninstall right here.
                         let w = kit::button_width(ui, None, t("Uninstall"), None, true);
@@ -1162,35 +1399,36 @@ impl App {
                         if ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| kit::button_ex(ui, kit::Kind::Ghost, None, t("Uninstall"), true)).inner.clicked() {
                             self.actions.push(Action::Uninstall(agent));
                         }
-                        right = br.left() - 10.0;
+                        right = br.left() - 12.0;
                     } else if hooks.active > 0 {
                         let text = crate::i18n::count(hooks.active, t("Active in 1 pane"), t("Active in {} panes"));
-                        let ag = ui.painter().layout_no_wrap(text, egui::FontId::proportional(12.0), p.text_faint);
+                        let ag = galley(ui, &text, FontId::proportional(style::SMALL), p.text_faint, None, 16.0);
                         let aw = ag.size().x;
-                        ui.painter().galley(pos2(right - aw, cy - ag.size().y / 2.0), ag, p.text_faint);
-                        right -= aw + 10.0;
+                        ui.painter().galley(pos2(right - aw, cy - 8.0), ag, p.text_faint);
+                        right -= aw + 12.0;
                     }
-                    let x = tile.right() + 12.0;
+                    let x = avatar.right() + 12.0;
                     let room = (right - x).max(40.0);
-                    let (icon, text, fg, bg) = hooks.pill(&p, dark);
-                    let pill_w = kit::pill_width(ui.painter(), icon, &text);
+                    let (status, pill_text) = hooks.pill();
+                    let pill_w = kit::state_pill_width(ui.painter(), status, &pill_text);
                     let name_max = if room > pill_w + 68.0 { room - pill_w - 8.0 } else { room };
-                    let mut njob = egui::text::LayoutJob::simple_singleline(preset.name.clone(), style::medium(13.5), p.text);
+                    let mut njob = egui::text::LayoutJob::simple_singleline(preset.name.clone(), style::medium(style::BODY), p.text);
                     njob.wrap = egui::text::TextWrapping::truncate_at_width(name_max);
                     let g = ui.painter().layout_job(njob);
                     let nw = g.size().x;
-                    ui.painter().galley(pos2(x, cy - 9.0 - g.size().y / 2.0), g, p.text);
+                    let name_cy = cy - 17.5 + 9.0;
+                    ui.painter().galley(pos2(x, name_cy - g.size().y / 2.0), g, p.text);
                     if x + nw + 8.0 + pill_w <= right {
-                        kit::paint_pill(ui.painter(), pos2(x + nw + 8.0, cy - 9.0), icon, &text, fg, bg);
+                        kit::paint_state_pill(ui.painter(), pos2(x + nw + 8.0, name_cy), status, &pill_text, &p, dark);
                     }
                     let sub = match &preset.resume {
-                        Some(r) if !r.is_empty() => format!("{}  ·  {} {r}", preset.command, t("resume:")),
-                        _ => format!("{}  ·  {} —", preset.command, t("resume:")),
+                        Some(r) if !r.is_empty() => format!("{} · {} {r}", preset.command, t("resume:")),
+                        _ => format!("{} · {} —", preset.command, t("resume:")),
                     };
-                    let mut sjob = egui::text::LayoutJob::simple_singleline(sub, style::mono(11.0), p.text_faint);
+                    let mut sjob = egui::text::LayoutJob::simple_singleline(sub, style::mono(style::DATA), p.text_faint);
                     sjob.wrap = egui::text::TextWrapping::truncate_at_width(room);
                     let sg = ui.painter().layout_job(sjob);
-                    ui.painter().galley(pos2(x, cy + 10.0 - sg.size().y / 2.0), sg, p.text_faint);
+                    ui.painter().galley(pos2(x, cy - 17.5 + 18.0 + 3.0), sg, p.text_faint);
                     if resp.clicked() {
                         open = if expanded { None } else { Some(preset.id.clone()) };
                     }
@@ -1201,14 +1439,16 @@ impl App {
                     // browser tools.
                     let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
                     ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, p.border));
-                    egui::Frame::NONE.inner_margin(egui::Margin { left: 59, right: 15, top: 12, bottom: 14 }).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 8.0;
-                        const LABEL_W: f32 = 122.0;
-                        let field_row = |ui: &mut Ui, label: &str, add: &mut dyn FnMut(&mut Ui)| {
+                    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 6, bottom: 16 }).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 12.0;
+                        const LABEL_W: f32 = 110.0;
+                        let field_row = |ui: &mut Ui, label: &str, top: bool, add: &mut dyn FnMut(&mut Ui)| {
                             ui.horizontal_top(|ui| {
-                                ui.spacing_mut().item_spacing.x = 0.0;
-                                let (r, _) = ui.allocate_exact_size(vec2(LABEL_W, 30.0), Sense::hover());
-                                ui.painter().text(r.left_center(), Align2::LEFT_CENTER, label, egui::FontId::proportional(12.5), p.text_muted);
+                                ui.spacing_mut().item_spacing.x = 12.0;
+                                let (r, _) = ui.allocate_exact_size(vec2(LABEL_W, if top { 16.0 } else { 30.0 }), Sense::hover());
+                                let g = galley(ui, label, FontId::proportional(style::SMALL), p.text_faint, None, 16.0);
+                                ui.painter().galley(pos2(r.left(), if top { r.top() + 6.0 } else { r.center().y - 8.0 }), g, p.text_faint);
                                 ui.vertical(|ui| {
                                     ui.spacing_mut().item_spacing.y = 8.0;
                                     add(ui);
@@ -1216,24 +1456,24 @@ impl App {
                             });
                         };
                         if !preset.builtin {
-                            field_row(ui, t("Name"), &mut |ui| {
+                            field_row(ui, t("Name"), false, &mut |ui| {
                                 let id = egui::Id::new(("preset-name", i));
-                                changed |= well_field(ui, id, &mut preset.name, "", false).changed();
+                                changed |= mono_field(ui, id, &mut preset.name, "", 0.0, false).changed();
                             });
                         }
-                        field_row(ui, t("Command"), &mut |ui| {
+                        field_row(ui, t("Command"), false, &mut |ui| {
                             let id = egui::Id::new(("preset-command", i));
-                            changed |= mono_field(ui, id, &mut preset.command).changed();
+                            changed |= mono_field(ui, id, &mut preset.command, "", 0.0, false).changed();
                         });
-                        field_row(ui, t("Resume"), &mut |ui| {
+                        field_row(ui, t("Resume"), false, &mut |ui| {
                             let id = egui::Id::new(("preset-resume", i));
                             let mut resume = preset.resume.clone().unwrap_or_default();
-                            if mono_field(ui, id, &mut resume).changed() {
+                            if mono_field(ui, id, &mut resume, "", 0.0, false).changed() {
                                 preset.resume = Some(resume).filter(|r| !r.trim().is_empty());
                                 changed = true;
                             }
                         });
-                        field_row(ui, t("Environment"), &mut |ui| {
+                        field_row(ui, t("Environment"), false, &mut |ui| {
                             // KEY=value, one per line (kept as typed while the field has the
                             // keyboard; read into the preset as it changes).
                             let id = egui::Id::new(("preset-env", i));
@@ -1243,7 +1483,7 @@ impl App {
                                 Some(t) => t,
                                 None => preset.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("\n"),
                             };
-                            if well_field(ui, id, &mut text, t("KEY=value, one per line"), true).changed() {
+                            if mono_field(ui, id, &mut text, t("KEY=value, one per line"), 0.0, true).changed() {
                                 preset.env = text
                                     .lines()
                                     .filter_map(|kv| kv.trim().split_once('=').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
@@ -1254,61 +1494,93 @@ impl App {
                             ui.data_mut(|d| d.insert_temp(typed_id, text));
                         });
                         if agent == AgentKind::Antigravity {
-                            field_row(ui, t("Status signals"), &mut |ui| {
-                                ui.add_space(6.0);
-                                ui.add(egui::Label::new(RichText::new(hooks_note(agent)).size(11.5).color(p.text_faint).line_height(Some(17.0))).wrap());
+                            field_row(ui, t("Status signals"), true, &mut |ui| {
+                                text(ui, hooks_note(agent), FontId::proportional(style::SMALL), p.text_faint, 16.0, true);
                             });
                         } else if agent != AgentKind::Custom {
-                            field_row(ui, t("Status signals"), &mut |ui| {
+                            field_row(ui, t("Status signals"), true, &mut |ui| {
                                 self.hooks_controls(ui, agent);
-                                ui.add(egui::Label::new(RichText::new(hooks_note(agent)).size(11.5).color(p.text_faint).line_height(Some(17.0))).wrap());
+                                text(ui, hooks_note(agent), FontId::proportional(style::SMALL), p.text_faint, 16.0, true);
                                 // What the hooks report, and the version they were checked with.
-                                health_strip(ui, &hooks, agent, &p);
+                                health_strip(ui, &hooks, agent, &p, dark);
                                 if hooks.unconnected > 0 {
-                                    let text = crate::i18n::count(
+                                    let msg = crate::i18n::count(
                                         hooks.unconnected,
                                         t("Typed by hand in 1 pane, it is not connected: Install connects it (then restart it there)."),
                                         t("Typed by hand in {} panes, it is not connected: Install connects it (then restart it there)."),
                                     );
-                                    ui.add(egui::Label::new(RichText::new(text).size(11.5).color(p.warn).line_height(Some(17.0))).wrap());
+                                    text(ui, &msg, FontId::proportional(style::SMALL), p.warn, 16.0, true);
                                 }
                             });
-                            // The browser tools: added to each run started with Per launch.
-                            if matches!(agent, AgentKind::Claude | AgentKind::Codex) {
-                                let per_launch = self.settings.integration(agent) == Integration::PerLaunch;
-                                field_row(ui, t("Browser tools"), &mut |ui| {
-                                    ui.add_space(4.0);
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
-                                        let (fg, bg, label) = if per_launch { (p.accent_text, p.accent_tint, t("Added to each run")) } else { (p.text_muted, p.subtle, t("Not added")) };
-                                        kit::pill(ui, Some(icons::GLOBE_SIMPLE), label, fg, bg);
-                                        let n = tc_agent::mcp::tools().as_array().map_or(0, |a| a.len());
-                                        let note = if per_launch { tf("{} tools, from presets started with Per launch", &[&n.to_string()]) } else { t("Browser tools come with Per launch.").to_string() };
-                                        ui.add(egui::Label::new(RichText::new(note).size(11.5).color(p.text_faint)).wrap());
-                                    });
-                                });
-                            }
                         } else {
-                            field_row(ui, "", &mut |ui| {
-                                ui.add(egui::Label::new(RichText::new(t("A custom agent reports through ternarycode-hook with start, working, needs-input, done and end; without it, its status comes from the terminal.")).size(11.5).color(p.text_faint).line_height(Some(17.0))).wrap());
-                                if kit::button_ex(ui, kit::Kind::Danger, Some(icons::TRASH), t("Delete Preset"), true).clicked() {
-                                    remove = Some(i);
+                            field_row(ui, "", true, &mut |ui| {
+                                let note = t("A custom agent reports through ternarycode-hook with start, working, needs-input, done and end; without it, its status comes from the terminal.");
+                                text(ui, note, FontId::proportional(style::SMALL), p.text_faint, 16.0, true);
+                                if confirm.as_deref() == Some(preset.id.as_str()) {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        text(ui, &tf("Delete the preset {}?", &[&preset.name]), FontId::proportional(style::SMALL), p.text, 16.0, false);
+                                        if kit::button_ex(ui, kit::Kind::Ghost, None, t("Cancel"), true).clicked() {
+                                            confirm = None;
+                                        }
+                                        if kit::button_ex(ui, kit::Kind::DangerFilled, Some(icons::TRASH), t("Delete"), true).clicked() {
+                                            remove = Some(i);
+                                            confirm = None;
+                                        }
+                                    });
+                                } else if kit::button_ex(ui, kit::Kind::Danger, Some(icons::TRASH), t("Delete Preset"), true).clicked() {
+                                    confirm = Some(preset.id.clone());
                                 }
+                            });
+                        }
+                        // The browser tools: what this agent gets in its runs.
+                        if agent != AgentKind::Custom {
+                            let (ok, status_text) = self.browser_tools_status(agent);
+                            let per_launch_note = matches!(agent, AgentKind::Claude | AgentKind::Codex) && self.settings.integration(agent) == Integration::PerLaunch;
+                            field_row(ui, t("Browser tools"), false, &mut |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.set_min_height(30.0);
+                                    ui.spacing_mut().item_spacing.x = 10.0;
+                                    let (st, label) = if ok { (Status::Done, status_text) } else { (Status::Idle, t("Not added")) };
+                                    let w = kit::state_pill_width(ui.painter(), st, label);
+                                    let (r, _) = ui.allocate_exact_size(vec2(w, kit::PILL_H), Sense::hover());
+                                    kit::paint_state_pill(ui.painter(), r.left_center(), st, label, &p, dark);
+                                    let note = if per_launch_note {
+                                        let n = tc_agent::mcp::tools().as_array().map_or(0, |a| a.len());
+                                        tf("{} tools, from presets started with Per launch", &[&n.to_string()])
+                                    } else if ok {
+                                        String::new()
+                                    } else {
+                                        status_text.to_string()
+                                    };
+                                    if !note.is_empty() {
+                                        text(ui, &note, FontId::proportional(style::SMALL), p.text_faint, 16.0, true);
+                                    }
+                                });
                             });
                         }
                     });
                 });
-            ui.add_space(8.0);
         }
-        ui.data_mut(|d| d.insert_temp(open_id, open));
+        ui.data_mut(|d| {
+            d.insert_temp(open_id, open);
+            match &confirm {
+                Some(c) => {
+                    d.insert_temp(confirm_id, c.clone());
+                }
+                None => d.remove::<String>(confirm_id),
+            }
+        });
         if let Some(i) = remove {
             presets.remove(i);
             changed = true;
         }
-        egui::Sides::new().spacing(12.0).shrink_right().show(
-            ui,
-            |ui| {
-                if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::PLUS), t("Add Preset"), true).clicked() {
+        if drawn > 0 || hit(search, t("Add preset"), "") || hit(search, t("Hook program"), "") {
+            if drawn > 0 {
+                ui.add_space(8.0);
+            }
+            ui.horizontal(|ui| {
+                if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::PLUS), t("Add preset"), true).clicked() {
                     let n = presets.iter().filter(|p| !p.builtin).count() + 1;
                     // An id no preset has (counting would repeat one after a deletion).
                     let mut k = n;
@@ -1328,16 +1600,31 @@ impl App {
                     ui.data_mut(|d| d.insert_temp(open_id, Some(id)));
                     changed = true;
                 }
-            },
-            |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
+                // At the right: the hook program the agents report through (its path cut from
+                // the left when it is long).
                 let exists = self.hook_bin.bin.exists();
+                let (icon, ic) = if exists { (icons::CHECK_CIRCLE, p.ok) } else { (icons::WARNING, p.err) };
                 let path = format!("{}{}", crate::paths::contract_tilde(&self.hook_bin.bin), if exists { "" } else { t(" (missing)") });
-                ui.add(egui::Label::new(RichText::new(path).font(style::mono(10.5)).color(if exists { p.text_faint } else { p.err })).truncate());
-                ui.label(RichText::new(t("Hook program")).size(12.0).color(p.text_muted));
-                ui.label(RichText::new(if exists { icons::CHECK_CIRCLE } else { icons::WARNING }).font(style::icon_fill(12.0)).color(if exists { p.ok } else { p.err }));
-            },
-        );
+                let lg = galley(ui, t("Hook program"), FontId::proportional(style::SMALL), p.text_faint, None, 16.0);
+                let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+                let path_room = (r.width() - 16.0 - 13.0 - 6.0 - lg.size().x - 6.0).max(40.0);
+                let chars: Vec<char> = path.chars().collect();
+                let mut shown = path.clone();
+                let mut cut = 0;
+                while ui.painter().layout_no_wrap(shown.clone(), style::mono(style::DATA), p.text_faint).size().x > path_room && cut + 8 < chars.len() {
+                    cut += 4;
+                    shown = format!("…{}", chars[cut..].iter().collect::<String>());
+                }
+                let pc = if exists { p.text_faint } else { p.err };
+                let pg = ui.painter().layout_no_wrap(shown, style::mono(style::DATA), pc);
+                let mut x = r.right() - pg.size().x;
+                ui.painter().galley(pos2(x, r.center().y - pg.size().y / 2.0), pg, pc);
+                x -= 6.0 + lg.size().x;
+                ui.painter().galley(pos2(x, r.center().y - 8.0), lg, p.text_faint);
+                x -= 6.0 + 6.5;
+                ui.painter().text(pos2(x, r.center().y), Align2::CENTER_CENTER, icon, style::icon_fill(13.0), ic);
+            });
+        }
         if changed {
             // Saved: every user preset, and built-ins only where they differ from the default.
             let defaults = tc_core::agent::builtin_presets();
@@ -1363,39 +1650,35 @@ impl App {
         modes.push((Integration::Off, t("Off")));
         let options: Vec<kit::Seg> = modes.iter().map(|(_, l)| kit::Seg::new(l, "")).collect();
         let on = modes.iter().position(|(m, _)| *m == shown).unwrap_or(0);
-        let ((seg_action, seg_mode), btn_action) = egui::Sides::new().spacing(8.0).wrap().show(
-            ui,
-            |ui| {
-                if let Some(i) = kit::segmented(ui, &options, on) {
-                    let m = modes[i].0;
-                    if m == Integration::Installed && installed.is_none() {
-                        (Some(Action::PlanInstall(agent)), None)
-                    } else {
-                        (None, Some(m))
-                    }
+        let mut action = None;
+        let mut mode = None;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            if let Some(i) = kit::segmented(ui, &options, on) {
+                let m = modes[i].0;
+                if m == Integration::Installed && installed.is_none() {
+                    action = Some(Action::PlanInstall(agent));
                 } else {
-                    (None, None)
+                    mode = Some(m);
                 }
-            },
-            |ui| {
-                if installed.is_some() {
-                    if kit::button_ex(ui, kit::Kind::Secondary, None, t("Uninstall"), true).clicked() {
-                        Some(Action::Uninstall(agent))
-                    } else {
-                        None
-                    }
-                } else {
-                    let r = kit::button_ex(ui, kit::Kind::Secondary, None, t("Install…"), true);
-                    #[cfg(debug_assertions)]
-                    crate::devtest::record(format!("install:{}", agent.slug()), r.rect);
-                    if r.clicked() { Some(Action::PlanInstall(agent)) } else { None }
+            }
+            if installed.is_some() {
+                if kit::button_ex(ui, kit::Kind::Secondary, None, t("Uninstall"), true).clicked() {
+                    action = Some(Action::Uninstall(agent));
                 }
-            },
-        );
-        if let Some(m) = seg_mode {
+            } else {
+                let r = kit::button_ex(ui, kit::Kind::Secondary, None, t("Install…"), true);
+                #[cfg(debug_assertions)]
+                crate::devtest::record(format!("install:{}", agent.slug()), r.rect);
+                if r.clicked() {
+                    action = Some(Action::PlanInstall(agent));
+                }
+            }
+        });
+        if let Some(m) = mode {
             self.settings.integrations.insert(agent.slug().into(), m);
         }
-        if let Some(a) = seg_action.or(btn_action) {
+        if let Some(a) = action {
             self.actions.push(a);
         }
     }
@@ -1419,6 +1702,130 @@ impl App {
     }
 }
 
+/// The page's nav search: a magnifier, the field, ⌘F at its right while it is empty.
+fn nav_search(ui: &mut Ui, rect: Rect, id: egui::Id, search: &mut String) {
+    let p = style::pal(ui);
+    let resp = ui.interact(rect, id.with("box"), Sense::click());
+    if resp.clicked() {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
+    let focused = ui.memory(|m| m.has_focus(id));
+    if focused {
+        ui.painter().rect_stroke(rect.expand(3.0), CornerRadius::same(11), Stroke::new(3.0, style::soft(p.accent, 0.25)), StrokeKind::Inside);
+    }
+    ui.painter().rect(rect, CornerRadius::same(8), p.inset, Stroke::new(1.0, if focused { p.accent } else { p.border }), StrokeKind::Inside);
+    ui.painter().text(pos2(rect.left() + 10.0 + 7.0, rect.center().y), Align2::CENTER_CENTER, icons::MAGNIFYING_GLASS, style::icon_font(14.0), p.text_faint);
+    let mut right = rect.right() - 6.0;
+    if search.is_empty() && !focused {
+        let keys = kit::keys(&Action::Find).unwrap_or("");
+        if !keys.is_empty() && keys.chars().count() <= 4 {
+            let w = kit::kbd_width(ui.painter(), keys);
+            kit::paint_kbd_text(ui.painter(), pos2(right - w, rect.center().y), keys, &p);
+            right -= w + 8.0;
+        }
+    }
+    let inner = Rect::from_min_max(pos2(rect.left() + 10.0 + 14.0 + 8.0, rect.top() + 1.0), pos2(right, rect.bottom() - 1.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.add_sized(
+        inner.size(),
+        egui::TextEdit::singleline(search)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .font(FontId::proportional(style::SMALL))
+            .hint_text(RichText::new(t("Search settings")).size(style::SMALL).color(p.text_faint))
+            .vertical_align(egui::Align::Center),
+    );
+}
+
+/// The licences, and the releases page.
+fn credits(ui: &mut Ui, p: &style::Palette) {
+    gap(ui);
+    ui.horizontal(|ui| {
+        let w = kit::button_width(ui, Some(icons::ARROW_SQUARE_OUT), t("Releases"), None, true);
+        let room = (ui.available_width() - w - 12.0).max(80.0);
+        ui.scope(|ui| {
+            ui.set_width(room);
+            text(ui, t("MIT license · Inter (OFL) · JetBrains Mono (OFL) · Phosphor icons (MIT)"), FontId::proportional(style::SMALL), p.text_faint, 16.0, true);
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::ARROW_SQUARE_OUT), t("Releases"), true).clicked() {
+                crate::update::open_page(&format!("https://github.com/{}/releases/latest", crate::update::REPO));
+            }
+        });
+    });
+}
+
+/// "2 h ago" for a Unix time.
+fn ago(at: i64) -> String {
+    let now = crate::profiles::now_unix_secs();
+    let s = (now - at).max(0);
+    if s < 60 {
+        t("just now").to_string()
+    } else if s < 3600 {
+        tf("{} min ago", &[&(s / 60).to_string()])
+    } else if s < 86_400 {
+        tf("{} h ago", &[&(s / 3600).to_string()])
+    } else {
+        tf("{} d ago", &[&(s / 86_400).to_string()])
+    }
+}
+
+/// The release notes as tagged lines: each bullet under its heading's tag (NEW, IMPROVED…),
+/// without Markdown marks. They stop where the notes end for the app ("## Install").
+fn note_lines(notes: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut tag = "NEW".to_string();
+    for line in notes.lines() {
+        let l = line.trim();
+        if l.contains("ternarycode:end-of-notes") || l.eq_ignore_ascii_case("## install") {
+            break;
+        }
+        if let Some(h) = l.strip_prefix('#') {
+            let h = h.trim_start_matches('#').trim();
+            if !h.is_empty() {
+                tag = h.split_whitespace().next().unwrap_or(h).to_uppercase();
+            }
+            continue;
+        }
+        let Some(item) = l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")).or_else(|| l.strip_prefix("• ")) else {
+            continue;
+        };
+        let mut s = item.replace("**", "").replace('`', "");
+        // [text](url) → text.
+        while let (Some(a), Some(b)) = (s.find('['), s.find("](")) {
+            let Some(c) = s[b..].find(')') else { break };
+            if b < a {
+                break;
+            }
+            s = format!("{}{}{}", &s[..a], &s[a + 1..b], &s[b + c + 1..]);
+        }
+        out.push((tag.clone(), s));
+    }
+    out
+}
+
+/// One release note: its tag outlined in its colour, the line beside it.
+fn release_note(ui: &mut Ui, tag: &str, line: &str, p: &style::Palette) {
+    let c = match tag {
+        "NEW" | "ADDED" => p.accent_text,
+        "IMPROVED" | "CHANGED" => p.ok,
+        "FIXED" => p.warn,
+        _ => p.text_faint,
+    };
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        let g = ui.painter().layout_no_wrap(tag.to_string(), style::mono(style::DATA), c);
+        let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 12.0, 18.0), Sense::hover());
+        ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, c), StrokeKind::Inside);
+        ui.painter().galley(r.center() - g.size() / 2.0, g, c);
+        ui.vertical(|ui| {
+            ui.add_space(1.0);
+            text(ui, line, FontId::proportional(style::SMALL), p.text, 16.0, true);
+        });
+    });
+}
+
 struct Hooks {
     agent: AgentKind,
     hooked: bool,
@@ -1431,35 +1838,37 @@ struct Hooks {
 }
 
 impl Hooks {
-    fn pill(&self, p: &style::Palette, dark: bool) -> (Option<&'static str>, String, Color32, Color32) {
+    /// The pill after the agent's name: how it reports, as a status (Done: hooks; Needs input:
+    /// no hooks, its status reads Active; Idle: off).
+    fn pill(&self) -> (Status, String) {
         if self.agent == AgentKind::Custom {
-            return (None, t("Custom").to_string(), p.text_muted, p.subtle);
+            return (Status::Idle, t("Custom").to_string());
         }
         // Per launch covers what Run Agent starts, not the agent typed by hand.
         if self.agent == AgentKind::Antigravity {
-            return (Some(icons::INFO), t("No hooks yet · status shows Active").to_string(), p.text_muted, p.subtle);
+            return (Status::NeedsInput, t("No hooks · status shows Active").to_string());
         }
         if self.hooked && !self.installed && self.unconnected > 0 {
-            return (Some(icons::WARNING), t("Hooks · per launch only").to_string(), p.warn, style::tint(p.warn, dark));
+            return (Status::NeedsInput, t("Hooks · per launch only").to_string());
         }
         if self.hooked && self.installed && self.agent == AgentKind::OpenCode {
-            return (Some(icons::CHECK_CIRCLE), t("Plugin installed").to_string(), p.ok, style::tint(p.ok, dark));
+            return (Status::Done, t("Plugin installed").to_string());
         }
         if self.hooked {
             let how = if self.installed { t("installed") } else { t("per launch") };
-            return (Some(icons::CHECK_CIRCLE), tf("Hooks · {}", &[how]), p.ok, style::tint(p.ok, dark));
+            return (Status::Done, tf("Hooks · {}", &[how]));
         }
         if self.off {
-            return (None, t("Hooks off").to_string(), p.text_muted, p.subtle);
+            return (Status::Idle, t("Hooks off").to_string());
         }
-        (Some(icons::WARNING), t("No hooks · status shows “Active”").to_string(), p.warn, style::tint(p.warn, dark))
+        (Status::NeedsInput, t("No hooks · status shows Active").to_string())
     }
 }
 
 /// What each agent's hooks report, and how they are added.
 fn hooks_note(agent: AgentKind) -> &'static str {
     match agent {
-        AgentKind::Claude => t("Per launch adds the hooks (--settings) and browser tools (--mcp-config) to each run, without touching your files. Installed writes the hooks into ~/.claude/settings.json, with a backup."),
+        AgentKind::Claude => t("Per launch adds the hooks and browser tools to each run, without touching your files. Installed writes them into ~/.claude/settings.json, with a backup."),
         AgentKind::Codex => t("Per launch adds the hooks, notify and browser tools to each run. Codex asks you once to trust TernaryCode's hooks (its own security check)."),
         AgentKind::Gemini => t("Install adds hooks to ~/.gemini/settings.json (tool permissions, finished turns). Gemini CLI has no per-launch option."),
         AgentKind::Antigravity => t("TernaryCode does not add hooks to Antigravity CLI yet: while it runs, its status reads “Active”."),
@@ -1475,44 +1884,9 @@ fn agent_mark(preset: &Preset) -> String {
     }
 }
 
-/// A monospace text field the width left in the row.
-fn mono_field(ui: &mut Ui, id: egui::Id, text: &mut String) -> egui::Response {
-    well_field(ui, id, text, "", false)
-}
-
-/// A field in a well (30 high, the data font): one line, or `multi`: as many lines as it has.
-fn well_field(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, multi: bool) -> egui::Response {
-    let p = style::pal(ui);
-    let dark = ui.visuals().dark_mode;
-    let w = ui.available_width();
-    let lines = if multi { text.lines().count().max(1) + usize::from(text.ends_with('\n')) } else { 1 };
-    let h = 30.0 + (lines.saturating_sub(1)) as f32 * 17.0;
-    let (rect, outer) = ui.allocate_exact_size(vec2(w, h), Sense::click());
-    if outer.clicked() {
-        ui.memory_mut(|m| m.request_focus(id));
-    }
-    let focused = ui.ctx().memory(|m| m.has_focus(id));
-    if focused {
-        ui.painter().rect_stroke(rect.expand(3.0), CornerRadius::same(10), Stroke::new(3.0, p.accent_tint), StrokeKind::Inside);
-    }
-    let fill = if dark { p.inset } else { Color32::WHITE };
-    ui.painter().rect(rect, CornerRadius::same(7), fill, Stroke::new(1.0, if focused { p.accent } else { p.border }), StrokeKind::Inside);
-    let inner = Rect::from_min_max(pos2(rect.left() + 10.0, rect.top() + 6.5), pos2(rect.right() - 10.0, rect.bottom() - 6.0));
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Min)));
-    let edit = if multi { egui::TextEdit::multiline(text).desired_rows(1) } else { egui::TextEdit::singleline(text) };
-    child.add_sized(
-        inner.size(),
-        edit.id(id)
-            .frame(egui::Frame::NONE)
-            .margin(egui::Margin::ZERO)
-            .font(style::mono(12.0))
-            .hint_text(RichText::new(hint).font(style::mono(12.0)).color(p.text_ghost)),
-    )
-}
-
-/// Under an agent's status signals: what its hooks report (green when they are in use), and
-/// the version they were checked with.
-fn health_strip(ui: &mut Ui, hooks: &Hooks, agent: AgentKind, p: &style::Palette) {
+/// Under an agent's status signals: what its hooks report (on the green tint when they are in
+/// use), and the version they were checked with.
+fn health_strip(ui: &mut Ui, hooks: &Hooks, agent: AgentKind, p: &style::Palette, dark: bool) {
     let (icon, color, text) = if hooks.hooked {
         (icons::CHECK_CIRCLE, p.ok, t("Reports permission requests, questions and finished turns"))
     } else if hooks.off {
@@ -1530,20 +1904,21 @@ fn health_strip(ui: &mut Ui, hooks: &Hooks, agent: AgentKind, p: &style::Palette
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(w, 32.0), Sense::hover());
     let painter = ui.painter();
-    let (fill, line) = if hooks.hooked { (style::soft(p.ok, 0.07), style::soft(p.ok, 0.28)) } else { (p.hover, p.border) };
-    painter.rect(rect, CornerRadius::same(7), fill, Stroke::new(1.0, line), StrokeKind::Inside);
-    painter.text(pos2(rect.left() + 10.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_fill(13.0), color);
+    let fill = if hooks.hooked { style::tint(p.ok, dark) } else { p.hover };
+    painter.rect_filled(rect, CornerRadius::same(7), fill);
+    painter.text(pos2(rect.left() + 10.0 + 7.0, rect.center().y), Align2::CENTER_CENTER, icon, style::icon_fill(14.0), color);
     let mut right = rect.right() - 10.0;
     if let Some(v) = checked {
-        let g = painter.layout_no_wrap(tf("checked with {}", &[v]), style::mono(10.5), p.text_faint);
+        let g = painter.layout_no_wrap(tf("checked with {}", &[v]), style::mono(style::DATA), p.text_faint);
         right -= g.size().x;
         painter.galley(pos2(right, rect.center().y - g.size().y / 2.0), g, p.text_faint);
         right -= 12.0;
     }
-    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), egui::FontId::proportional(12.0), if hooks.hooked { p.text } else { p.text_muted });
-    job.wrap = egui::text::TextWrapping::truncate_at_width((right - rect.left() - 32.0).max(20.0));
+    let x = rect.left() + 10.0 + 14.0 + 8.0;
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), FontId::proportional(style::SMALL), if hooks.hooked { p.text } else { p.text_muted });
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(20.0));
     let g = painter.layout_job(job);
-    painter.galley(pos2(rect.left() + 32.0, rect.center().y - g.size().y / 2.0), g, p.text);
+    painter.galley(pos2(x, rect.center().y - g.size().y / 2.0), g, p.text);
 }
 
 /// "10,000".
@@ -1559,186 +1934,161 @@ fn group_digits(n: usize) -> String {
     out
 }
 
-/// A theme's preview card: a miniature window (sidebar and content) in its colours.
-fn theme_card(ui: &mut Ui, mode: ThemeMode, name: &str, on: bool, w: f32) -> egui::Response {
-    let p = style::pal(ui);
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 74.0 + 10.0 + 18.0), Sense::click());
-    let card = Rect::from_min_size(rect.min, vec2(w, 74.0));
-    let painter = ui.painter();
-    // A tiny drawing of the window in that theme: its base, the sidebar with the queue and a row
-    // picked, two sheets with lines of text.
-    let mini = |painter: &egui::Painter, dark: bool| {
-        let pal = style::palette(dark);
-        painter.rect_filled(card, CornerRadius::same(9), pal.chrome);
-        let side = Rect::from_min_size(card.min + vec2(5.0, 6.0), vec2(card.width() * 0.31, card.height() - 12.0));
-        for (i, c) in [Color32::from_rgb(0xff, 0x5f, 0x57), Color32::from_rgb(0xfe, 0xbc, 0x2e), Color32::from_rgb(0x28, 0xc8, 0x40)].iter().enumerate() {
-            painter.circle_filled(pos2(side.left() + 4.0 + i as f32 * 6.5, side.top() + 3.0), 2.0, *c);
-        }
-        let q = Rect::from_min_size(side.min + vec2(0.0, 9.0), vec2(side.width(), 11.0));
-        painter.rect(q, CornerRadius::same(3), style::soft(pal.warn, 0.18), Stroke::new(1.0, style::soft(pal.warn, 0.35)), StrokeKind::Inside);
-        painter.circle_filled(pos2(q.left() + 6.0, q.center().y), 2.0, pal.warn);
-        painter.rect_filled(Rect::from_min_size(pos2(q.left() + 11.0, q.center().y - 1.5), vec2(q.width() * 0.5, 3.0)), CornerRadius::same(2), style::soft(pal.text_muted, 0.4));
-        for (i, (cr, cg, cb)) in [(0x9d, 0x8c, 0xf0), (0x9c, 0xbf, 0x5a), (0xe0, 0x7a, 0xa0), (0xe5, 0x8a, 0x6b)].iter().enumerate() {
-            let row = Rect::from_min_size(pos2(side.left(), q.bottom() + 3.0 + i as f32 * 12.0), vec2(side.width(), 11.0));
-            if i == 2 {
-                painter.rect(row, CornerRadius::same(3), pal.surface, Stroke::new(1.0, pal.border), StrokeKind::Inside);
-            }
-            painter.rect_filled(Rect::from_center_size(pos2(row.left() + 6.0, row.center().y), vec2(6.0, 6.0)), CornerRadius::same(2), Color32::from_rgb(*cr, *cg, *cb).gamma_multiply(0.8));
-            painter.rect_filled(Rect::from_min_size(pos2(row.left() + 12.0, row.center().y - 1.5), vec2(row.width() * [0.7, 0.55, 0.8, 0.6][i] - 14.0, 3.0)), CornerRadius::same(2), style::soft(pal.text_muted, 0.4));
-        }
-        let main = Rect::from_min_max(pos2(side.right() + 4.0, side.top()), pos2(card.right() - 6.0, side.bottom()));
-        painter.rect_filled(Rect::from_min_size(main.min + vec2(2.0, 3.0), vec2(main.width() * 0.22, 3.0)), CornerRadius::same(2), style::soft(pal.text_muted, 0.5));
-        painter.rect_filled(Rect::from_min_size(pos2(main.right() - 22.0, main.top() + 1.5), vec2(20.0, 6.0)), CornerRadius::same(2), pal.accent);
-        let sheets = Rect::from_min_max(pos2(main.left(), main.top() + 12.0), main.max);
-        let w1 = sheets.width() * 0.53;
-        for (k, r) in [Rect::from_min_size(sheets.min, vec2(w1, sheets.height())), Rect::from_min_max(pos2(sheets.left() + w1 + 3.0, sheets.top()), sheets.max)].into_iter().enumerate() {
-            painter.rect(r, CornerRadius::same(4), pal.canvas, Stroke::new(1.0, pal.border), StrokeKind::Inside);
-            for j in 0..(5 - k) {
-                let lw = r.width() * [0.72, 0.5, 0.86, 0.64, 0.4][j] - 10.0;
-                let c = if j == 1 { pal.info } else { style::soft(pal.text_muted, 0.45) };
-                painter.rect_filled(Rect::from_min_size(pos2(r.left() + 5.0, r.top() + 6.0 + j as f32 * 6.5), vec2(lw.max(4.0), 2.5)), CornerRadius::same(1), c);
-            }
-        }
-    };
-    match mode {
-        ThemeMode::Dark => mini(painter, true),
-        ThemeMode::Light => mini(painter, false),
-        ThemeMode::System => {
-            mini(painter, false);
-            let (_, right) = card.split_left_right_at_fraction(0.5);
-            mini(&painter.with_clip_rect(right), true);
-        }
-    }
-    if on {
-        painter.rect_stroke(card.expand(2.0), CornerRadius::same(11), Stroke::new(2.0, p.accent), StrokeKind::Outside);
-    } else {
-        painter.rect_stroke(card, CornerRadius::same(9), Stroke::new(1.0, if resp.hovered() { p.border_heavy } else { p.border_strong }), StrokeKind::Inside);
-    }
-    // A radio and the name under it ("follows macOS" for System).
-    let ry = card.bottom() + 10.0 + 9.0;
-    let rc = pos2(card.left() + 8.0, ry);
-    if on {
-        painter.circle_filled(rc, 8.0, p.accent);
-        painter.circle_filled(rc, 3.0, Color32::WHITE);
-    } else {
-        painter.circle_stroke(rc, 7.5, Stroke::new(1.0, p.border_heavy));
-    }
-    let g = painter.layout_no_wrap(name.to_string(), if on { style::medium(12.5) } else { egui::FontId::proportional(12.5) }, if on { p.text } else { p.text_muted });
-    let gw = g.size().x;
-    painter.galley(pos2(card.left() + 8.0 + 8.0 + 8.0, ry - g.size().y / 2.0), g, if on { p.text } else { p.text_muted });
-    if mode == ThemeMode::System {
-        let os = if cfg!(target_os = "macos") { t("follows macOS") } else if cfg!(windows) { t("follows Windows") } else { t("follows the system") };
-        let ox = card.left() + 24.0 + gw + 8.0;
-        let room = card.right() - ox;
-        if room > 32.0 {
-            let mut job = egui::text::LayoutJob::simple_singleline(os.to_string(), egui::FontId::proportional(11.5), p.text_faint);
-            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-            let og = painter.layout_job(job);
-            painter.galley(pos2(ox, ry - og.size().y / 2.0), og, p.text_faint);
-        }
-    }
-    resp
+/// "13" or "13.5".
+fn size_text(size: f32) -> String {
+    if size.fract() == 0.0 { format!("{size:.0}") } else { format!("{size:.1}") }
 }
 
-/// A terminal scheme's tile: its background with a prompt and its first six colours, its name.
+/// A theme's card: a miniature window (its sidebar, a sheet with a line of a terminal) in its
+/// colours, 152 × 74, then a radio and its name.
+fn theme_card(ui: &mut Ui, mode: ThemeMode, name: &str, on: bool) -> egui::Response {
+    let p = style::pal(ui);
+    let (rect, resp) = ui.allocate_exact_size(vec2(152.0, 74.0 + 10.0 + 16.0), Sense::click());
+    if resp.hovered() && !on {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let card = Rect::from_min_size(rect.min, vec2(152.0, 74.0));
+    let painter = ui.painter();
+    // The design's miniature: the window, its sidebar, a sheet, two rows (one picked), a
+    // terminal line.
+    let mini = |painter: &egui::Painter, origin: egui::Pos2, dark: bool, corners: CornerRadius| {
+        let hex = |c: u32| Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+        let (bg, sheet, side) = if dark { (0x09090B, 0x151518, 0x0F0F12) } else { (0xEDEDEF, 0xFFFFFF, 0xE4E4E7) };
+        let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(origin + vec2(x, y), vec2(w, h));
+        painter.rect_filled(at(0.0, 0.0, 152.0, 74.0), corners, hex(bg));
+        painter.rect_filled(at(0.0, 0.0, 44.0, 74.0), CornerRadius { nw: corners.nw, sw: corners.sw, ne: 0, se: 0 }, hex(side));
+        painter.rect_filled(at(50.0, 8.0, 98.0, 60.0), CornerRadius::same(5), hex(sheet));
+        painter.rect_filled(at(8.0, 14.0, 30.0, 6.0), CornerRadius::same(3), hex(0xF2B14B));
+        painter.rect_filled(at(8.0, 26.0, 26.0, 5.0), CornerRadius::same(2), hex(0x80808A));
+        painter.rect_filled(at(58.0, 18.0, 60.0, 4.0), CornerRadius::same(2), hex(if dark { 0x7FD1A0 } else { 0x1C7A4A }));
+    };
+    match mode {
+        ThemeMode::Dark | ThemeMode::Light => mini(painter, card.min, mode == ThemeMode::Dark, CornerRadius::same(8)),
+        ThemeMode::System => {
+            let (l, r) = card.split_left_right_at_x(card.left() + 76.0);
+            mini(&painter.with_clip_rect(l.intersect(painter.clip_rect())), card.min, false, CornerRadius::same(8));
+            mini(&painter.with_clip_rect(r.intersect(painter.clip_rect())), pos2(card.left() + 76.0, card.top()), true, CornerRadius { nw: 0, sw: 0, ne: 8, se: 8 });
+        }
+    }
+    let stroke = if on {
+        Stroke::new(2.0, p.accent)
+    } else if resp.hovered() {
+        Stroke::new(1.0, p.border_heavy)
+    } else {
+        Stroke::new(1.0, p.border_strong)
+    };
+    painter.rect_stroke(card, CornerRadius::same(8), stroke, StrokeKind::Inside);
+    // A radio and the name beside it.
+    let rc = pos2(card.left() + 7.0, card.bottom() + 10.0 + 8.0);
+    if on {
+        painter.circle_filled(rc, 7.0, p.accent);
+        painter.circle_filled(rc, 3.0, Color32::WHITE);
+    } else {
+        painter.circle_stroke(rc, 6.25, Stroke::new(1.5, p.border_heavy));
+    }
+    let font = if on { style::medium(style::SMALL) } else { FontId::proportional(style::SMALL) };
+    let g = painter.layout_no_wrap(name.to_string(), font, p.text);
+    painter.galley(pos2(rc.x + 7.0 + 8.0, rc.y - g.size().y / 2.0), g, p.text);
+    let os = if cfg!(target_os = "macos") { t("follows macOS") } else if cfg!(windows) { t("follows Windows") } else { t("follows the system") };
+    if mode == ThemeMode::System { resp.on_hover_text(os) } else { resp }
+}
+
+/// A terminal scheme's tile: its background with a prompt and five of its colours, its name.
 fn scheme_tile(ui: &mut Ui, s: &tc_term::scheme::Scheme, on: bool) -> egui::Response {
     let p = style::pal(ui);
     let (rect, resp) = ui.allocate_exact_size(vec2(104.0, 52.0 + 6.0 + 16.0), Sense::click());
+    if resp.hovered() && !on {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     let painter = ui.painter();
     let top = Rect::from_min_size(rect.min, vec2(104.0, 52.0));
-    painter.rect_filled(top, CornerRadius::same(8), s.background);
-    let stroke = if on { Stroke::new(2.0, p.accent) } else if resp.hovered() { Stroke::new(1.0, p.text_faint) } else { Stroke::new(1.0, p.border_strong) };
-    painter.rect_stroke(top, CornerRadius::same(8), stroke, if on { StrokeKind::Outside } else { StrokeKind::Inside });
-    let mono = style::mono(10.0);
-    let mut job = egui::text::LayoutJob::default();
-    job.append("❯", 0.0, egui::TextFormat::simple(mono.clone(), s.ansi[2]));
-    job.append("ls", 6.0, egui::TextFormat::simple(mono.clone(), s.foreground));
-    job.append("src", 6.0, egui::TextFormat::simple(mono, s.ansi[4]));
-    let g = painter.layout_job(job);
-    painter.galley(top.min + vec2(10.0, 9.0), g, s.foreground);
-    for (i, c) in [1, 2, 3, 4, 5, 6, 7].iter().map(|k| s.ansi[*k]).enumerate() {
-        let r = Rect::from_min_size(top.min + vec2(10.0 + i as f32 * 10.0, 33.0), vec2(7.0, 7.0));
+    painter.rect_filled(top, CornerRadius::same(7), s.background);
+    let stroke = if on {
+        Stroke::new(2.0, p.accent)
+    } else if resp.hovered() {
+        Stroke::new(1.0, p.border_heavy)
+    } else {
+        Stroke::new(1.0, p.border_strong)
+    };
+    painter.rect_stroke(top, CornerRadius::same(7), stroke, StrokeKind::Inside);
+    let g = painter.layout_no_wrap("❯ ls src".to_string(), style::mono(style::DATA), s.foreground);
+    painter.galley(pos2(top.left() + 8.0, top.top() + 16.0 - g.size().y / 2.0), g, s.foreground);
+    for (i, c) in [1, 2, 3, 4, 5].iter().map(|k| s.ansi[*k]).enumerate() {
+        let r = Rect::from_min_size(top.min + vec2(8.0 + i as f32 * 13.0, 34.0), vec2(10.0, 10.0));
         painter.rect_filled(r, CornerRadius::same(2), c);
-    }
-    if on {
-        let c = pos2(top.right() - 11.0, top.top() + 11.0);
-        painter.circle_filled(c, 7.0, p.accent);
-        kit::paint_check_mark(painter, c, 9.5, Color32::WHITE);
     }
     // Its name without " Dark" / " Light" (the row says which).
     let name = s.name.trim_end_matches(" Dark").trim_end_matches(" Light");
-    let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), egui::FontId::proportional(12.0), if on { p.text } else { p.text_faint });
+    let c = if on { p.text } else { p.text_muted };
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), FontId::proportional(style::SMALL), c);
     job.wrap = egui::text::TextWrapping::truncate_at_width(104.0);
     let g = painter.layout_job(job);
-    painter.galley(pos2(top.left() + 1.0, top.bottom() + 6.0), g, p.text);
+    painter.galley(pos2(top.left(), top.bottom() + 6.0), g, c);
     resp
 }
 
-/// "N more" (or "Fewer"): opens the rest of the schemes.
-fn more_tile(ui: &mut Ui, label: &str) -> egui::Response {
+/// "+N More" (or "Fewer"): opens the rest of the schemes.
+fn more_tile(ui: &mut Ui, id: egui::Id, open: bool, more: usize) -> egui::Response {
     let p = style::pal(ui);
-    // As tall as a scheme's tile with its name, the box level with the pictures.
     let (full, _) = ui.allocate_exact_size(vec2(72.0, 52.0 + 6.0 + 16.0), Sense::hover());
     let rect = Rect::from_min_size(full.min, vec2(72.0, 52.0));
-    let resp = ui.interact(rect, ui.id().with(("more-schemes", label)), Sense::click());
+    let resp = ui.interact(rect, id.with("tile"), Sense::click());
     let painter = ui.painter();
-    painter.rect(rect, CornerRadius::same(8), if resp.hovered() { p.hover } else { Color32::TRANSPARENT }, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
-    painter.text(rect.center() - vec2(0.0, 8.0), Align2::CENTER_CENTER, icons::DOTS_THREE, style::icon_font(12.0), p.text_ghost);
-    painter.text(rect.center() + vec2(0.0, 7.0), Align2::CENTER_CENTER, label, egui::FontId::proportional(12.0), p.text_faint);
+    painter.rect(rect, CornerRadius::same(7), if resp.hovered() { p.hover } else { Color32::TRANSPARENT }, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
+    let big = if open { "−".to_string() } else { format!("+{more}") };
+    painter.text(rect.center(), Align2::CENTER_CENTER, big, style::medium(style::SMALL), p.text_muted);
+    let label = if open { t("Fewer") } else { t("More") };
+    painter.text(pos2(rect.left(), rect.bottom() + 6.0), Align2::LEFT_TOP, label, FontId::proportional(style::SMALL), p.text_faint);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// A few lines of a terminal in `scheme`, in the terminal's own font at `size`, with its cursor:
-/// what the settings beside it look like.
+/// What the terminal settings beside it look like: a few lines in the chosen scheme, the
+/// terminal's own font and size, the cursor after the command.
 fn terminal_preview(ui: &mut Ui, r: Rect, scheme: &tc_term::scheme::Scheme, size: f32, cursor: CursorShape) {
     let p = style::pal(ui);
     let painter = ui.painter_at(r.expand(1.0));
-    painter.rect(r, CornerRadius::same(8), scheme.background, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
-    let head = Rect::from_min_size(r.min, vec2(r.width(), 28.0));
-    painter.hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, style::soft(scheme.foreground, 0.12)));
-    let faint = style::soft(scheme.foreground, 0.55);
-    painter.text(pos2(head.left() + 10.0 + 6.0, head.center().y), Align2::CENTER_CENTER, icons::EYE, style::icon_font(12.0), faint);
-    painter.text(pos2(head.left() + 10.0 + 12.0 + 6.0, head.center().y), Align2::LEFT_CENTER, t("Preview"), egui::FontId::proportional(11.5), faint);
-    let size_text = if size.fract() == 0.0 { format!("{size:.0}") } else { format!("{size:.1}") };
-    painter.text(pos2(head.right() - 10.0, head.center().y), Align2::RIGHT_CENTER, format!("{} · {size_text} pt", scheme.name), style::mono(10.5), faint);
+    let head = format!("{} · {} · {} pt", t("Preview"), scheme.name, size_text(size));
+    painter.text(pos2(r.left() + 6.0, r.top() + 8.0), Align2::CENTER_CENTER, icons::EYE, style::icon_font(12.0), p.text_faint);
+    let hg = galley(ui, &head, FontId::proportional(style::SMALL), p.text_faint, Some(r.width() - 18.0), 16.0);
+    painter.galley(pos2(r.left() + 12.0 + 6.0, r.top()), hg, p.text_faint);
     let font = egui::FontId::new(size, egui::FontFamily::Name(tc_term::fonts::TERM_REGULAR.into()));
     let a = scheme.ansi;
     let fg = scheme.foreground;
-    let lines: [Vec<(&str, Color32)>; 8] = [
-        vec![("storefront", a[6]), (" on ", a[8]), (" main", a[5]), (" ❯ ", a[2]), ("git status -sb", fg)],
-        vec![("## ", a[2]), ("main", a[2]), ("...", fg), ("origin/main", a[1]), (" [ahead 2]", fg)],
-        vec![(" M ", a[1]), ("src/components/Header.tsx", fg)],
-        vec![("?? ", a[1]), ("src/components/CartBadge.tsx", fg)],
-        vec![("storefront", a[6]), (" ❯ ", a[2]), ("npm test -- --run", fg)],
-        vec![(" ✓ ", a[2]), ("CartBadge renders the count ", fg), ("12 ms", a[8])],
-        vec![(" ✕ ", a[1]), ("Header shows the badge ", fg), ("31 ms", a[8])],
-        vec![("storefront", a[6]), (" ❯ ", a[2])],
+    let lines: [Vec<(&str, Color32)>; 4] = [
+        vec![("storefront ", a[4]), ("main ", a[5]), ("❯ ", a[2]), ("pnpm test", fg)],
+        vec![(" ✓ ", a[2]), ("auth/callback.test.ts (12)", fg)],
+        vec![(" ✕ ", a[1]), ("cart/voucher.test.ts (1)", fg)],
+        vec![("   Tests  13 passed, 1 failed", a[8])],
     ];
-    let line_h = (size * 1.35).round();
-    let mut y = head.bottom() + 10.0;
-    let x0 = r.left() + 12.0;
-    let mut end = pos2(x0, y);
+    let line_h = (size * 1.54).round();
+    let box_r = Rect::from_min_size(pos2(r.left(), r.top() + 16.0 + 8.0), vec2(r.width(), 12.0 * 2.0 + line_h * 4.0));
+    painter.rect(box_r, CornerRadius::same(8), scheme.background, Stroke::new(1.0, p.border), StrokeKind::Inside);
+    let x0 = box_r.left() + 12.0;
+    let mut y = box_r.top() + 12.0;
+    let mut first_end = None;
     for line in &lines {
-        if y + line_h > r.bottom() - 6.0 {
-            break;
-        }
         let mut job = egui::text::LayoutJob::default();
         for (text, c) in line {
             job.append(text, 0.0, egui::TextFormat::simple(font.clone(), *c));
         }
+        job.wrap = egui::text::TextWrapping::truncate_at_width(box_r.width() - 24.0);
         let g = painter.layout_job(job);
-        end = pos2(x0 + g.size().x, y);
+        first_end.get_or_insert(pos2(x0 + g.size().x, y));
         painter.galley(pos2(x0, y + (line_h - g.size().y) / 2.0), g, fg);
         y += line_h;
     }
-    // The cursor after the last prompt, as it is set.
-    let cw = ui.fonts_mut(|f| f.glyph_width(&font, 'M'));
-    let cell = Rect::from_min_size(end, vec2(cw, line_h));
-    match cursor {
-        CursorShape::Block => painter.rect_filled(cell, CornerRadius::ZERO, scheme.cursor),
-        CursorShape::Beam => painter.rect_filled(Rect::from_min_size(cell.min, vec2(2.0, line_h)), CornerRadius::ZERO, scheme.cursor),
-        CursorShape::Underline => painter.rect_filled(Rect::from_min_max(pos2(cell.left(), cell.bottom() - 2.0), cell.max), CornerRadius::ZERO, scheme.cursor),
-    };
+    // The cursor after the command, as it is set.
+    if let Some(end) = first_end {
+        let cw = ui.fonts_mut(|f| f.glyph_width(&font, 'M'));
+        let cell = Rect::from_min_size(end + vec2(cw * 0.5, (line_h - size * 1.2) / 2.0), vec2(cw, size * 1.2));
+        if cell.right() < box_r.right() - 6.0 {
+            match cursor {
+                CursorShape::Block => painter.rect_filled(cell, CornerRadius::ZERO, scheme.cursor),
+                CursorShape::Beam => painter.rect_filled(Rect::from_min_size(cell.min, vec2(2.0, cell.height())), CornerRadius::ZERO, scheme.cursor),
+                CursorShape::Underline => painter.rect_filled(Rect::from_min_max(pos2(cell.left(), cell.bottom() - 2.0), cell.max), CornerRadius::ZERO, scheme.cursor),
+            };
+        }
+    }
 }
 
 /// The app's mark: a 3 × 3 lattice on the accent.

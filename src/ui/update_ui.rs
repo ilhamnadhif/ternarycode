@@ -60,6 +60,15 @@ impl Updater {
             _ => None,
         }
     }
+
+    /// The release an update is available for (or downloading, or ready): Settings → Updates
+    /// shows its notes.
+    pub fn available_release(&self) -> Option<&Release> {
+        match &self.state {
+            State::Available(r) | State::Downloading(r) | State::Ready(r, _) => Some(r),
+            _ => None,
+        }
+    }
 }
 
 pub struct Updater {
