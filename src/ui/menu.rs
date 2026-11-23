@@ -127,19 +127,20 @@ impl AppMenu {
 
         let palette = item(t("Command Palette…"), Action::Palette);
         let switch = item(t("Switch Project…"), Action::SwitchProject);
-        let editor = item(t("Show/Hide Code"), Action::ToggleEditor);
-        let drawer = item(t("Show/Hide Terminal Panel"), Action::ToggleDrawer);
+        let editor = item(t("Files"), Action::ToggleEditor);
+        let drawer = item(t("Show/Hide Panel"), Action::ToggleDrawer);
+        let expand = item(t("Expand Panel"), Action::TogglePanelExpanded);
         let browser = item(t("Browser"), Action::ShowBrowser);
         let address = item(t("Open Address"), Action::BrowserAddress);
         let reload = item(t("Reload Page"), Action::BrowserReload);
-        let files = item(t("Show/Hide Files"), Action::ToggleFiles);
+        let files = item(t("Show/Hide File Tree"), Action::ToggleFiles);
         let sidebar = item(t("Show/Hide Sidebar"), Action::ToggleSidebar);
         let compact = item(t("Narrow Sidebar"), Action::ToggleCompactSidebar);
         let zen = item(t("Zen Mode"), Action::ToggleZenMode);
         let focus = item(t("Focus View"), Action::SetView(View::Focus));
-        let grid = item(t("Grid of All Projects"), Action::ToggleGrid);
-        let profiles = item(t("Agent Profiles…"), Action::OpenProfiles);
-        let pairing = item(t("Phone Pairing…"), Action::OpenPhonePairing);
+        let grid = item(t("Overview"), Action::ToggleGrid);
+        let profiles = item(t("Accounts & Usage…"), Action::OpenProfiles);
+        let pairing = item(t("Phone…"), Action::OpenPhonePairing);
         let split_right = item(t("Split Right"), Action::SplitRight);
         let split_down = item(t("Split Down"), Action::SplitDown);
         let next_pane = item(t("Next Pane"), Action::NextPane);
@@ -158,6 +159,7 @@ impl AppMenu {
                 &zen,
                 &editor,
                 &drawer,
+                &expand,
                 &files,
                 &PredefinedMenuItem::separator(),
                 &browser,
@@ -189,7 +191,7 @@ impl AppMenu {
         let review = item(t("Review Changes…"), Action::Review);
         let history = item(t("Commit History"), Action::History);
         let commit = item(t("Commit…"), Action::Commit);
-        let attention = item(t("Show Attention List"), Action::ToggleAttention);
+        let attention = item(t("Inbox"), Action::ToggleAttention);
         let agent_menu = Submenu::with_items(
             t("Agent"),
             true,

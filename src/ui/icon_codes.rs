@@ -6,6 +6,7 @@
 pub const APP_WINDOW: &str = "\u{E5DA}";
 pub const ARROWS_CLOCKWISE: &str = "\u{E094}";
 pub const ARROWS_IN: &str = "\u{E09A}";
+pub const ARROWS_IN_SIMPLE: &str = "\u{E09E}";
 pub const ARROWS_OUT: &str = "\u{E0A2}";
 pub const ARROWS_OUT_SIMPLE: &str = "\u{E0A6}";
 pub const ARROW_CIRCLE_UP: &str = "\u{E030}";
@@ -82,6 +83,7 @@ pub const GAUGE: &str = "\u{E628}";
 pub const GEAR: &str = "\u{E270}";
 pub const GEAR_SIX: &str = "\u{E272}";
 pub const GITHUB_LOGO: &str = "\u{E576}";
+pub const GITLAB_LOGO: &str = "\u{E694}";
 pub const GIT_BRANCH: &str = "\u{E278}";
 pub const GIT_COMMIT: &str = "\u{E27A}";
 pub const GIT_DIFF: &str = "\u{E27C}";

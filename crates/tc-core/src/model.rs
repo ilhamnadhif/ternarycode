@@ -559,8 +559,9 @@ pub struct Settings {
     /// so the Code Editor keeps >= 60% of the primary viewport by default).
     #[serde(default = "default_drawer_size")]
     pub drawer_size: f32,
-    /// Code editor & diff viewer commands the primary viewport by default.
-    #[serde(default = "yes")]
+    /// Unused since Slate (terminals are the stage; Files opens in the right panel). Kept so
+    /// older settings files still read.
+    #[serde(default)]
     pub editor_first: bool,
     /// Phone pairing and mobile companion server settings.
     #[serde(default)]
@@ -663,7 +664,7 @@ impl Default for Settings {
             drawer_dock: DrawerDock::Bottom,
             drawer_open: true,
             drawer_size: default_drawer_size(),
-            editor_first: true,
+            editor_first: false,
             companion: CompanionSettings::default(),
         }
     }
@@ -972,7 +973,7 @@ mod tests {
     #[test]
     fn ade_redesign_settings_and_profiles_round_trip() {
         let mut s = Settings::default();
-        assert!(s.editor_first);
+        assert!(!s.editor_first);
         assert!(s.drawer_open);
         assert_eq!(s.drawer_dock, DrawerDock::Bottom);
         assert_eq!(s.failover.mode, FailoverMode::Auto);

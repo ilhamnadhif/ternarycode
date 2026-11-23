@@ -220,6 +220,8 @@ pub enum Action {
     ToggleZenMode,
     /// Shows or collapses the secondary drawer (Terminals, Agent Logs, Problems).
     ToggleDrawer,
+    /// ⇧⌘E: the right panel fills the body, or goes back beside the terminals.
+    TogglePanelExpanded,
     /// Docks the secondary drawer at the Bottom (editor 100% width) or Right (editor >=60% width).
     SetDrawerDock(tc_core::model::DrawerDock),
     /// Switches the active tab inside the secondary drawer.

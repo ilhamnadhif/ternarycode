@@ -504,7 +504,6 @@ pub struct App {
     pub drawer_maximized: bool,
     /// Focus / Zen Mode: peripheral panels hidden so the Code Editor fills the window.
     pub zen_mode: bool,
-    pub zen_saved: Option<crate::ade::ZenSaved>,
     /// Expandable top-bar Usage & Status telemetry popover.
     pub monitor_popover: bool,
     pub monitor_pill_rect: Option<egui::Rect>,
@@ -801,7 +800,6 @@ impl App {
             drawer_tab: tc_core::model::DrawerTab::Terminals,
             drawer_maximized: false,
             zen_mode: false,
-            zen_saved: None,
             monitor_popover: false,
             monitor_pill_rect: None,
             companion: None,
@@ -3599,32 +3597,8 @@ impl App {
                 }
             }
             Action::ToggleEditor => {
-                if self.zen_mode {
-                    self.exit_zen_mode();
-                }
-                if self.drawer_maximized {
-                    // Clicking Code while the Terminal Panel is maximized restores the split with Code visible.
-                    self.drawer_maximized = false;
-                    if let Some(pid) = self.active {
-                        self.ensure_editor_for_project(pid, 0.0);
-                    }
-                    if let Some(e) = self.editor_mut() {
-                        e.visible = true;
-                    }
-                } else if let Some(e) = self.editor_mut() {
-                    e.visible = !e.visible;
-                }
-                // Review & History in the drawer go with it.
-                if !self.editors.get(&self.active.unwrap_or_default()).is_some_and(|e| e.visible) {
-                    if self.review.as_ref().is_some_and(|r| !r.expanded) {
-                        self.review = None;
-                    }
-                    self.history = None;
-                }
-                self.show_focus();
-                if !self.editors.get(&self.active.unwrap_or_default()).is_some_and(|e| e.visible) {
-                    self.focus_request = self.current_pane();
-                }
+                self.exit_zen_mode();
+                self.switch_panel(crate::ui::panel::PanelTab::Files, true);
             }
             Action::ToggleFiles => {
                 // The Files column of the Code Editor: shown with the editor when it was closed,
@@ -3798,12 +3772,9 @@ impl App {
             // Toggle Changes in the docked Code drawer (no duplicate full-screen overlay).
             Action::Review => {
                 if self.view == View::Focus && self.review.as_ref().is_some_and(|r| Some(r.project) == self.active) {
-                    self.review = None;
-                    if let Some(e) = self.editor_mut() {
-                        e.visible = false;
+                    if let Some(pid) = self.active {
+                        self.close_panel(pid);
                     }
-                    self.focus_request = self.current_pane();
-                    self.mark_dirty();
                 } else {
                     self.open_review(None);
                 }
@@ -3971,39 +3942,21 @@ impl App {
             Action::RestartToUpdateNow => self.install_update(ctx),
             Action::ToggleZenMode => self.toggle_zen_mode(),
             Action::ToggleDrawer => {
-                if self.zen_mode {
-                    self.exit_zen_mode();
-                    self.settings.drawer_open = true;
-                    self.drawer_maximized = false;
-                } else {
-                    let editor_on = self.active.is_some_and(|pid| {
-                        let review_here = self.review.as_ref().is_some_and(|r| r.project == pid && !r.expanded);
-                        let history_here = self.history.as_ref().is_some_and(|h| h.project == pid);
-                        review_here || history_here || self.editors.get(&pid).is_some_and(|e| e.visible)
-                    });
-                    if !editor_on && let Some(pid) = self.active {
-                        // When the Code Editor is hidden, terminals already fill the workspace;
-                        // clicking Terminal Panel switches to Code Editor with the panel collapsed
-                        // so the toggle always produces an immediate visible change.
-                        self.ensure_editor_for_project(pid, 0.0);
-                        if let Some(e) = self.editors.get_mut(&pid) {
-                            e.visible = true;
-                        }
-                        self.settings.drawer_open = false;
-                        self.drawer_maximized = false;
-                        self.show_focus();
-                    } else if self.drawer_maximized {
-                        self.drawer_maximized = false;
-                        self.settings.drawer_open = false;
+                // ⇧⌘L: the right panel goes, or comes back (Changes when there are some, else Files).
+                self.exit_zen_mode();
+                if let Some(pid) = self.active {
+                    if self.panel_tab(pid).is_some() {
+                        self.close_panel(pid);
                     } else {
-                        self.settings.drawer_open = !self.settings.drawer_open;
-                        self.drawer_maximized = false;
+                        let changed = self.project(pid).and_then(|x| x.git.as_ref()).is_some_and(|g| g.changed > 0);
+                        let tab = if changed { crate::ui::panel::PanelTab::Changes } else { crate::ui::panel::PanelTab::Files };
+                        self.switch_panel(tab, false);
                     }
                 }
-                self.settings_changed();
-                if self.settings.drawer_open {
-                    self.focus_request = self.current_pane();
-                }
+            }
+            Action::TogglePanelExpanded => {
+                self.exit_zen_mode();
+                self.toggle_panel_expanded();
             }
             Action::SetDrawerDock(dock) => {
                 self.exit_zen_mode();
@@ -4716,6 +4669,7 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::J, Action::BackAttention));
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::B, Action::ToggleCompactSidebar));
     keys.push((Modifiers::CTRL | Modifiers::ALT, Key::Z, Action::ToggleZenMode));
+    keys.push((Modifiers::CTRL | Modifiers::SHIFT | Modifiers::ALT, Key::E, Action::TogglePanelExpanded));
     keys
 }
 

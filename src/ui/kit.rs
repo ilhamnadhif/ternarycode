@@ -33,6 +33,7 @@ pub fn key_labels(action: &crate::actions::Action) -> Option<(&'static str, &'st
         A::ToggleEditor => ("⌘E", "Ctrl+Shift+Y"),
         A::ToggleZenMode => ("⌥⌘Z", "Ctrl+Alt+Z"),
         A::ToggleDrawer => ("⇧⌘L", "Ctrl+Shift+L"),
+        A::TogglePanelExpanded => ("⇧⌘E", "Ctrl+Shift+Alt+E"),
         A::QuickOpen => ("⌘O", "Ctrl+Shift+O"),
         A::AddProject => ("⇧⌘O", "Ctrl+Shift+N"),
         A::PickPreset => ("⇧⌘A", "Ctrl+Shift+A"),
@@ -900,6 +901,17 @@ pub fn status_pill(ui: &mut Ui, icon: &str, text: &str, color: Color32) -> Respo
 }
 
 /// How wide [`paint_state_pill`] draws.
+/// An agent's mark in a 16 px square (its logo, or a terminal glyph when it has none or none
+/// runs): beside a pane's name, in the Inbox and in tiles.
+pub fn paint_agent_avatar(painter: &egui::Painter, rect: Rect, agent: Option<tc_core::agent::AgentKind>, p: &style::Palette) {
+    if let Some(a) = agent
+        && super::agent_logo::paint(painter, rect.shrink(1.0), a, p.text, false)
+    {
+        return;
+    }
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, super::icons::TERMINAL_WINDOW, style::icon_font(rect.height() - 2.0), p.text_faint);
+}
+
 pub fn state_pill_width(painter: &egui::Painter, s: tc_core::status::Status, text: &str) -> f32 {
     let w = painter.layout_no_wrap(text.to_string(), style::medium(12.0), Color32::PLACEHOLDER).size().x;
     let glyph = if super::status::has_glyph(s) { 12.0 + 5.0 } else { 0.0 };

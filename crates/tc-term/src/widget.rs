@@ -850,6 +850,16 @@ pub fn show(
 
 /// The grid a terminal drawn in `rect` gets (what `show` resizes it to). Callers use it to
 /// start a program at its final size, so it does not see a resize right after starting.
+/// How many lines the view is scrolled back from the newest output (0 at the bottom).
+pub fn display_offset(shared: &TermShared) -> usize {
+    shared.term.lock().grid().display_offset()
+}
+
+/// Scrolls the view back down to the newest output.
+pub fn scroll_to_bottom(shared: &TermShared) {
+    shared.term.lock().scroll_display(Scroll::Bottom);
+}
+
 pub fn grid_for(rect: Rect, cell: Vec2) -> GridSize {
     // A cell of no size (a font of size 0) would make an endless grid.
     let cell = vec2(cell.x.max(1.0), cell.y.max(1.0));

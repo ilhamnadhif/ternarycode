@@ -29,12 +29,6 @@ use crate::profiles::{
     RateLimitBanner, RateLimitHit,
 };
 
-/// Saved layout snapshot restored when exiting Focus / Zen Mode.
-#[derive(Clone, Copy, Debug)]
-pub struct ZenSaved {
-    pub editor_project: Option<ProjectId>,
-    pub editor_visible: bool,
-}
 
 /// Editable form draft in the Profiles & Accounts management view.
 #[derive(Clone, Debug)]
@@ -330,10 +324,9 @@ impl App {
         });
     }
 
-    /// Ensures the project's editor exists and respects `settings.editor_first` (wide code editor
-    /// open by default).
+    /// Ensures the project's editor exists (hidden: Files opens it in the right panel).
     pub fn ensure_editor_for_project(&mut self, id: ProjectId, saved_width: f32) {
-        let visible = self.settings.editor_first;
+        let visible = false;
         let width = if saved_width > 0.0 { saved_width.clamp(0.45, 0.85) } else { 0.64 };
         self.editors.entry(id).or_insert_with(|| crate::editor::Editor {
             visible,
@@ -342,18 +335,9 @@ impl App {
         });
     }
 
-    /// Exits Focus / Zen Mode cleanly without corrupting persisted sidebar or drawer settings.
+    /// Leaves Zen: the sidebar, the project bar and the panel come back as they were.
     pub fn exit_zen_mode(&mut self) {
-        if !self.zen_mode {
-            return;
-        }
         self.zen_mode = false;
-        if let Some(saved) = self.zen_saved.take()
-            && let Some(pid) = saved.editor_project
-            && let Some(e) = self.editors.get_mut(&pid)
-        {
-            e.visible = saved.editor_visible;
-        }
     }
 
     /// Enters or exits one-keystroke Focus / Zen Mode without mutating persisted settings.
@@ -365,26 +349,14 @@ impl App {
         if self.projects.is_empty() {
             return;
         }
-        let editor_project = self.active;
-        let editor_visible = editor_project
-            .and_then(|id| self.editors.get(&id))
-            .is_some_and(|e| e.visible);
-        self.zen_saved = Some(ZenSaved {
-            editor_project,
-            editor_visible,
-        });
+        // Zen: only the terminals (the panel stays as it was, out of view).
         self.zen_mode = true;
         self.drawer_maximized = false;
         self.monitor_popover = false;
         self.attention_open = false;
         self.show_focus();
         self.release_page_keyboard();
-        if let Some(id) = editor_project {
-            self.ensure_editor_for_project(id, 0.0);
-            if let Some(e) = self.editors.get_mut(&id) {
-                e.visible = true;
-            }
-        }
+        self.focus_request = self.current_pane();
     }
 
     /// Periodic ADE background tick: updates profile states, expires cooldowns, scans agent panes
