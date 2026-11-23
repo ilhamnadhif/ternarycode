@@ -16,8 +16,9 @@ use crate::app::App;
 use crate::i18n::{t, tf};
 
 pub const HEADER_H: f32 = super::sidebar::TOP_H;
-/// A pane's header: what runs there, its status pill, what it does, since when, the account.
-pub const PANE_HEADER_H: f32 = 36.0;
+/// A split pane's compact header (shown when a tab holds 2+ panes; single-pane tabs fold controls
+/// directly into the 40 px tab strip above for a clean single-row horizon aligned with the panel).
+pub const PANE_HEADER_H: f32 = 32.0;
 /// The strip of tabs at the top of the stage.
 pub const TAB_STRIP_H: f32 = 40.0;
 /// The secondary drawer's tab bar (`Terminals | Agent Logs | Problems`, dock controls).
@@ -386,19 +387,17 @@ impl App {
         #[cfg(debug_assertions)]
         crate::devtest::record("stage", stage);
         let strip_row = Rect::from_min_max(pos2(stage.left() + 6.0, stage.top()), pos2(stage.right() - 8.0, stage.top() + TAB_STRIP_H));
-        // Right end of the strip: Split Right, Split Down.
-        let right_used = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(strip_row).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                if kit::icon_button_ex(ui, icons::SQUARE_SPLIT_VERTICAL, &kit::tip(t("Split Down"), Action::SplitDown), false, 24.0).clicked() {
-                    self.actions.push(Action::SplitDown);
-                }
-                if kit::icon_button_ex(ui, icons::SQUARE_SPLIT_HORIZONTAL, &kit::tip(t("Split Right"), Action::SplitRight), false, 24.0).clicked() {
-                    self.actions.push(Action::SplitRight);
-                }
-                ui.min_rect().left()
+        // When the active tab has a single terminal pane, fold its status, account chip and pane
+        // menu right into the 40 px tab strip so there is no duplicate header row below it.
+        let single_term_pane = self
+            .project(pid)
+            .and_then(|x| x.tab())
+            .and_then(|t| {
+                let ps = t.layout.panes();
+                (ps.len() == 1).then(|| ps[0])
             })
-            .inner;
+            .filter(|id| !self.browsers.contains_key(id));
+        let right_used = self.stage_strip_right(ui, strip_row, single_term_pane);
         let tabs_row = Rect::from_min_max(strip_row.min, pos2((right_used - 8.0).max(strip_row.left()), strip_row.bottom()));
         let mut tab_rects: Vec<Rect> = Vec::with_capacity(tabs.len());
         // The part of the strip in view (tabs scrolled out of it are no place to drop on).
@@ -464,6 +463,9 @@ impl App {
                                     if r.double_clicked() {
                                         let current = self.panes.get(focused).and_then(|p| p.title.clone()).unwrap_or_default();
                                         self.dialog = Some(crate::app::Dialog::RenamePane(*focused, current));
+                                    }
+                                    if on && single_term_pane == Some(*focused) {
+                                        r.context_menu(|ui| self.pane_menu(ui, *focused));
                                     }
                                 }
                             });
@@ -552,14 +554,24 @@ impl App {
             if waiting {
                 ui.painter().rect_stroke(rect.shrink(1.0), CornerRadius::same(10), Stroke::new(1.5, p.warn), egui::StrokeKind::Inside);
             }
-            let header = Rect::from_min_size(rect.min, vec2(rect.width(), PANE_HEADER_H));
             let mut term_rect = term_rect(rect, single);
-            self.pane_header(ui, pane_id, header, is_focused && !single);
+            let notice_top = if single {
+                rect.top() + 8.0
+            } else {
+                let header = Rect::from_min_size(rect.min, vec2(rect.width(), PANE_HEADER_H));
+                self.pane_header(ui, pane_id, header, is_focused);
+                ui.painter().hline((rect.left() + 1.0)..=(rect.right() - 1.0), header.bottom() - 0.5, Stroke::new(1.0, p.border));
+                if is_focused && !waiting {
+                    let inset = (rect.width() * 0.14).clamp(12.0, 64.0);
+                    ui.painter().hline((rect.left() + inset)..=(rect.right() - inset), rect.top() + 0.75, Stroke::new(1.5, style::soft(p.accent, 0.75)));
+                }
+                header.bottom() + 4.0
+            };
             // Notices: a session to resume under the header; at the foot an agent's question,
             // a usage limit, a failed command or an ended shell.
             let inset = |h: f32, top: f32| Rect::from_min_size(pos2(rect.left() + 8.0, top), vec2((rect.width() - 16.0).max(40.0), h));
             if self.panes.get(&pane_id).is_some_and(|x| x.resume.is_some() && x.rate_limit.is_none()) {
-                let n = inset(kit::NOTICE_H, header.bottom());
+                let n = inset(kit::NOTICE_H, notice_top);
                 self.resume_banner(ui, pane_id, n, false);
                 term_rect.min.y = n.bottom() + 4.0;
             }
@@ -1052,6 +1064,155 @@ impl App {
         }
     }
 
+    /// Right side of the 40 px stage tab strip: Split Right / Split Down, and — when the tab has a
+    /// single terminal pane — its active status pill, account chip, unconnected-hooks badge, and
+    /// pane menu (`⋯`) folded seamlessly into the same 40 px row (leaving generous space for tabs).
+    /// Returns the leftmost x occupied on the right.
+    fn stage_strip_right(&mut self, ui: &mut Ui, strip_row: Rect, single_pane: Option<PaneId>) -> f32 {
+        let p = style::pal(ui);
+        let dark = ui.visuals().dark_mode;
+        let cy = strip_row.center().y;
+        let mut right = strip_row.right();
+        // Always reserve comfortable width for tabs + `+` on the left so tabs never collapse.
+        let tabs_reserve = (strip_row.width() * 0.44).clamp(130.0, 210.0);
+        let min_left = (strip_row.left() + tabs_reserve).min(strip_row.right());
+
+        // Rightmost: pane menu `⋯` (single-pane mode), then Split Down, Split Right.
+        if let Some(pane_id) = single_pane {
+            let menu_rect = Rect::from_center_size(pos2(right - 12.0, cy), vec2(24.0, 24.0));
+            let menu = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(menu_rect), |ui| {
+                    kit::icon_button_ex(ui, icons::DOTS_THREE, t("Pane"), false, 24.0)
+                })
+                .inner;
+            #[cfg(debug_assertions)]
+            crate::devtest::record(format!("pane-menu:{pane_id}"), menu_rect);
+            egui::Popup::menu(&menu).align(egui::RectAlign::BOTTOM_END).show(|ui| self.pane_menu(ui, pane_id));
+            right = menu_rect.left() - 2.0;
+        }
+        let sd_rect = Rect::from_center_size(pos2(right - 12.0, cy), vec2(24.0, 24.0));
+        if ui
+            .scope_builder(egui::UiBuilder::new().max_rect(sd_rect), |ui| {
+                kit::icon_button_ex(ui, icons::SQUARE_SPLIT_VERTICAL, &kit::tip(t("Split Down"), Action::SplitDown), false, 24.0)
+            })
+            .inner
+            .clicked()
+        {
+            self.actions.push(Action::SplitDown);
+        }
+        right = sd_rect.left() - 2.0;
+        let sr_rect = Rect::from_center_size(pos2(right - 12.0, cy), vec2(24.0, 24.0));
+        if ui
+            .scope_builder(egui::UiBuilder::new().max_rect(sr_rect), |ui| {
+                kit::icon_button_ex(ui, icons::SQUARE_SPLIT_HORIZONTAL, &kit::tip(t("Split Right"), Action::SplitRight), false, 24.0)
+            })
+            .inner
+            .clicked()
+        {
+            self.actions.push(Action::SplitRight);
+        }
+        right = sr_rect.left();
+
+        let Some(pane_id) = single_pane else {
+            return right;
+        };
+        let Some(pane) = self.panes.get(&pane_id) else {
+            return right;
+        };
+        let s = pane.tracker.status;
+        let has_agent = pane.tracker.agent.is_some();
+        let since = pane.tracker.since;
+        let unseen = pane.tracker.unseen;
+        let unconnected = self.unconnected(pane).map(|a| (pane_id, a));
+        let show_profile = pane.tracker.agent.or(pane.last_agent).is_some_and(crate::profiles::supports_profile);
+        let active_status = match s {
+            Status::Running | Status::NeedsInput | Status::Failed(_) => true,
+            Status::Done | Status::CommandDone => unseen,
+            _ => false,
+        };
+        let has_extra = show_profile || unconnected.is_some() || active_status;
+        if !has_extra || right - min_left < 84.0 {
+            return right;
+        }
+
+        let sep_x = right - 6.0;
+        let before_extras = right;
+        right = sep_x - 7.0;
+
+        // Account profile chip (+ urgent failover switch if rate-limited and not dismissed).
+        if show_profile && right - min_left >= 92.0 {
+            let sw_left = (right - 260.0).max(min_left);
+            let switcher_area = Rect::from_min_max(pos2(sw_left, strip_row.top()), pos2(right, strip_row.bottom()));
+            let used_left = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(switcher_area).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                    ui.set_clip_rect(switcher_area.intersect(ui.clip_rect()));
+                    self.pane_profile_switcher(ui, pane_id);
+                    ui.min_rect().left()
+                })
+                .inner;
+            if used_left < right - 1.0 {
+                right = used_left - 8.0;
+            }
+        }
+
+        // Unconnected hooks pill ("Not connected · Connect").
+        if let Some(agent) = unconnected {
+            let painter = ui.painter_at(strip_row);
+            let g = painter.layout_no_wrap(t("Not connected · Connect").to_string(), style::medium(style::SMALL), p.warn);
+            let gw = g.size().x;
+            let b = Rect::from_min_max(pos2(right - gw - 8.0 - 13.0 - 6.0 - 8.0, cy - 11.0), pos2(right, cy + 11.0));
+            if b.left() >= min_left {
+                let r = ui.interact(b, egui::Id::new(("unconnected", pane_id)), Sense::click());
+                #[cfg(debug_assertions)]
+                crate::devtest::record(format!("unconnected:{pane_id}"), b);
+                painter.rect_filled(b, CornerRadius::same(6), style::tint(p.warn, dark));
+                if r.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                painter.text(pos2(b.left() + 8.0 + 6.5, cy), Align2::CENTER_CENTER, icons::PLUGS, style::icon_font(13.0), p.warn);
+                painter.galley(pos2(b.left() + 8.0 + 13.0 + 6.0, cy - g.size().y / 2.0), g, p.warn);
+                if r.on_hover_text(self.unconnected_tip(&[agent])).clicked() {
+                    self.actions.push(Action::PlanInstall(agent.1));
+                }
+                right = b.left() - 8.0;
+            }
+        }
+
+        // Active status pill (with inline elapsed timer when Running / NeedsInput). Calm when Idle.
+        if active_status {
+            let painter = ui.painter_at(strip_row);
+            let base_word = match s {
+                Status::Running if !has_agent => t("Running").to_string(),
+                Status::Failed(_) => t("Failed").to_string(),
+                _ => status::text(s),
+            };
+            let word = if matches!(s, Status::Running | Status::NeedsInput) {
+                let secs = since.elapsed().as_secs();
+                let elapsed = if secs >= 3600 {
+                    format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+                } else {
+                    format!("{}:{:02}", secs / 60, secs % 60)
+                };
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+                format!("{base_word} · {elapsed}")
+            } else {
+                base_word
+            };
+            let pw = kit::state_pill_width(&painter, s, &word);
+            if right - pw >= min_left {
+                let r = kit::paint_state_pill(&painter, pos2(right - pw, cy), s, &word, &p, dark);
+                right = r.left() - 8.0;
+            }
+        }
+
+        if right < sep_x - 8.0 {
+            ui.painter().vline(sep_x, (cy - 7.0)..=(cy + 7.0), Stroke::new(1.0, p.border_strong));
+            right
+        } else {
+            before_extras
+        }
+    }
+
     /// A pane's header, inside its sheet (no line under it): the agent's logo (or the
     /// terminal's icon), the pane's name, its status as glyph and word, what it does or asks
     /// ("— Bash · flutter test"); at the right where it runs, "hooks" when the status comes
@@ -1171,7 +1332,7 @@ impl App {
         let lw = g.size().x;
         painter.galley(pos2(x, cy - g.size().y / 2.0), g, label_c);
         x += lw + 8.0;
-        if !quiet || has_agent {
+        if !quiet {
             let word = if s == Status::Running && !has_agent { t("Running").to_string() } else { status::text(s) };
             let word = match s {
                 Status::Failed(_) => t("Failed").to_string(),
@@ -1949,12 +2110,13 @@ fn terminal_tab(
     (resp, closed)
 }
 
-/// Where a pane's terminal text goes inside its sheet: below its header, the terminal's own
-/// padding (10) plus `TERM_PAD` from the sides. (`single`: kept for callers; every pane has a
-/// header now.)
-pub fn term_rect(pane: Rect, _single: bool) -> Rect {
+/// Where a pane's terminal text goes inside its sheet: directly below the 40 px stage tab strip
+/// when the tab holds a single pane (`single == true`), or below the split pane's compact header
+/// (`PANE_HEADER_H`) when split into 2+ panes.
+pub fn term_rect(pane: Rect, single: bool) -> Rect {
+    let top = if single { pane.top() + 2.0 } else { pane.top() + PANE_HEADER_H - 4.0 };
     Rect::from_min_max(
-        pos2(pane.left() + TERM_PAD, pane.top() + PANE_HEADER_H - 6.0),
+        pos2(pane.left() + TERM_PAD, top),
         pos2(pane.right() - TERM_PAD, pane.bottom() - 2.0),
     )
 }

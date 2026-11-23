@@ -257,7 +257,7 @@ impl App {
         let list_h = if prs_open { 8.0 + (h.open_prs.len() as f32 * 26.0).min(132.0) } else { 0.0 };
         let height = if web.is_some() { 10.0 + 24.0 + 8.0 + 24.0 + list_h + 10.0 } else { 10.0 + 24.0 + 10.0 };
         let card = Rect::from_min_size(at, vec2(width, height));
-        ui.painter().rect(card, CornerRadius::same(style::RADIUS_CARD), p.inset, Stroke::new(1.0, p.border), StrokeKind::Inside);
+        ui.painter().rect(card, CornerRadius::same(style::RADIUS_CARD), p.hover, Stroke::new(1.0, p.border), StrokeKind::Inside);
         let row1 = Rect::from_min_size(pos2(card.left() + 10.0, card.top() + 10.0), vec2(card.width() - 20.0, 24.0));
         let painter = ui.painter().clone();
         let cy = row1.center().y;

@@ -1533,5 +1533,5 @@ const ID: &[(&str, &str)] = &[
     ("Antigravity uses its single system sign-in (~/.gemini/antigravity-cli).", "Antigravity memakai satu login sistem (~/.gemini/antigravity-cli)."),
     ("{} turns", "{} giliran"),
     ("{} local", "{} lokal"),
-    ("Quota not exposed", "Kuota tidak tersedia"),
+    ("Local only", "Lokal saja"),
 ];

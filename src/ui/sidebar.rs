@@ -428,7 +428,7 @@ impl App {
             // instead of a misleading empty 0% progress bar.
             painter.hline(inner.left()..=inner.right(), track_y, Stroke::new(1.0, p.border));
             painter.text(pos2(inner.left(), row3), Align2::LEFT_CENTER, tf("{} local", &[&m.window]), egui::FontId::proportional(sc.label), p.text_faint);
-            let right = m.reset.as_deref().unwrap_or_else(|| t("Quota not exposed"));
+            let right = m.reset.as_deref().unwrap_or_else(|| t("Local only"));
             painter.text(pos2(inner.right(), row3), Align2::RIGHT_CENTER, right, egui::FontId::proportional(sc.label), p.text_faint);
         }
         if r.on_hover_text(t("Accounts & usage")).clicked() {
