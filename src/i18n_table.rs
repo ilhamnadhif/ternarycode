@@ -566,7 +566,6 @@ const ID: &[(&str, &str)] = &[
     ("It keeps going in the background.", "Tetap berjalan di latar belakang."),
     ("Later", "Nanti"),
     ("No release notes.", "Tidak ada catatan rilis."),
-    ("Open Releases Page", "Buka Halaman Rilis"),
     ("Restart now", "Mulai ulang sekarang"),
     ("Restart to Update", "Mulai Ulang untuk Memperbarui"),
     ("Starting…", "Memulai…"),
