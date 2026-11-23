@@ -495,11 +495,16 @@ pub struct Seg<'a> {
     pub text: &'a str,
     pub count: Option<(String, Color32)>,
     pub tip: &'a str,
+    pub enabled: bool,
 }
 
 impl<'a> Seg<'a> {
     pub fn new(text: &'a str, tip: &'a str) -> Self {
-        Self { icon: None, agent: None, text, count: None, tip }
+        Self { icon: None, agent: None, text, count: None, tip, enabled: true }
+    }
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
     }
     pub fn agent(mut self, agent: tc_core::agent::AgentKind) -> Self {
         if super::agent_logo::has(agent) {
@@ -594,20 +599,27 @@ fn paint_segmented(
     ui.painter().rect_filled(rect, CornerRadius::same(8), p.inset);
     let mut out = None;
     for (i, (r, s)) in segments.iter().zip(options).enumerate() {
-        let resp = ui.interact(*r, id.with(("option", i)), Sense::click());
+        let sense = if s.enabled { Sense::click() } else { Sense::hover() };
+        let resp = ui.interact(*r, id.with(("option", i)), sense);
         let resp = if s.tip.is_empty() { resp } else { resp.on_hover_text(s.tip) };
         let selected = i == on;
-        if resp.hovered() && !selected {
+        if s.enabled && resp.hovered() && !selected {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, s.text));
+        resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, s.enabled, selected, s.text));
         if selected {
             ui.painter().rect_filled(r.translate(vec2(0.0, 1.0)), CornerRadius::same(6), Color32::from_black_alpha(if dark { 64 } else { 18 }));
             ui.painter().rect(*r, CornerRadius::same(6), p.surface, Stroke::new(1.0, p.border), StrokeKind::Inside);
-        } else if resp.hovered() {
+        } else if s.enabled && resp.hovered() {
             ui.painter().rect_filled(*r, CornerRadius::same(6), p.hover);
         }
-        let color = if selected || resp.hovered() { p.text } else { p.text_muted };
+        let color = if !s.enabled {
+            p.text_ghost
+        } else if selected || resp.hovered() {
+            p.text
+        } else {
+            p.text_muted
+        };
         let content = segment_content(ui, s);
         let seg_painter = ui.painter().with_clip_rect(r.intersect(ui.clip_rect()));
         let mut x = (r.center().x - content / 2.0).max(r.left() + 4.0);
@@ -1127,40 +1139,156 @@ pub fn paint_lattice(painter: &egui::Painter, center: egui::Pos2, size: f32, col
     }
 }
 
-/// A project's identity icon: a refined monochrome dark-glass squircle housing a crisp duotone
-/// Phosphor folder glyph (uniform across all projects — no per-project rainbow colors).
-pub fn paint_project_tile(painter: &egui::Painter, rect: Rect, _letters: &str, _color: Color32, dark: bool) {
+/// Visual emphasis of a project's sculpted monochrome folder icon (Conductor × macOS style).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FolderTone {
+    /// Quiet graphite silhouette for idle projects so long lists stay calm and scannable.
+    Idle,
+    /// Lifted graphite-silver tone under the pointer.
+    Hover,
+    /// Brighter brushed slate for projects in the Active group or headers/cards.
+    Active,
+    /// Crisp anodized silver for the currently selected project.
+    Selected,
+}
+
+/// Linearly interpolates two opaque colors (`t` in `0.0..=1.0`).
+fn lerp_rgb(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Color32::from_rgb(ch(a.r(), b.r()), ch(a.g(), b.g()), ch(a.b(), b.b()))
+}
+
+/// A project's identity icon: a frameless sculpted solid monochrome folder (graphite → brushed
+/// metallic silver) with beveled back tab, soft vertical sheen, and specular top rim.
+pub fn paint_project_folder(painter: &egui::Painter, rect: Rect, tone: FolderTone, dark: bool) {
     let side = rect.width().min(rect.height());
-    let radius: u8 = if side >= 30.0 { 8 } else if side >= 19.0 { 6 } else { 4 };
-    let (fill, border, sheen, duo_fill, stroke_ink) = if dark {
-        (
-            Color32::from_rgb(0x1B, 0x1E, 0x26),
-            Color32::from_rgb(0x2D, 0x32, 0x3E),
-            Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x16),
-            Color32::from_rgba_unmultiplied(0xC8, 0xD2, 0xE3, 0x28),
-            Color32::from_rgb(0xB8, 0xC2, 0xD1),
-        )
+    let w = side * 0.96;
+    let h = side * 0.78;
+    let c = rect.center();
+    let x0 = c.x - w * 0.5;
+    let x1 = c.x + w * 0.5;
+    let y0 = c.y - h * 0.5;
+    let y1 = c.y + h * 0.5;
+
+    let (back, front_top, front_bot, rim, groove) = if dark {
+        match tone {
+            FolderTone::Idle => (
+                Color32::from_rgb(0x3E, 0x43, 0x4F),
+                Color32::from_rgb(0x5B, 0x61, 0x70),
+                Color32::from_rgb(0x4A, 0x50, 0x5E),
+                Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x24),
+                Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x38),
+            ),
+            FolderTone::Hover => (
+                Color32::from_rgb(0x56, 0x5D, 0x6D),
+                Color32::from_rgb(0x81, 0x89, 0x9C),
+                Color32::from_rgb(0x6A, 0x72, 0x84),
+                Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x38),
+                Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x40),
+            ),
+            FolderTone::Active => (
+                Color32::from_rgb(0x60, 0x68, 0x7A),
+                Color32::from_rgb(0x96, 0x9F, 0xB3),
+                Color32::from_rgb(0x7C, 0x85, 0x99),
+                Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x48),
+                Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x44),
+            ),
+            FolderTone::Selected => (
+                Color32::from_rgb(0x7B, 0x85, 0x9C),
+                Color32::from_rgb(0xCB, 0xD3, 0xE3),
+                Color32::from_rgb(0xA7, 0xB1, 0xC4),
+                Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x73),
+                Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x48),
+            ),
+        }
     } else {
-        (
-            Color32::from_rgb(0xF1, 0xF3, 0xF7),
-            Color32::from_rgb(0xD8, 0xDD, 0xE6),
-            Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0xB0),
-            Color32::from_rgba_unmultiplied(0x47, 0x55, 0x69, 0x22),
-            Color32::from_rgb(0x47, 0x55, 0x69),
-        )
+        match tone {
+            FolderTone::Idle => (
+                Color32::from_rgb(0x9B, 0xA2, 0xB0),
+                Color32::from_rgb(0xBC, 0xC2, 0xCE),
+                Color32::from_rgb(0xA5, 0xAC, 0xB9),
+                Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x8C),
+                Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x1A),
+            ),
+            FolderTone::Hover => (
+                Color32::from_rgb(0x79, 0x82, 0x94),
+                Color32::from_rgb(0x9A, 0xA2, 0xB2),
+                Color32::from_rgb(0x84, 0x8C, 0x9E),
+                Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x8C),
+                Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x1E),
+            ),
+            FolderTone::Active => (
+                Color32::from_rgb(0x59, 0x63, 0x75),
+                Color32::from_rgb(0x7B, 0x85, 0x99),
+                Color32::from_rgb(0x66, 0x70, 0x85),
+                Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x73),
+                Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x22),
+            ),
+            FolderTone::Selected => (
+                Color32::from_rgb(0x37, 0x41, 0x51),
+                Color32::from_rgb(0x52, 0x5F, 0x73),
+                Color32::from_rgb(0x3F, 0x4A, 0x5C),
+                Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x59),
+                Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x26),
+            ),
+        }
     };
-    let cr = CornerRadius::same(radius);
-    painter.rect(rect, cr, fill, Stroke::new(1.0, border), StrokeKind::Inside);
-    let r = f32::from(radius);
-    painter.hline(
-        (rect.left() + r * 0.65)..=(rect.right() - r * 0.65),
-        rect.top() + 0.5,
-        Stroke::new(1.0, sheen),
+
+    let r_tab = (w * 0.12).round().clamp(1.0, 3.0) as u8;
+    let r_body = (w * 0.14).round().clamp(2.0, 4.0) as u8;
+    let shoulder_y = y0 + h * 0.16;
+    let front_y = y0 + h * 0.26;
+
+    // Back plate: left tab, smooth diagonal shoulder transition, and right back ledge.
+    let tab_rect = Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x0 + w * 0.42, front_y + 2.0));
+    painter.rect_filled(tab_rect, CornerRadius { nw: r_tab, ne: r_tab, sw: 0, se: 0 }, back);
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(x0 + w * 0.36, y0 + 0.4),
+            egui::pos2(x0 + w * 0.41, y0 + 0.4),
+            egui::pos2(x0 + w * 0.53, shoulder_y + 0.4),
+            egui::pos2(x0 + w * 0.53, front_y + 2.0),
+            egui::pos2(x0 + w * 0.36, front_y + 2.0),
+        ],
+        back,
+        Stroke::NONE,
+    ));
+    let ledge = Rect::from_min_max(egui::pos2(x0, shoulder_y), egui::pos2(x1, front_y + 2.0));
+    painter.rect_filled(ledge, CornerRadius { nw: 0, ne: r_tab, sw: 0, se: 0 }, back);
+
+    // Subtle groove shadow separating front metallic flap from back tab.
+    painter.hline((x0 + 1.0)..=(x1 - 1.0), front_y - 0.35, Stroke::new(0.8, groove));
+
+    // Front sculpted flap with silky multi-band vertical metallic gradient (native AA corners).
+    let front = Rect::from_min_max(egui::pos2(x0, front_y), egui::pos2(x1, y1));
+    let fh = front.height();
+    painter.rect_filled(front, CornerRadius::same(r_body), front_bot);
+    let top_cr = CornerRadius { nw: r_body, ne: r_body, sw: 0, se: 0 };
+    painter.rect_filled(
+        Rect::from_min_max(front.min, egui::pos2(x1, front_y + fh * 0.76)),
+        top_cr,
+        lerp_rgb(front_top, front_bot, 0.62),
     );
-    let icon_size = if side >= 30.0 { 16.0 } else if side >= 24.0 { 13.5 } else if side >= 19.0 { 12.5 } else { 10.5 };
-    // True duotone folder: soft frosted silhouette behind crisp outline glyph.
-    painter.text(rect.center(), Align2::CENTER_CENTER, super::icons::FOLDER, style::icon_fill(icon_size), duo_fill);
-    painter.text(rect.center(), Align2::CENTER_CENTER, super::icons::FOLDER, style::icon_font(icon_size), stroke_ink);
+    painter.rect_filled(
+        Rect::from_min_max(front.min, egui::pos2(x1, front_y + fh * 0.52)),
+        top_cr,
+        lerp_rgb(front_top, front_bot, 0.28),
+    );
+    painter.rect_filled(
+        Rect::from_min_max(front.min, egui::pos2(x1, front_y + fh * 0.28)),
+        top_cr,
+        front_top,
+    );
+
+    // Crisp specular metallic highlight along the front flap's top edge.
+    let inset = (f32::from(r_body) * 0.65).max(1.2);
+    painter.hline((front.left() + inset)..=(front.right() - inset), front.top() + 0.55, Stroke::new(0.9, rim));
+}
+
+/// Default project icon for headers, cards, palette rows, and dialogs (Active sculpted folder).
+pub fn paint_project_tile(painter: &egui::Painter, rect: Rect, _letters: &str, _color: Color32, dark: bool) {
+    paint_project_folder(painter, rect, FolderTone::Active, dark);
 }
 
 /// A chip in the top bar (branch, changes, server): an icon, text, a hover fill. `mono` sets

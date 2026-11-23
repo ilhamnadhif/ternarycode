@@ -1586,41 +1586,54 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
             }
             transcripts.sort_by_key(|f| std::cmp::Reverse(f.0));
 
-            let mut oldest_5h: Option<i64> = None;
-            let mut oldest_7d: Option<i64> = None;
+            let mut saw_user_turns = false;
+            let mut planner_turns_5h = 0u32;
+            let mut planner_turns_7d = 0u32;
             for (mtime, path) in transcripts.into_iter().take(128) {
                 let fallback_ts = unix_secs(mtime);
                 let lines = recent_jsonl_lines(&path, 8 * 1024 * 1024, 64 * 1024 * 1024, cut_7d, |l| {
-                    l.contains("\"input_tokens\"") || l.contains("\"output_tokens\"")
+                    l.contains("\"input_tokens\"") || l.contains("\"output_tokens\"") || l.contains("\"USER_INPUT\"")
                 });
                 for line in lines {
                     let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+                    let ts = v["created_at"]
+                        .as_str()
+                        .or_else(|| v["timestamp"].as_str())
+                        .and_then(parse_iso_unix)
+                        .unwrap_or(fallback_ts);
+                    if v["type"].as_str() == Some("USER_INPUT") {
+                        saw_user_turns = true;
+                        if ts >= cut_7d {
+                            report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
+                        }
+                        if ts >= cut_5h {
+                            report.window_5h.turns = report.window_5h.turns.saturating_add(1);
+                        }
+                        continue;
+                    }
                     let inp = v["input_tokens"].as_u64().unwrap_or(0);
                     let out = v["output_tokens"].as_u64().unwrap_or(0);
                     let cr = v["cache_read_tokens"].as_u64().unwrap_or(0);
                     if inp == 0 && out == 0 && cr == 0 {
                         continue;
                     }
-                    let ts = v["created_at"]
-                        .as_str()
-                        .or_else(|| v["timestamp"].as_str())
-                        .and_then(parse_iso_unix)
-                        .unwrap_or(fallback_ts);
                     let u = TokenUsage { input: inp, output: out, cache_read: cr };
                     if ts >= cut_7d {
                         report.window_weekly.tokens.add_assign(u);
-                        report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
-                        oldest_7d = Some(oldest_7d.map_or(ts, |o| o.min(ts)));
+                        planner_turns_7d = planner_turns_7d.saturating_add(1);
                     }
                     if ts >= cut_24h {
                         report.recent_24h.add_assign(u);
                     }
                     if ts >= cut_5h {
                         report.window_5h.tokens.add_assign(u);
-                        report.window_5h.turns = report.window_5h.turns.saturating_add(1);
-                        oldest_5h = Some(oldest_5h.map_or(ts, |o| o.min(ts)));
+                        planner_turns_5h = planner_turns_5h.saturating_add(1);
                     }
                 }
+            }
+            if !saw_user_turns {
+                report.window_5h.turns = planner_turns_5h;
+                report.window_weekly.turns = planner_turns_7d;
             }
             // Fallback to `history.jsonl` turn counts if no transcripts exist yet.
             if report.window_weekly.turns == 0
@@ -1636,11 +1649,9 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                     }
                     if ts >= cut_7d {
                         report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
-                        oldest_7d = Some(oldest_7d.map_or(ts, |o| o.min(ts)));
                     }
                     if ts >= cut_5h {
                         report.window_5h.turns = report.window_5h.turns.saturating_add(1);
-                        oldest_5h = Some(oldest_5h.map_or(ts, |o| o.min(ts)));
                     }
                 }
             }
@@ -1650,12 +1661,9 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
             if report.window_weekly.tokens.total() > 0 || report.window_weekly.turns > 0 {
                 report.window_weekly.window_minutes = Some(10_080);
             }
-            if let Some(o) = oldest_5h {
-                report.window_5h.resets_at_unix = Some(o + WIN_5H);
-            }
-            if let Some(o) = oldest_7d {
-                report.window_weekly.resets_at_unix = Some(o + WIN_7D);
-            }
+            // Google's Antigravity CLI does not expose server-side quota percentages or reset
+            // clocks locally, so leave `resets_at_unix = None` rather than inventing an
+            // out-of-sync rolling countdown.
         }
         AgentKind::OpenCode => {
             let has_auth = non_empty_file(&root.join("data/opencode/auth.json"))
@@ -1993,7 +2001,12 @@ mod tests {
         write(
             &agy_root.join("brain/conv-1/.system_generated/logs/transcript.jsonl"),
             &format!(
-                "{{\"step_index\":1,\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"{now_s}\",\"input_tokens\":12000,\"output_tokens\":3000,\"cache_read_tokens\":80000}}\n"
+                concat!(
+                    "{{\"step_index\":0,\"type\":\"USER_INPUT\",\"created_at\":\"{now_s}\"}}\n",
+                    "{{\"step_index\":1,\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"{now_s}\",\"input_tokens\":10000,\"output_tokens\":2000,\"cache_read_tokens\":50000}}\n",
+                    "{{\"step_index\":2,\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"{now_s}\",\"input_tokens\":2000,\"output_tokens\":1000,\"cache_read_tokens\":30000}}\n"
+                ),
+                now_s = now_s
             ),
         );
         let agy_rep = profile_usage(AgentKind::Antigravity, &agy_root);
@@ -2001,8 +2014,12 @@ mod tests {
         assert_eq!(agy_rep.account_email.as_deref(), Some("dev@example.com"));
         assert_eq!(agy_rep.window_5h.tokens.total(), 15_000);
         assert_eq!(agy_rep.window_5h.tokens.cache_read, 80_000);
+        // Counts real user turns (`USER_INPUT`), not every internal planner tool step.
         assert_eq!(agy_rep.window_5h.turns, 1);
         assert_eq!(agy_rep.window_weekly.tokens.total(), 15_000);
         assert_eq!(agy_rep.window_5h.used_percent, None);
+        // Does not fabricate a rolling reset clock that differs from Google's server quota window.
+        assert_eq!(agy_rep.window_5h.resets_at_unix, None);
+        assert_eq!(agy_rep.window_weekly.resets_at_unix, None);
     }
 }

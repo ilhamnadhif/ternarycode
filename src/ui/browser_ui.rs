@@ -1107,15 +1107,6 @@ impl App {
     /// at the project's dev server, else empty with its address field taking the keyboard.
     pub fn show_browser(&mut self, address: bool) {
         let Some(project) = self.command_project() else { return };
-        let server = self.project_servers(project).first().map(|(_, s)| s.url.clone());
-        if !crate::browser::supported() {
-            // Pages can't show in TernaryCode here: the default browser has the page.
-            match server {
-                Some(url) => crate::platform::open_url(&url),
-                None => self.toast(t("Pages can't show in TernaryCode here. They open in your default browser.").to_string()),
-            }
-            return;
-        }
         let in_focus = self.view == tc_core::model::View::Focus && self.active == Some(project);
         if let Some(front) = self.panel_page(project).filter(|_| in_focus) {
             if address {
@@ -1123,6 +1114,20 @@ impl App {
                 self.browser_edit = Some(front);
             } else {
                 self.hide_panel(project);
+            }
+            return;
+        }
+        self.open_browser_panel(project, address);
+    }
+
+    /// Opens or brings forward `project`'s Browser panel without toggling it closed.
+    pub(crate) fn open_browser_panel(&mut self, project: tc_core::ProjectId, address: bool) {
+        let server = self.project_servers(project).first().map(|(_, s)| s.url.clone());
+        if !crate::browser::supported() {
+            // Pages can't show in TernaryCode here: the default browser has the page.
+            match server {
+                Some(url) => crate::platform::open_url(&url),
+                None => self.toast(t("Pages can't show in TernaryCode here. They open in your default browser.").to_string()),
             }
             return;
         }

@@ -134,6 +134,33 @@ pub(crate) fn send(_sock: &str, _msg: &HookMsg) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Computes the JSON stdout response required by Antigravity CLI hooks.
+/// `PreToolUse` requires a `"decision"` field (`"allow"` / `"deny"` / `"ask"`); returning `{}`
+/// causes `agy` to deny the tool call with an empty reason, so non-denied `PreToolUse` invocations
+/// ALWAYS return `{"decision":"allow"}` both inside and outside TernaryCode panes.
+fn antigravity_hook_output(event: &str, in_pane: bool, tools: bool, payload: &Value) -> String {
+    match event {
+        "SessionStart" if in_pane && tools => serde_json::json!({
+            "injectSteps": [{
+                "systemMessage": {
+                    "systemMessage": crate::integrate::ANTIGRAVITY_GUIDE,
+                }
+            }]
+        })
+        .to_string(),
+        "PreToolUse" => {
+            if in_pane {
+                let prompt = || payload["lastUserInput"].as_str().map(str::to_string);
+                if let Some(out) = crate::guard::decision(AgentKind::Antigravity, event, payload, tools, prompt) {
+                    return out;
+                }
+            }
+            r#"{"decision":"allow"}"#.to_string()
+        }
+        _ => "{}".to_string(),
+    }
+}
+
 /// Entry point of `ternarycode-hook`; returns the exit code (always 0). `ternarycode-hook mcp`
 /// is the agents' browser tools instead (`crate::mcp`).
 pub fn run(args: &[String]) -> i32 {
@@ -152,26 +179,8 @@ pub fn run(args: &[String]) -> i32 {
         let _ = send(&sock, &msg);
         if is_antigravity {
             let tools = crate::guard::tools_on(AgentKind::Antigravity, env);
-            if msg.event == "SessionStart" && tools {
-                let out = serde_json::json!({
-                    "injectSteps": [{
-                        "systemMessage": {
-                            "systemMessage": crate::integrate::ANTIGRAVITY_GUIDE,
-                        }
-                    }]
-                });
-                println!("{out}");
-            } else if msg.event == "PreToolUse" {
-                let payload: Value = raw.and_then(|r| serde_json::from_slice(&r).ok()).unwrap_or(Value::Null);
-                let prompt = || payload["lastUserInput"].as_str().map(str::to_string);
-                if let Some(out) = crate::guard::decision(AgentKind::Antigravity, &msg.event, &payload, tools, prompt) {
-                    println!("{out}");
-                } else {
-                    println!("{{}}");
-                }
-            } else {
-                println!("{{}}");
-            }
+            let payload: Value = raw.and_then(|r| serde_json::from_slice(&r).ok()).unwrap_or(Value::Null);
+            println!("{}", antigravity_hook_output(&msg.event, true, tools, &payload));
             return 0;
         }
         // A call that would open a page in another browser: refused (Claude Code, Codex).
@@ -190,8 +199,10 @@ pub fn run(args: &[String]) -> i32 {
             }
         }
     } else if is_antigravity {
-        // Antigravity CLI hooks always expect a JSON object on stdout, even outside TernaryCode.
-        println!("{{}}");
+        // Antigravity CLI hooks always expect a JSON object on stdout, even outside TernaryCode,
+        // and `PreToolUse` specifically requires `"decision":"allow"` so tools are never blocked.
+        let event = args.get(1).map(String::as_str).unwrap_or("");
+        println!("{}", antigravity_hook_output(event, false, false, &Value::Null));
     }
     0
 }
@@ -286,5 +297,39 @@ mod tests {
         let bad: Vec<String> = ["vim", "Stop"].iter().map(|s| s.to_string()).collect();
         assert!(message(&bad, env_of(PANE_ENV), || None).is_none());
         assert!(message(&[], env_of(PANE_ENV), || None).is_none());
+    }
+
+    #[test]
+    fn antigravity_pre_tool_use_always_returns_explicit_decision() {
+        // Non-browser tools inside a pane must return decision=allow (empty `{}` denies in agy).
+        let read = serde_json::json!({"toolCall": {"name": "read_file", "args": {"Path": "/tmp/a"}}});
+        let out: Value = serde_json::from_str(&antigravity_hook_output("PreToolUse", true, true, &read)).unwrap();
+        assert_eq!(out["decision"], "allow");
+
+        // Outside TernaryCode panes, PreToolUse must still return decision=allow.
+        let out_outside: Value = serde_json::from_str(&antigravity_hook_output("PreToolUse", false, false, &Value::Null)).unwrap();
+        assert_eq!(out_outside["decision"], "allow");
+
+        // Blocked external browser subagent inside a pane returns decision=deny with reason.
+        let sub = serde_json::json!({
+            "toolCall": {"name": "invoke_subagent", "args": {"TypeName": "browser", "Prompt": "open http://localhost:3000"}},
+            "lastUserInput": "check the preview"
+        });
+        let deny: Value = serde_json::from_str(&antigravity_hook_output("PreToolUse", true, true, &sub)).unwrap();
+        assert_eq!(deny["decision"], "deny");
+        assert!(deny["reason"].as_str().unwrap().contains("ternarycode browser tools"));
+
+        // Explicit Chrome request passes through with decision=allow.
+        let sub_chrome = serde_json::json!({
+            "toolCall": {"name": "invoke_subagent", "args": {"TypeName": "browser", "Prompt": "open http://localhost:3000"}},
+            "lastUserInput": "buka di chrome"
+        });
+        let allow_chrome: Value = serde_json::from_str(&antigravity_hook_output("PreToolUse", true, true, &sub_chrome)).unwrap();
+        assert_eq!(allow_chrome["decision"], "allow");
+
+        // Non-PreToolUse events return `{}` when no injection is needed.
+        assert_eq!(antigravity_hook_output("PostToolUse", true, true, &Value::Null), "{}");
+        assert_eq!(antigravity_hook_output("Stop", true, true, &Value::Null), "{}");
+        assert_eq!(antigravity_hook_output("SessionStart", false, false, &Value::Null), "{}");
     }
 }

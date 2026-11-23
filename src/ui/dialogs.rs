@@ -1123,7 +1123,7 @@ impl App {
         let p = style::pal(ui);
         let dark = ui.visuals().dark_mode;
         let presets = self.presets();
-        let here = self.idle_command_pane().is_some();
+        let here = self.run_dialog_idle_pane().is_some();
         let project = self.active_project().map(|x| (x.name.clone(), crate::paths::contract_tilde(&x.path), x.path.clone()));
         begin(ui, W_RUN);
         let mut keep = true;
@@ -1463,9 +1463,14 @@ impl App {
                             });
                         });
                         option_row(ui, t("Open in"), &mut |ui: &mut Ui| {
-                            // "This tab": a shell at its prompt with nothing typed takes the agent.
+                            // "This tab": a shell at its prompt with nothing running or typed takes the agent.
                             let this_tip = if here { "" } else { t("No shell here is idle at its prompt") };
-                            let options = [kit::Seg::new(t("This tab"), this_tip), kit::Seg::new(t("New tab"), ""), kit::Seg::new(t("Split right"), ""), kit::Seg::new(t("Split down"), "")];
+                            let options = [
+                                kit::Seg::new(t("This tab"), this_tip).enabled(here),
+                                kit::Seg::new(t("New tab"), ""),
+                                kit::Seg::new(t("Split right"), ""),
+                                kit::Seg::new(t("Split down"), ""),
+                            ];
                             // Place 0 is this tab when its shell is idle, else a new tab; 3 is
                             // always a new tab.
                             let on = match *place {
@@ -1567,7 +1572,12 @@ impl App {
                 (Rows::Last(_), _) => Launch::Last,
                 _ => Launch::New,
             };
-            self.actions.push(Action::RunAgent(preset.id.clone(), launch, *place));
+            let dispatch_place = if *place == 0 && self.idle_command_pane().is_none() && self.run_dialog_idle_pane().is_some() {
+                4
+            } else {
+                *place
+            };
+            self.actions.push(Action::RunAgent(preset.id.clone(), launch, dispatch_place));
             keep = false;
         }
         keep

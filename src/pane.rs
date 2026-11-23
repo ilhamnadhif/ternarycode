@@ -716,18 +716,46 @@ impl Pane {
             && !matches!(self.tracker.fg, Foreground::Program { .. })
     }
 
+    /// Whether this pane's live shell has no foreground program or agent running and no partial
+    /// command typed at its prompt.
+    fn idle_at_prompt(&self) -> bool {
+        if !self.alive()
+            || self.pending_command.is_some()
+            || self.tracker.agent.is_some()
+            || matches!(self.tracker.fg, Foreground::Program { .. })
+        {
+            return false;
+        }
+        if self.tracker.shell_marks {
+            tcore::command_line_empty(&self.shared)
+        } else {
+            matches!(self.tracker.fg, Foreground::Shell) && !tcore::in_alt_screen(&self.shared)
+        }
+    }
+
     /// A shell an agent can start in instead of a tab beside it: one nobody has used yet, or one
-    /// waiting at its prompt with nothing typed (what it showed before stays above).
+    /// waiting at its prompt with nothing running and nothing typed (what it showed before stays
+    /// above). Excludes `adopted` shells whose env vars belong to an earlier app process.
     pub fn takes_agent(&self) -> bool {
-        self.is_fresh()
-            || (self.alive()
-                && !self.adopted
-                && self.pending_command.is_none()
-                && self.resume.is_none()
-                && self.tracker.agent.is_none()
-                && self.tracker.shell_marks
-                && !matches!(self.tracker.fg, Foreground::Program { .. })
-                && tcore::command_line_empty(&self.shared))
+        self.is_fresh() || (!self.adopted && self.idle_at_prompt())
+    }
+
+    /// Same as [`takes_agent`], but also accepts an idle shell adopted across an app update (the
+    /// caller respawns the idle shell in-place so the agent receives fresh `$TC_*` env vars).
+    pub fn takes_agent_with_respawn(&self) -> bool {
+        self.takes_agent() || (self.adopted && self.idle_at_prompt())
+    }
+
+    /// Tears down an idle shell cleanly so `start_shell` can respawn a fresh shell with current
+    /// environment variables in the exact same tab.
+    pub fn drop_shell_for_respawn(&mut self) {
+        self.closing = true;
+        if let Some(old) = self.session.take() {
+            old.pty.hang_up(Duration::from_millis(1500));
+        }
+        self.exit = None;
+        self.adopted = false;
+        self.resume = None;
     }
 
     /// Keys typed or text pasted by the user.

@@ -1459,6 +1459,12 @@ impl App {
         self.command_pane().filter(|id| self.panes.get(id).is_some_and(Pane::takes_agent))
     }
 
+    /// Same as [`idle_command_pane`], also including an idle shell adopted across an app update
+    /// (respawned cleanly in-place when explicitly chosen in the Run Agent dialog).
+    pub fn run_dialog_idle_pane(&self) -> Option<PaneId> {
+        self.command_pane().filter(|id| self.panes.get(id).is_some_and(Pane::takes_agent_with_respawn))
+    }
+
     /// The project "this project" commands act on (new tab, agents): the command pane's (a
     /// Grid tile's project is not made the open one).
     pub(crate) fn command_project(&self) -> Option<ProjectId> {
@@ -2608,18 +2614,24 @@ impl App {
             .is_some_and(|tab| tab.layout.panes().len() >= 3);
         let here = match place {
             Some(0) => self.idle_command_pane(),
+            Some(4) => self.run_dialog_idle_pane(),
             _ => self.fresh_command_pane(),
         };
         let here = here.filter(|id| self.pane_finds(*id, &preset));
         let pane = match (place, here) {
-            (Some(0) | None, Some(id)) => {
-                if self.panes.get(&id).is_some_and(Pane::dormant) {
+            (Some(0 | 4) | None, Some(id)) => {
+                if self.panes.get(&id).is_some_and(|p| p.adopted) {
+                    if let Some(p) = self.panes.get_mut(&id) {
+                        p.drop_shell_for_respawn();
+                    }
+                    self.restart_shell(ctx, id);
+                } else if self.panes.get(&id).is_some_and(Pane::dormant) {
                     self.wake(ctx, id);
                 }
                 Some(id)
             }
             // Run Agent's "New tab" (3), even when this tab's shell is idle.
-            (Some(0 | 3), _) => self.new_tab(ctx),
+            (Some(0 | 3 | 4), _) => self.new_tab(ctx),
             (Some(2), _) => self.split(ctx, SplitDir::Vertical),
             (Some(_), _) => self.split(ctx, SplitDir::Horizontal),
             (None, None) if crowded => self.new_tab(ctx),
@@ -2635,8 +2647,8 @@ impl App {
             crate::actions::Launch::New => None,
         }
         .unwrap_or_else(|| preset.command.clone());
-        if place.is_some() {
-            self.last_agent_place = place.unwrap_or(0);
+        if let Some(p) = place {
+            self.last_agent_place = if p == 4 { 0 } else { p };
         }
         let proj_id = self.panes.get(&pane).map(|p| p.project);
         let profile = preset
@@ -2672,6 +2684,7 @@ impl App {
             if let crate::actions::Launch::Session(id) = &launch {
                 p.agent_session = Some(id.clone());
             }
+            p.resume = None;
             p.rate_limit = None;
             p.last_limit_sig = None;
             p.rate_limit_dismissed = false;
@@ -3497,7 +3510,12 @@ impl App {
                     let root = self.active.and_then(|id| self.root_project(id));
                     let on = root.is_some_and(|r| r.new_worktree && r.git.is_some() && !r.missing);
                     let wt = crate::worktree::Form { on, ..Default::default() };
-                    self.dialog = Some(Dialog::RunAgent { selected, session: 0, place: self.last_agent_place, wt });
+                    let place = if self.run_dialog_idle_pane().is_some() && self.last_agent_place == 3 {
+                        0
+                    } else {
+                        self.last_agent_place
+                    };
+                    self.dialog = Some(Dialog::RunAgent { selected, session: 0, place, wt });
                 }
             }
             Action::SetView(v) => {
@@ -3922,7 +3940,13 @@ impl App {
                     self.open_review(None);
                 }
             }
-            Action::History => self.open_history(),
+            Action::History => {
+                if self.view == View::Focus && self.history.as_ref().is_some_and(|h| Some(h.project) == self.active) {
+                    self.switch_panel(crate::ui::panel::PanelTab::History, true);
+                } else {
+                    self.open_history();
+                }
+            }
             Action::ReviewAgent => self.open_review_with(None, true),
             Action::Commit => self.ship_open(),
             Action::OpenPullRequest => {

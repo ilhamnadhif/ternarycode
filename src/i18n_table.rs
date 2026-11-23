@@ -1532,4 +1532,6 @@ const ID: &[(&str, &str)] = &[
     ("Antigravity CLI supports 1 account only (Google policy).", "Antigravity CLI hanya mendukung 1 akun (ketentuan Google)."),
     ("Antigravity uses its single system sign-in (~/.gemini/antigravity-cli).", "Antigravity memakai satu login sistem (~/.gemini/antigravity-cli)."),
     ("{} turns", "{} giliran"),
+    ("{} local", "{} lokal"),
+    ("Quota not exposed", "Kuota tidak tersedia"),
 ];

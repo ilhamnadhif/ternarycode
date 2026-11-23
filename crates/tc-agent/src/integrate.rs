@@ -552,6 +552,9 @@ impl Hooks {
     /// primary-browser instructions on `SessionStart`, and guards `PreToolUse` against external
     /// browsers unless the user explicitly names one.
     pub fn antigravity_hooks_json(&self) -> String {
+        // Scope `PreToolUse` to browser-related tools, subagents, MCP calls, and `ask_question` so
+        // ordinary file/shell tools keep Antigravity's native permission policy and add zero hook overhead.
+        const PRE_TOOL_MATCHER: &str = "invoke_subagent|browser_subagent|open_browser_url|ask_question|call_mcp_tool|.*browser.*|.*chrome.*|.*playwright.*|.*puppeteer.*";
         let mut hook = serde_json::Map::new();
         for &event in ANTIGRAVITY_EVENTS {
             let entry = json!({
@@ -559,13 +562,16 @@ impl Hooks {
                 "command": self.command(AgentKind::Antigravity, event),
                 "timeout": 5,
             });
-            let value = if matches!(event, "PreToolUse" | "PostToolUse") {
-                json!([{
+            let value = match event {
+                "PreToolUse" => json!([{
+                    "matcher": PRE_TOOL_MATCHER,
+                    "hooks": [entry],
+                }]),
+                "PostToolUse" => json!([{
                     "matcher": "*",
                     "hooks": [entry],
-                }])
-            } else {
-                json!([entry])
+                }]),
+                _ => json!([entry]),
             };
             hook.insert(event.to_string(), value);
         }
@@ -2004,7 +2010,10 @@ mod tests {
         assert_eq!(mcp["mcpServers"]["ternarycode"]["args"], json!(["mcp", "antigravity"]));
         let hooks_v: Value = serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
         assert!(hooks_v["ternarycode"]["SessionStart"][0]["command"].as_str().unwrap().contains("antigravity SessionStart"));
-        assert_eq!(hooks_v["ternarycode"]["PreToolUse"][0]["matcher"], "*");
+        let pre_matcher = hooks_v["ternarycode"]["PreToolUse"][0]["matcher"].as_str().unwrap();
+        assert_ne!(pre_matcher, "*");
+        assert!(pre_matcher.contains("invoke_subagent") && pre_matcher.contains("ask_question") && pre_matcher.contains("call_mcp_tool"));
+        assert_eq!(hooks_v["ternarycode"]["PostToolUse"][0]["matcher"], "*");
         assert_eq!(uninstall(&record, &hooks()), Ok(Uninstalled::Restored));
         assert!(!plugin.exists());
         // Sync creates it idempotently too.

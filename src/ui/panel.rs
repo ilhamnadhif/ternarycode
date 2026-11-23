@@ -81,19 +81,12 @@ impl App {
         self.panel_tab(project).is_some() && self.panel_of(project).is_some_and(|p| p.max)
     }
 
-    /// Shows `tab` in the panel of the project in view (or closes the panel when it shows it
-    /// already and `toggle`).
+    /// Shows `tab` in the panel of the project in view, or closes the right panel completely when
+    /// `tab` is already selected and `toggle` is true.
     pub fn switch_panel(&mut self, tab: PanelTab, toggle: bool) {
         let Some(pid) = self.active else { return };
         if toggle && self.panel_tab(pid) == Some(tab) {
-            // Changes, Files or History put away: the Browser waiting behind them comes back.
-            if tab != PanelTab::Browser && self.panel_of(pid).is_some_and(|p| p.open && !p.pages.is_empty()) {
-                self.hide_drawer(pid);
-                self.focus_request = self.current_pane();
-                self.mark_dirty();
-            } else {
-                self.close_panel(pid);
-            }
+            self.close_panel(pid);
             return;
         }
         if tab != PanelTab::Browser {
@@ -101,8 +94,7 @@ impl App {
         }
         match tab {
             PanelTab::Browser => {
-                self.hide_drawer(pid);
-                self.show_browser(false);
+                self.open_browser_panel(pid, false);
             }
             PanelTab::Files => {
                 self.review = None;

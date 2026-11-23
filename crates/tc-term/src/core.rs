@@ -155,18 +155,27 @@ pub struct TermShared {
 
 pub type SharedTerm = Arc<TermShared>;
 
+/// Whether the terminal currently displays the alternate screen buffer (fullscreen TUIs such as
+/// vim, less, htop, Claude Code, Codex, or Antigravity CLI).
+pub fn in_alt_screen(shared: &TermShared) -> bool {
+    shared.term.lock().mode().contains(TermMode::ALT_SCREEN)
+}
+
 /// The shell waits at its prompt with nothing typed: the cursor is where its input starts, on a
-/// blank cell (a right-hand prompt further along the line is the shell's own). Only known with
-/// shell integration marks.
+/// blank cell (a right-hand prompt further along the line is the shell's own). When a custom
+/// prompt emitted `133;A` (`at_prompt`) without a `133;B` input anchor, accepts the idle prompt.
 pub fn command_line_empty(shared: &TermShared) -> bool {
     let term = shared.term.lock();
     let prompt = shared.prompt.lock();
     if !prompt.at_prompt || term.mode().contains(TermMode::ALT_SCREEN) {
         return false;
     }
+    let Some(input_line) = prompt.input else {
+        return true;
+    };
     let cursor = term.grid().cursor.point;
     let line = term.grid().history_size() + cursor.line.0.max(0) as usize;
-    prompt.input == Some(line) && prompt.input_col == cursor.column.0 && matches!(term.grid()[cursor].c, ' ' | '\0')
+    input_line == line && prompt.input_col == cursor.column.0 && matches!(term.grid()[cursor].c, ' ' | '\0')
 }
 
 /// The terminal's options. The kitty keyboard protocol is always on: alacritty empties its
