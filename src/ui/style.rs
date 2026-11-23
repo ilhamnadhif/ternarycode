@@ -97,76 +97,76 @@ const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
     Color32::from_rgba_premultiplied(m(r, a), m(g, a), m(b, a), a)
 }
 
-// Neutral greys (no blue or violet cast), crisp structural hierarchy inspired by Linear, Zed,
-// Raycast and Warp — disciplined contrast, 1 px hairline borders, zero neon gradients.
+// Slate (v3): neutral greys, hairlines, one accent (the blue of the app icon). Values are the
+// `Theme` variables of design/TernaryCode Redesign.figcraft, Dark and Light modes.
 const LIGHT: Palette = Palette {
-    // The background of the "TernaryCode Light" terminal scheme, so the terminal blends in.
-    canvas: Color32::from_rgb(0xfb, 0xfb, 0xfb),
-    chrome: Color32::from_rgb(0xec, 0xec, 0xed),
+    // The sheet is the "TernaryCode Light" terminal's background, so the terminal blends in.
+    canvas: Color32::from_rgb(0xfb, 0xfb, 0xfc),
+    chrome: Color32::from_rgb(0xed, 0xed, 0xef),
     surface: Color32::from_rgb(0xff, 0xff, 0xff),
     overlay: Color32::from_rgb(0xff, 0xff, 0xff),
     menu: Color32::from_rgb(0xff, 0xff, 0xff),
-    inset: Color32::from_rgb(0xe5, 0xe5, 0xe7),
+    inset: Color32::from_rgb(0xe9, 0xe9, 0xec),
     hover: black(10),
-    subtle: black(17),
-    border: black(18),
-    border_strong: black(30),
-    border_heavy: black(48),
-    highlight: white(179),
-    text: Color32::from_rgb(0x14, 0x15, 0x17),
-    text_muted: Color32::from_rgb(0x52, 0x55, 0x5c),
-    text_faint: Color32::from_rgb(0x76, 0x7b, 0x84),
-    text_ghost: Color32::from_rgb(0x86, 0x8c, 0x96),
+    subtle: black(18),
+    border: black(15),
+    border_strong: black(26),
+    border_heavy: black(43),
+    highlight: white(0),
+    text: Color32::from_rgb(0x17, 0x17, 0x1a),
+    text_muted: Color32::from_rgb(0x56, 0x56, 0x60),
+    text_faint: Color32::from_rgb(0x80, 0x80, 0x8a),
+    text_ghost: Color32::from_rgb(0xab, 0xab, 0xb3),
     accent: Color32::from_rgb(0x1f, 0x5f, 0xbf),
     accent_hover: Color32::from_rgb(0x1a, 0x52, 0xa8),
     on_accent: Color32::WHITE,
-    accent_soft: black(14),
-    accent_tint: rgba(0x1f, 0x5f, 0xbf, 24),
+    accent_soft: black(13),
+    accent_tint: rgba(0x1f, 0x5f, 0xbf, 26),
     accent_text: Color32::from_rgb(0x1a, 0x56, 0xb3),
-    ring: rgba(0x1f, 0x5f, 0xbf, 115),
-    ok: Color32::from_rgb(0x16, 0x79, 0x4b),
-    warn: Color32::from_rgb(0xb4, 0x65, 0x06),
+    ring: rgba(0x1f, 0x5f, 0xbf, 102),
+    ok: Color32::from_rgb(0x15, 0x80, 0x4e),
+    warn: Color32::from_rgb(0xb2, 0x6a, 0x00),
     err: Color32::from_rgb(0xc7, 0x35, 0x2d),
-    info: Color32::from_rgb(0x1f, 0x5f, 0xbf),
+    info: Color32::from_rgb(0x25, 0x63, 0xc9),
     rate_limited: Color32::from_rgb(0xc2, 0x56, 0x0a),
     cooldown: Color32::from_rgb(0x2d, 0x6c, 0x9e),
-    idle: Color32::from_rgb(0x94, 0x97, 0x9e),
-    folder: Color32::from_rgb(0x66, 0x73, 0x85),
+    idle: Color32::from_rgb(0x8e, 0x8e, 0x98),
+    folder: Color32::from_rgb(0x66, 0x73, 0x8a),
 };
 
 const DARK: Palette = Palette {
-    // Crisp obsidian-charcoal elevation hierarchy: chrome (#0b0c0e) -> canvas (#121316) -> surface (#1a1c20).
-    canvas: Color32::from_rgb(0x14, 0x15, 0x18),
-    chrome: Color32::from_rgb(0x0b, 0x0c, 0x0e),
-    surface: Color32::from_rgb(0x1b, 0x1d, 0x21),
-    overlay: Color32::from_rgb(0x16, 0x18, 0x1c),
-    menu: Color32::from_rgb(0x1d, 0x1f, 0x24),
-    inset: Color32::from_rgb(0x09, 0x0a, 0x0c),
-    hover: white(11),
-    subtle: white(19),
-    border: white(17),
-    border_strong: white(28),
-    border_heavy: white(48),
-    highlight: white(14),
-    text: Color32::from_rgb(0xec, 0xed, 0xef),
-    text_muted: Color32::from_rgb(0x9c, 0xa0, 0xa8),
-    text_faint: Color32::from_rgb(0x6c, 0x70, 0x78),
-    text_ghost: Color32::from_rgb(0x4b, 0x4f, 0x56),
-    accent: Color32::from_rgb(0x2b, 0x66, 0xcc),
-    accent_hover: Color32::from_rgb(0x36, 0x73, 0xdb),
+    // The sheet is the "TernaryCode Dark" terminal's background (#111113).
+    canvas: Color32::from_rgb(0x11, 0x11, 0x13),
+    chrome: Color32::from_rgb(0x09, 0x09, 0x0b),
+    surface: Color32::from_rgb(0x1a, 0x1a, 0x1d),
+    overlay: Color32::from_rgb(0x14, 0x14, 0x16),
+    menu: Color32::from_rgb(0x1c, 0x1c, 0x20),
+    inset: Color32::from_rgb(0x0c, 0x0c, 0x0e),
+    hover: white(10),
+    subtle: white(20),
+    border: white(15),
+    border_strong: white(26),
+    border_heavy: white(43),
+    highlight: white(0),
+    text: Color32::from_rgb(0xed, 0xed, 0xf0),
+    text_muted: Color32::from_rgb(0xa1, 0xa1, 0xaa),
+    text_faint: Color32::from_rgb(0x6c, 0x6c, 0x75),
+    text_ghost: Color32::from_rgb(0x48, 0x48, 0x4f),
+    accent: Color32::from_rgb(0x2e, 0x6b, 0xe6),
+    accent_hover: Color32::from_rgb(0x3a, 0x78, 0xf0),
     on_accent: Color32::WHITE,
-    accent_soft: white(18),
-    accent_tint: rgba(0x46, 0x82, 0xeb, 36),
-    accent_text: Color32::from_rgb(0x82, 0xab, 0xf2),
-    ring: rgba(0x54, 0x8c, 0xea, 140),
-    ok: Color32::from_rgb(0x46, 0xb8, 0x7f),
-    warn: Color32::from_rgb(0xe6, 0x9f, 0x38),
-    err: Color32::from_rgb(0xe8, 0x5c, 0x56),
-    info: Color32::from_rgb(0x73, 0xa4, 0xf2),
-    rate_limited: Color32::from_rgb(0xf2, 0x92, 0x38),
-    cooldown: Color32::from_rgb(0x68, 0xb0, 0xd8),
-    idle: Color32::from_rgb(0x66, 0x6a, 0x72),
-    folder: Color32::from_rgb(0x92, 0x9b, 0xa8),
+    accent_soft: white(15),
+    accent_tint: rgba(0x2e, 0x6b, 0xe6, 41),
+    accent_text: Color32::from_rgb(0x8b, 0xb2, 0xff),
+    ring: rgba(0x4f, 0x8c, 0xff, 153),
+    ok: Color32::from_rgb(0x4d, 0xc4, 0x8c),
+    warn: Color32::from_rgb(0xf2, 0xb1, 0x4b),
+    err: Color32::from_rgb(0xf0, 0x6a, 0x64),
+    info: Color32::from_rgb(0x6a, 0xa5, 0xff),
+    rate_limited: Color32::from_rgb(0xf2, 0x94, 0x41),
+    cooldown: Color32::from_rgb(0x5d, 0xb6, 0xdc),
+    idle: Color32::from_rgb(0x6c, 0x6c, 0x75),
+    folder: Color32::from_rgb(0x8c, 0x96, 0xa5),
 };
 
 impl Palette {
@@ -214,10 +214,10 @@ pub fn soft(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (alpha.clamp(0.0, 1.0) * 255.0) as u8)
 }
 
-/// The soft fill behind status-coloured text (pills, icon badges): 14% in the dark theme, 12%
-/// in the light one.
+/// The soft fill behind status-coloured text (pills, notices, icon tiles): 12% in the dark
+/// theme, 9% in the light one (the `status/*-tint` tokens).
 pub fn tint(c: Color32, dark: bool) -> Color32 {
-    soft(c, if dark { 0.14 } else { 0.12 })
+    soft(c, if dark { 0.12 } else { 0.09 })
 }
 
 /// `c` at `alpha` laid over `base`, opaque (a tinted surface that hides what is behind it).
@@ -235,14 +235,22 @@ pub fn over(base: Color32, c: Color32, alpha: f32) -> Color32 {
 // Type
 // ---------------------------------------------------------------------------------------------
 
-/// Body text size of the UI.
+/// Body text size of the UI (Body / Body Strong, 13/18).
 pub const BODY: f32 = 13.0;
-/// Small text: details, notes.
+/// Small text: details, notes (Small / Small Strong, 12/16).
 pub const SMALL: f32 = 12.0;
-/// Labels: a group's title, the status bar.
-pub const LABEL: f32 = 11.5;
-/// Data in the UI's monospace (branches, times, sizes, shortcuts).
-pub const DATA: f32 = 10.5;
+/// Labels: a group's title (Label, medium 11/14).
+pub const LABEL: f32 = 11.0;
+/// Data in the UI's monospace (Mono Small 11/14: branches, times, sizes, shortcuts).
+pub const DATA: f32 = 11.0;
+/// Mono 12/16: paths and commands in rows.
+pub const MONO: f32 = 12.0;
+/// Heading: semibold 14/20.
+pub const HEADING: f32 = 14.0;
+/// Title: semibold 17/24 (dialogs, page heads).
+pub const TITLE: f32 = 17.0;
+/// Display: semibold 24/30 (settings pages, onboarding).
+pub const DISPLAY: f32 = 24.0;
 
 /// Inter Medium: labels that need a little weight (tabs, buttons, row titles).
 pub fn medium(size: f32) -> FontId {
@@ -292,14 +300,16 @@ pub fn icon_font(size: f32) -> FontId {
 // Style
 // ---------------------------------------------------------------------------------------------
 
-/// Buttons, fields, segmented controls.
-pub const RADIUS: u8 = 7;
-/// Sheets (panes, drawers, panels, tiles) and cards.
-pub const RADIUS_LG: u8 = 10;
-/// Rows of a list (sidebar, palette, menus' items are 6).
-pub const RADIUS_ROW: u8 = 8;
-/// Dialogs and the palette.
-pub const RADIUS_DIALOG: u8 = 14;
+/// Buttons, fields, rows (radius/sm 6).
+pub const RADIUS: u8 = 6;
+/// Sheets (panes, panels, tiles) (radius/lg 12).
+pub const RADIUS_LG: u8 = 12;
+/// Rows of a list: sidebar places, palette and inbox rows, cards (7–8).
+pub const RADIUS_ROW: u8 = 7;
+/// Dialogs, the palette, settings (radius/xl 16).
+pub const RADIUS_DIALOG: u8 = 16;
+/// Cards and grouped settings (radius/md 8–10).
+pub const RADIUS_CARD: u8 = 10;
 /// The gap between sheets, and between the window's edge and the sheets.
 pub const GAP: f32 = 6.0;
 /// The window's edge beside the sheets (right and, with the sidebar hidden, left).
@@ -320,14 +330,14 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
             s.button_padding = vec2(10.0, 4.0);
             s.interact_size = vec2(24.0, 26.0);
             s.window_margin = Margin::same(20);
-            s.menu_margin = Margin::same(5);
+            s.menu_margin = Margin::same(6);
             s.indent = 16.0;
             s.icon_width = 15.0;
             s.icon_width_inner = 9.0;
             s.icon_spacing = 6.0;
             s.combo_height = 320.0;
             s.tooltip_width = 360.0;
-            s.menu_width = 220.0;
+            s.menu_width = 232.0;
             s.scroll = egui::style::ScrollStyle::floating();
             s.scroll.bar_width = 8.0;
             s.scroll.floating_width = 3.0;
@@ -358,17 +368,18 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
             v.window_corner_radius = CornerRadius::same(RADIUS_DIALOG);
             v.menu_corner_radius = CornerRadius::same(10);
             v.window_stroke = Stroke::new(1.0, p.border_strong);
+            // Shadow/Dialog and Shadow/Menu of the design.
             v.window_shadow = Shadow {
-                offset: [0, 30],
-                blur: 80,
+                offset: [0, 24],
+                blur: 64,
                 spread: 0,
-                color: Color32::from_black_alpha(if dark { 166 } else { 46 }),
+                color: Color32::from_black_alpha(if dark { 128 } else { 40 }),
             };
             v.popup_shadow = Shadow {
-                offset: [0, 10],
-                blur: 28,
+                offset: [0, 8],
+                blur: 24,
                 spread: 0,
-                color: Color32::from_black_alpha(if dark { 128 } else { 31 }),
+                color: Color32::from_black_alpha(if dark { 89 } else { 26 }),
             };
             v.window_highlight_topmost = false;
             v.collapsing_header_frame = false;
@@ -413,7 +424,7 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
 
             for (ts, font) in style.text_styles.iter_mut() {
                 *font = match ts {
-                    egui::TextStyle::Heading => semibold(17.0),
+                    egui::TextStyle::Heading => semibold(TITLE),
                     egui::TextStyle::Small => FontId::proportional(SMALL),
                     egui::TextStyle::Monospace => FontId::monospace(12.5),
                     _ => FontId::proportional(BODY),

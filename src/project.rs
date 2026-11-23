@@ -325,19 +325,50 @@ impl Change {
     }
 }
 
-/// Project colours (index saved in the workspace).
+/// Project colours (index saved in the workspace): the Slate `hue/*` tokens, dark-theme values.
+/// Blue, violet, green, amber, rose, cyan, then orange and slate: apart from each other; the
+/// letter tile shows them on their own tint, never as a status.
 pub const COLORS: [(u8, u8, u8); 8] = [
-    // Sky, teal, lime, sand, coral, rose, violet, slate: apart from each other and from the
-    // status colours (amber, green, red, blue) where they could be taken for one.
-    (0x5a, 0xa6, 0xe6),
-    (0x45, 0xb5, 0xa8),
-    (0x9c, 0xbf, 0x5a),
-    (0xc9, 0xa4, 0x6a),
-    (0xe5, 0x8a, 0x6b),
-    (0xe0, 0x7a, 0xa0),
-    (0x9d, 0x8c, 0xf0),
-    (0x8e, 0x9a, 0xab),
+    (0x7a, 0xa7, 0xff),
+    (0xb9, 0x9c, 0xff),
+    (0x6f, 0xd3, 0xa0),
+    (0xef, 0xc1, 0x5e),
+    (0xf5, 0x8b, 0xa6),
+    (0x63, 0xcf, 0xe3),
+    (0xf5, 0xa0, 0x6a),
+    (0xa1, 0xa1, 0xaa),
 ];
+
+/// The same hues in the light theme (darker, to read on white).
+pub const COLORS_LIGHT: [(u8, u8, u8); 8] = [
+    (0x1f, 0x5f, 0xbf),
+    (0x6d, 0x3f, 0xd6),
+    (0x16, 0x79, 0x4b),
+    (0x9a, 0x64, 0x00),
+    (0xc0, 0x2b, 0x5a),
+    (0x0e, 0x74, 0x90),
+    (0xb4, 0x56, 0x1b),
+    (0x5e, 0x5e, 0x66),
+];
+
+/// A project hue as the theme shows it (`color` is a `COLORS` value, or any colour).
+pub fn hue_for_theme(color: eframe::egui::Color32, dark: bool) -> eframe::egui::Color32 {
+    if dark {
+        return color;
+    }
+    match COLORS.iter().position(|&(r, g, b)| (r, g, b) == (color.r(), color.g(), color.b())) {
+        Some(i) => {
+            let (r, g, b) = COLORS_LIGHT[i];
+            eframe::egui::Color32::from_rgb(r, g, b)
+        }
+        None => color,
+    }
+}
+
+/// A project's letter: the first letter or digit of its name, upper case ("docs-site" → "D").
+pub fn initial(name: &str) -> String {
+    name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_else(|| "?".to_string())
+}
 
 /// Two letters from a name: the first letters of its first two words, else its first two
 /// letters, the first upper case ("docs-site" → "Ds", "infra" → "In", "x" → "X").
@@ -395,13 +426,9 @@ impl Project {
         self.parent.is_some()
     }
 
-    /// The two letters of its tile: its kind's, else its name's initials ("docs-site" → "Ds",
-    /// "infra" → "In").
+    /// The letter of its tile: its name's first ("docs-site" → "D").
     pub fn letters(&self) -> String {
-        if let Some(l) = self.kind.letters() {
-            return l.to_string();
-        }
-        initials(&self.name)
+        initial(&self.name)
     }
 
     pub fn color32(&self) -> eframe::egui::Color32 {

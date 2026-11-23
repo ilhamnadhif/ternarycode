@@ -26,12 +26,17 @@ pub fn icon(s: Status) -> &'static str {
     match s {
         Status::Idle => icons::CIRCLE,
         Status::Running => icons::CIRCLE_NOTCH,
-        Status::NeedsInput => icons::BELL_RINGING,
+        Status::NeedsInput => icons::CHAT_CIRCLE_DOTS,
         Status::Failed(_) => icons::X_CIRCLE,
         Status::Done | Status::CommandDone => icons::CHECK_CIRCLE,
-        Status::Unknown => icons::CIRCLE_HALF,
+        Status::Unknown => icons::CIRCLE,
         Status::Ended => icons::STOP,
     }
+}
+
+/// Whether the status's icon is drawn filled (Needs input, Done, Failed).
+pub fn filled(s: Status) -> bool {
+    matches!(s, Status::NeedsInput | Status::Failed(_) | Status::Done | Status::CommandDone)
 }
 
 pub fn color(s: Status, p: &Palette) -> Color32 {
@@ -45,33 +50,42 @@ pub fn color(s: Status, p: &Palette) -> Color32 {
     }
 }
 
-/// Whether the status has a glyph of its own (the lattice, a filled icon); Idle and Ended show
-/// the still lattice, Active (no hooks) a half circle.
+/// Whether the status has a glyph of its own (Ended has none).
 pub fn has_glyph(s: Status) -> bool {
     !matches!(s, Status::Ended)
 }
 
-/// Paints a status's glyph centred at `center`, about `size` across (10 for the lattice, 14 for
-/// the icons; `size` below 13 draws the small icons): Running is the moving lattice, Idle the
-/// still one, Needs input a ringing bell, Done a check, Failed a cross (filled), Active a half
-/// circle.
+/// Paints a status's glyph centred at `center`, `size` across (12 small, 14 medium): the Slate
+/// status icons. Running is a ring with a gap that turns (the only thing that moves); Idle and
+/// Active a hollow circle; Needs input a chat bubble, Done a check, Failed a cross (filled).
 pub fn paint_glyph(painter: &egui::Painter, center: egui::Pos2, s: Status, p: &Palette, size: f32) {
     let c = color(s, p);
+    let size = if size < 13.0 { 12.0 } else { 14.0 };
     match s {
-        Status::Running => super::kit::paint_lattice(painter, center, 10.0, p.info, true),
-        Status::Idle | Status::Ended => super::kit::paint_lattice(painter, center, 10.0, p.idle, false),
-        Status::Unknown => {
-            painter.circle_stroke(center, 3.8, egui::Stroke::new(1.5, p.idle));
-        }
+        Status::Running => paint_spinner(painter, center, size, c),
+        Status::Ended => {}
         _ => {
-            let icon = match s {
-                Status::NeedsInput => icons::BELL_RINGING,
-                Status::Failed(_) => icons::X_CIRCLE,
-                _ => icons::CHECK_CIRCLE,
-            };
-            painter.text(center, egui::Align2::CENTER_CENTER, icon, super::style::icon_fill(if size < 13.0 { 12.0 } else { 14.0 }), c);
+            let font = if filled(s) { super::style::icon_fill(size) } else { super::style::icon_font(size) };
+            painter.text(center, egui::Align2::CENTER_CENTER, icon(s), font, c);
         }
     }
+}
+
+/// The running glyph: Phosphor's circle-notch, drawn as an arc that turns once a second.
+pub fn paint_spinner(painter: &egui::Painter, center: egui::Pos2, size: f32, color: Color32) {
+    let t = painter.ctx().input(|i| i.time) as f32;
+    let r = size * 0.36;
+    let start = t * std::f32::consts::TAU;
+    let sweep = std::f32::consts::TAU * 0.72;
+    let n = 24;
+    let pts: Vec<egui::Pos2> = (0..=n)
+        .map(|i| {
+            let a = start + sweep * i as f32 / n as f32;
+            egui::pos2(center.x + r * a.cos(), center.y + r * a.sin())
+        })
+        .collect();
+    painter.add(egui::Shape::line(pts, egui::Stroke::new((size * 0.11).max(1.3), color)));
+    painter.ctx().request_repaint_after(std::time::Duration::from_millis(33));
 }
 
 pub fn source(src: Source) -> String {

@@ -329,9 +329,8 @@ impl App {
                             let summary = folder_summary(&typed);
                             let letters = if summary.is_some() {
                                 let dir = crate::app::absolute(&typed);
-                                let kind = crate::project::Kind::detect(&dir);
                                 let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                                kind.letters().map(str::to_string).unwrap_or_else(|| crate::project::initials(&folder))
+                                crate::project::initial(&folder)
                             } else {
                                 String::new()
                             };
@@ -352,7 +351,7 @@ impl App {
                                     .unwrap_or_else(|| {
                                         let dir = crate::app::absolute(&typed);
                                         let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                                        crate::project::initials(&folder)
+                                        crate::project::initial(&folder)
                                     });
                                 let tile = egui::Rect::from_min_size(egui::pos2(r.left() + 9.0, r.center().y - 9.0), egui::vec2(18.0, 18.0));
                                 kit::paint_project_tile(ui.painter(), tile, &letters, next_color, dark);

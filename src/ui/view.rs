@@ -366,7 +366,7 @@ impl App {
                             let cy = row.center().y;
                             let bx = egui::Rect::from_center_size(egui::pos2(row.left() + 14.0 + 8.0, cy), egui::vec2(16.0, 16.0));
                             kit::paint_checkbox(&rp, bx, on, resp.hovered(), &p);
-                            let letters = repo.kind.letters().map(str::to_string).unwrap_or_else(|| crate::project::initials(&repo.name));
+                            let letters = crate::project::initial(&repo.name);
                             let (cr, cg, cb) = crate::project::COLORS[i % crate::project::COLORS.len()];
                             let tile = egui::Rect::from_min_size(egui::pos2(bx.right() + 12.0, cy - 12.0), egui::vec2(24.0, 24.0));
                             kit::paint_project_tile(&rp, tile, &letters, egui::Color32::from_rgb(cr, cg, cb).gamma_multiply(if on { 1.0 } else { 0.55 }), dark);
