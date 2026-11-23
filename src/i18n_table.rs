@@ -1102,11 +1102,6 @@ const ID: &[(&str, &str)] = &[
     // Inbox and Overview (Slate)
     ("{} finished its turn", "{} selesai gilirannya"),
     ("{} exited with code {}", "{} keluar dengan kode {}"),
-    ("Every agent is working or done.", "Semua agent sedang bekerja atau sudah selesai."),
-    ("Nothing is running", "Tidak ada yang berjalan"),
-    ("Nothing is waiting", "Tidak ada yang menunggu"),
-    ("Open a project, or press {} to start an agent.", "Buka project, atau tekan {} untuk memulai agent."),
-    ("Show all projects", "Tampilkan semua project"),
     ("1 thing, oldest first", "1 hal, yang terlama dulu"),
     ("{} things, oldest first", "{} hal, yang terlama dulu"),
     ("Asked {} ago", "Ditanyakan {} lalu"),

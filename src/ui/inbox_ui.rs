@@ -179,10 +179,8 @@ impl App {
         super::focus::paint_sheet(ui.painter(), sheet, &p, super::focus::SheetLook::Plain);
         let keys_free = self.inbox_keys_free(ui);
         if total == 0 {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(sheet), |ui| {
-                let body = tf("Questions, failures and finished turns show up here. {} jumps to the next one from anywhere.", &[kit::keys(&Action::NextAttention).unwrap_or("⌘J")]);
-                kit::empty_state(ui, icons::TRAY, t("Nothing waits for you"), &body, |_| {});
-            });
+            let body = tf("Questions, failures and finished turns show up here. {} jumps to the next one from anywhere.", &[kit::keys(&Action::NextAttention).unwrap_or("⌘J")]);
+            kit::empty_state_at(ui, sheet, icons::TRAY, t("Nothing waits for you"), &body, None);
             if keys_free && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.actions.push(Action::SetView(self.inbox_back()));
             }
@@ -279,6 +277,10 @@ impl App {
     /// filter (All, Needs you, Finished, each with its count).
     pub(super) fn inbox_toolbar(&mut self, ui: &mut Ui) {
         let items = self.inbox_items();
+        // Nothing waits: nothing to filter or mark.
+        if items.is_empty() {
+            return;
+        }
         let needs = items.iter().filter(|i| i.kind.needs_you()).count();
         let finished = items.len() - needs;
         let all = kit::button_ex(ui, kit::Kind::Ghost, Some(icons::CHECKS), t("Mark all seen"), false);
@@ -303,7 +305,7 @@ impl App {
         ];
         let filters = [InboxFilter::All, InboxFilter::NeedsYou, InboxFilter::Finished];
         let on = filters.iter().position(|f| *f == self.inbox_filter).unwrap_or(0);
-        let r = ui.scope(|ui| kit::segmented(ui, &options, on));
+        let r = ui.push_id("inbox-filter", |ui| kit::segmented(ui, &options, on));
         #[cfg(debug_assertions)]
         for (rect, name) in super::grid::word_segments(ui, r.response.rect, &labels).into_iter().zip(["inbox:all", "inbox:needs", "inbox:finished"]) {
             crate::devtest::record(name, rect);
@@ -597,13 +599,7 @@ impl App {
             InboxFilter::Finished => (t("Nothing has finished"), t("Finished turns and long commands show up here.")),
             _ => (t("Nothing needs you"), t("Questions, failures and usage limits show up here.")),
         };
-        let mut all = false;
-        ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-            kit::empty_state(ui, icons::CHECK_CIRCLE, title, body, |ui| {
-                all = kit::button_ex(ui, kit::Kind::Secondary, None, t("Show all"), true).clicked();
-            });
-        });
-        if all {
+        if kit::empty_state_at(ui, area, icons::CHECK_CIRCLE, title, body, Some((None, t("Show all"), None))).is_some_and(|r| r.clicked()) {
             self.inbox_filter = InboxFilter::All;
         }
     }

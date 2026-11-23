@@ -247,6 +247,7 @@ impl App {
     pub fn grid_view(&mut self, ui: &mut Ui) {
         // The tiles are sheets on the window's base, as the Focus view's panes.
         let area = super::focus::sheets_area(ui.max_rect(), self.settings.sidebar_hidden);
+        ui.data_mut(|d| d.remove::<Vec<Rect>>(egui::Id::new("grid-feet")));
         let ids = self.shown_projects(ui.ctx());
         if ids.is_empty() {
             self.nothing_active(ui, area);
@@ -344,7 +345,12 @@ impl App {
         let text = tf("{} more below", &[&below.to_string()]);
         let g = ui.painter().layout_no_wrap(text, egui::FontId::proportional(style::SMALL), p.text);
         let w = 14.0 + 11.0 + 6.0 + g.size().x + 14.0;
-        let pill = Rect::from_center_size(pos2(visible.center().x, visible.bottom() - 18.0 - 13.0), vec2(w, 26.0));
+        let mut pill = Rect::from_center_size(pos2(visible.center().x, visible.bottom() - 18.0 - 13.0), vec2(w, 26.0));
+        // Above the notices at the foot of the tiles it would cover.
+        let feet: Vec<Rect> = ui.data(|d| d.get_temp(egui::Id::new("grid-feet"))).unwrap_or_default();
+        if let Some(top) = feet.iter().filter(|f| f.x_range().intersects(pill.x_range()) && f.y_range().intersects(pill.y_range())).map(|f| f.top()).reduce(f32::min) {
+            pill = pill.translate(vec2(0.0, top - 8.0 - pill.bottom()));
+        }
         let r = ui.interact(pill, egui::Id::new("grid-more-below"), Sense::click());
         #[cfg(debug_assertions)]
         crate::devtest::record("grid-more", pill);
@@ -1290,6 +1296,7 @@ impl App {
         if let Foot::Resume(id) = kind {
             let rect = Rect::from_min_max(pos2(area.left(), area.bottom() - kit::NOTICE_H), area.max);
             self.resume_banner(ui, id, rect, true);
+            note_foot(ui, rect);
             #[cfg(debug_assertions)]
             {
                 let (dismiss, resume, _) = notice_buttons(ui, rect, Some((t("Resume session"), Some("↵"))), None, true);
@@ -1400,6 +1407,7 @@ impl App {
             }
             Foot::Resume(_) => {}
         }
+        note_foot(ui, rect);
         rect.top()
     }
 }
@@ -1435,6 +1443,11 @@ fn notice_buttons(ui: &Ui, rect: Rect, primary: Option<(&str, Option<&str>)>, se
     let p = primary.map(|(label, keys)| at(kit::button_width(ui, None, label, keys, true)));
     let s = secondary.map(|label| at(kit::button_width(ui, None, label, None, true)));
     (d, p, s)
+}
+
+/// Notes where a tile's foot notice is this frame (the "more below" pill keeps off them).
+fn note_foot(ui: &Ui, rect: Rect) {
+    ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<Rect>>(egui::Id::new("grid-feet")).push(rect));
 }
 
 /// The terminal style of a tile: the Focus view's, in the data font's size (`TILE_FONT`).

@@ -1591,7 +1591,7 @@ impl App {
         ];
         let filters = [GridFilter::All, GridFilter::Active, GridFilter::Waiting];
         let on = filters.iter().position(|f| *f == self.grid_filter).unwrap_or(0);
-        let r = ui.scope(|ui| kit::segmented(ui, &options, on));
+        let r = ui.push_id("grid-filter", |ui| kit::segmented(ui, &options, on));
         #[cfg(debug_assertions)]
         for (rect, name) in super::grid::word_segments(ui, r.response.rect, &labels).into_iter().zip(["grid:all", "grid:active", "grid:waiting"]) {
             crate::devtest::record(name, rect);
