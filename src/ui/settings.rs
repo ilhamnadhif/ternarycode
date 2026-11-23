@@ -69,7 +69,7 @@ const NAV: [Option<(SettingsPage, &str, &str)>; 12] = [
 /// accounts and presets, is matched by `App::page_matches`).
 fn page_rows(page: SettingsPage) -> &'static [&'static str] {
     match page {
-        SettingsPage::General => &["Command line", "Data folder", "Group active projects at the top", "Worktrees", "Where new worktrees go", "Branch names start with", "When a branch is merged"],
+        SettingsPage::General => &["Command line", "Data folder", "Worktrees", "Where new worktrees go", "Branch names start with", "When a branch is merged"],
         SettingsPage::Appearance => &["Theme", "Language", "Terminal colours", "Dark theme", "Light theme", "Terminal text", "Font", "Size", "Cursor", "Blinking cursor"],
         SettingsPage::Terminal => {
             if cfg!(target_os = "macos") {
@@ -641,7 +641,7 @@ impl App {
         let p = style::pal(ui);
         let cli_note = tf("Type {} in any terminal to open that folder here.", &["ternarycode ."]);
         let dir = crate::paths::contract_tilde(crate::paths::data_dir());
-        let labels = [(t("Command line"), cli_note.as_str()), (t("Data folder"), dir.as_str()), (t("Group active projects at the top"), "")];
+        let labels = [(t("Command line"), cli_note.as_str()), (t("Data folder"), dir.as_str())];
         section(ui, search, None, None, &labels, |c| {
             c.row(t("Command line"), &cli_note, |ui| match crate::cli::installed() {
                 Some(path) => {
@@ -674,9 +674,6 @@ impl App {
                 if kit::button_ex(ui, kit::Kind::Secondary, None, label, true).clicked() {
                     crate::platform::reveal(crate::paths::data_dir());
                 }
-            });
-            c.row(t("Group active projects at the top"), t("In the sidebar, projects where something runs or waits come first, under Active."), |ui| {
-                kit::switch(ui, &mut self.settings.group_active);
             });
         });
 

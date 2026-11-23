@@ -514,8 +514,9 @@ pub struct Settings {
     /// Where new worktrees go and what their branches are called.
     #[serde(default)]
     pub worktrees: WorktreeSettings,
-    /// The sidebar lists projects where something runs or waits first, under "Active".
-    #[serde(default = "yes")]
+    /// Unused since Slate (the sidebar keeps the order the user chose). Kept so older settings
+    /// files still read.
+    #[serde(default)]
     pub group_active: bool,
     /// Web pages (server chips, links clicked in terminals, HTML files) open in a browser pane
     /// beside the terminals, not in the default browser.
@@ -635,7 +636,7 @@ impl Default for Settings {
             skip_permissions: Vec::new(),
             shell_integration: true,
             check_updates: true,
-            group_active: true,
+            group_active: false,
             browser_here: true,
             browser_sleep_minutes: 10,
             browser_agents: true,
