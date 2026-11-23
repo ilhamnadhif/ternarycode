@@ -538,6 +538,7 @@ impl App {
         // A click on the notice gives it the keyboard: Enter hands the page back.
         let keys = notice_keys(ui, rect, egui::Id::new(("browser-agent-keys", id)));
         let out = ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| kit::notice(ui, width, tone, Some(glyph), &title, Some(&body), primary, secondary, false)).inner;
+        #[cfg_attr(not(debug_assertions), allow(unused_variables))]
         let (pr, sr) = notice_buttons(ui, rect, primary, secondary);
         if let Some(r) = pr {
             ui.interact(r, egui::Id::new(("browser-hand-back-tip", id)), Sense::hover()).on_hover_text(tf("Hand back to {}", &[&d.who]));
@@ -571,6 +572,7 @@ impl App {
         let primary = Some((t("Allow once"), Some("↵")));
         let secondary = Some(t("Block"));
         // Where it is too narrow for the whole line, its end ("⌘↵ always") stays.
+        #[cfg_attr(not(debug_assertions), allow(unused_variables))]
         let (pr, sr) = notice_buttons(ui, rect, primary, secondary);
         let body = tf("{} · not on your list of sites · {} always", &[project, always_keys]);
         let room = sr.or(pr).map_or(rect.right() - 8.0, |b| b.left() - 6.0) - (rect.left() + 38.0) - 8.0;
@@ -1840,6 +1842,8 @@ pub(crate) struct FindOut {
     pub close: bool,
     /// Its field has the keyboard.
     pub focused: bool,
+    /// Where its field is (for the dev scripts' clicks).
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub field: Rect,
 }
 
