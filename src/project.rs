@@ -81,7 +81,7 @@ pub struct Panel {
 }
 
 /// The share of the area a panel takes by default, and its bounds.
-pub const PANEL_SHARE: f32 = 0.42;
+pub const PANEL_SHARE: f32 = 0.5;
 /// The least width a panel gets (a page narrower than this is a phone's).
 pub const PANEL_MIN: f32 = 440.0;
 
@@ -788,9 +788,9 @@ mod tests {
 
         // Hidden, or no page: the panes have it all.
         assert_eq!(place_panel(body, &Panel::default(), &one, room), PanelPlace::without(body));
-        // One terminal: beside it, 42% (at least 440).
+        // One terminal: beside it, half the area (at least 440).
         let p = place_panel(body, &shown, &one, room);
-        assert_eq!(p.panel.map(|r| r.width()), Some(440.0));
+        assert_eq!(p.panel.map(|r| r.width()), Some(520.0));
         assert!(!p.stacked && !p.float && p.panes.right() < p.panel.unwrap().left());
         // Two side by side: they don't fit beside it, stacked they do.
         let p = place_panel(body, &shown, &two, room);
