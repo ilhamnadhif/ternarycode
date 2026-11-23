@@ -2554,7 +2554,8 @@ impl App {
                 }
                 Some(id)
             }
-            (Some(0), None) => self.new_tab(ctx),
+            // Run Agent's "New tab" (3), even when this tab's shell is idle.
+            (Some(0 | 3), _) => self.new_tab(ctx),
             (Some(2), _) => self.split(ctx, SplitDir::Vertical),
             (Some(_), _) => self.split(ctx, SplitDir::Horizontal),
             (None, None) if crowded => self.new_tab(ctx),
@@ -2800,7 +2801,8 @@ impl App {
         for project in &self.projects {
             for id in project.panes() {
                 if let Some(what) = self.panes.get(&id).and_then(Pane::busy_with) {
-                    out.push(Busy { text: format!("{} · {what}", self.project_label(project.id)), file: false });
+                    // "Claude Code · storefront": the dialog lists the program, its project at the right.
+                    out.push(Busy { text: format!("{what} · {}", self.project_label(project.id)), file: false });
                 }
             }
         }
