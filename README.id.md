@@ -5,8 +5,8 @@
 <h1 align="center">TernaryCode</h1>
 
 <p align="center">
-  <b>Satu Agent Development Environment (ADE) native untuk semua project dan AI coding agent Anda.</b><br>
-  Editor kode lebar, riwayat sesi di dalam tree project, multi-akun dengan batas 5 jam &amp; mingguan + pindah akun 1-klik, monitor pemakaian live, dan companion ponsel — ditulis dengan Rust untuk macOS, Windows, dan Linux.
+  <b>Satu workspace native untuk semua project dan AI coding agent Anda.</b><br>
+  Terminal di depan, status setiap agent sekilas pandang, satu Inbox untuk semua yang menunggu Anda, failover multi-akun dengan batas 5 jam &amp; mingguan yang asli, browser yang bisa dikendalikan agent, dan companion ponsel — ditulis dengan Rust untuk macOS, Windows, dan Linux.
 </p>
 
 <p align="center">
@@ -26,21 +26,21 @@
   <a href="README.md">English</a>
 </p>
 
-![Editor Kode lebar di viewport utama dengan riwayat sesi agent di dalam sidebar project (Claude Code, Codex, Antigravity CLI) dan Panel Terminal yang dapat dilipat di bawah](docs/screenshots/focus.png)
+![Claude Code minta izin menjalankan perintah di storefront: pane diberi cincin kuning, notice menawarkan Reject dan Approve, dan sidebar, Inbox, serta status bar ikut menghitungnya](docs/screenshots/focus.png)
 
-Menjalankan **Claude Code**, **ChatGPT / Codex**, **Antigravity CLI (`agy`)**, atau **OpenCode** di banyak project biasanya berarti jendela terminal berserakan, repot logout-login ulang saat kuota akun habis, dan bingung agent mana yang sedang menunggu. TernaryCode menyatukan semua project, sesi, akun, dan editor dalam satu aplikasi native Rust yang cepat.
+Menjalankan **Claude Code**, **Codex**, **Antigravity CLI (`agy`)**, atau **OpenCode** di banyak project biasanya berarti jendela terminal berserakan, logout-login ulang saat kuota akun habis, dan menebak agent mana yang sedang menunggu. TernaryCode menyatukan semua project, sesi, akun, dan halaman web dalam satu aplikasi native yang cepat.
 
-Tanpa Electron dan tanpa server perantara: terbuka ~0,2 detik, CPU 0% saat diam, dan seluruh kredensial tetap lokal di mesin Anda.
+Tanpa Electron dan tanpa server perantara: terbuka ~0,2 detik, CPU 0% saat diam, dan semua kredensial tetap di mesin Anda.
 
 ## Sorotan
 
-- **Editor Kode Lebar & Panel Terminal Fleksibel**: Code Editor & Diff Viewer mengisi viewport utama (≥60% secara default), sementara Terminal, Agent Logs, dan LSP Problems berada di panel bawah/kanan yang bisa dilipat (`⇧⌘L`).
-- **Riwayat Sesi di Dalam Tree Project**: klik panah `›` pada project mana pun di sidebar untuk melihat sesi aktif & riwayat **Claude Code, Codex, dan Antigravity CLI (`agy`)** dengan logo asli, tampilan ringkas 3 baris (`N more…` / `Show less`), dan resume 1-klik.
-- **Profil Multi-Akun & Kuota 5 Jam / Mingguan Asli**: daftarkan banyak akun **Claude Code** & **ChatGPT / Codex** (`claude1`, `claude2`, `chatgpt1`, `chatgpt2`) dengan folder auth terisolasi, geser urutan prioritas dengan mouse (drag-and-drop), dan pantau persentase kuota & waktu reset langsung dari server. Pindah akun **1-klik tanpa logout/login ulang**, atau aktifkan failover Auto/Manual Resume saat akun kena limit.
-- **Monitor Pemakaian & Status Semua Agent**: pill telemetri live di top bar, popover cepat dengan tombol Switch 1-klik, dan halaman penuh yang memantau kuota **5 jam** & **mingguan**, hitung mundur reset, sesi aktif, serta log failover.
-- **Pairing Ponsel & Mobile Companion**: pindai kode QR lewat Wi-Fi lokal atau tunnel aman untuk memantau output agent secara live, menyetujui tool, mengirim prompt lanjutan, dan memindah akun dari HP.
-- **Tahu Agent Mana yang Butuh Anda**: status berbasis hook (*Butuh input*, *Berjalan*, *Selesai*, *Gagal*), lompatan `⌘J`, dan **Grid** (`⌘0`) live untuk semua project.
-- **Riwayat Commit, Integrasi GitHub & GitLab, Browser, & Dokumen**: telusuri log commit & diff per commit (`Files | Changes | History`), fetch remote, lihat daftar **GitHub PR** (`gh`) & **GitLab MR** (`glab`) aktif, commit/push/PR/MR 1 tombol, browser bawaan, serta penampil PDF/Office/CSV/gambar.
+- **Terminal adalah panggung utama.** Tab dan pane terbelah per project; setiap pane menunjukkan apa yang berjalan, statusnya, berapa lama, dan akun yang dipakai. Changes, Files, History, dan Browser terbuka di satu panel di sampingnya (`⇧⌘L`, `⇧⌘E` untuk memenuhi jendela).
+- **Tahu agent mana yang butuh Anda.** Status *Needs input*, *Running*, *Done*, dan *Failed* dari hook agent; pertanyaan muncul sebagai notice dengan **Approve ↵** langsung di pane. **Inbox** berisi semua yang menunggu, `⌘J` melompat ke yang berikutnya.
+- **Semua project sekaligus.** **Overview** (`⌘0`) menampilkan terminal live (dan halaman web) setiap project dalam ubin; ketik langsung di ubin mana pun.
+- **Akun tanpa repot logout.** Beberapa akun Claude Code dan Codex dengan login terpisah, pemakaian 5 jam dan mingguan asli dari server, dan failover 1-klik (atau otomatis) yang melanjutkan percakapan yang sama di akun berikutnya.
+- **Browser yang bisa dikendalikan agent** — WebKit, WebView2, atau WebKitGTK — sementara Anda menonton, plus PDF, Word, PowerPoint, Excel, CSV, dan gambar di tempat.
+- **Review lalu kirim.** Diff per run, per branch, atau per commit, pesan commit ditulis dari tugas agent, dan Commit & Push / pull request dengan satu tombol. Worktree memberi tiap agent branch sendiri.
+- **Ponsel Anda** mengikuti agent lewat Wi-Fi: output live, Approve/Reject, instruksi lanjutan, dan pindah akun.
 
 ## Instalasi
 
@@ -60,93 +60,87 @@ Unduh dari [rilis terbaru](https://github.com/ilhamnadhif/ternarycode/releases/l
 curl -fsSL https://raw.githubusercontent.com/ilhamnadhif/ternarycode/main/scripts/install.sh | bash
 ```
 
+Installer memeriksa SHA-256 dan tanda tangan unduhan, lalu memasangnya di `/Applications`.
+
 > [!IMPORTANT]
 > Build belum di-notarize atau ditandatangani. Di macOS, `.dmg` dari browser diblokir: pakai installer di atas atau **System Settings → Privacy & Security → Open Anyway**. Di Windows, SmartScreen bertanya sekali: **More info → Run anyway**.
 
-Di Linux, TernaryCode butuh OpenGL dan glibc 2.28+; panel Browser butuh WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`).
+Di Linux, TernaryCode butuh OpenGL (renderer software juga bisa) dan glibc 2.28+; Browser butuh WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`).
+
+TernaryCode memperbarui dirinya sendiri (`.deb`, `.rpm`, dan `.zip` portabel lewat paket baru).
 
 ## Mulai cepat
 
-1. **Tambah project**: klik **+** di sidebar, jatuhkan folder ke jendela, atau jalankan `ternarycode .` di terminal.
-2. **Daftarkan akun sejak awal** (opsional): buka **Profil** (ikon 👤 di kiri bawah), klik **+ Add Profile**, pilih **Claude Code** atau **ChatGPT / Codex**, seret kartu untuk mengatur urutan prioritas, lalu klik **Auth Login** sekali per akun. Setiap akun login di folder privat `0o700` masing-masing tanpa saling menimpa.
-3. **Jalankan Agent** (`⇧⌘A`): mulai Claude Code, Codex, Antigravity CLI (`agy`), atau OpenCode. Buka dropdown project di sidebar kapan saja untuk melanjutkan sesi lama dengan 1 klik.
-4. **Pindah akun instan**: klik tombol `⇄ <akun_berikutnya>` langsung di header pane untuk pindah akun tanpa logout, atau tekan `⌘J` untuk lompat ke agent yang menunggu.
+1. **Tambah project**: **+** di sidebar, jatuhkan folder ke jendela, atau jalankan `ternarycode .` di terminal mana pun.
+2. **Jalankan agent** (`⇧⌘A`): Claude Code, Codex, Antigravity CLI, atau OpenCode, di tab baru, tab ini, atau worktree baru — atau lanjutkan salah satu sesi sebelumnya.
+3. **Jawab di tempat ia bertanya**: Approve atau Reject di pane, atau `⌘J` ke agent berikutnya yang menunggu. Semua yang menunggu ada di **Inbox**.
+4. **Tambahkan akun lain** (opsional): **Settings → Accounts → Add account**, login sekali per akun, geser untuk mengatur urutan failover.
 
 ## Fitur
 
-### Editor Kode Lebar & Sesi Tersemat di Project
+### Workspace
 
-- **Workspace fokus kode**: Code Editor (`⌘E`) tampil lebar dengan split yang bisa digeser mulus, integrasi LSP (rust-analyzer, gopls, TypeScript, pyright, clangd…), serta penanda baris berubah dari git.
-- **Panel Terminal yang bisa dilipat** (`⇧⌘L`): tempel Terminal, Log Agent, dan Problems di bawah atau kanan, maksimalkan saat perlu, atau sembunyikan saat membaca kode.
-- **Riwayat sesi di dalam tree project**: buka project mana pun di sidebar (`›`) untuk melihat sesi aktif (`● live`) dan sesi sebelumnya dari **Claude Code**, **Codex**, dan **Antigravity CLI** (`agy --conversation <id>`) — sekali klik langsung fokus atau resume.
+![Changes di samping terminal: file yang diubah run ini, diff per hunk, dan pesan commit yang ditulis dari tugas agent](docs/screenshots/changes.png)
 
-### Profil Multi-Akun, Batas 5 Jam & Mingguan, & Pindah Akun 1-Klik
+- **Sidebar**: Search (`⌘K` mencari apa saja), Inbox, Overview, lalu project Anda dengan urutan yang Anda pilih (`⌥⌘↑` / `⌥⌘↓`, `⌘1`–`⌘9`). Project terpilih menampilkan sesi dan worktree-nya; akun yang dipakai tampil di bawah sebagai satu meter.
+- **Pane** dengan header yang jujur: agent, statusnya, apa yang dikerjakan atau ditanyakan, timer, dan akun (bisa diganti dari situ). Notice di dalam pane untuk pertanyaan, batas pemakaian, sesi yang bisa dilanjutkan, dan shell yang berakhir.
+- **Panel kanan**: **Changes** (run ini, branch, commit terakhir), **Files** (tree dan editor dengan language server), **History** (commit, pull request, fetch), **Browser**. `⇧⌘E` memenuhi jendela; `⌥⌘Z` (Zen) hanya menampilkan terminal.
+- **Command palette** (`⌘K`): project, sesi (live dan yang bisa dilanjutkan), file, output setiap pane, dan semua perintah.
 
-![Profil Agent & Failover menampilkan 6 akun terdaftar untuk Claude Max, ChatGPT Plus, dan Antigravity CLI lengkap dengan meter batas 5 jam & mingguan serta folder auth terisolasi](docs/screenshots/profiles.png)
+### Inbox dan Overview
 
-- **Tanpa logout-login ulang**: daftarkan banyak akun **Claude Code** & **ChatGPT / Codex** (`claude1`, `claude2`, `chatgpt1`, `chatgpt2`) sejak awal dan seret urutan prioritas fallback dengan mouse. Setiap profil punya `CLAUDE_CONFIG_DIR` atau `CODEX_HOME` berbasis file (`auth.json`) sendiri sehingga login tidak pernah bentrok.
-- **Meter Batas 5 Jam & Mingguan Akurat**: menampilkan pemakaian **jendela 5 jam** dan **mingguan (7 hari) / 30 hari** — membaca persentase, paket, dan waktu reset resmi langsung dari server Claude Code (`cachedUsageUtilization`) dan Codex (`rate_limits.primary` / `secondary`, `plan_type`).
-- **Pindah Akun Live 1-Klik & Failover**: klik tombol `⇄` di header pane agent kapan saja — atau biarkan **Auto-Resume** / **Manual Resume** mengambil alih saat kena limit. Perpindahan sesama provider otomatis menyalin file sesi dan melakukan `--resume` dengan riwayat utuh; lintas provider membuat ringkasan *handoff* dengan penyensoran secret otomatis.
+![Inbox: semua yang menunggu Anda, dengan pertanyaan agent, baris terakhir terminalnya, serta Approve, Reject, Open pane](docs/screenshots/inbox.png)
 
-![Banner pemulihan Rate Limit inline dengan tombol 1-klik Resume on claude2, chatgpt1, atau chatgpt2](docs/screenshots/editor.png)
+![Overview: terminal live setiap project berdampingan](docs/screenshots/overview.png)
 
-### Monitor Pemakaian & Status Semua Agent
+### Akun dan pemakaian
 
-![Monitor Pemakaian & Status menampilkan total token 5 jam dan mingguan, bar kuota ganda per akun, sesi aktif, dan log failover live](docs/screenshots/monitor.png)
+![Settings → Accounts: akun sesuai urutan failover dengan pemakaian 5 jam dan mingguan, kebijakan batas, dan kejadian terbaru](docs/screenshots/accounts.png)
 
-- Klik pill telemetri di top bar untuk melihat status live setiap akun (`Running`, `Idle`, `Rate-Limited`, `Cooldown`, `Error`), meter **5 jam** & **mingguan**, hitung mundur reset, dan tombol **Pindah** 1-klik tanpa meninggalkan kode.
-- Buka **Tampilan Penuh** untuk ringkasan **Token 5 Jam**, **Token Mingguan**, akun sehat, tautan cepat sesi aktif, dan log failover.
+- Daftarkan beberapa akun **Claude Code** dan **Codex**; masing-masing punya folder login sendiri (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`).
+- Pemakaian asli: persentase 5 jam dan mingguan, paket, dan waktu reset, sesuai laporan agent.
+- Saat sebuah akun kena batas, pane memberi tahu dan menawarkan **Resume on** akun sehat berikutnya — atau failover melakukannya untuk Anda dan melanjutkan percakapan yang sama.
 
-### Pairing Ponsel & Mobile Companion
+### Browser dan dokumen
 
-![Halaman Pairing Ponsel dengan kode QR, kode pairing, pengaturan Wi-Fi lokal / tunnel aman, dan daftar perangkat iPhone terhubung](docs/screenshots/pairing.png)
+![Agent mengklik halaman di panel Browser sementara terminal tetap berjalan](docs/screenshots/browser.png)
 
-- Aktifkan **Server Mobile Companion** bawaan (Wi-Fi lokal atau tunnel Cloudflare / Tailscale / ngrok) lalu pindai kode QR dengan kamera HP.
-- Setiap perangkat mendapat token bearer yang bisa dicabut kapan saja (lengkap dengan rate-limit brute-force dan redaksi secret). Pantau output live lewat SSE, setujui/tolak tool, kirim prompt lanjutan, dan ganti akun langsung dari ponsel.
+- Web view native yang dikendalikan agent lewat tool MCP (navigasi, klik, ketik, baca, screenshot) sementara Anda menonton; ambil alih kapan saja.
+- PDF, Word, PowerPoint, Excel, CSV (sebagai tabel), dan gambar terbuka di panel Files, di samping agent yang membuatnya.
 
-### Review, Worktree, Grid, Browser & Dokumen
+### Ponsel
 
-![Tampilan Review diff dengan checkbox vektor tajam dan tombol Commit 1-klik di samping agent](docs/screenshots/review.png)
-
-- **Riwayat Commit, Review, & Integrasi GitHub / GitLab** (`⇧⌘R`, `⇧⌘C`): beralih mulus antara **Files | Changes | History** untuk melihat diff unified/berdampingan, menelusuri riwayat commit & diff tiap commit, fetch remote, melihat daftar **GitHub PR** (`gh`) & **GitLab MR** (`glab`) aktif, serta commit, push, atau buat PR/MR dalam satu tombol.
-- **Grid** (`⌘0`): pantau semua project berdampingan dalam terminal sungguhan.
-- **Panel Browser** (`⇧⌘B`): web view sistem (WebKit, WebView2, WebKitGTK) yang bisa dioperasikan agent sambil Anda pantau atau ambil alih kapan saja.
-- **Dokumen Langsung Terbuka**: PDF, Word, PowerPoint, Excel, CSV (sebagai tabel interaktif), dan gambar langsung di samping agent.
-
-![Tampilan Grid live semua project berdampingan](docs/screenshots/grid.png)
-
-![Laporan CSV terbuka sebagai tabel interaktif di dalam workspace](docs/screenshots/docs.png)
+Nyalakan **Settings → Phone**, pindai kode QR, dan ikuti setiap agent dari ponsel di Wi-Fi yang sama (atau tunnel Anda sendiri): output live, Approve / Reject, instruksi lanjutan, dan pindah akun. Setiap ponsel mendapat token sendiri yang bisa dicabut.
 
 ## Shortcut keyboard
 
-Di Windows dan Linux, `⌘` menjadi `Ctrl+Shift` (`⌥` tetap `Alt`), sehingga `Ctrl+C` tetap sampai ke terminal. Command palette (`⌘K`) menampilkan semuanya.
+Di Windows dan Linux, `⌘` adalah `Ctrl+Shift` (`⌥` tetap `Alt`), jadi `Ctrl+C` tetap sampai ke terminal. Command palette (`⌘K`) berisi semuanya.
 
 | macOS | Windows, Linux | |
 | --- | --- | --- |
-| `⌘J` · `⇧⌘J` | `Ctrl+Shift+J` · `Ctrl+Alt+J` | agent menunggu berikutnya · kembali |
 | `⌘K` · `⌘P` | `Ctrl+Shift+K` · `Ctrl+Shift+P` | command palette · pindah project |
+| `⌘J` · `⇧⌘J` | `Ctrl+Shift+J` · `Ctrl+Alt+J` | agent berikutnya yang menunggu · kembali |
 | `⇧⌘A` | `Ctrl+Shift+A` | jalankan agent |
-| `⌘0` | `Ctrl+Shift+0` | Grid |
-| `⌘E` · `⇧⌘L` | `Ctrl+Shift+Y` · `Ctrl+Shift+L` | Editor Kode · Panel Terminal |
-| `⌘O` · `⌘S` | `Ctrl+Shift+O` · `Ctrl+Shift+S` | buka file · simpan |
+| `⌘0` | `Ctrl+Shift+0` | Overview |
+| `⇧⌘R` · `⌘E` · `⇧⌘B` | `Ctrl+Shift+R` · `Ctrl+Shift+Y` · `Ctrl+Shift+Alt+B` | Changes · Files · Browser |
+| `⇧⌘L` · `⇧⌘E` | `Ctrl+Shift+L` · `Ctrl+Alt+E` | tampilkan/sembunyikan panel · penuhi jendela |
+| `⇧⌘C` | `Ctrl+Shift+Alt+C` | commit, push & pull request |
 | `⌘T` · `⌘W` | `Ctrl+Shift+T` · `Ctrl+Shift+W` | tab baru · tutup pane |
-| `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | bagi ke kanan · ke bawah |
-| `⇧⌘R` · `⇧⌘C` | `Ctrl+Shift+R` · `Ctrl+Shift+Alt+C` | review perubahan · commit, push & PR |
-| `⇧⌘B` | `Ctrl+Shift+Alt+B` | panel Browser |
+| `⌘D` · `⇧⌘D` | `Ctrl+Shift+D` · `Ctrl+Shift+E` | belah kanan · bawah |
 | `⌘F` · `⇧⌘F` | `Ctrl+Shift+F` · `Ctrl+Shift+G` | cari · di semua pane |
-| `⌘B` · `⌥⌘B` | `Ctrl+Shift+B` · `Ctrl+Alt+B` | sidebar · sidebar sempit |
-| `⌘1`–`⌘9` | `Ctrl+Shift+1`–`9` | project 1–9 |
+| `⌘B` · `⌥⌘B` · `⌥⌘Z` | `Ctrl+Shift+B` · `Ctrl+Alt+B` · `Ctrl+Alt+Z` | sidebar · sidebar sempit · Zen |
+| `⌘1`–`⌘9` · `⌥⌘↑` `⌥⌘↓` | `Ctrl+Shift+1`–`9` · `Ctrl+Alt+↑` `↓` | project 1–9 · pindahkan project |
 
 ## Kalau ada masalah
 
-- **Agent hanya menampilkan *Active*.** Agent dijalankan manual tanpa hook: pakai **Run Agent**, atau pasang hook di **Settings → Agents**.
+- **Pane agent bertuliskan *Not connected*.** Agent dijalankan manual tanpa hook: klik untuk menghubungkan, pakai **Run agent**, atau pasang hook di **Settings → Agents**.
 - **Windows: "running scripts is disabled".** Jalankan `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` sekali, atau pasang PowerShell 7 (`winget install Microsoft.PowerShell`).
-- **Linux: jendela tetap kosong.** Pastikan OpenGL berjalan; `LIBGL_ALWAYS_SOFTWARE=1 ternarycode` memakai renderer software Mesa.
-- Masalah lain: [buka issue](https://github.com/ilhamnadhif/ternarycode/issues).
+- **Linux: jendela tetap kosong.** Periksa OpenGL; `LIBGL_ALWAYS_SOFTWARE=1 ternarycode` memakai renderer software Mesa.
+- Lainnya: [buka issue](https://github.com/ilhamnadhif/ternarycode/issues) dengan versi, sistem, dan langkah-langkahnya.
 
 ## Privasi
 
-Tanpa akun cloud, tanpa telemetri. TernaryCode hanya menghubungi GitHub untuk memeriksa pembaruan (opsional); Mobile Companion berjalan lokal di jaringan Anda dengan token per perangkat yang bisa dicabut dan redaksi secret otomatis. Pengaturan dan profil terisolasi disimpan di `~/Library/Application Support/ternarycode` (macOS), `%APPDATA%\ternarycode` (Windows), atau `~/.local/share/ternarycode` (Linux).
+Tanpa akun cloud, tanpa telemetri. TernaryCode hanya memeriksa GitHub untuk pembaruan aplikasi (opsional); pull request lewat `gh` / `glab` milik Anda sendiri; companion ponsel tetap di jaringan Anda (atau tunnel Anda sendiri) dengan token per perangkat yang bisa dicabut dan rahasia disensor dari yang dialirkan. Pengaturan dan folder akun ada di `~/Library/Application Support/ternarycode` (macOS), `%APPDATA%\ternarycode` (Windows), atau `~/.local/share/ternarycode` (Linux).
 
 ## Build dari source
 
@@ -155,9 +149,11 @@ cargo build --release       # ternarycode dan ternarycode-hook, berdampingan
 ./target/release/ternarycode
 ```
 
-Sebelum pull request, jalankan `cargo clippy --locked --workspace --all-targets -- -D warnings` dan `cargo test --locked --workspace` (serta `scripts/e2e.sh` di macOS). Kode diformat manual: mohon jangan jalankan `cargo fmt` untuk seluruh file.
+Sebelum pull request, jalankan: `cargo clippy --locked --workspace --all-targets -- -D warnings` dan `cargo test --locked --workspace` (plus `scripts/e2e.sh` di macOS). Kode diformat manual: jangan jalankan `cargo fmt` untuk seluruh file.
 
-Dibuat dengan [egui](https://github.com/emilk/egui), [alacritty_terminal](https://github.com/alacritty/alacritty), dan [wry](https://github.com/tauri-apps/wry). Font: Inter dan JetBrains Mono (SIL OFL 1.1), ikon Phosphor (MIT).
+Dibangun dengan [egui](https://github.com/emilk/egui), [alacritty_terminal](https://github.com/alacritty/alacritty), dan [wry](https://github.com/tauri-apps/wry). Font: Inter dan JetBrains Mono (SIL OFL 1.1), ikon Phosphor (MIT).
+
+TernaryCode adalah bagian dari keluarga Ternary bersama [TernaryGrid](https://github.com/ilhamnadhif/ternarygrid) (SQL), [TernaryWire](https://github.com/ilhamnadhif/ternarywire) (API), dan [TernaryShell](https://github.com/ilhamnadhif/ternaryshell) (SSH).
 
 ## Lisensi
 

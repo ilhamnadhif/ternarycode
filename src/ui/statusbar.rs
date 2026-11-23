@@ -59,7 +59,7 @@ impl App {
                 crate::devtest::record("status-running", r.rect);
                 r.on_hover_text(t("Agents at work in every project"));
                 let r = if waiting > 0 {
-                    let keys = kit::keys(&Action::BackAttention);
+                    let keys = kit::keys(&Action::NextAttention);
                     bar_item(ui, |painter, at| status::paint_glyph(painter, at, Status::NeedsInput, &p, 12.0), &tf("{} waiting", &[&waiting.to_string()]), style::medium(style::SMALL), p.warn, keys)
                 } else {
                     bar_item(ui, |painter, at| { painter.text(at, Align2::CENTER_CENTER, icons::CHECK, style::icon_font(12.0), p.text_faint); }, t("Nothing waiting"), egui::FontId::proportional(style::SMALL), p.text_faint, None)
