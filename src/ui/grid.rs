@@ -1302,7 +1302,7 @@ impl App {
         let who = pane.and_then(|id| self.panes.get(&id)).and_then(|x| x.tracker.agent.or(x.last_agent)).map_or_else(|| label.clone(), |a| a.label().to_string());
         // What it says: tone, title, second line, the main button (and its key), the other one.
         let mut approvable = false;
-        let (tone, title, body, primary, secondary): (kit::Tone, String, Option<String>, (&str, Option<&str>), Option<&str>) = match kind {
+        let (tone, title, body, primary, secondary) = match kind {
             Foot::Wait => {
                 use super::focus::Ask;
                 let ask = super::focus::ask_of(message.as_deref());
