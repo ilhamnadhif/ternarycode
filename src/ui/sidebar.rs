@@ -82,7 +82,7 @@ impl App {
         if !searching {
             let waiting = self.attention_queue().len();
             let inbox = Rect::from_min_size(pos2(inner_l, y), vec2(inner_r - inner_l, NAV_H));
-            let r = nav_item(ui, inbox, icons::TRAY, t("Inbox"), (waiting > 0).then_some(waiting), None, self.attention_open, &p);
+            let r = nav_item(ui, inbox, icons::TRAY, t("Inbox"), (waiting > 0).then_some(waiting), None, self.view == View::Inbox, &p);
             #[cfg(debug_assertions)]
             crate::devtest::record("nav:inbox", inbox);
             if r.on_hover_text(kit::tip(t("Everything that waits for you"), Action::ToggleAttention)).clicked() {
@@ -580,7 +580,7 @@ impl App {
         }
         y += 32.0 + 8.0;
         let waiting = self.attention_queue().len();
-        let r = rail_button(ui, cell(y), icons::TRAY, &kit::tip(t("Inbox"), Action::ToggleAttention), self.attention_open, false, &p);
+        let r = rail_button(ui, cell(y), icons::TRAY, &kit::tip(t("Inbox"), Action::ToggleAttention), self.view == View::Inbox, false, &p);
         #[cfg(debug_assertions)]
         crate::devtest::record("nav:inbox", r.rect);
         if waiting > 0 {

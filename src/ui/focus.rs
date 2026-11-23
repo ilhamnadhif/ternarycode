@@ -123,6 +123,10 @@ impl App {
             self.grid_toolbar(ui);
             return;
         }
+        if self.view == View::Inbox {
+            self.inbox_toolbar(ui);
+            return;
+        }
         let Some(pid) = self.active else { return };
         let compact = ui.available_width() < 760.0;
         // The panel's four toggles, in an inset group (the open one tinted).
@@ -1490,66 +1494,33 @@ impl App {
         }
     }
 
-    /// The top bar of the Grid: its title and counts, the filter in the middle, how many tiles
-    /// fit a screen at the right.
+    /// The Overview's bar: its title and counts at the left; the filter, how many tiles a
+    /// screen holds and Run agent at the right (`grid_toolbar`).
     pub fn overview_bar(&mut self, ui: &mut Ui) -> Rect {
-        use tc_core::model::GridFilter;
         let p = style::pal(ui);
         let full = ui.max_rect();
         let n = self.projects.len();
-        let app_worktrees = self.projects.iter().filter(|x| x.is_worktree()).count();
+        let worktrees = self.projects.iter().filter(|x| x.is_worktree()).count();
         let waiting = self.attention_queue().len();
-        let waiting_projects = self.waiting_projects().len();
         let active = self.active_projects();
-        // The filter, in the middle where it is easy to find.
-        let options = [
-            kit::Seg::new(t("All"), t("Every project's terminal; scroll for more")).count(n, p.text_faint),
-            kit::Seg::new(t("Active"), t("Only projects where something runs or waits, or an agent can be resumed")).count(active, p.text_faint),
-            kit::Seg::new(t("Waiting"), t("Only projects with something waiting for you")).count(waiting_projects, if waiting_projects > 0 { p.warn } else { p.text_faint }),
-        ];
-        let width = kit::segmented_width(ui, &options);
-        let on = match self.grid_filter {
-            GridFilter::All => 0,
-            GridFilter::Active => 1,
-            GridFilter::Waiting => 2,
-        };
-        let filter = |app: &mut Self, ui: &mut Ui, rect: Rect| {
-            #[cfg(debug_assertions)]
-            for (r, name) in kit::segment_rects(rect, 3).into_iter().zip(["grid:all", "grid:active", "grid:waiting"]) {
-                crate::devtest::record(name, r);
-            }
-            let id = egui::Id::new("grid-filter");
-            if let Some(i) = kit::segmented_in(ui, rect, id, &options, on) {
-                app.actions.push(Action::GridFilter([GridFilter::All, GridFilter::Active, GridFilter::Waiting][i]));
-            }
-        };
         let body = self.top_bar(
             ui,
             full,
-            |app, ui| {
-                let left_w = ui.available_width();
-                ui.add_space(4.0);
-                if left_w > width + 110.0 {
-                    ui.label(RichText::new(t("All projects")).font(style::semibold(14.0)).color(p.text));
+            |_, ui| {
+                ui.add(egui::Label::new(RichText::new(t("Overview")).font(style::semibold(style::TITLE)).color(p.text)).selectable(false));
+                // "6 projects · 1 worktree · 4 active · 2 waiting", when there is room for it.
+                let mut parts = vec![crate::i18n::count(n - worktrees, t("1 project"), t("{} projects"))];
+                if worktrees > 0 {
+                    parts.push(crate::i18n::count(worktrees, t("1 worktree"), t("{} worktrees")));
                 }
-                // Worktrees are counted on their own ("7 projects · 2 worktrees · …"); drop on narrow bars so filters never clip.
-                if left_w > width + 320.0 {
-                    ui.add_space(4.0);
-                    let worktrees = app_worktrees;
-                    let mut parts = vec![crate::i18n::count(n - worktrees, t("1 project"), t("{} projects"))];
-                    if worktrees > 0 {
-                        parts.push(crate::i18n::count(worktrees, t("1 worktree"), t("{} worktrees")));
-                    }
-                    parts.push(tf("{} active", &[&active.to_string()]));
-                    parts.push(tf("{} waiting", &[&waiting.to_string()]));
-                    ui.label(RichText::new(parts.join(" · ")).font(style::mono(11.0)).color(p.text_faint));
-                    ui.add_space(14.0);
-                } else if left_w > width + 110.0 {
+                parts.push(tf("{} active", &[&active.to_string()]));
+                parts.push(tf("{} waiting", &[&waiting.to_string()]));
+                let counts = parts.join(" · ");
+                let w = ui.painter().layout_no_wrap(counts.clone(), style::mono(style::DATA), p.text_faint).size().x;
+                if ui.available_width() > w + 12.0 {
                     ui.add_space(8.0);
+                    ui.add(egui::Label::new(RichText::new(counts).font(style::mono(style::DATA)).color(p.text_faint)).selectable(false));
                 }
-                let seg_w = width.min((ui.available_width() - 4.0).max(120.0));
-                let (rect, _) = ui.allocate_exact_size(vec2(seg_w, kit::SEGMENTED_H), Sense::hover());
-                filter(app, ui, rect);
             },
             None,
         );
@@ -1559,29 +1530,36 @@ impl App {
         body
     }
 
-    /// The Grid's toolbar: Run Agent, and how many tiles a screen holds.
+    /// The Overview's toolbar (laid out right to left): Run agent, how many tiles a screen
+    /// holds, and the filter (All, Active, Waiting, each with its count).
     fn grid_toolbar(&mut self, ui: &mut Ui) {
+        use tc_core::model::GridFilter;
         let p = style::pal(ui);
         let compact = ui.available_width() < 760.0;
-        let label = match self.grid_columns {
-            0 => t("Auto").to_string(),
-            n => format!("{n} × {n}"),
-        };
-        // Added right to left: the tiles menu, then Run Agent.
         let run_keys = (!compact).then(|| kit::keys(&Action::PickPreset)).flatten();
         let run = kit::button_keys(ui, kit::Kind::Primary, Some(icons::PLAY), t("Run agent"), run_keys, false);
+        #[cfg(debug_assertions)]
+        crate::devtest::record("grid-run-agent", run.rect);
         if run.on_hover_text(kit::tip(t("Start an agent in a new pane"), Action::PickPreset)).clicked() {
             self.actions.push(Action::PickPreset);
         }
-        kit::vsep(ui);
-        let g = ui.painter().layout_no_wrap(label, style::mono(11.0), p.text);
-        let (rect, r) = ui.allocate_exact_size(vec2(8.0 + 13.0 + 6.0 + g.size().x + 6.0 + 10.0 + 8.0, 26.0), Sense::click());
+        ui.add_space(10.0);
+
+        // Tiles in view: "2 × 2" (Automatic is two by two too), a menu of the others.
+        let side = if self.grid_columns == 0 { 2 } else { self.grid_columns };
+        let g = ui.painter().layout_no_wrap(format!("{side} × {side}"), style::mono(style::DATA), p.text_muted);
+        let (rect, r) = ui.allocate_exact_size(vec2(10.0 + 14.0 + 6.0 + g.size().x + 6.0 + 10.0 + 10.0, 28.0), Sense::click());
         let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&r));
-        ui.painter().rect(rect, CornerRadius::same(style::RADIUS), if r.hovered() || open { p.hover } else { egui::Color32::TRANSPARENT }, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
-        ui.painter().text(pos2(rect.left() + 8.0 + 6.5, rect.center().y), Align2::CENTER_CENTER, icons::SQUARES_FOUR, style::icon_font(13.0), p.text_faint);
+        let painter = ui.painter();
+        painter.rect(rect, CornerRadius::same(style::RADIUS_ROW), if r.hovered() || open { p.hover } else { egui::Color32::TRANSPARENT }, Stroke::new(1.0, p.border_strong), egui::StrokeKind::Inside);
+        let cy = rect.center().y;
+        painter.text(pos2(rect.left() + 10.0 + 7.0, cy), Align2::CENTER_CENTER, icons::SQUARES_FOUR, style::icon_font(14.0), p.text_muted);
         let gw = g.size().x;
-        ui.painter().galley(pos2(rect.left() + 8.0 + 13.0 + 6.0, rect.center().y - g.size().y / 2.0), g, p.text);
-        ui.painter().text(pos2(rect.left() + 8.0 + 13.0 + 6.0 + gw + 6.0 + 5.0, rect.center().y), Align2::CENTER_CENTER, icons::CARET_DOWN, style::icon_font(10.0), p.text_ghost);
+        painter.galley(pos2(rect.left() + 10.0 + 14.0 + 6.0, cy - g.size().y / 2.0), g, p.text_muted);
+        painter.text(pos2(rect.left() + 10.0 + 14.0 + 6.0 + gw + 6.0 + 5.0, cy), Align2::CENTER_CENTER, icons::CARET_DOWN, style::icon_font(10.0), p.text_faint);
+        if r.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
         #[cfg(debug_assertions)]
         crate::devtest::record("grid-layout", rect);
         let r = r.on_hover_text(t("Tiles in view"));
@@ -1599,6 +1577,28 @@ impl App {
             kit::menu_sep(ui);
             ui.add_enabled_ui(false, |ui| kit::menu_item(ui, Some(icons::INFO), t("Ordered by project name"), None, false));
         });
+        ui.add_space(10.0);
+
+        // The filter: each word with its count ("Waiting 2").
+        let n = self.projects.len();
+        let active = self.active_projects();
+        let waiting = self.waiting_projects().len();
+        let labels = [format!("{} {n}", t("All")), format!("{} {active}", t("Active")), format!("{} {waiting}", t("Waiting"))];
+        let options = [
+            kit::Seg::new(&labels[0], t("Every project's terminal; scroll for more")),
+            kit::Seg::new(&labels[1], t("Only projects where something runs or waits, or an agent can be resumed")),
+            kit::Seg::new(&labels[2], t("Only projects with something waiting for you")),
+        ];
+        let filters = [GridFilter::All, GridFilter::Active, GridFilter::Waiting];
+        let on = filters.iter().position(|f| *f == self.grid_filter).unwrap_or(0);
+        let r = ui.push_id("grid-filter", |ui| kit::segmented(ui, &options, on));
+        #[cfg(debug_assertions)]
+        for (rect, name) in super::grid::word_segments(ui, r.response.rect, &labels).into_iter().zip(["grid:all", "grid:active", "grid:waiting"]) {
+            crate::devtest::record(name, rect);
+        }
+        if let Some(i) = r.inner {
+            self.actions.push(Action::GridFilter(filters[i]));
+        }
     }
 }
 
@@ -1688,14 +1688,14 @@ pub(super) fn server_label(url: &str) -> &str {
 /// What an agent that waits for the user asks, read from its hook's message: a tool to allow
 /// ("Bash: npm test"), a plan ("Plan: …"), a question, or a plain confirmation.
 #[derive(Debug, PartialEq)]
-enum Ask {
+pub(super) enum Ask {
     Permission { tool: String, target: String },
     Plan(String),
     Question(String),
     Confirm(Option<String>),
 }
 
-fn ask_of(message: Option<&str>) -> Ask {
+pub(super) fn ask_of(message: Option<&str>) -> Ask {
     let Some(m) = message.map(str::trim).filter(|m| !m.is_empty()) else { return Ask::Confirm(None) };
     if let Some(plan) = m.strip_prefix("Plan: ") {
         return Ask::Plan(plan.to_string());

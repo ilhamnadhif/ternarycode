@@ -12,6 +12,7 @@ pub mod grid;
 pub mod history_ui;
 pub mod icon_codes;
 pub mod icons;
+pub mod inbox_ui;
 pub mod kit;
 #[cfg(target_os = "macos")]
 pub mod menu;

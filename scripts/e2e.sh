@@ -68,6 +68,10 @@ run jump 40 "sleep 1000;; action add-project $P2;; sleep 1000;; action add-proje
 # A question asked in the pane being looked at still waits for the user until it is answered.
 run focused-question 40 "sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude PermissionRequest;; sleep 400;; wait-queue 1;; expect-shown attention-summary;; key enter;; sleep 400;; wait-queue 0;; quit"
 
+# The Inbox (⌥⌘J): ↵ approves the ask chosen, ⌫ marks the finished turn seen, Esc goes back
+# where it was opened from; ⌥⌘J again goes back too.
+run inbox-keys 40 "sleep 1000;; action add-project $P1;; sleep 1200;; action add-project $P2;; sleep 1200;; action attention;; sleep 400;; expect-view inbox;; hook 2 claude PermissionRequest - Bash: echo approved;; hook 4 claude Stop - All done.;; wait-queue 2;; wait-shown inbox-row:2;; expect-shown inbox-approve;; shot e2e-inbox;; key enter;; wait-queue 1;; sleep 300;; expect-shown att-review:4;; key backspace;; wait-queue 0;; key esc;; sleep 400;; expect-view focus;; action grid;; sleep 400;; action attention;; sleep 400;; expect-view inbox;; action attention;; sleep 400;; expect-view grid;; quit"
+
 # Claude Code typed by hand with no hooks installed: after a few seconds the status bar (and a
 # Grid tile say it is not connected.
 run unconnected 40 "sleep 1000;; action add-project $P1;; sleep 1200;; keys $WORK/bin/claude 60\\r;; sleep 7000;; expect-shown unconnected;; shot e2e-unconnected;; key ctrl+c;; sleep 800;; expect-hidden unconnected;; quit"

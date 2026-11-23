@@ -126,7 +126,7 @@ impl App {
     }
 
     /// Terminals take keys only while nothing floating over them does: a dialog, the palette,
-    /// the Review, a management view, Zen Mode, a browser page, a menu popup, or the attention list.
+    /// the Review, the Inbox, a management view, Zen Mode, a browser page, a menu popup, or the attention list.
     pub fn terminals_take_keys(&self) -> bool {
         self.dialog.is_none()
             && self.palette.is_none()
@@ -136,6 +136,7 @@ impl App {
             && !self.updater.dialog_open
             && self.browser_focus.is_none()
             && self.pane_search.is_none()
+            && self.view != tc_core::model::View::Inbox
             && !crate::ade::is_management_view(self.view)
             && !egui::Popup::is_any_open(&self.ctx)
     }
@@ -181,6 +182,7 @@ impl App {
                 let body = self.overview_bar(ui);
                 ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| self.grid_view(ui));
             }
+            tc_core::model::View::Inbox => self.inbox_view(ui),
             tc_core::model::View::Profiles | tc_core::model::View::Monitor | tc_core::model::View::Pairing => {}
         }
     }

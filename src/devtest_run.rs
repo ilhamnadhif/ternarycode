@@ -597,6 +597,7 @@ impl App {
                     "move-up" => Some(Action::MoveActiveProject(true)),
                     "move-down" => Some(Action::MoveActiveProject(false)),
                     "expand-panel" => Some(Action::TogglePanelExpanded),
+                    "inbox" => Some(Action::SetView(tc_core::model::View::Inbox)),
                     "grid-all" => Some(Action::GridFilter(tc_core::model::GridFilter::All)),
                     "grid-waiting" => Some(Action::GridFilter(tc_core::model::GridFilter::Waiting)),
                     "ide" => {
@@ -903,7 +904,7 @@ impl App {
             "expect-fill" => {
                 let id: u64 = arg.trim().parse().unwrap_or(0);
                 let want = if self.view == tc_core::model::View::Grid {
-                    let cell = tc_term::widget::cell_size(&self.ctx, self.settings.font_size);
+                    let cell = tc_term::widget::cell_size(&self.ctx, self.settings.font_size * crate::ui::grid::TILE_FONT);
                     devtest::rect_of(&format!("tile-pane:{id}")).map(|r| tc_term::widget::grid_for(r, cell))
                 } else {
                     self.panes.get(&id).and_then(|p| p.view.grid)
@@ -966,11 +967,12 @@ impl App {
                     &format!("expect-editor-min-pct {min_pct}% (got {pct:?})"),
                 );
             }
-            // `expect-view focus|grid|profiles|monitor|pairing`
+            // `expect-view focus|grid|inbox|profiles|monitor|pairing`
             "expect-view" => {
                 let got = match self.view {
                     tc_core::model::View::Focus => "focus",
                     tc_core::model::View::Grid => "grid",
+                    tc_core::model::View::Inbox => "inbox",
                     tc_core::model::View::Profiles => "profiles",
                     tc_core::model::View::Monitor => "monitor",
                     tc_core::model::View::Pairing => "pairing",

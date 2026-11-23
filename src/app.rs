@@ -280,6 +280,11 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub palette: Option<Palette>,
     pub attention_open: bool,
+    /// The Inbox view: the pane of the row chosen, its place in the list (the row that takes
+    /// its place when it leaves), and the filter.
+    pub inbox_sel: Option<PaneId>,
+    pub inbox_ix: usize,
+    pub inbox_filter: ui::inbox_ui::InboxFilter,
     /// Move keyboard focus to this pane's terminal when it is drawn next.
     pub focus_request: Option<PaneId>,
     pub actions: Vec<Action>,
@@ -684,6 +689,9 @@ impl App {
             dialog: None,
             palette: None,
             attention_open: false,
+            inbox_sel: None,
+            inbox_ix: 0,
+            inbox_filter: Default::default(),
             focus_request: None,
             actions: Vec::new(),
             save_due: None,
@@ -1245,7 +1253,7 @@ impl App {
                 })
                 .collect(),
             active: self.active,
-            view: if crate::ade::is_management_view(self.view) { View::Focus } else { self.view },
+            view: if crate::ade::is_management_view(self.view) || self.view == View::Inbox { View::Focus } else { self.view },
             grid_columns: self.grid_columns,
             grid_active_only: self.grid_filter == tc_core::model::GridFilter::Active,
             grid_filter: Some(self.grid_filter),
@@ -1386,7 +1394,7 @@ impl App {
         match self.view {
             View::Grid => self.grid_focus,
             View::Focus => self.current_pane(),
-            View::Profiles | View::Monitor | View::Pairing => None,
+            View::Inbox | View::Profiles | View::Monitor | View::Pairing => None,
         }
     }
 
@@ -1468,7 +1476,7 @@ impl App {
                 self.current_pane()
             }
             View::Grid => self.grid_focus,
-            View::Profiles | View::Monitor | View::Pairing => None,
+            View::Inbox | View::Profiles | View::Monitor | View::Pairing => None,
         }
     }
 
@@ -3368,20 +3376,10 @@ impl App {
                 }
             }
             Action::ToggleAttention => {
-                self.attention_open = !self.attention_open;
-                if self.attention_open {
-                    self.monitor_popover = false;
-                    self.palette = None;
-                    self.dialog = None;
-                    ctx.memory_mut(|m| {
-                        if let Some(f) = m.focused() {
-                            m.surrender_focus(f);
-                        }
-                    });
-                    self.release_page_keyboard();
-                }
-                self.attention_sel = 0;
-                self.inbox_scroll = 0;
+                // The Inbox view (⌥⌘J); again, back to where it was opened from.
+                let v = if self.view == View::Inbox { self.inbox_back() } else { View::Inbox };
+                self.dialog = None;
+                self.dispatch(ctx, Action::SetView(v));
             }
             Action::MarkSeen(id) => self.mark_seen(&[id]),
             Action::MarkAllSeen => {
@@ -3421,6 +3419,24 @@ impl App {
             Action::SetView(v) => {
                 self.monitor_popover = false;
                 self.drawer_maximized = false;
+                if v == View::Inbox && self.view != View::Inbox {
+                    // Back (Esc, ⌥⌘J) goes where it was opened from. The terminal or page that
+                    // had the keyboard lets go of it: the list's keys are the Inbox's.
+                    self.prev_view = self.view;
+                    self.attention_open = false;
+                    self.palette = None;
+                    ctx.memory_mut(|m| {
+                        if let Some(f) = m.focused() {
+                            m.surrender_focus(f);
+                        }
+                    });
+                    self.release_page_keyboard();
+                    // Out of the Grid: the panes get their Focus size back, as on the way to Focus.
+                    if self.view == View::Grid {
+                        self.fit_all_to_focus(ctx);
+                        self.grid_pick.clear();
+                    }
+                }
                 if v == View::Focus {
                     self.show_focus();
                 } else {
