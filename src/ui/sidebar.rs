@@ -517,8 +517,9 @@ impl App {
             .iter()
             .filter_map(|id| self.panes.get(id))
             .filter_map(|x| Some(x.tracker.status).filter(|s| shows_status(*s)))
-            .min_by_key(|s| s.priority());
-        let server = self.project_servers(project).into_iter().find(|(id, _)| tab.layout.panes().contains(id)).map(|(_, s)| s.url);
+            .min_by_key(|s| s.priority().unwrap_or(u8::MAX));
+        // The port of a server the tab is about (its pane in front), not one beside an agent.
+        let server = self.project_servers(project).into_iter().find(|(id, _)| *id == tab.focused).map(|(_, s)| s.url);
         let meta = match (&server, pane) {
             (Some(url), _) => super::focus::server_label(url).rsplit_once(':').map_or_else(|| super::focus::server_label(url).to_string(), |(_, port)| format!(":{port}")),
             (None, Some(x)) if x.tracker.agent.is_some() && !matches!(x.tracker.status, Status::Idle | Status::Unknown | Status::Ended) => short_age(x.tracker.since.elapsed().as_secs()),
@@ -896,6 +897,8 @@ pub struct ProjectRow {
     pub status: Option<Status>,
     /// Panes with something not seen yet.
     pub waiting: usize,
+    /// Panes whose agent asks the user something (the count the row shows).
+    pub asks: usize,
     /// No shell started yet.
     pub asleep: bool,
     /// A dot per pane (when there are several), in its status colour.
@@ -1091,8 +1094,8 @@ fn paint_project_row(
             painter.circle_filled(pos2(right - 3.0, cy), 2.5, p.text_ghost);
             right -= 6.0 + 9.0;
         }
-        if row.waiting > 0 {
-            right -= count_pill(painter, pos2(right, cy), row.waiting, p, dark) + 9.0;
+        if row.asks > 0 {
+            right -= count_pill(painter, pos2(right, cy), row.asks, p, dark) + 9.0;
         }
     }
     let x = tile.right() + 9.0;
@@ -1218,6 +1221,7 @@ impl App {
             .filter_map(|id| self.panes.get(id))
             .filter(|pane| pane.tracker.wants_attention())
             .count();
+        let asks = panes.iter().filter_map(|id| self.panes.get(id)).filter(|pane| pane.tracker.status == Status::NeedsInput).count();
         let asleep = panes.iter().all(|id| self.panes.get(id).is_none_or(crate::pane::Pane::dormant));
         let status = self.project_status(pr).map(|(s, _)| s);
         let dots = if panes.len() > 1 {
@@ -1279,6 +1283,7 @@ impl App {
             color: pr.color,
             status,
             waiting,
+            asks,
             asleep,
             dots,
             branch: pr.git.as_ref().map(|g| (g.branch.clone(), g.changed)),
@@ -1294,6 +1299,7 @@ impl App {
             for w in worktrees {
                 let kid = self.project_row(w, p);
                 row.waiting += kid.waiting;
+                row.asks += kid.asks;
                 let rank = |s: Option<Status>| s.and_then(Status::priority).unwrap_or(u8::MAX);
                 if rank(kid.status) < rank(row.status) {
                     row.status = kid.status;

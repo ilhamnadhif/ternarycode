@@ -37,7 +37,7 @@ impl App {
     /// What a pane is called (a tab, a tile): a terminal's label, or a browser's page.
     pub fn leaf_label(&self, id: PaneId) -> String {
         match (self.panes.get(&id), self.browsers.get(&id)) {
-            (Some(p), _) => p.label(),
+            (Some(p), _) => p.name(),
             (None, Some(b)) => b.label(),
             _ => String::new(),
         }

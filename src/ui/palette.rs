@@ -370,7 +370,7 @@ impl App {
             let Some(x) = self.panes.get(&e.pane) else { continue };
             let project = self.project_label(x.project);
             let (letters, color) = self.project(x.project).map(|pr| (pr.letters(), pr.color32())).unwrap_or_default();
-            let mut it = Item::new(Lead::Waiting(e.status, letters, color), x.label(), Action::FocusPane(e.pane));
+            let mut it = Item::new(Lead::Waiting(e.status, letters, color), x.name(), Action::FocusPane(e.pane));
             it.detail = format!("{project} · {}", super::sidebar::attention_short(x));
             it.mono_detail = true;
             it.preview = Preview::Pane(e.pane);

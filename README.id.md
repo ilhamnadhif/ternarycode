@@ -103,7 +103,7 @@ TernaryCode memperbarui dirinya sendiri (`.deb`, `.rpm`, dan `.zip` portabel lew
 
 ### Browser dan dokumen
 
-![Agent mengklik halaman di panel Browser sementara terminal tetap berjalan](docs/screenshots/browser.png)
+![Halaman login project di panel Browser, di samping Claude Code yang minta izin menjalankan tes](docs/screenshots/browser.png)
 
 - Web view native yang dikendalikan agent lewat tool MCP (navigasi, klik, ketik, baca, screenshot) sementara Anda menonton; ambil alih kapan saja.
 - PDF, Word, PowerPoint, Excel, CSV (sebagai tabel), dan gambar terbuka di panel Files, di samping agent yang membuatnya.

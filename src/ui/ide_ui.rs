@@ -847,7 +847,10 @@ impl App {
         let p = style::pal(ui);
         let chip = |ui: &mut Ui, dot: Option<Color32>, text: &str| {
             // A 6 px dot in the server's state (a ring: not started), then its name in mono.
-            let g = ui.painter().layout_no_wrap(text.to_string(), style::mono(style::DATA), p.text_faint);
+            // Shortened (…) rather than run under what is left of it in a narrow status line.
+            let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), style::mono(style::DATA), p.text_faint);
+            job.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - 11.0).max(24.0));
+            let g = ui.painter().layout_job(job);
             let (rect, r) = ui.allocate_exact_size(vec2(6.0 + 5.0 + g.size().x, 18.0), Sense::click());
             let c = pos2(rect.left() + 3.0, rect.center().y);
             match dot {

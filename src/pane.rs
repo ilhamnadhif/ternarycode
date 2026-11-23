@@ -1100,6 +1100,29 @@ impl Pane {
     }
 
     /// The pane's label: the user's title, the foreground program, or the folder.
+    /// Its agent finished its turn (and said so) and nothing was typed here since: the pane
+    /// offers Review and Commit. (A turn finished in view reads as Idle, not Done.)
+    pub fn turn_finished(&self) -> bool {
+        self.alive()
+            && self.tracker.agent.is_some()
+            && matches!(self.tracker.status, tc_core::status::Status::Done | tc_core::status::Status::Idle)
+            && (self.last_words.is_some() || self.done_stats.as_ref().is_some_and(|(at, _)| *at == self.tracker.since))
+            && self.enter_at.is_none_or(|e| e < self.tracker.since)
+    }
+
+    /// What a pane is called in its tab, its header and the sidebar: the name the user gave
+    /// it, else the task its agent works on (its prompt's first line), else [`Pane::label`].
+    pub fn name(&self) -> String {
+        if let Some(t) = &self.title {
+            return t.clone();
+        }
+        let agent_here = self.tracker.agent.is_some() || matches!(self.tracker.fg, Foreground::Program { agent: Some(_), .. });
+        match &self.task {
+            Some(task) if agent_here && !task.trim().is_empty() => task.clone(),
+            _ => self.label(),
+        }
+    }
+
     pub fn label(&self) -> String {
         if let Some(t) = &self.title {
             return t.clone();

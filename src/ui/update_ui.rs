@@ -14,7 +14,13 @@ use crate::update::{self, CURRENT, Prepared, Release, Stage};
 /// "12.4 MB".
 pub(super) fn human_size(bytes: u64) -> String {
     let mb = bytes as f64 / (1024.0 * 1024.0);
-    if mb >= 1.0 { format!("{mb:.1} MB") } else { format!("{} KB", bytes / 1024) }
+    if mb >= 1.0 {
+        format!("{mb:.1} MB")
+    } else if bytes >= 1024 {
+        format!("{} KB", bytes / 1024)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// Automatic checks: right after launch, where a new version opens the update dialog by

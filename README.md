@@ -105,7 +105,7 @@ TernaryCode updates itself (the `.deb`, `.rpm`, and portable `.zip` through a ne
 
 ### Browser and documents
 
-![An agent clicks through a page in the Browser panel while the terminals keep running](docs/screenshots/browser.png)
+![The project's sign-in page in the Browser panel, beside Claude Code asking to run the tests](docs/screenshots/browser.png)
 
 - A native web view your agents drive through MCP tools (navigate, click, type, read, screenshot) while you watch; take over any time.
 - PDF, Word, PowerPoint, Excel, CSV (as a table) and images open in the Files panel beside the agent that wrote them.

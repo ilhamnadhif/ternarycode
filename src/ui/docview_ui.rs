@@ -271,7 +271,7 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
             // The crumb's own room at its left lines its text up with the toolbar's edge; its
             // own line under it falls outside (the toolbar's is there).
             let cell = Rect::from_min_size(ui.cursor().min, vec2(left.width(), rect.height() - 1.0));
-            let crumb = Rect::from_min_max(pos2(inner.left() - 16.0, rect.top()), pos2(cell.right(), rect.bottom() + 1.0));
+            let crumb = Rect::from_min_max(pos2(inner.left() - 12.0, rect.top()), pos2(cell.right(), rect.bottom() + 1.0));
             super::editor_ui::paint_crumb(ui, crumb, root, &view.path, &p);
             ui.allocate_rect(cell, Sense::hover());
         }

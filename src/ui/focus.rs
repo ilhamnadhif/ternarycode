@@ -587,6 +587,12 @@ impl App {
                 let n = foot(kit::NOTICE_H);
                 self.failed_notice(ui, pane_id, n);
                 term_rect.max.y = n.top() - 4.0;
+            } else if self.panes.get(&pane_id).is_some_and(crate::pane::Pane::turn_finished)
+                && term_rect.height() > 140.0
+            {
+                let n = foot(kit::NOTICE_H);
+                self.done_notice(ui, pane_id, n);
+                term_rect.max.y = n.top() - 4.0;
             }
             term_rect.max.y = term_rect.max.y.max(term_rect.min.y);
             term_rect.max.x = term_rect.max.x.max(term_rect.min.x);
@@ -1065,7 +1071,7 @@ impl App {
         let root = self.project(pane.project).map(|x| x.path.clone()).unwrap_or_default();
         let s = pane.tracker.status;
         let cy = rect.center().y;
-        let label = pane.label();
+        let label = pane.name();
         let place = pane.place(&root);
         let message = pane.tracker.message.clone().filter(|_| s == Status::NeedsInput).map(|m| m.replacen(": ", " · ", 1));
         let doing = pane.program_title.clone();
@@ -1313,6 +1319,40 @@ impl App {
                     pane.input(b"\r".to_vec());
                 }
             }
+        }
+    }
+
+    /// An agent that finished its turn, at the foot of its pane: what its run changed (or its
+    /// last words), then Review and Commit…. Typing in the pane puts it away.
+    fn done_notice(&mut self, ui: &mut Ui, pane_id: PaneId, rect: Rect) {
+        let Some(pane) = self.panes.get(&pane_id) else { return };
+        let who = pane.tracker.agent.map_or_else(|| t("The agent").to_string(), |a| a.label().to_string());
+        let body = match pane.done_stats.as_ref().and_then(|(_, s)| *s) {
+            Some((files, add, del)) if files > 0 => format!("{} · +{add} −{del}", crate::i18n::count(files, t("1 file"), t("{} files"))),
+            _ => pane.last_words.clone().unwrap_or_default(),
+        };
+        let out = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                kit::notice(
+                    ui,
+                    rect.width(),
+                    kit::Tone::Done,
+                    None,
+                    &tf("{} finished its turn", &[&who]),
+                    (!body.is_empty()).then_some(body.as_str()),
+                    Some((t("Commit…"), None)),
+                    Some(t("Review")),
+                    false,
+                )
+            })
+            .inner;
+        #[cfg(debug_assertions)]
+        crate::devtest::record(format!("done:{pane_id}"), out.rect);
+        if out.primary {
+            self.actions.push(Action::Commit);
+        }
+        if out.secondary {
+            self.actions.push(Action::Review);
         }
     }
 

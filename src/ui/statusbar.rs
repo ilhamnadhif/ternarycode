@@ -21,7 +21,8 @@ impl App {
     pub fn status_bar(&mut self, ui: &mut Ui) {
         let p = style::pal(ui);
         let bar = ui.max_rect();
-        let waiting = self.attention_queue().len();
+        // Agents that ask something (finished and failed ones wait in the Inbox).
+        let waiting = self.panes.values().filter(|x| x.tracker.status == Status::NeedsInput).count();
         let running = self.panes.values().filter(|x| x.tracker.status == Status::Running && x.tracker.agent.is_some()).count();
         let unconnected = self.unconnected_agents();
         let right_used = ui

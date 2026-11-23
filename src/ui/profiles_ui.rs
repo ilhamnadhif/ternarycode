@@ -1054,7 +1054,7 @@ impl App {
             if let Some(secs) = r.reset_remaining_secs(now) {
                 Some(profiles::format_countdown(secs))
             } else {
-                r.quota_5h_used_pct(c).map(|used| format!("{} {:.0}%", r.window_5h_label(), used))
+                r.quota_5h_used_pct(c).map(|used| format!("· {used:.0}%"))
             }
         });
         let resp = kit::profile_chip(ui, label, detail.as_deref(), dot, false);
@@ -1063,13 +1063,17 @@ impl App {
 
         // One-click Switch Account button right beside the active profile chip when another
         // pre-registered account is ready (no logout / re-login required).
-        if has_live_agent && let Some(next_prof) = self.next_switch_profile(pane_id) {
+        // Shown only while the account runs out (otherwise the chip's menu switches).
+        let urgent = rt.zip(prof_cfg).is_some_and(|(r, c)| {
+            r.state == ProfileState::RateLimited || r.quota_5h_used_pct(c).is_some_and(|u| u >= 85.0)
+        });
+        if has_live_agent
+            && urgent
+            && let Some(next_prof) = self.next_switch_profile(pane_id)
+        {
             let next_rt = self.profiles_rt.get(&next_prof.id);
             let next_sum = compact_window_summary(&next_prof, next_rt, now_unix, now);
             let tip = tf("Switch immediately to {} ({}) and resume session without logout", &[&next_prof.id, &next_sum]);
-            let urgent = rt.zip(prof_cfg).is_some_and(|(r, c)| {
-                r.state == ProfileState::RateLimited || r.quota_5h_used_pct(c).is_some_and(|u| u >= 85.0)
-            });
             let sw = kit::button_ex(
                 ui,
                 if urgent { kit::Kind::Primary } else { kit::Kind::Ghost },
