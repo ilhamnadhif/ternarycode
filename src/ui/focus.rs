@@ -183,40 +183,6 @@ impl App {
         }
     }
 
-    /// Standard top-left back arrow button (`←`) for management pages (`Profiles`, `Monitor`,
-    /// `Phone Pairing`), matching `Review` and supporting `Esc` when no overlay or input is active.
-    pub fn nav_back_button(&mut self, ui: &mut Ui) {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        let tip = format!("{}   Esc", t("Back"));
-        let back = kit::icon_button_ex(ui, icons::ARROW_LEFT, &tip, false, 26.0);
-        #[cfg(debug_assertions)]
-        crate::devtest::record("nav-back", back.rect);
-        let mut go_back = back.clicked();
-        let no_overlay = self.dialog.is_none()
-            && self.palette.is_none()
-            && !self.attention_open
-            && !self.monitor_popover
-            && !self.updater.dialog_open
-            && !egui::Popup::is_any_open(ui.ctx())
-            && !ui.ctx().egui_wants_keyboard_input();
-        let drag_id = egui::Id::new("profiles-drag-idx");
-        let profiles_dragging = self.view == View::Profiles
-            && ui.data(|d| d.get_temp::<usize>(drag_id).is_some());
-        if !go_back && no_overlay && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            if profiles_dragging {
-                ui.data_mut(|d| d.remove::<usize>(drag_id));
-            } else if self.view == View::Profiles && self.profile_draft.is_some() {
-                self.profile_draft = None;
-            } else {
-                go_back = true;
-            }
-        }
-        if go_back {
-            let target = if crate::ade::is_management_view(self.prev_view) { View::Focus } else { self.prev_view };
-            self.actions.push(Action::SetView(target));
-        }
-    }
-
     pub fn focus_view(&mut self, ui: &mut Ui) {
         self.note_tab_seen();
         let p = style::pal(ui);

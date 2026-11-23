@@ -796,8 +796,8 @@ impl App {
         }
         self.toast_with(
             ToastKind::Warn,
-            tf("{} hit its usage limit. Choose another profile to resume.", &[&from_profile]),
-            Some((t("Profiles").into(), Action::OpenProfiles)),
+            tf("{} hit its usage limit. Choose another account to resume.", &[&from_profile]),
+            Some((t("Accounts").into(), Action::OpenProfiles)),
         );
         self.push_companion_now();
     }

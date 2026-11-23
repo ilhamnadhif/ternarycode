@@ -467,8 +467,8 @@ impl App {
             add(icons::ROWS, t("Show/Hide Terminal Panel"), Action::ToggleDrawer);
             add(icons::ROWS, t("Dock Panel Bottom"), Action::SetDrawerDock(tc_core::model::DrawerDock::Bottom));
             add(icons::COLUMNS, t("Dock Panel Right"), Action::SetDrawerDock(tc_core::model::DrawerDock::Right));
-            add(icons::USER, t("Agent Profiles…"), Action::OpenProfiles);
-            add(icons::DEVICE_MOBILE, t("Phone Pairing…"), Action::OpenPhonePairing);
+            add(icons::USER, t("Accounts & Usage…"), Action::OpenProfiles);
+            add(icons::DEVICE_MOBILE, t("Phone…"), Action::OpenPhonePairing);
             add(icons::SIDEBAR_SIMPLE, t("Show/Hide Files"), Action::ToggleFiles);
             add(icons::PLUS, t("New Tab"), Action::NewTab);
             add(icons::GLOBE, t("Browser"), Action::ShowBrowser);
