@@ -440,6 +440,81 @@ pub fn duplicate_name(path: &Path) -> PathBuf {
         .unwrap_or_else(|| dir.join(format!("{stem} copy{ext}")))
 }
 
+/// Copies a single file, symlink, or directory tree from `from` to `to`. Symlinks are copied as
+/// symlinks rather than dereferenced (avoiding infinite symlink loops).
+fn copy_entry_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() {
+        let link = std::fs::read_link(from)?;
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(link, to)
+        }
+        #[cfg(windows)]
+        {
+            if from.is_dir() {
+                std::os::windows::fs::symlink_dir(link, to)
+            } else {
+                std::os::windows::fs::symlink_file(link, to)
+            }
+        }
+    } else if meta.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_entry_recursive(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(from, to)?;
+        Ok(())
+    }
+}
+
+/// Copies files and/or folders into `dest_dir` safely:
+/// - prunes descendant paths already covered by an ancestor in `sources`,
+/// - refuses copying a folder into itself or one of its own subfolders (preventing infinite recursion),
+/// - never overwrites existing items (picks `name copy.ext`, `name copy 2.ext`, … on collision).
+///
+/// Returns `(created_paths, error_messages)`.
+pub fn copy_items_into(sources: &[PathBuf], dest_dir: &Path) -> (Vec<PathBuf>, Vec<String>) {
+    use crate::i18n::tf;
+    let mut created = Vec::new();
+    let mut errors = Vec::new();
+    if !dest_dir.is_dir() {
+        errors.push(format!("{}: not a directory", dest_dir.display()));
+        return (created, errors);
+    }
+    let dest_canon = std::fs::canonicalize(dest_dir).unwrap_or_else(|_| dest_dir.to_path_buf());
+    for src in Explorer::prune_descendants(sources) {
+        let Some(file_name) = src.file_name() else { continue };
+        let name = file_name.to_string_lossy().into_owned();
+        let meta = match std::fs::symlink_metadata(&src) {
+            Ok(m) => m,
+            Err(e) => {
+                errors.push(format!("{name}: {e}"));
+                continue;
+            }
+        };
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            let src_canon = std::fs::canonicalize(&src).unwrap_or_else(|_| src.clone());
+            if dest_canon == src_canon || dest_canon.starts_with(&src_canon) {
+                errors.push(tf("Cannot paste {} inside itself.", &[&name]));
+                continue;
+            }
+        }
+        let mut target = dest_dir.join(file_name);
+        if target.symlink_metadata().is_ok() {
+            target = duplicate_name(&target);
+        }
+        match copy_entry_recursive(&src, &target) {
+            Ok(()) => created.push(target),
+            Err(e) => errors.push(format!("{name}: {e}")),
+        }
+    }
+    (created, errors)
+}
+
 /// One folder, sorted: folders first, then names regardless of case.
 fn read(root: &Path, dir: &Path) -> Listing {
     let Ok(read) = std::fs::read_dir(dir) else {
@@ -702,5 +777,46 @@ mod tests {
         std::fs::remove_file(root.join("b.txt")).unwrap();
         ex.invalidate(&[root.join("b.txt")]);
         assert!(!ex.selected_many.contains(&root.join("b.txt")));
+    }
+
+    #[test]
+    fn copy_items_into_handles_files_folders_collisions_and_self_paste() {
+        let external = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let assets = project.path().join("assets");
+        std::fs::create_dir(&assets).unwrap();
+
+        // External file + nested folder (like copied from Finder).
+        let ext_file = external.path().join("logo.png");
+        std::fs::write(&ext_file, b"PNGDATA").unwrap();
+        let ext_dir = external.path().join("icons");
+        std::fs::create_dir_all(ext_dir.join("sub")).unwrap();
+        std::fs::write(ext_dir.join("sub/arrow.svg"), "<svg/>").unwrap();
+
+        let (created, errors) = copy_items_into(&[ext_file.clone(), ext_dir.clone()], &assets);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(created.len(), 2);
+        assert_eq!(std::fs::read(assets.join("logo.png")).unwrap(), b"PNGDATA");
+        assert_eq!(std::fs::read_to_string(assets.join("icons/sub/arrow.svg")).unwrap(), "<svg/>");
+
+        // Pasting the same file again creates a non-destructive copy without overwriting.
+        let (created2, errors2) = copy_items_into(std::slice::from_ref(&ext_file), &assets);
+        assert!(errors2.is_empty(), "{errors2:?}");
+        assert_eq!(created2, vec![assets.join("logo copy.png")]);
+        assert_eq!(std::fs::read(assets.join("logo copy.png")).unwrap(), b"PNGDATA");
+
+        // Pasting a folder inside itself or its own subfolder is safely refused.
+        let (created3, errors3) = copy_items_into(std::slice::from_ref(&assets), &assets);
+        assert!(created3.is_empty());
+        assert_eq!(errors3.len(), 1);
+        let (created4, errors4) = copy_items_into(std::slice::from_ref(&assets), &assets.join("icons"));
+        assert!(created4.is_empty());
+        assert_eq!(errors4.len(), 1);
+
+        // Pasting a folder into its parent duplicates it cleanly as `assets copy`.
+        let (created5, errors5) = copy_items_into(std::slice::from_ref(&assets), project.path());
+        assert!(errors5.is_empty(), "{errors5:?}");
+        assert_eq!(created5, vec![project.path().join("assets copy")]);
+        assert!(project.path().join("assets copy/icons/sub/arrow.svg").is_file());
     }
 }

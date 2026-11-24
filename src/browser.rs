@@ -522,11 +522,20 @@ impl Browser {
 
     /// Takes in what the page reported; returns whether anything changed.
     pub fn take_events(&mut self) -> Vec<Event> {
+        let cap_str = |s: &str, max: usize| -> String {
+            if s.len() <= max {
+                return s.to_string();
+            }
+            match s.char_indices().nth(max) {
+                Some((cut, _)) => s[..cut].to_string(),
+                None => s.to_string(),
+            }
+        };
         let events = std::mem::take(&mut *self.events.lock());
         for e in &events {
             match e {
                 Event::Url(u) if !u.is_empty() && u != "about:blank" => {
-                    self.url = u.clone();
+                    self.url = cap_str(u, 8_192);
                 }
                 // A new page: its console starts empty (as a browser's does).
                 Event::Loading(true) => {
@@ -534,12 +543,18 @@ impl Browser {
                     self.console.clear();
                 }
                 Event::Console(lines) => {
-                    self.console.extend(lines.iter().cloned());
+                    for l in lines.iter().take(200) {
+                        self.console.push_back(ConsoleLine {
+                            level: cap_str(&l.level, 16),
+                            text: cap_str(&l.text, 2_048),
+                            src: cap_str(&l.src, 256),
+                        });
+                    }
                     while self.console.len() > CONSOLE_LINES {
                         self.console.pop_front();
                     }
                 }
-                Event::Title(t) => self.title = t.clone(),
+                Event::Title(t) => self.title = cap_str(t, 512),
                 Event::Loading(l) => self.loading = *l,
                 Event::State(st) => {
                     self.state = *st;

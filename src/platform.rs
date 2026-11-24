@@ -537,6 +537,257 @@ pub fn trash(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
+#[cfg(debug_assertions)]
+static E2E_CLIPBOARD_FILES: std::sync::Mutex<Option<Vec<std::path::PathBuf>>> = std::sync::Mutex::new(None);
+
+/// Test hook: overrides the OS file clipboard inside E2E runs without touching the user's real clipboard.
+#[cfg(debug_assertions)]
+pub fn set_e2e_clipboard_files(paths: Option<Vec<std::path::PathBuf>>) {
+    if let Ok(mut guard) = E2E_CLIPBOARD_FILES.lock() {
+        *guard = paths;
+    }
+}
+
+/// Parses a `text/uri-list` payload (`file://...` lines, percent-encoded) into local paths.
+pub fn parse_file_uri_list(text: &str) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let rest = if let Some(r) = line.strip_prefix("file://localhost") {
+            r
+        } else if let Some(r) = line.strip_prefix("file://") {
+            r
+        } else {
+            continue;
+        };
+        let mut bytes = Vec::with_capacity(rest.len());
+        let b = rest.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%'
+                && i + 2 < b.len()
+                && let (Some(hi), Some(lo)) = ((b[i + 1] as char).to_digit(16), (b[i + 2] as char).to_digit(16))
+            {
+                bytes.push(((hi << 4) | lo) as u8);
+                i += 3;
+            } else {
+                bytes.push(b[i]);
+                i += 1;
+            }
+        }
+        if let Ok(decoded) = String::from_utf8(bytes)
+            && !decoded.is_empty()
+        {
+            out.push(std::path::PathBuf::from(decoded));
+        }
+    }
+    out
+}
+
+/// Reads copied files/folders from the OS clipboard (e.g. `⌘C` in Finder, `Ctrl+C` in Explorer/Files).
+pub fn clipboard_files() -> Vec<std::path::PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Ok(guard) = E2E_CLIPBOARD_FILES.lock()
+        && let Some(paths) = guard.as_ref()
+    {
+        return paths.clone();
+    }
+    os_clipboard_files()
+}
+
+/// Writes files/folders to the OS clipboard so they can be pasted into folders in TernaryCode or Finder.
+pub fn copy_files_to_clipboard(paths: &[std::path::PathBuf]) -> bool {
+    if paths.is_empty() {
+        return false;
+    }
+    #[cfg(debug_assertions)]
+    if std::env::var_os("TERNARYCODE_DEV_SCRIPT").is_some()
+        || E2E_CLIPBOARD_FILES.lock().ok().is_some_and(|g| g.is_some())
+    {
+        set_e2e_clipboard_files(Some(paths.to_vec()));
+        return true;
+    }
+    os_copy_files_to_clipboard(paths)
+}
+
+#[cfg(target_os = "macos")]
+fn os_clipboard_files() -> Vec<std::path::PathBuf> {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
+    use objc2_foundation::NSURL;
+
+    let pb = NSPasteboard::generalPasteboard();
+    let Some(items) = pb.pasteboardItems() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for i in 0..items.count() {
+        let item = items.objectAtIndex(i);
+        // SAFETY: NSPasteboardTypeFileURL is a static AppKit extern constant.
+        let Some(raw) = item.stringForType(unsafe { NSPasteboardTypeFileURL }) else {
+            continue;
+        };
+        let Some(url) = NSURL::URLWithString(&raw) else {
+            continue;
+        };
+        // Finder writes file-reference URLs (`file:///.file/id=...`): resolve to a real POSIX path.
+        let resolved = url.filePathURL().unwrap_or(url);
+        if let Some(path) = resolved.path() {
+            let s = path.to_string();
+            if !s.is_empty() {
+                out.push(std::path::PathBuf::from(s));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn os_copy_files_to_clipboard(paths: &[std::path::PathBuf]) -> bool {
+    use objc2::rc::Retained;
+    use objc2::runtime::ProtocolObject;
+    use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardWriting};
+    use objc2_foundation::{NSArray, NSString, NSURL};
+
+    let pb = NSPasteboard::generalPasteboard();
+    pb.clearContents();
+    let mut objs: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = Vec::with_capacity(paths.len());
+    for path in paths {
+        let abs = if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir().map(|d| d.join(path)).unwrap_or_else(|_| path.clone())
+        };
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&abs.to_string_lossy()));
+        let Some(url_str) = url.absoluteString() else { continue };
+        let item = NSPasteboardItem::new();
+        // SAFETY: NSPasteboardTypeFileURL is a static AppKit extern constant.
+        if item.setString_forType(&url_str, unsafe { NSPasteboardTypeFileURL }) {
+            objs.push(ProtocolObject::from_retained(item));
+        }
+    }
+    if objs.is_empty() {
+        return false;
+    }
+    let arr = NSArray::from_retained_slice(&objs);
+    pb.writeObjects(&arr)
+}
+
+#[cfg(windows)]
+fn os_clipboard_files() -> Vec<std::path::PathBuf> {
+    use std::ffi::{OsString, c_void};
+    use std::os::windows::ffi::OsStringExt;
+
+    const CF_HDROP: u32 = 15;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn OpenClipboard(hwnd: *mut c_void) -> i32;
+        fn CloseClipboard() -> i32;
+        fn GetClipboardData(format: u32) -> *mut c_void;
+    }
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn DragQueryFileW(hdrop: *mut c_void, i_file: u32, lpsz_file: *mut u16, cch: u32) -> u32;
+    }
+    let mut out = Vec::new();
+    // SAFETY: OpenClipboard is paired with CloseClipboard on success; DragQueryFileW reads CF_HDROP.
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return out;
+        }
+        let hdrop = GetClipboardData(CF_HDROP);
+        if !hdrop.is_null() {
+            let count = DragQueryFileW(hdrop, u32::MAX, std::ptr::null_mut(), 0);
+            for i in 0..count {
+                let len = DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0);
+                if len > 0 {
+                    let mut buf = vec![0u16; len as usize + 1];
+                    let got = DragQueryFileW(hdrop, i, buf.as_mut_ptr(), buf.len() as u32);
+                    if got > 0 {
+                        buf.truncate(got as usize);
+                        out.push(std::path::PathBuf::from(OsString::from_wide(&buf)));
+                    }
+                }
+            }
+        }
+        CloseClipboard();
+    }
+    out
+}
+
+#[cfg(windows)]
+fn os_copy_files_to_clipboard(_paths: &[std::path::PathBuf]) -> bool {
+    false
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn os_clipboard_files() -> Vec<std::path::PathBuf> {
+    let try_cmd = |program: &str, args: &[&str]| -> Option<Vec<std::path::PathBuf>> {
+        let out = command(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let paths = parse_file_uri_list(&String::from_utf8_lossy(&out.stdout));
+        (!paths.is_empty()).then_some(paths)
+    };
+    if std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && let Some(paths) = try_cmd("wl-paste", &["--no-newline", "--type", "text/uri-list"])
+    {
+        return paths;
+    }
+    try_cmd("xclip", &["-selection", "clipboard", "-o", "-t", "text/uri-list"]).unwrap_or_default()
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn os_copy_files_to_clipboard(paths: &[std::path::PathBuf]) -> bool {
+    use std::io::Write as _;
+    let payload: String = paths
+        .iter()
+        .map(|p| {
+            let s = p.to_string_lossy();
+            let mut enc = String::from("file://");
+            for b in s.as_bytes() {
+                match *b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => enc.push(*b as char),
+                    other => {
+                        let _ = std::fmt::Write::write_fmt(&mut enc, format_args!("%{other:02X}"));
+                    }
+                }
+            }
+            enc
+        })
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let try_write = |program: &str, args: &[&str]| -> bool {
+        let Ok(mut child) = command(program)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(payload.as_bytes());
+        }
+        child.wait().is_ok_and(|s| s.success())
+    };
+    if std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && try_write("wl-copy", &["--type", "text/uri-list"])
+    {
+        return true;
+    }
+    try_write("xclip", &["-selection", "clipboard", "-i", "-t", "text/uri-list"])
+}
+
 /// `path` quoted for PowerShell (the shell on Windows) when it needs it: single quotes, with
 /// `'` doubled inside.
 #[cfg(windows)]
@@ -643,6 +894,19 @@ mod tests {
             assert_eq!(shell_quote("it's"), "'it''s'");
             assert_eq!(shell_quote(r"C:\src\main.rs"), r"C:\src\main.rs");
         }
+    }
+
+    #[test]
+    fn parses_file_uri_lists_with_spaces_and_unicode() {
+        let input = "# comment\r\nfile:///Users/me/My%20File%20%281%29.png\nfile://localhost/tmp/caf%C3%A9.txt\nhttps://ignored.example/x\n";
+        let got = parse_file_uri_list(input);
+        assert_eq!(
+            got,
+            vec![
+                std::path::PathBuf::from("/Users/me/My File (1).png"),
+                std::path::PathBuf::from("/tmp/café.txt"),
+            ]
+        );
     }
 }
 

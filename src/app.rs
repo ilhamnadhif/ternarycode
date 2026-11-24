@@ -84,6 +84,24 @@ pub enum AppMsg {
     ProjectSessions(ProjectId, Vec<crate::profiles::ProjectSessionItem>),
     /// Remote command received from a paired smartphone via the Mobile Companion server.
     Companion(crate::companion::CompanionCmd),
+    /// Files/folders copied from the OS clipboard (or dropped) into a folder of the file tree.
+    FilesPasted {
+        project: ProjectId,
+        dest_dir: PathBuf,
+        created: Vec<PathBuf>,
+        errors: Vec<String>,
+    },
+}
+
+/// Where files currently dragged over the window will land if dropped.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DropTarget {
+    /// Typed as shell-escaped paths into this terminal pane.
+    Terminal(PaneId),
+    /// Copied into this folder inside the Code Editor file tree (with highlight rect).
+    FilesDir(PathBuf, egui::Rect),
+    /// Added as project(s) in the workspace.
+    Project,
 }
 
 /// A line of a confirmation's list: a program that would be stopped, or a file whose changes
@@ -481,9 +499,14 @@ pub struct App {
     /// Where each terminal was drawn last frame, in the Focus view and in the Grid: files
     /// dropped on one have their paths typed there.
     pub term_rects: Vec<(PaneId, egui::Rect)>,
-    /// Files are dragged over the window: the pane they would be typed into (none: they would
-    /// be added as projects).
-    pub drag_over: Option<Option<PaneId>>,
+    /// Where the Code Editor's Files column was drawn last frame (if visible).
+    pub files_rect: Option<egui::Rect>,
+    /// Visible rows in the Files tree `(target_dir, row_rect)` for drag-and-drop copy into folders.
+    pub files_drop_rows: Vec<(PathBuf, egui::Rect)>,
+    /// True after the user clicked/selected in the Files tree (until they focus a terminal or editor text).
+    pub files_focused: bool,
+    /// Files are dragged over the window: where they would land if dropped.
+    pub drag_over: Option<DropTarget>,
     /// How each pane is drawn this frame (see [`crate::pane::Shown`]).
     pub shown_now: HashMap<PaneId, crate::pane::Shown>,
     watchers: crate::watch::Watchers,
@@ -819,6 +842,9 @@ impl App {
             review_switch: None,
             pane_rects: HashMap::new(),
             term_rects: Vec::new(),
+            files_rect: None,
+            files_drop_rows: Vec::new(),
+            files_focused: false,
             drag_over: None,
             shown_now: HashMap::new(),
             watchers: crate::watch::Watchers::default(),
@@ -1688,6 +1714,7 @@ impl App {
     // ----- focus ------------------------------------------------------------------------------
 
     pub fn focus_pane(&mut self, pane: PaneId) {
+        self.files_focused = false;
         // A page: its project's Browser panel shows it, and it takes the keyboard.
         if let Some(project) = self.browsers.get(&pane).map(|b| b.project) {
             self.active = Some(project);
@@ -1929,6 +1956,41 @@ impl App {
                     }
                 }
                 AppMsg::Companion(cmd) => self.handle_companion_cmd(ctx, cmd),
+                AppMsg::FilesPasted { project, dest_dir, created, errors } => {
+                    if !created.is_empty() {
+                        if let Some(ex) = self.explorer_mut(project) {
+                            let mut changed = vec![dest_dir.clone()];
+                            changed.extend(created.iter().cloned());
+                            ex.invalidate(&changed);
+                            ex.reveal(&created[0]);
+                            if created.len() > 1 {
+                                ex.selected_many.clear();
+                                for p in &created {
+                                    ex.selected_many.insert(p.clone());
+                                }
+                            }
+                        }
+                        self.project_files_at.remove(&project);
+                        self.want_project_files(project);
+                        self.refresh_git(project);
+                        let dir_name = dest_dir
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| paths::contract_tilde(&dest_dir));
+                        if created.len() == 1 {
+                            let item_name = created[0]
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            self.toast_ok(tf("Pasted {} into {}", &[&item_name, &dir_name]));
+                        } else {
+                            self.toast_ok(tf("Pasted {} items into {}", &[&created.len().to_string(), &dir_name]));
+                        }
+                    }
+                    if let Some(first) = errors.first() {
+                        self.toast_err(first.clone());
+                    }
+                }
             }
         }
         for (id, mut paths) in files_changed {
@@ -2190,7 +2252,12 @@ impl App {
                     }
                 }
                 Err(crate::editor::OpenError::Binary) => {
-                    self.toast(tf("{} is a binary file.", &[&paths::contract_tilde(&path)]))
+                    let f = crate::editor::OpenFile::unsupported_binary(path.clone(), &self.ctx);
+                    if let Some(e) = self.editor_mut() {
+                        e.files.push(f);
+                        e.active = e.files.len() - 1;
+                        e.visible = true;
+                    }
                 }
                 Err(crate::editor::OpenError::Io(e)) => self.toast(e),
             },
@@ -3129,6 +3196,7 @@ impl App {
                     // A folder that could not be watched (not there at launch) is tried again.
                     self.watchers.watch(id, path, self.app_tx.clone(), ctx.clone());
                     self.active = Some(id);
+                    self.files_focused = false;
                     self.show_focus();
                     self.focus_request = self.current_pane();
                     self.mark_dirty();
@@ -3873,6 +3941,15 @@ impl App {
                     Err(e) => self.toast(e.to_string()),
                 }
             }
+            Action::CopyFiles(paths) => self.copy_files_action(paths),
+            Action::PasteFilesInto(dir) => {
+                let files = platform::clipboard_files();
+                if files.is_empty() {
+                    self.toast(t("No files on the clipboard.").to_string());
+                } else {
+                    self.paste_files_into(dir, files);
+                }
+            }
             Action::TrashPath(path) => self.dialog = Some(Dialog::ConfirmTrash(path)),
             Action::TrashPaths(paths) => {
                 let pruned = crate::explorer::Explorer::prune_descendants(&paths);
@@ -4086,10 +4163,20 @@ impl App {
             Action::SelectAll if self.page_has_keys("selectAll") => {}
             Action::Copy => {
                 // The menu takes ⌘C before any widget: a text field (the editor, a dialog, the
-                // palette) or text selected in a document gets it as egui's own copy; else the
-                // terminal copies its selection when terminals own keyboard focus.
+                // palette) or text selected in a document gets it as egui's own copy; when the
+                // Code Editor file tree is focused, copy the selected files onto the OS clipboard;
+                // else the terminal copies its selection when terminals own keyboard focus.
                 if self.text_field_focused(ctx) || ui::docview_ui::has_doc_selection(ctx) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy);
+                } else if self.files_focused
+                    && self.files_tree_owns_clipboard(ctx)
+                    && let Some(pid) = self.active
+                    && let Some(ex) = self.explorers.get_mut(&pid)
+                {
+                    let paths = ex.selected_paths_in_order();
+                    if !paths.is_empty() {
+                        self.copy_files_action(paths);
+                    }
                 } else if self.terminals_take_keys()
                     && let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id))
                 {
@@ -4097,6 +4184,18 @@ impl App {
                 }
             }
             Action::Paste => {
+                // When the Code Editor file tree is focused (or hovered without a text field
+                // owning the keyboard) and the OS clipboard holds files (e.g. copied from Finder),
+                // paste them straight into the selected folder.
+                if self.files_tree_owns_clipboard(ctx)
+                    && let Some(dir) = self.files_paste_target_dir()
+                {
+                    let files = platform::clipboard_files();
+                    if !files.is_empty() {
+                        self.paste_files_into(dir, files);
+                        return;
+                    }
+                }
                 // A terminal pastes the clipboard as text (on Windows and Linux a paste event
                 // without Shift would reach it as a typed Ctrl+V); a text field gets egui's own.
                 match self.target_pane().filter(|_| !self.text_field_focused(ctx) && self.terminals_take_keys()) {
@@ -4467,9 +4566,94 @@ impl App {
         }
     }
 
+    /// Whether the Code Editor's Files tree is visible and eligible to handle file Copy/Paste.
+    fn files_tree_owns_clipboard(&self, ctx: &egui::Context) -> bool {
+        let Some(rect) = self.files_rect else { return false };
+        if self.view != View::Focus
+            || self.overlay_open()
+            || self.text_field_focused(ctx)
+            || egui::Popup::is_any_open(ctx)
+            || self.browser_focus.is_some()
+        {
+            return false;
+        }
+        self.files_focused || ctx.input(|i| i.pointer.latest_pos().is_some_and(|p| rect.contains(p)))
+    }
+
+    /// The destination folder for pasting files in the active project's Files tree: the selected
+    /// folder itself, the selected file's parent folder, or the project root.
+    fn files_paste_target_dir(&self) -> Option<PathBuf> {
+        let pid = self.active?;
+        let root = self.project(pid)?.path.clone();
+        let target = self
+            .explorers
+            .get(&pid)
+            .and_then(|e| e.selected.clone())
+            .map(|s| if s.is_dir() { s } else { s.parent().map(Path::to_path_buf).unwrap_or_default() })
+            .filter(|d| d.starts_with(&root) && d.is_dir())
+            .unwrap_or(root);
+        Some(target)
+    }
+
+    /// Copies files/folders onto the OS clipboard and shows confirmation.
+    fn copy_files_action(&mut self, paths: Vec<PathBuf>) {
+        let pruned = crate::explorer::Explorer::prune_descendants(&paths);
+        if pruned.is_empty() {
+            return;
+        }
+        if platform::copy_files_to_clipboard(&pruned) {
+            if pruned.len() == 1 {
+                let name = pruned[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.toast_ok(tf("Copied {} to clipboard", &[&name]));
+            } else {
+                self.toast_ok(tf("Copied {} items to clipboard", &[&pruned.len().to_string()]));
+            }
+        }
+    }
+
+    /// Copies `sources` into `dest_dir` off the UI thread so large Finder copies never stall frames.
+    pub fn paste_files_into(&mut self, dest_dir: PathBuf, sources: Vec<PathBuf>) {
+        let Some(project) = self.active else { return };
+        let Some(root) = self.project(project).map(|p| p.path.clone()) else { return };
+        let dest_dir = if dest_dir.is_dir() {
+            dest_dir
+        } else {
+            dest_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| root.clone())
+        };
+        if !dest_dir.starts_with(&root) {
+            return;
+        }
+        let (tx, ctx) = (self.app_tx.clone(), self.ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let (created, errors) = crate::explorer::copy_items_into(&sources, &dest_dir);
+            let _ = tx.send(AppMsg::FilesPasted { project, dest_dir, created, errors });
+            ctx.request_repaint();
+        });
+    }
+
+    /// Resolves where an OS file drop at `pos` lands: a terminal pane, a folder in the Code
+    /// Editor file tree, or the workspace as a new project.
+    pub fn drop_target_at(&self, pos: egui::Pos2) -> DropTarget {
+        if let Some((id, _)) = self.term_rects.iter().find(|(_, r)| r.contains(pos)) {
+            return DropTarget::Terminal(*id);
+        }
+        if let Some(files_rect) = self.files_rect
+            && files_rect.contains(pos)
+            && let Some(pid) = self.active
+            && let Some(root) = self.project(pid).map(|p| p.path.clone())
+        {
+            if let Some((dir, row_rect)) = self.files_drop_rows.iter().find(|(_, r)| r.contains(pos)) {
+                return DropTarget::FilesDir(dir.clone(), *row_rect);
+            }
+            return DropTarget::FilesDir(root, files_rect);
+        }
+        DropTarget::Project
+    }
+
     /// Files dragged over the window, and dropped: onto a terminal their paths are typed there;
-    /// elsewhere they become projects (`route_drop`). While they are dragged, the window
-    /// hears of no pointer movement: where the pointer is is asked of the system.
+    /// onto a folder in the Code Editor file tree they are copied into that folder; elsewhere they
+    /// become projects (`route_drop`). While they are dragged, the window hears of no pointer
+    /// movement: where the pointer is is asked of the system.
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let (dropped, hovering): (Vec<PathBuf>, bool) = ctx.input(|i| {
             (i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect(), !i.raw.hovered_files.is_empty())
@@ -4478,7 +4662,7 @@ impl App {
             self.drag_over = None;
             return;
         }
-        let target = platform::pointer_in_window(ctx).and_then(|p| self.term_rects.iter().find(|(_, r)| r.contains(p)).map(|(id, _)| *id));
+        let target = platform::pointer_in_window(ctx).map(|p| self.drop_target_at(p)).unwrap_or(DropTarget::Project);
         if dropped.is_empty() {
             self.drag_over = Some(target);
             ctx.request_repaint_after(Duration::from_millis(33));
@@ -4488,20 +4672,28 @@ impl App {
         self.route_drop(target, dropped);
     }
 
-    /// Files dropped on a terminal: their paths are typed there, as a paste (an agent takes a
-    /// screenshot that way). Anywhere else a folder, or a file's folder, becomes a project
-    /// (FR-P1).
-    pub fn route_drop(&mut self, pane: Option<PaneId>, paths: Vec<PathBuf>) {
-        if let Some(id) = pane
-            && let Some(p) = self.panes.get_mut(&id)
-            && p.alive()
-        {
-            let mut text = paths.iter().map(|p| platform::dropped_path(&p.to_string_lossy())).collect::<Vec<_>>().join(" ");
-            text.push(' ');
-            let bytes = tc_term::widget::paste_bytes(&p.shared, &text);
-            p.input(bytes);
-            self.actions.push(Action::FocusPane(id));
-            return;
+    /// Files dropped on a terminal: their paths are typed there, as a paste. Files dropped on a
+    /// folder in the Code Editor file tree: copied into that folder. Anywhere else: added as a
+    /// project (FR-P1).
+    pub fn route_drop(&mut self, target: DropTarget, paths: Vec<PathBuf>) {
+        match target {
+            DropTarget::Terminal(id) => {
+                if let Some(p) = self.panes.get_mut(&id)
+                    && p.alive()
+                {
+                    let mut text = paths.iter().map(|p| platform::dropped_path(&p.to_string_lossy())).collect::<Vec<_>>().join(" ");
+                    text.push(' ');
+                    let bytes = tc_term::widget::paste_bytes(&p.shared, &text);
+                    p.input(bytes);
+                    self.actions.push(Action::FocusPane(id));
+                    return;
+                }
+            }
+            DropTarget::FilesDir(dir, _) => {
+                self.paste_files_into(dir, paths);
+                return;
+            }
+            DropTarget::Project => {}
         }
         for path in paths {
             let dir = if path.is_dir() {
@@ -4517,28 +4709,44 @@ impl App {
     }
 
     /// While files are dragged over the window: where they would go. The terminal under the
-    /// pointer is outlined ("Drop to insert the path"); elsewhere the window says they would
-    /// become projects.
+    /// pointer is outlined ("Drop to insert the path"); a folder in the Files tree says "Drop to
+    /// copy into <folder>"; elsewhere the window says they would become projects.
     fn drop_overlay(&self, ctx: &egui::Context) {
-        let Some(target) = self.drag_over else { return };
+        let Some(target) = &self.drag_over else { return };
         let p = crate::ui::style::palette(ctx.global_style().visuals.dark_mode);
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop-overlay")));
         let screen = ctx.content_rect();
-        let (rect, icon, text) = match target.and_then(|id| self.term_rects.iter().find(|(p, _)| *p == id)) {
-            Some((_, r)) => (*r, crate::ui::icons::TERMINAL_WINDOW, t("Drop to insert the path")),
-            None => (screen.shrink(6.0), crate::ui::icons::FOLDER_PLUS, t("Drop to add as a project")),
+        let (rect, icon, text): (egui::Rect, &str, String) = match target {
+            DropTarget::Terminal(id) => match self.term_rects.iter().find(|(p, _)| p == id) {
+                Some((_, r)) => (*r, crate::ui::icons::TERMINAL_WINDOW, t("Drop to insert the path").to_string()),
+                None => (screen.shrink(6.0), crate::ui::icons::FOLDER_PLUS, t("Drop to add as a project").to_string()),
+            },
+            DropTarget::FilesDir(dir, r) => {
+                let name = dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| paths::contract_tilde(dir));
+                (*r, crate::ui::icons::FOLDER_SIMPLE_PLUS, tf("Drop to copy into {}", &[&name]))
+            }
+            DropTarget::Project => (screen.shrink(6.0), crate::ui::icons::FOLDER_PLUS, t("Drop to add as a project").to_string()),
         };
         painter.rect_filled(rect, egui::CornerRadius::same(crate::ui::style::RADIUS), crate::ui::style::soft(p.accent, 0.08));
         painter.rect_stroke(rect, egui::CornerRadius::same(crate::ui::style::RADIUS), egui::Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
         let font = crate::ui::style::medium(13.0);
-        let g = painter.layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE);
+        let g = painter.layout_no_wrap(text, font, egui::Color32::WHITE);
         let ig = painter.layout_no_wrap(icon.to_string(), crate::ui::style::icon_font(14.0), egui::Color32::WHITE);
         let size = egui::vec2(ig.size().x + 8.0 + g.size().x + 28.0, 32.0);
-        let pill = egui::Rect::from_center_size(rect.center(), size);
+        let pill_center = if rect.height() < 48.0 {
+            self.files_rect.map_or(rect.center(), |fr| fr.center())
+        } else {
+            rect.center()
+        };
+        let pill = egui::Rect::from_center_size(pill_center, size);
         painter.rect_filled(pill, egui::CornerRadius::same(16), p.accent);
         let x = pill.left() + 14.0;
-        painter.galley(egui::pos2(x, pill.center().y - ig.size().y / 2.0), ig.clone(), egui::Color32::WHITE);
-        painter.galley(egui::pos2(x + ig.size().x + 8.0, pill.center().y - g.size().y / 2.0), g, egui::Color32::WHITE);
+        let ig_w = ig.size().x;
+        painter.galley(egui::pos2(x, pill.center().y - ig.size().y / 2.0), ig, egui::Color32::WHITE);
+        painter.galley(egui::pos2(x + ig_w + 8.0, pill.center().y - g.size().y / 2.0), g, egui::Color32::WHITE);
         #[cfg(debug_assertions)]
         crate::devtest::record("drop-overlay", pill);
     }
@@ -4797,6 +5005,11 @@ impl App {
         // its find bar closes instead of floating over another view).
         self.pane_rects.clear();
         self.term_rects.clear();
+        self.files_rect = None;
+        self.files_drop_rows.clear();
+        if self.text_field_focused(&ctx) {
+            self.files_focused = false;
+        }
         // A drag the view it began in no longer sees (⌘0 or ⌘B while dragging) ends with the
         // button: otherwise its ghost would follow the pointer, repainting, until a later click.
         if !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
@@ -4994,8 +5207,17 @@ impl eframe::App for App {
             self.ui_panics = 0;
         }
         // Browser panes: what their pages said, and their web views laid where they are drawn.
-        self.browser_events(ui.ctx());
-        self.sync_browsers(ui.ctx(), frame);
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.browser_events(ui.ctx());
+            self.sync_browsers(ui.ctx(), frame);
+        }))
+        .is_err()
+        {
+            self.toast(tf(
+                "Something went wrong and TernaryCode recovered. A report was saved in {}.",
+                &[&paths::contract_tilde(&paths::logs_dir())],
+            ));
+        }
         #[cfg(target_os = "macos")]
         {
             self.sync_option_as_alt(ui.ctx(), frame);

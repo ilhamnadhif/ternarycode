@@ -992,6 +992,7 @@ impl App {
                             let r = ui.add(
                                 egui::TextEdit::singleline(&mut search.query)
                                     .id(fid)
+                                    .char_limit(1_024)
                                     .frame(egui::Frame::NONE)
                                     .hint_text(RichText::new(t("Find")).color(p.text_faint))
                                     .font(egui::FontId::proportional(style::BODY))
@@ -2042,7 +2043,7 @@ fn terminal_tab(
     let close_w = if closable { 4.0 + 14.0 } else { 0.0 };
     let w = 10.0 + 13.0 + 7.0 + galley.size().x + dot_w + close_w + if closable { 4.0 } else { 10.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click_and_drag());
-    let close_rect = Rect::from_center_size(pos2(rect.right() - 4.0 - 7.0, rect.center().y), vec2(14.0, 14.0));
+    let close_rect = Rect::from_center_size(pos2((rect.right() - 4.0 - 7.0).round(), rect.center().y.round()), vec2(16.0, 16.0));
     let close_resp = closable.then(|| ui.interact(close_rect, resp.id.with("close"), Sense::click()));
     let close_hot = close_resp.as_ref().is_some_and(egui::Response::hovered);
     let tab_hot = resp.hovered() || close_hot;
@@ -2096,13 +2097,7 @@ fn terminal_tab(
             painter.rect_filled(close_rect, CornerRadius::same(4), p.subtle);
         }
         if on || tab_hot {
-            painter.text(
-                close_rect.center(),
-                Align2::CENTER_CENTER,
-                icons::X,
-                style::icon_font(10.0),
-                if close_hot { p.text } else { p.text_faint },
-            );
+            kit::paint_close_x(&painter, close_rect.center(), 3.25, if close_hot { p.text } else { p.text_faint });
         }
         closed = c.on_hover_text(t("Close Tab")).clicked();
     }

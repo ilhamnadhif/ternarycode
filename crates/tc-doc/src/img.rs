@@ -5,6 +5,9 @@ use crate::Rgba;
 /// Longest side kept: bigger images are scaled down (a texture that large is rarely needed,
 /// and the GPU may refuse it).
 pub const MAX_SIDE: u32 = 4096;
+/// Maximum raw pixel count allowed before decoding (100 MP ≈ 400 MB RGBA) to guard against
+/// decompression bombs (e.g. tiny PNG claiming 65535×65535).
+const MAX_PIXELS: u64 = 100_000_000;
 
 /// The size of an encoded image (read from its header only); None when it is not an image
 /// this can decode (EMF and WMF drawings, for instance).
@@ -19,6 +22,11 @@ pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 
 /// Decodes an image, scaled down to at most `max_side` pixels on its longest side.
 pub fn decode(bytes: &[u8], max_side: u32) -> Result<Rgba, String> {
+    if let Some((w, h)) = dimensions(bytes)
+        && u64::from(w).saturating_mul(u64::from(h)) > MAX_PIXELS
+    {
+        return Err(format!("the image is too big to decode ({w} × {h} px)"));
+    }
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let img = if img.width().max(img.height()) > max_side {
         img.resize(max_side, max_side, image::imageops::FilterType::Triangle)

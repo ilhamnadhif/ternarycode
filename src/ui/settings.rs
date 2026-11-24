@@ -316,6 +316,7 @@ pub(super) fn mono_field(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &st
     child.add_sized(
         inner.size(),
         edit.id(id)
+            .char_limit(16_384)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .font(style::mono(12.0))
@@ -1746,6 +1747,7 @@ fn nav_search(ui: &mut Ui, rect: Rect, id: egui::Id, search: &mut String) {
         inner.size(),
         egui::TextEdit::singleline(search)
             .id(id)
+            .char_limit(1_024)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .font(FontId::proportional(style::SMALL))

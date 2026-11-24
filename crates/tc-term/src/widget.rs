@@ -883,9 +883,10 @@ pub fn fit_scale(rect: Rect, shared: &TermShared, style: &TermStyle) -> (GridSiz
         }
     };
     let avail = rect.size() - vec2(2.0 * PAD, 2.0 * PAD);
-    let scale = (avail.x / (size.cols as f32 * style.cell.x))
-        .min(avail.y / (size.rows as f32 * style.cell.y))
-        .clamp(0.05, 1.0);
+    let denom_x = (size.cols.max(1) as f32 * style.cell.x.max(1.0)).max(1.0);
+    let denom_y = (size.rows.max(1) as f32 * style.cell.y.max(1.0)).max(1.0);
+    let raw = (avail.x / denom_x).min(avail.y / denom_y);
+    let scale = if raw.is_finite() { raw.clamp(0.05, 1.0) } else { 1.0 };
     (size, scale)
 }
 
@@ -913,7 +914,8 @@ pub fn show_readable(
         cell: style.cell * scale,
         ..*style
     };
-    let visible = (((rect.height() - 2.0 * PAD) / scaled.cell.y).floor() as usize).max(1);
+    let raw_vis = ((rect.height() - 2.0 * PAD) / scaled.cell.y.max(1.0)).floor();
+    let visible = if raw_vis.is_finite() && raw_vis >= 1.0 { (raw_vis as usize).min(4096) } else { 1 };
     let crop = if visible >= size.rows {
         Crop::default()
     } else {

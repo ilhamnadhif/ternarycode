@@ -160,6 +160,10 @@ pub enum Action {
     /// A file or folder was renamed: open files follow it.
     PathRenamed { old: PathBuf, new: PathBuf },
     DuplicatePath(PathBuf),
+    /// Copies files/folders onto the OS clipboard so they can be pasted into folders or Finder.
+    CopyFiles(Vec<PathBuf>),
+    /// Pastes files/folders currently on the OS clipboard (e.g. copied from Finder) into this folder.
+    PasteFilesInto(PathBuf),
     /// Asks, then moves a file or folder (or several selected items) to the Trash.
     TrashPath(PathBuf),
     TrashPathNow(PathBuf),

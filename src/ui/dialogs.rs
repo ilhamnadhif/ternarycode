@@ -196,6 +196,7 @@ pub(super) fn mono_field(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &st
         inner.size(),
         egui::TextEdit::singleline(text)
             .id(id)
+            .char_limit(4_096)
             .frame(egui::Frame::NONE)
             .margin(Margin::ZERO)
             .font(style::mono(style::MONO))
@@ -1108,6 +1109,9 @@ fn install_preview(ui: &mut Ui, path: &std::path::Path, before: Option<&str>, di
                     }
                     folded = 0;
                     let (r, _) = ui.allocate_exact_size(vec2(rw, 20.0), Sense::hover());
+                    if !ui.is_rect_visible(r) {
+                        continue;
+                    }
                     let (bg, sc) = if add {
                         (style::soft(p.ok, if dark { 0.09 } else { 0.07 }), p.ok)
                     } else if del {
@@ -1128,8 +1132,12 @@ fn install_preview(ui: &mut Ui, path: &std::path::Path, before: Option<&str>, di
                     }
                     let sx = r.left() + 4.0 + 30.0 + 8.0 + 30.0 + 8.0;
                     painter.text(pos2(sx, cy), Align2::LEFT_CENTER, if add { "+" } else if del { "−" } else { "" }, font.clone(), sc);
+                    let clipped_text = match text.char_indices().nth(2_000) {
+                        Some((cut, _)) => &text[..cut],
+                        None => text,
+                    };
                     let mut job = egui::text::LayoutJob::default();
-                    for (c, piece) in crate::editor::line_colors(text, &syntax, dark, if add || del { p.text } else { p.text_muted }) {
+                    for (c, piece) in crate::editor::line_colors(clipped_text, &syntax, dark, if add || del { p.text } else { p.text_muted }) {
                         job.append(&piece, 0.0, egui::TextFormat::simple(font.clone(), c));
                     }
                     let cx = sx + 12.0 + 8.0;

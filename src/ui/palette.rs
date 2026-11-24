@@ -885,6 +885,7 @@ impl App {
                         ui.add_sized(
                             field.size(),
                             egui::TextEdit::singleline(&mut pal.query)
+                                .char_limit(1_024)
                                 .hint_text(egui::RichText::new(hint).font(egui::FontId::proportional(style::TITLE)).color(p.text_faint))
                                 .font(style::semibold(style::TITLE))
                                 .text_color(p.text)

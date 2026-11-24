@@ -438,7 +438,7 @@ impl App {
         let p = style::pal(ui);
         let Some(b) = self.browsers.get(&id) else { return (false, false) };
         let cy = r.center().y;
-        let x_rect = Rect::from_center_size(pos2(r.right() - TAB_PAD - 5.0, cy), vec2(16.0, 16.0));
+        let x_rect = Rect::from_center_size(pos2((r.right() - TAB_PAD - 5.0).round(), cy.round()), vec2(16.0, 16.0));
         let mut lead_x = r.left() + TAB_PAD;
         match &look.agent {
             Some(a) => {
@@ -544,7 +544,7 @@ impl App {
             if close_hovered {
                 painter.rect_filled(x_rect, CornerRadius::same(4), p.subtle);
             }
-            painter.text(x_rect.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), if close_hovered { p.text } else { p.text_faint });
+            kit::paint_close_x(&painter, x_rect.center(), 3.25, if close_hovered { p.text } else { p.text_faint });
             closed = xr.on_hover_text(t("Close page")).clicked();
         }
         let who = look.agent.as_ref().and_then(|a| {
@@ -552,9 +552,15 @@ impl App {
             a.kind.map(|k| k.label().to_string()).or_else(|| pane.map(|x| x.label()))
         });
         let (host, path) = crate::browser::split_url(&b.url);
-        let mut tip = look.title.clone();
+        let clip = |s: &str, max: usize| -> String {
+            match s.char_indices().nth(max) {
+                Some((cut, _)) => format!("{}…", &s[..cut]),
+                None => s.to_string(),
+            }
+        };
+        let mut tip = clip(&look.title, 256);
         if !host.is_empty() {
-            tip = format!("{tip}\n{host}{path}");
+            tip = format!("{tip}\n{}", clip(&format!("{host}{path}"), 256));
         }
         if let Some(who) = &who {
             tip = format!("{tip}\n{}", if ended { tf("{}’s page (its terminal is closed)", &[who]) } else { tf("{}’s page", &[who]) });

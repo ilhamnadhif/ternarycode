@@ -484,6 +484,9 @@ impl App {
                 }
                 for l in &lines {
                     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), CONSOLE_ROW), Sense::hover());
+                    if !ui.is_rect_visible(row) {
+                        continue;
+                    }
                     let painter = ui.painter();
                     let level = match l.level.as_str() {
                         "error" => Some((icons::WARNING_CIRCLE, p.err)),
@@ -776,7 +779,8 @@ impl App {
         let mut who_job = egui::text::LayoutJob::simple_singleline(who, style::medium(style::SMALL), p.text);
         who_job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
         let who_g = ui.painter().layout_job(who_job);
-        let mut job = egui::text::LayoutJob::simple(d.message.clone(), style::mono(style::DATA), p.text_muted, text_w);
+        let msg_text = clip_text(&d.message, 4_096);
+        let mut job = egui::text::LayoutJob::simple(msg_text.into_owned(), style::mono(style::DATA), p.text_muted, text_w);
         job.wrap.max_rows = 8;
         let msg = ui.painter().layout_job(job);
         let field_h = 26.0;
@@ -797,7 +801,7 @@ impl App {
         let focus = std::mem::take(&mut self.dialog_focus) == Some(id);
         if prompt {
             let field = Rect::from_min_size(pos2(tx, top + who_h + 2.0 + msg.size().y + 8.0), vec2(text_w.min(360.0), field_h));
-            let mut text = d.text.clone();
+            let mut text = clip_text(&d.text, 4_096).into_owned();
             let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(field), |ui| kit::field(ui, fid, &mut text, None, "", field.width(), true)).inner;
             if focus {
                 resp.request_focus();
@@ -1756,6 +1760,7 @@ fn address_field(ui: &mut Ui, id: egui::Id, text: &mut String, icon: &str, rect:
         inner.size(),
         egui::TextEdit::singleline(text)
             .id(id)
+            .char_limit(8_192)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .font(style::mono(style::MONO))
@@ -1764,6 +1769,16 @@ fn address_field(ui: &mut Ui, id: egui::Id, text: &mut String, icon: &str, rect:
             .vertical_align(egui::Align::Center),
     );
     (resp, outer.clicked())
+}
+
+fn clip_text(s: &str, max_chars: usize) -> std::borrow::Cow<'_, str> {
+    if s.len() <= max_chars {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => std::borrow::Cow::Owned(format!("{}…", &s[..idx])),
+        None => std::borrow::Cow::Borrowed(s),
+    }
 }
 
 /// A chip of the page's toolbar (24 high, on a hairline): an icon in `color` (`filled`), and a
@@ -1891,6 +1906,7 @@ pub(crate) fn find_card(ui: &mut Ui, at: egui::Pos2, max_w: f32, c: FindCard, es
         field.size(),
         egui::TextEdit::singleline(c.query)
             .id(c.id)
+            .char_limit(1_024)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .font(egui::FontId::proportional(style::BODY))

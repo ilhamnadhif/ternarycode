@@ -133,8 +133,12 @@ pub fn popup_of(page: tc_core::PaneId) -> Option<Retained<WKWebView>> {
 /// on a screen of `room` points.
 pub fn fit(asked: Option<(f64, f64)>, room: (f64, f64)) -> (f64, f64) {
     let (w, h) = asked.unwrap_or((500.0, 640.0));
-    let max_w = (room.0 - 2.0 * SCREEN_MARGIN).max(MIN_SIZE.0);
-    let max_h = (room.1 - 2.0 * SCREEN_MARGIN).max(MIN_SIZE.1);
+    let w = if w.is_finite() { w } else { 500.0 };
+    let h = if h.is_finite() { h } else { 640.0 };
+    let room_w = if room.0.is_finite() { room.0 } else { 1440.0 };
+    let room_h = if room.1.is_finite() { room.1 } else { 900.0 };
+    let max_w = (room_w - 2.0 * SCREEN_MARGIN).max(MIN_SIZE.0);
+    let max_h = (room_h - 2.0 * SCREEN_MARGIN).max(MIN_SIZE.1);
     (w.clamp(MIN_SIZE.0, max_w), h.clamp(MIN_SIZE.1, max_h))
 }
 
@@ -165,8 +169,14 @@ fn open(opener: &WKWebView, url: &str, config: &WKWebViewConfiguration, size: Op
     let (w, h) = fit(size, (room.size.width, room.size.height));
     // Centred over the page that opened it, on its screen.
     let page = own.convertRectToScreen(opener.convertRect_toView(opener.bounds(), None));
-    let x = (page.origin.x + (page.size.width - w) / 2.0).clamp(room.origin.x + SCREEN_MARGIN, (room.origin.x + room.size.width - w - SCREEN_MARGIN).max(room.origin.x + SCREEN_MARGIN));
-    let y = (page.origin.y + (page.size.height - h) / 2.0).clamp(room.origin.y + SCREEN_MARGIN, (room.origin.y + room.size.height - h - SCREEN_MARGIN).max(room.origin.y + SCREEN_MARGIN));
+    let min_x = room.origin.x + SCREEN_MARGIN;
+    let max_x = (room.origin.x + room.size.width - w - SCREEN_MARGIN).max(min_x);
+    let raw_x = page.origin.x + (page.size.width - w) / 2.0;
+    let x = if raw_x.is_finite() { raw_x.clamp(min_x, max_x) } else { min_x };
+    let min_y = room.origin.y + SCREEN_MARGIN;
+    let max_y = (room.origin.y + room.size.height - h - SCREEN_MARGIN).max(min_y);
+    let raw_y = page.origin.y + (page.size.height - h) / 2.0;
+    let y = if raw_y.is_finite() { raw_y.clamp(min_y, max_y) } else { min_y };
     // Not minimized on its own: it rides on the app's window.
     let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
     let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));

@@ -18,6 +18,16 @@ const LIST_W: f32 = 420.0;
 /// The narrowest commit side that offers Unified | Split.
 const SPLIT_MIN_W: f32 = 760.0;
 
+fn clip_history_text(s: &str, max_chars: usize) -> std::borrow::Cow<'_, str> {
+    if s.len() <= max_chars {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    match s.char_indices().nth(max_chars) {
+        Some((cut, _)) => std::borrow::Cow::Owned(format!("{}…", &s[..cut])),
+        None => std::borrow::Cow::Borrowed(s),
+    }
+}
+
 /// What a frame of History asked for (done once drawing is over).
 #[derive(Default)]
 struct Asks {
@@ -436,7 +446,8 @@ impl App {
                                 asks.open_url = Some(web.commit_url(&commit.hash));
                             }
                         };
-                        let title = RichText::new(&commit.subject).font(style::semibold(style::TITLE)).color(p.text);
+                        let subject_short = clip_history_text(&commit.subject, 512);
+                        let title = RichText::new(subject_short.as_ref()).font(style::semibold(style::TITLE)).color(p.text);
                         if area.width() >= 380.0 {
                             egui::Sides::new().spacing(10.0).shrink_left().show(
                                 ui,
@@ -450,8 +461,9 @@ impl App {
                             ui.horizontal(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| buttons(ui)));
                         }
                         if !commit.body.is_empty() {
+                            let body_short = clip_history_text(&commit.body, 16_000);
                             egui::ScrollArea::vertical().id_salt(("history-commit-body", pid, idx)).max_height(64.0).auto_shrink([false, true]).show(ui, |ui| {
-                                ui.add(egui::Label::new(RichText::new(&commit.body).size(style::SMALL).color(p.text_muted)).wrap());
+                                ui.add(egui::Label::new(RichText::new(body_short.as_ref()).size(style::SMALL).color(p.text_muted)).wrap());
                             });
                         }
                         // Who and when, a merge, where it is, not pushed.

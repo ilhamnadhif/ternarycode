@@ -17,6 +17,28 @@ pub const READ_ONLY_ABOVE: u64 = 10 * 1024 * 1024;
 pub const SHOW_AT_MOST: usize = 2 * 1024 * 1024;
 /// Highlighting stops above this size (plain text is shown).
 pub const HIGHLIGHT_AT_MOST: usize = 1024 * 1024;
+/// Single lines longer than this skip syntect regex tokenization (prevents hangs on minified
+/// HTML/JS/JSON/SVG bundles) and trigger the virtualized fast code viewer instead of egui's
+/// non-virtualized TextEdit (which overflows wgpu's 256 MB vertex buffer on multi-MB lines).
+pub const MAX_HIGHLIGHT_LINE_LEN: usize = 8 * 1024;
+/// Files above this byte size render in the virtualized fast viewer (read-only) so egui's
+/// vertex buffer stays tiny and never exceeds Metal/wgpu buffer size limits.
+pub const MAX_TEXTEDIT_BYTES: usize = 350 * 1024;
+/// Maximum characters painted on a single line in the virtualized code/diff viewer.
+pub const MAX_VIRTUAL_LINE_CHARS: usize = 4_000;
+
+/// Known binary / non-text extensions that should always open the unsupported-binary info card
+/// rather than attempting UTF-8 text editing (even if the first 8 KB happen to lack NUL bytes).
+const BINARY_EXTENSIONS: &[&str] = &[
+    "bin", "dat", "exe", "dll", "so", "dylib", "o", "a", "lib", "obj", "wasm", "pyc", "pyo",
+    "class", "jar", "war", "ear", "zip", "tar", "gz", "tgz", "bz2", "xz", "zst", "7z", "rar",
+    "dmg", "pkg", "iso", "img", "deb", "rpm", "apk", "ipa", "msi", "cab", "mp3", "mp4", "m4a",
+    "m4v", "mov", "avi", "mkv", "webm", "wav", "flac", "ogg", "opus", "aac", "ttf", "otf",
+    "woff", "woff2", "eot", "sqlite", "sqlite3", "db", "mdb", "psd", "ai", "sketch", "fig",
+    "blend", "fbx", "glb", "heic", "heif", "avif", "raw", "cr2", "nef", "dng", "icns", "cur",
+    "p12", "pfx", "der", "keystore", "jks", "parquet", "avro", "arrow", "npy", "npz", "pt",
+    "pth", "onnx", "safetensors", "gguf",
+];
 
 pub struct OpenFile {
     pub path: PathBuf,
@@ -42,6 +64,9 @@ pub struct OpenFile {
     pub caret_rev: u64,
     /// Number of lines (for the width of the line numbers).
     pub lines: usize,
+    /// Byte length of the longest line in `text` (used to switch minified/single-line files to
+    /// the virtualized viewer before egui tessellates millions of glyphs into one GPU buffer).
+    pub max_line_bytes: usize,
     /// Lines end with CR LF.
     pub crlf: bool,
     /// Not UTF-8: shown with replacement marks (and so read-only).
@@ -80,6 +105,12 @@ impl OpenFile {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
+    }
+
+    /// True when this file is too large or has lines too long for egui's non-virtualized
+    /// `TextEdit` (which would otherwise allocate >256 MB GPU vertex buffers and panic wgpu).
+    pub fn use_virtual_viewer(&self) -> bool {
+        self.truncated || self.text.len() > MAX_TEXTEDIT_BYTES || self.max_line_bytes > MAX_HIGHLIGHT_LINE_LEN
     }
 }
 
@@ -246,6 +277,33 @@ fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// Whether `path` or its leading bytes look like a binary / non-text file.
+pub fn is_binary_file(path: &Path, head: &[u8]) -> bool {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str())
+        && BINARY_EXTENSIONS.iter().any(|b| b.eq_ignore_ascii_case(ext))
+    {
+        return true;
+    }
+    let sample = &head[..head.len().min(8192)];
+    if sample.is_empty() {
+        return false;
+    }
+    if sample.contains(&0) {
+        return true;
+    }
+    // Control bytes outside whitespace/ESC (> 30% of leading sample) indicate raw binary data.
+    let ctrl = sample
+        .iter()
+        .filter(|&&b| (b < 0x08) || (0x0E..=0x1A).contains(&b) || (0x1C..=0x1F).contains(&b))
+        .count();
+    ctrl * 10 > sample.len() * 3
+}
+
+/// Byte length of the longest line in `text`.
+pub fn max_line_len(text: &str) -> usize {
+    text.split('\n').map(str::len).max().unwrap_or(0)
+}
+
 /// Reads a file for the editor.
 pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
     let meta = std::fs::metadata(path).map_err(|e| OpenError::Io(e.to_string()))?;
@@ -258,7 +316,7 @@ pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
             .read_to_end(&mut bytes)
             .map_err(|e| OpenError::Io(e.to_string()))?;
     }
-    if bytes.iter().take(8192).any(|b| *b == 0) {
+    if is_binary_file(path, &bytes) {
         return Err(OpenError::Binary);
     }
     let truncated = bytes.len() > SHOW_AT_MOST;
@@ -268,14 +326,15 @@ pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
     // that file is read-only anyway.)
     let lossy = std::str::from_utf8(&bytes).is_err() && !truncated;
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    let (lines, crlf) = (count_lines(&text), text.contains("\r\n"));
+    let (lines, max_line_bytes, crlf) = (count_lines(&text), max_line_len(&text), text.contains("\r\n"));
+    let virtual_only = truncated || text.len() > MAX_TEXTEDIT_BYTES || max_line_bytes > MAX_HIGHLIGHT_LINE_LEN;
     Ok(OpenFile {
         path: path.to_path_buf(),
         saved: text.clone(),
         text,
         dirty: false,
         mtime: Some(meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
-        read_only: read_only || truncated || lossy,
+        read_only: read_only || truncated || lossy || virtual_only,
         truncated,
         conflict: false,
         compare: false,
@@ -284,6 +343,7 @@ pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
         caret_index: None,
         caret_rev: 0,
         lines,
+        max_line_bytes,
         crlf,
         lossy,
         rev: 0,
@@ -302,8 +362,20 @@ pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
 impl OpenFile {
     /// A document shown by `DocView` (read in the background), not as text.
     pub fn document(path: PathBuf, ctx: &eframe::egui::Context) -> Self {
+        let doc = crate::docview::DocView::open(path.clone(), ctx);
+        Self::from_doc(path, doc)
+    }
+
+    /// An unsupported or binary file shown with an informative card (file type, size, Open in
+    /// default app, Show in Finder) instead of crashing or only flashing a toast.
+    pub fn unsupported_binary(path: PathBuf, ctx: &eframe::egui::Context) -> Self {
+        let doc = crate::docview::DocView::unsupported_binary(path.clone(), ctx);
+        Self::from_doc(path, doc)
+    }
+
+    fn from_doc(path: PathBuf, doc: crate::docview::DocView) -> Self {
         Self {
-            doc: Some(Box::new(crate::docview::DocView::open(path.clone(), ctx))),
+            doc: Some(Box::new(doc)),
             mtime: mtime(&path),
             path,
             text: String::new(),
@@ -318,6 +390,7 @@ impl OpenFile {
             caret_index: None,
             caret_rev: 0,
             lines: 0,
+            max_line_bytes: 0,
             crlf: false,
             lossy: false,
             rev: 0,
@@ -348,6 +421,12 @@ pub fn save(file: &mut OpenFile, force: bool) -> Result<(), SaveError> {
     // By content, whatever the time stamp says: one that counts in seconds (or less finely)
     // misses an agent's write made in the same tick as the last load or save.
     if !force && file.path.exists() {
+        // Bound the on-disk read: if the file grew far beyond `saved`, it changed on disk.
+        let limit = file.saved.len().saturating_mul(2).saturating_add(4096) as u64;
+        if std::fs::metadata(&file.path).is_ok_and(|m| m.len() > limit) {
+            file.conflict = true;
+            return Err(SaveError::ChangedOnDisk);
+        }
         let disk = std::fs::read(&file.path).unwrap_or_default();
         if !is_saved(file, &disk) {
             file.conflict = true;
@@ -406,6 +485,7 @@ pub fn on_disk_change(file: &mut OpenFile) -> bool {
         file.compare_diff = None;
     } else {
         file.lines = count_lines(&disk);
+        file.max_line_bytes = max_line_len(&disk);
         file.rev += 1;
         file.crlf = disk.contains("\r\n");
         file.text = disk.clone();
@@ -420,6 +500,7 @@ pub fn on_disk_change(file: &mut OpenFile) -> bool {
 fn load_again(file: &mut OpenFile) {
     if let Ok(fresh) = load(&file.path) {
         file.lines = fresh.lines;
+        file.max_line_bytes = fresh.max_line_bytes;
         file.crlf = fresh.crlf;
         file.lossy = fresh.lossy;
         file.rev += 1;
@@ -443,6 +524,7 @@ pub fn reload(file: &mut OpenFile) {
         load_again(file);
     } else if let Ok(disk) = std::fs::read_to_string(&file.path) {
         file.lines = count_lines(&disk);
+        file.max_line_bytes = max_line_len(&disk);
         file.rev += 1;
         file.crlf = disk.contains("\r\n");
         file.text = disk.clone();
@@ -527,7 +609,12 @@ pub fn count_lines(text: &str) -> usize {
 
 /// The difference between the file on disk and the buffer, for Compare.
 pub fn compare_diff(file: &OpenFile) -> String {
-    let disk = std::fs::read_to_string(&file.path).unwrap_or_default();
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    if let Ok(f) = std::fs::File::open(&file.path) {
+        let _ = f.take(SHOW_AT_MOST as u64).read_to_end(&mut bytes);
+    }
+    let disk = String::from_utf8_lossy(&bytes);
     let text = if file.crlf { to_crlf(&file.text) } else { std::borrow::Cow::Borrowed(file.text.as_str()) };
     tc_agent::integrate::diff_lines(&disk, &text)
 }
@@ -658,7 +745,11 @@ fn ternary_theme(dark: bool) -> Theme {
 }
 
 /// The colours of one line of code (coloured on its own, from the start state): for diffs.
+/// Lines longer than [`MAX_HIGHLIGHT_LINE_LEN`] skip regex tokenization to avoid hangs.
 pub fn line_colors(line: &str, syntax: &str, dark: bool, plain: Color32) -> Vec<(Color32, String)> {
+    if line.len() > MAX_HIGHLIGHT_LINE_LEN {
+        return vec![(plain, line.to_string())];
+    }
     let h = highlighting();
     let Some(syntax_ref) = h.syntaxes.find_syntax_by_extension(syntax).or_else(|| h.syntaxes.find_syntax_by_token(syntax)) else {
         return vec![(plain, line.to_string())];
@@ -822,14 +913,18 @@ pub fn cached_layout(
         }
         let start = (j % CHECKPOINT == 0).then(|| state.clone());
         let line = lines[j];
-        let spans = match state.0.parse_line(line, &h.syntaxes) {
-            Ok(ops) => syntect::highlighting::RangedHighlightIterator::new(&mut state.1, &ops, line, &highlighter)
-                .map(|(style, _, r)| {
-                    let c = style.foreground;
-                    (Color32::from_rgb(c.r, c.g, c.b), r.start, r.end)
-                })
-                .collect(),
-            Err(_) => vec![(plain, 0, line.len())],
+        let spans = if line.len() > MAX_HIGHLIGHT_LINE_LEN {
+            vec![(plain, 0, line.len())]
+        } else {
+            match state.0.parse_line(line, &h.syntaxes) {
+                Ok(ops) => syntect::highlighting::RangedHighlightIterator::new(&mut state.1, &ops, line, &highlighter)
+                    .map(|(style, _, r)| {
+                        let c = style.foreground;
+                        (Color32::from_rgb(c.r, c.g, c.b), r.start, r.end)
+                    })
+                    .collect(),
+                Err(_) => vec![(plain, 0, line.len())],
+            }
         };
         out.push(HlLine { hash: hashes[j], start, spans });
         j += 1;
@@ -1141,6 +1236,33 @@ mod tests {
         let job = layout("fn main() { let x = 1; }\n", "rs", true, FontId::monospace(12.0), Color32::WHITE);
         let colors: std::collections::HashSet<_> = job.sections.iter().map(|s| s.format.color).collect();
         assert!(colors.len() > 2, "{colors:?}");
+    }
+
+    #[test]
+    fn binary_detection_and_long_line_virtual_viewer_guards() {
+        // Known binary extensions are refused even without leading NUL bytes.
+        assert!(is_binary_file(Path::new("firmware.bin"), b"plain header"));
+        assert!(is_binary_file(Path::new("archive.zip"), b"PK\x03\x04"));
+        assert!(is_binary_file(Path::new("movie.mp4"), b"ftypisom"));
+        // Normal UTF-8 HTML / Rust is NOT binary.
+        assert!(!is_binary_file(Path::new("index.html"), b"<!DOCTYPE html><html><body>hi</body></html>"));
+        // Raw control bytes without a known extension are detected as binary.
+        assert!(is_binary_file(Path::new("blob"), &[1, 2, 3, 4, 5, 6, 7, 14, 15, 16]));
+        // Single-line minified HTML > MAX_HIGHLIGHT_LINE_LEN triggers virtual viewer and skips slow regexes.
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("flow.html");
+        let big_line = format!("<html><body><div data-x=\"{}\"></div></body></html>", "A".repeat(20_000));
+        std::fs::write(&html, &big_line).unwrap();
+        let f = load(&html).ok().unwrap();
+        assert!(f.use_virtual_viewer());
+        assert!(f.read_only);
+        assert!(f.max_line_bytes > MAX_HIGHLIGHT_LINE_LEN);
+        // Syntax highlighting a huge line returns immediately as plain text without hanging.
+        let mut cache = Highlight::default();
+        let job = cached_layout(&mut cache, &f.text, "html", true, FontId::monospace(12.0), Color32::WHITE);
+        assert_eq!(job.text.len(), f.text.len());
+        let lc = line_colors(&f.text, "html", true, Color32::WHITE);
+        assert_eq!(lc.len(), 1);
     }
 }
 

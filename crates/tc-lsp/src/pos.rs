@@ -59,7 +59,9 @@ impl LineIndex {
             return "";
         };
         let end = self.starts.get(line + 1).map_or(self.bytes, |(_, e)| *e);
-        let s = &text[b.min(text.len())..end.min(text.len())];
+        let lo = text.floor_char_boundary(b.min(text.len()));
+        let hi = text.floor_char_boundary(end.min(text.len())).max(lo);
+        let s = text.get(lo..hi).unwrap_or("");
         let s = s.strip_suffix('\n').unwrap_or(s);
         s.strip_suffix('\r').unwrap_or(s)
     }

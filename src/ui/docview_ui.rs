@@ -257,6 +257,7 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
                         well.shrink2(vec2(3.0, 2.0)).size(),
                         egui::TextEdit::singleline(&mut text)
                             .id(id)
+                            .char_limit(16)
                             .frame(egui::Frame::NONE)
                             .margin(egui::Margin::ZERO)
                             .font(style::mono(style::DATA))
@@ -337,11 +338,18 @@ fn zoom_controls(ui: &mut Ui, view: &mut DocView, right: f32, cy: f32) -> f32 {
 
 /// What the document is ("PDF · 12 pages · 1.4 MB"; an image's format too).
 fn summary(ui: &Ui, view: &DocView) -> String {
-    let mut s = view.summary();
-    if matches!(view.state, State::Ready(Content::Image))
+    let mut s = if matches!(&view.state, State::Failed(e) if e.contains("binary")) {
+        t("Binary file").to_string()
+    } else {
+        view.summary()
+    };
+    if (matches!(view.state, State::Ready(Content::Image)) || view.kind == tc_doc::Kind::Unsupported)
         && let Some(ext) = view.path.extension()
     {
-        s = format!("{s} · {}", ext.to_string_lossy().to_uppercase());
+        let ext = ext.to_string_lossy().to_uppercase();
+        if !ext.is_empty() {
+            s = format!("{s} · .{ext}");
+        }
     }
     // Its size, read once while it is shown (again after a reload). Caching `Option<u64>` ensures
     // a missing or renamed file does not hit `std::fs::metadata` synchronously on every frame.
@@ -417,6 +425,11 @@ fn loading(ui: &mut Ui, rect: Rect) {
 fn failed(ui: &mut Ui, rect: Rect, error: &str, ask: &mut Option<Ask>) {
     // The reader's reason, as a title and a sentence a person would write.
     let (icon, title, body) = match error {
+        e if e.contains("binary") => (
+            icons::FILE,
+            t("This binary file cannot be displayed"),
+            t("TernaryCode cannot preview binary or unsupported files. You can open it in its default app or reveal it in Finder.").to_string(),
+        ),
         e if e.contains("password") => (icons::LOCK_SIMPLE, t("This PDF is password-protected"), t("TernaryCode can’t show protected PDFs. Your default app can.").to_string()),
         e if e.contains("too big") => (icons::FILE, t("This file is too big to show here"), e.to_string()),
         e if e.contains("cannot be shown here") => (icons::FILE, t("This format can’t be shown here"), t("Supported: PDF, Word, PowerPoint, Excel, ODS, CSV/TSV and images.").to_string()),
@@ -429,9 +442,15 @@ fn failed(ui: &mut Ui, rect: Rect, error: &str, ask: &mut Option<Ask>) {
     };
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         kit::empty_state(ui, icon, title, &body, |ui| {
-            if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Open in default app"), true).clicked() {
-                *ask = Some(Ask::OpenDefault);
-            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if kit::button_ex(ui, kit::Kind::Secondary, Some(icons::ARROW_SQUARE_OUT), t("Open in default app"), true).clicked() {
+                    *ask = Some(Ask::OpenDefault);
+                }
+                if kit::button_ex(ui, kit::Kind::Ghost, Some(icons::FOLDER_OPEN), reveal_label(), true).clicked() {
+                    *ask = Some(Ask::Reveal);
+                }
+            });
         });
     });
 }
@@ -915,12 +934,29 @@ fn usable(c: [u8; 3], dark: bool) -> Option<Color32> {
     Some(Color32::from_rgb(c[0], c[1], c[2]))
 }
 
+/// Truncates `s` to at most `max_chars` Unicode scalar values, appending `"…"` if cut.
+fn truncate_chars(s: &str, max_chars: usize) -> std::borrow::Cow<'_, str> {
+    if s.len() <= max_chars {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => std::borrow::Cow::Owned(format!("{}…", &s[..idx])),
+        None => std::borrow::Cow::Borrowed(s),
+    }
+}
+
 impl Builder<'_> {
     fn job(&self, para: &Para, base: f32, wrap: f32) -> egui::text::LayoutJob {
+        const MAX_PARA_CHARS: usize = 32_000;
         let dark = self.ui.visuals().dark_mode;
         let (size, bold_all, color, italic_all, mono_all) = style_of(para.style, &self.p, base);
         let mut job = egui::text::LayoutJob::default();
+        let mut emitted = 0usize;
         for span in &para.spans {
+            if emitted >= MAX_PARA_CHARS {
+                job.append("…", 0.0, egui::TextFormat::simple(egui::FontId::proportional(size), self.p.text_faint));
+                break;
+            }
             match span {
                 Span::Text { text, bold, italic, underline, strike, code, link, size: run_size, color: run_color } => {
                     let sz = match (para.style, run_size) {
@@ -940,8 +976,11 @@ impl Builder<'_> {
                         run_color.and_then(|c| usable(c, dark)).unwrap_or(color)
                     };
                     let line = Stroke::new(1.0, c);
+                    let remaining = MAX_PARA_CHARS.saturating_sub(emitted);
+                    let piece = truncate_chars(text, remaining);
+                    emitted += piece.chars().count();
                     job.append(
-                        text,
+                        &piece,
                         0.0,
                         egui::TextFormat {
                             font_id: font,
@@ -953,8 +992,14 @@ impl Builder<'_> {
                         },
                     );
                 }
-                Span::Tab => job.append("    ", 0.0, egui::TextFormat::simple(egui::FontId::proportional(size), color)),
-                Span::Break => job.append("\n", 0.0, egui::TextFormat::simple(egui::FontId::proportional(size), color)),
+                Span::Tab => {
+                    emitted += 4;
+                    job.append("    ", 0.0, egui::TextFormat::simple(egui::FontId::proportional(size), color));
+                }
+                Span::Break => {
+                    emitted += 1;
+                    job.append("\n", 0.0, egui::TextFormat::simple(egui::FontId::proportional(size), color));
+                }
                 Span::Image(..) => {}
             }
         }
@@ -981,7 +1026,7 @@ impl Builder<'_> {
         let mut w = w;
         if let Some(list) = &para.list {
             let indent = (22.0 * z * (list.level.min(8) as f32 + 1.0)).min((w - 40.0).max(0.0));
-            let mark = self.ui.painter().layout_no_wrap(list.mark.clone(), egui::FontId::proportional(base), self.p.text_faint);
+            let mark = self.ui.painter().layout_no_wrap(truncate_chars(&list.mark, 64).into_owned(), egui::FontId::proportional(base), self.p.text_faint);
             let mr = Rect::from_min_size(pos2(x + indent - mark.size().x - 6.0 * z, y), mark.size());
             self.items.push(Item::Text { rect: mr, galley: mark });
             x += indent;
@@ -1021,9 +1066,12 @@ impl Builder<'_> {
             if let Span::Image(ix, size_pt) = span
                 && let Some(pic) = self.pictures.get(*ix)
             {
-                let natural = size_pt.map_or(pic.width as f32 * 0.75, |s| s.0 * 1.33) * z;
-                let pw = natural.min(w).max(8.0);
-                let ph = pw * pic.height as f32 / pic.width.max(1) as f32;
+                let base_w = size_pt
+                    .filter(|s| s.0.is_finite() && s.0 > 0.0)
+                    .map_or(pic.width as f32 * 0.75, |s| s.0 * 1.33);
+                let natural = (base_w * z).clamp(8.0, 4096.0);
+                let pw = natural.min(w.max(8.0)).max(8.0);
+                let ph = (pw * pic.height as f32 / pic.width.max(1) as f32).clamp(8.0, (pw * 4.0).max(8.0));
                 let px = match para.align {
                     tc_doc::office::Align::Center => x + (w - pw) / 2.0,
                     tc_doc::office::Align::Right => x + w - pw,
@@ -1054,7 +1102,8 @@ impl Builder<'_> {
         for row in rows {
             for (c, cell) in row.iter().enumerate() {
                 for para in cell {
-                    let g = self.ui.painter().layout_no_wrap(para.text(), egui::FontId::proportional(base), self.p.text);
+                    let sample = truncate_chars(&para.text(), 200).into_owned();
+                    let g = self.ui.painter().layout_no_wrap(sample, egui::FontId::proportional(base), self.p.text);
                     natural[c] = natural[c].max((g.size().x + pad * 2.0).min(w * 0.7));
                 }
             }
@@ -1073,7 +1122,7 @@ impl Builder<'_> {
                 let saved = std::mem::take(&mut self.items);
                 if let Some(cell) = row.get(c) {
                     for para in cell {
-                        cy = self.para(para, cx + pad, width - pad * 2.0, cy, base) - 6.0 * z;
+                        cy = self.para(para, cx + pad, (width - pad * 2.0).max(20.0), cy, base) - 6.0 * z;
                     }
                 }
                 cell_items.extend(std::mem::replace(&mut self.items, saved));
@@ -1144,12 +1193,13 @@ fn build_layout(ui: &Ui, content: &Content, width: f32, zoom: f32, key: (u32, u3
                 let pad = 36.0 * s;
                 let mut cy = card_top + pad;
                 if let Some(title) = &slide.title {
-                    let g = ui.painter().layout(title.clone(), style::semibold(30.0 * s), p.text, card_w - pad * 2.0);
+                    let g = ui.painter().layout(truncate_chars(title, 2_048).into_owned(), style::semibold(30.0 * s), p.text, card_w - pad * 2.0);
                     b.items.push(Item::Text { rect: Rect::from_min_size(pos2(x + pad, cy), g.size()), galley: g });
                     cy += b.items.last().map_or(0.0, |i| i.rect().height()) + 18.0 * s;
                 }
                 cy = b.blocks(&slide.blocks, x + pad, card_w - pad * 2.0, cy, 19.0 * s);
-                let h = (card_w / deck.aspect.max(0.3)).max(cy - card_top + pad);
+                let aspect = if deck.aspect.is_finite() { deck.aspect.clamp(0.3, 4.0) } else { 16.0 / 9.0 };
+                let h = (card_w / aspect).max(cy - card_top + pad);
                 if let Item::Fill { rect, .. } = &mut b.items[card_index] {
                     *rect = Rect::from_min_size(pos2(x, card_top), vec2(card_w, h));
                 }
@@ -1162,7 +1212,7 @@ fn build_layout(ui: &Ui, content: &Content, width: f32, zoom: f32, key: (u32, u3
 }
 
 fn rich_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
-    let width = ((rect.width() - 10.0) / 8.0).floor() * 8.0;
+    let width = (((rect.width() - 10.0) / 8.0).floor() * 8.0).max(80.0);
     let key = (width.to_bits(), view.zoom.to_bits(), ui.visuals().dark_mode);
     if view.layout.as_ref().is_none_or(|l| l.key != key)
         && let State::Ready(content) = &view.state
@@ -1333,7 +1383,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
             ui.ctx().copy_text(cell.text().to_string());
         }
         // The column's header, and its first values under it.
-        let first_line = |x: &str| x.lines().next().unwrap_or("").trim().to_string();
+        let first_line = |x: &str| truncate_chars(x.lines().next().unwrap_or("").trim(), 128).into_owned();
         let header = if r > 0 && sticky > 0.0 { first_line(sheet.cell(0, c).text()) } else { String::new() };
         let firsts: Vec<String> = (if sticky > 0.0 { 1 } else { 0 }..sheet.rows.min(200)).map(|row| first_line(sheet.cell(row, c).text())).filter(|x| !x.is_empty()).take(3).collect();
         let mut context = Vec::new();
@@ -1343,7 +1393,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
         if !firsts.is_empty() {
             context.push(tf("first values {}", &[&firsts.join(", ")]));
         }
-        let text = cell.text().replace('\n', " ⏎ ");
+        let text = truncate_chars(cell.text(), 512).replace('\n', " ⏎ ");
         let room = (copy.left() - 10.0 - (nr.right() + 10.0)).max(10.0);
         let mut job = egui::text::LayoutJob::default();
         job.append(&text, 0.0, egui::TextFormat::simple(style::mono(style::MONO), p.text));
@@ -1385,8 +1435,8 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
             // The offset is clamped only at the frame's end: zoomed out at the bottom of a long
             // sheet, the view can start below the last row for a frame.
             let row0 = ((((vp.min.y - pad - head_h) / row_h).floor().max(0.0)) as usize).min(row1);
-            let col0 = xs.partition_point(|x| *x <= vp.min.x - pad - rn_w).saturating_sub(1);
             let col1 = xs.partition_point(|x| *x < vp.max.x - pad - rn_w).min(widths.len());
+            let col0 = xs.partition_point(|x| *x <= vp.min.x - pad - rn_w).saturating_sub(1).min(col1);
             let (all, current) = match_colors(ui.visuals().dark_mode);
             let cur = view.find.as_ref().and_then(|f| f.current);
             let hits: std::collections::HashMap<(usize, usize), bool> = view
@@ -1429,7 +1479,8 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
                         _ => (p.text_muted, false),
                     };
                     let f = if header { style::medium(style::SMALL * z) } else { font.clone() };
-                    let mut job = egui::text::LayoutJob::simple_singleline(text.lines().next().unwrap_or("").to_string(), f, color);
+                    let first_line = truncate_chars(text.lines().next().unwrap_or(""), 256).into_owned();
+                    let mut job = egui::text::LayoutJob::simple_singleline(first_line, f, color);
                     job.wrap = egui::text::TextWrapping::truncate_at_width((cr.width() - 16.0 * z).max(4.0));
                     let g = painter.layout_job(job);
                     let gx = if right { cr.right() - 8.0 * z - g.size().x } else { cr.left() + 8.0 * z };
@@ -1480,7 +1531,8 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
                 if y >= sticky_y + sticky - 0.5 {
                     let cr = Rect::from_min_size(pos2(o.x + rn_w + xs[sc], y), vec2(widths[sc], row_h));
                     let right = matches!(sheet.cell(sr, sc), tc_doc::sheet::Cell::Number(_));
-                    let mut job = egui::text::LayoutJob::simple_singleline(sheet.cell(sr, sc).text().lines().next().unwrap_or("").to_string(), font.clone(), p.text);
+                    let first_line = truncate_chars(sheet.cell(sr, sc).text().lines().next().unwrap_or(""), 256).into_owned();
+                    let mut job = egui::text::LayoutJob::simple_singleline(first_line, font.clone(), p.text);
                     job.wrap = egui::text::TextWrapping::truncate_at_width((cr.width() - 16.0 * z).max(4.0));
                     let g = painter.layout_job(job);
                     let gx = if right { cr.right() - 8.0 * z - g.size().x } else { cr.left() + 8.0 * z };
@@ -1656,6 +1708,7 @@ fn image_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
         .min((rect.height() - margin * 2.0).max(0.0) / natural.y.max(1.0))
         .min(1.0);
     let size = natural * fit * view.zoom;
+    let size = vec2(size.x.max(1.0), size.y.max(1.0));
     let tex = tex.id();
     egui::ScrollArea::both()
         .id_salt(("image", view.path.clone()))

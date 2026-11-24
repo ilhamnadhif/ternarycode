@@ -193,7 +193,7 @@ impl App {
                             if on && scroll_to_active {
                                 resp.scroll_to_me(None);
                             }
-                            let close_r = Rect::from_center_size(pos2(r.right() - 9.0 - 6.0, r.center().y), vec2(14.0, 14.0));
+                            let close_r = Rect::from_center_size(pos2((r.right() - 9.0 - 6.0).round(), r.center().y.round()), vec2(16.0, 16.0));
                             let close_resp = ui.interact(close_r, egui::Id::new(("tab-close", project, i)), Sense::click());
                             let tab_hot = resp.hovered() || close_resp.hovered();
                             if tab_hot {
@@ -222,7 +222,7 @@ impl App {
                             if *dirty && !close_resp.hovered() {
                                 painter.circle_filled(close_r.center(), 3.0, p.text_muted);
                             } else if show_x {
-                                painter.text(close_r.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), if close_resp.hovered() { p.text } else { p.text_faint });
+                                kit::paint_close_x(painter, close_r.center(), 3.25, if close_resp.hovered() { p.text } else { p.text_faint });
                             }
                             if close_resp.clicked() || resp.middle_clicked() {
                                 close_file = Some(i);
@@ -354,6 +354,27 @@ impl App {
             kit::paint_pill(painter, pos2(right - w, rect.center().y), None, text, p.text_muted, p.subtle);
             right -= w + 6.0;
         }
+        let open_in_browser = crate::platform::browser_file(&file.path) && !file.use_virtual_viewer();
+        let browser_path = open_in_browser.then(|| file.path.clone());
+        if let Some(bp) = browser_path {
+            let label = t("Open in Browser");
+            let w = kit::button_width(ui, Some(icons::GLOBE), label, None, true);
+            if right - w > rect.left() + 90.0 {
+                let r = Rect::from_min_size(pos2(right - w, rect.center().y - 11.0), vec2(w, 22.0));
+                let clicked = ui
+                    .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+                        kit::button_ex(ui, kit::Kind::Ghost, Some(icons::GLOBE), label, true).clicked()
+                    })
+                    .inner;
+                #[cfg(debug_assertions)]
+                crate::devtest::record("editor-open-browser", r);
+                if clicked {
+                    self.actions.push(Action::OpenInBrowser(bp));
+                }
+                right -= w + 6.0;
+            }
+        }
+        let Some(file) = self.editors.get(&project).and_then(|e| e.file()) else { return };
         let crumb_clip = Rect::from_min_max(rect.min, pos2((right - 6.0).max(rect.left()), rect.max.y));
         let crumb_end = ui
             .scope_builder(egui::UiBuilder::new().max_rect(crumb_clip), |ui| {
@@ -479,6 +500,7 @@ impl App {
                             vec2(field_w, 20.0),
                             egui::TextEdit::singleline(&mut f.query)
                                 .id(find_id)
+                                .char_limit(1_024)
                                 .frame(egui::Frame::NONE)
                                 .margin(egui::Margin::ZERO)
                                 .font(egui::FontId::proportional(style::BODY))
@@ -676,7 +698,8 @@ impl App {
                         let sign = match mark { '-' => "−", '+' => "+", _ => "" };
                         ui.painter().text(pos2(cell.left() + 10.0, row.center().y), Align2::CENTER_CENTER, sign, mono.clone(), sc);
                         let painter = ui.painter().with_clip_rect(cell);
-                        painter.text(pos2(cell.left() + 20.0, row.center().y), Align2::LEFT_CENTER, *text, mono.clone(), if changed { p.text } else { p.text_muted });
+                        let shown = clip_chars(text, 2_000);
+                        painter.text(pos2(cell.left() + 20.0, row.center().y), Align2::LEFT_CENTER, shown.as_ref(), mono.clone(), if changed { p.text } else { p.text_muted });
                     }
                     ui.painter().vline(row.left() + half, row.y_range(), Stroke::new(1.0, p.border));
                 }
@@ -694,6 +717,35 @@ impl App {
         // 8, the numbers, 10, the change mark (3), 10, the code.
         let gutter = (digits * char_w + 8.0 + 10.0 + 3.0 + 10.0).round().min(127.0);
         let goto = file.goto_line.take();
+
+        // Large files (> 350 KB) or files with giant minified lines (> 8 KB, e.g. Draw.io HTML
+        // exports or minified JS bundles) use the virtualized read-only viewer so egui never
+        // allocates > 256 MB GPU vertex buffers (which panics wgpu / force-closes the app).
+        if file.use_virtual_viewer() {
+            let mut open_browser = None;
+            let virtual_seen = paint_virtual_text(
+                ui,
+                project,
+                file,
+                find.as_ref(),
+                goto,
+                font,
+                font_size,
+                line_h,
+                gutter,
+                dark,
+                &p,
+                &mut open_browser,
+            );
+            if virtual_seen {
+                self.editor_seen = true;
+            }
+            if let Some(bp) = open_browser {
+                self.actions.push(Action::OpenInBrowser(bp));
+            }
+            return;
+        }
+
         let mut area = egui::ScrollArea::both()
             .id_salt(("editor", project, file.path.clone()))
             .auto_shrink([false, false]);
@@ -746,6 +798,7 @@ impl App {
             let output = egui::TextEdit::multiline(buffer)
                 .id(egui::Id::new(("editor-text", path.clone())))
                 .code_editor()
+                .char_limit(crate::editor::MAX_TEXTEDIT_BYTES)
                 .font(font.clone())
                 .desired_width(f32::INFINITY)
                 .desired_rows(40)
@@ -771,6 +824,11 @@ impl App {
             if resp.changed() && !read_only {
                 file.rev += 1;
                 file.lines = crate::editor::count_lines(&file.text);
+                if file.text.len() > crate::editor::MAX_HIGHLIGHT_LINE_LEN {
+                    file.max_line_bytes = crate::editor::max_line_len(&file.text);
+                } else {
+                    file.max_line_bytes = file.text.len();
+                }
                 file.refresh_dirty();
                 file.compare_diff = None;
             }
@@ -1007,6 +1065,215 @@ impl App {
                 });
             });
     }
+}
+
+/// Clips `s` to at most `max_chars` characters on a UTF-8 boundary, returning a borrowed slice
+/// when short enough or an owned truncated string with `"…"`.
+fn clip_chars(s: &str, max_chars: usize) -> std::borrow::Cow<'_, str> {
+    if s.len() <= max_chars {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => std::borrow::Cow::Owned(format!("{}…", &s[..idx])),
+        None => std::borrow::Cow::Borrowed(s),
+    }
+}
+
+/// Byte offsets `(start, end)` of each line in `text` (excluding trailing `\r`/`\n`).
+fn compute_line_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    for (i, b) in text.bytes().enumerate() {
+        if b == b'\n' {
+            let end = if i > start && text.as_bytes()[i - 1] == b'\r' { i - 1 } else { i };
+            ranges.push((start, end));
+            start = i + 1;
+        }
+    }
+    let end = if text.len() > start && text.as_bytes()[text.len() - 1] == b'\r' {
+        text.len() - 1
+    } else {
+        text.len()
+    };
+    ranges.push((start, end));
+    ranges
+}
+
+/// Virtualized fast read-only code viewer for large (> 350 KB), truncated (> 2 MB), or
+/// long-line/minified files (such as Draw.io HTML exports or minified JS/JSON bundles).
+/// Only paints visible rows and caps per-line glyph counts so GPU vertex buffers stay < 1 MB.
+#[allow(clippy::too_many_arguments)]
+fn paint_virtual_text(
+    ui: &mut Ui,
+    project: ProjectId,
+    file: &mut crate::editor::OpenFile,
+    find: Option<&crate::editor::Find>,
+    goto: Option<usize>,
+    font: egui::FontId,
+    font_size: f32,
+    line_h: f32,
+    gutter: f32,
+    dark: bool,
+    p: &style::Palette,
+    open_browser: &mut Option<PathBuf>,
+) -> bool {
+    let is_browser_file = crate::platform::browser_file(&file.path);
+    let reason = if file.truncated {
+        t("Large file (first 2 MB shown) — read-only fast viewer")
+    } else if file.max_line_bytes > crate::editor::MAX_HIGHLIGHT_LINE_LEN {
+        t("Long or minified lines — read-only fast viewer")
+    } else {
+        t("Large file — read-only fast viewer")
+    };
+    egui::Frame::NONE
+        .inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 6 })
+        .fill(p.surface)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let left = |ui: &mut Ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    kit::icon(ui, icons::INFO, 13.0, p.accent_text);
+                    ui.add(egui::Label::new(RichText::new(reason).size(style::SMALL).color(p.text_muted)).truncate());
+                });
+            };
+            if is_browser_file {
+                egui::Sides::new().spacing(10.0).shrink_left().show(
+                    ui,
+                    left,
+                    |ui| {
+                        let btn = kit::button_ex(ui, kit::Kind::Primary, Some(icons::GLOBE), t("Open in Browser"), true);
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record("editor-open-browser", btn.rect);
+                        if btn.clicked() {
+                            *open_browser = Some(file.path.clone());
+                        }
+                    },
+                );
+            } else {
+                left(ui);
+            }
+        });
+    let y_sep = ui.cursor().top();
+    ui.painter().hline(ui.max_rect().x_range(), y_sep, Stroke::new(1.0, p.border));
+
+    // Cache line byte ranges in egui temp storage so scrolling never re-scans a 2 MB buffer.
+    let cache_id = egui::Id::new(("virtual-lines", project, file.path.clone()));
+    let ranges: std::sync::Arc<Vec<(usize, usize)>> = match ui.data(|d| d.get_temp::<(u64, std::sync::Arc<Vec<(usize, usize)>>)>(cache_id)) {
+        Some((rev, r)) if rev == file.rev => r,
+        _ => {
+            let r = std::sync::Arc::new(compute_line_ranges(&file.text));
+            ui.data_mut(|d| d.insert_temp(cache_id, (file.rev, r.clone())));
+            r
+        }
+    };
+    let total_lines = ranges.len().max(1);
+    let mut area = egui::ScrollArea::both()
+        .id_salt(("virtual-editor", project, file.path.clone()))
+        .auto_shrink([false, false]);
+    if let Some(line) = goto {
+        area = area.vertical_scroll_offset((line.saturating_sub(5) as f32) * line_h);
+    }
+    let number_font = egui::FontId::monospace(font_size - 1.0);
+    let view_id = egui::Id::new(("editor-text", file.path.clone()));
+    #[cfg(debug_assertions)]
+    crate::devtest::record("editor-text", ui.available_rect_before_wrap().intersect(ui.clip_rect()));
+    let mut seen = ui.ctx().memory(|m| m.has_focus(view_id));
+    let mut clicked_line = None;
+    let syntax = file.syntax.clone();
+    let plain = p.text;
+    let max_chars = crate::editor::MAX_VIRTUAL_LINE_CHARS;
+    area.show_rows(ui, line_h, total_lines, |ui, row_range| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let view_w = ui.available_width().max(200.0);
+        for line_idx in row_range {
+            let (s, e) = ranges.get(line_idx).copied().unwrap_or((0, 0));
+            let raw = file.text.get(s..e).unwrap_or("");
+            let (shown, omitted_chars) = if raw.len() > max_chars {
+                match raw.char_indices().nth(max_chars) {
+                    Some((cut, _)) => (&raw[..cut], raw[cut..].chars().count()),
+                    None => (raw, 0),
+                }
+            } else {
+                (raw, 0)
+            };
+            let mut job = egui::text::LayoutJob::default();
+            job.wrap.max_width = f32::INFINITY;
+            if raw.len() <= crate::editor::MAX_HIGHLIGHT_LINE_LEN {
+                for (c, piece) in crate::editor::line_colors(shown, &syntax, dark, plain) {
+                    job.append(&piece, 0.0, egui::TextFormat::simple(font.clone(), c));
+                }
+            } else {
+                job.append(shown, 0.0, egui::TextFormat::simple(font.clone(), plain));
+            }
+            if omitted_chars > 0 {
+                job.append(
+                    &format!("  … (+{} {})", omitted_chars, t("more chars")),
+                    0.0,
+                    egui::TextFormat::simple(font.clone(), p.text_faint),
+                );
+            }
+            let galley = ui.painter().layout_job(job);
+            let row_w = view_w.max(gutter + galley.size().x + 24.0);
+            let (rect, resp) = ui.allocate_exact_size(vec2(row_w, line_h), Sense::click());
+            let current = file.caret.0 == line_idx + 1;
+            if current {
+                ui.painter().rect_filled(rect, CornerRadius::ZERO, p.hover);
+            }
+            // Highlight any ⌘F find matches on this visible line.
+            if let Some(f) = find.filter(|f| !f.matches.is_empty()) {
+                let from = f.matches.partition_point(|m| m.line < line_idx);
+                for (mi, m) in f.matches.iter().enumerate().skip(from) {
+                    if m.line > line_idx {
+                        break;
+                    }
+                    if m.col.0 >= max_chars {
+                        continue;
+                    }
+                    let c0 = m.col.0;
+                    let c1 = m.col.1.min(max_chars);
+                    let row0 = galley.rows.first();
+                    if let Some(r0) = row0 {
+                        let x0 = rect.left() + gutter + r0.x_offset(egui::epaint::text::CharIndex(c0));
+                        let x1 = rect.left() + gutter + r0.x_offset(egui::epaint::text::CharIndex(c1));
+                        let hr = Rect::from_min_max(pos2(x0, rect.top() + 1.0), pos2(x1.max(x0 + 2.0), rect.bottom() - 1.0));
+                        let is_cur = f.current == Some(mi);
+                        ui.painter().rect_filled(
+                            hr,
+                            CornerRadius::same(2),
+                            if is_cur { style::soft(p.warn, 0.55) } else { style::soft(p.warn, 0.22) },
+                        );
+                    }
+                }
+            }
+            let numbers_right = rect.left() + gutter - 23.0;
+            ui.painter().text(
+                pos2(numbers_right, rect.center().y),
+                Align2::RIGHT_CENTER,
+                (line_idx + 1).to_string(),
+                number_font.clone(),
+                if current { p.text_muted } else { p.text_faint },
+            );
+            ui.painter().galley(pos2(rect.left() + gutter, rect.center().y - galley.size().y / 2.0), galley, plain);
+            if resp.clicked() {
+                clicked_line = Some(line_idx + 1);
+                ui.ctx().memory_mut(|m| m.request_focus(view_id));
+                seen = true;
+            }
+        }
+    });
+    if let Some(ln) = clicked_line {
+        file.caret = (ln, 1);
+    }
+    if seen && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
+        let idx = file.caret.0.saturating_sub(1);
+        if let Some((s, e)) = ranges.get(idx).copied()
+            && let Some(line) = file.text.get(s..e)
+        {
+            ui.ctx().copy_text(line.to_string());
+        }
+    }
+    seen
 }
 
 /// The character index where line `line` (0-based) starts.

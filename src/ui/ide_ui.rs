@@ -58,18 +58,37 @@ fn severity_color(s: Option<lt::DiagnosticSeverity>, p: &style::Palette) -> Colo
     }
 }
 
-/// A wavy underline from `x0` to `x1` at `y`.
+/// A wavy underline from `x0` to `x1` at `y`, clipped to the painter's clip rect.
 fn wave(painter: &egui::Painter, x0: f32, x1: f32, y: f32, color: Color32) {
+    let clip_x = painter.clip_rect().x_range();
+    let start = x0.max(clip_x.min);
+    let end = x1.min(clip_x.max);
+    if !start.is_finite() || !end.is_finite() || !y.is_finite() || end <= start {
+        return;
+    }
     let mut pts = Vec::new();
-    let mut x = x0;
+    let mut x = start;
     let mut up = true;
-    while x < x1 {
+    const MAX_STEPS: usize = 2_000;
+    let mut steps = 0;
+    while x < end && steps < MAX_STEPS {
         pts.push(pos2(x, if up { y - 1.2 } else { y + 1.2 }));
         x += 2.5;
         up = !up;
+        steps += 1;
     }
-    pts.push(pos2(x1, y));
+    pts.push(pos2(end, y));
     painter.add(egui::Shape::line(pts, Stroke::new(1.0, color)));
+}
+
+fn clip_ide_text(s: &str, max_chars: usize) -> std::borrow::Cow<'_, str> {
+    if s.len() <= max_chars {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    match s.char_indices().nth(max_chars) {
+        Some((cut, _)) => std::borrow::Cow::Owned(format!("{}…", &s[..cut])),
+        None => std::borrow::Cow::Borrowed(s),
+    }
 }
 
 /// The diagnostics, ⌘-click and hover of the text just drawn, and what typing asks for.
@@ -633,10 +652,11 @@ impl App {
                                 ui.spacing_mut().item_spacing.y = 4.0;
                                 for (c, msg) in &diags {
                                     let icon = if *c == p.err { icons::X_CIRCLE } else if *c == p.warn { icons::WARNING } else { icons::INFO };
+                                    let msg = clip_ide_text(msg, 2_048);
                                     ui.horizontal_top(|ui| {
                                         ui.spacing_mut().item_spacing.x = 6.0;
                                         ui.label(egui::RichText::new(icon).font(style::icon_font(13.0)).color(*c));
-                                        ui.add(egui::Label::new(egui::RichText::new(msg).size(style::SMALL).color(*c)).wrap());
+                                        ui.add(egui::Label::new(egui::RichText::new(msg.as_ref()).size(style::SMALL).color(*c)).wrap());
                                     });
                                 }
                             });
@@ -656,11 +676,12 @@ impl App {
                                             ui.set_width(372.0 - 24.0);
                                             let mut job = egui::text::LayoutJob::default();
                                             let mono = style::mono(style::DATA);
-                                            for (n, line) in b.text.lines().enumerate() {
+                                            for (n, line) in b.text.lines().take(200).enumerate() {
                                                 if n > 0 {
                                                     job.append("\n", 0.0, egui::TextFormat::simple(mono.clone(), p.text));
                                                 }
-                                                for (c, piece) in crate::editor::line_colors(line, &syntax, dark, p.text) {
+                                                let line = clip_ide_text(line, 2_000);
+                                                for (c, piece) in crate::editor::line_colors(line.as_ref(), &syntax, dark, p.text) {
                                                     job.append(&piece, 0.0, egui::TextFormat::simple(mono.clone(), c));
                                                 }
                                             }
@@ -671,7 +692,8 @@ impl App {
                                     } else {
                                         section(egui::Margin { left: 12, right: 12, top: if i == 0 { 10 } else { 9 }, bottom: 10 }).show(ui, |ui| {
                                             ui.set_width(372.0 - 24.0);
-                                            ui.label(egui::RichText::new(&b.text).size(style::SMALL).color(p.text_muted).line_height(Some(18.0)));
+                                            let prose = clip_ide_text(&b.text, 16_000);
+                                            ui.label(egui::RichText::new(prose.as_ref()).size(style::SMALL).color(p.text_muted).line_height(Some(18.0)));
                                         });
                                     }
                                 }

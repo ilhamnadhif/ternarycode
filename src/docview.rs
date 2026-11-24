@@ -230,6 +230,35 @@ impl DocView {
         view
     }
 
+    /// Creates a static info view for a binary / unsupported file (e.g. `.bin`, `.zip`, `.mp4`,
+    /// `.exe`) so clicking it in the file tree opens a clear explanation with Open / Reveal actions.
+    pub fn unsupported_binary(path: PathBuf, _ctx: &egui::Context) -> Self {
+        let (tx, rx) = mpsc::channel();
+        Self {
+            kind: Kind::Unsupported,
+            path,
+            state: State::Failed("binary file cannot be shown here".into()),
+            zoom: 1.0,
+            sheet: 0,
+            cell: None,
+            pdf: None,
+            pictures: HashMap::new(),
+            image: None,
+            image_size: None,
+            layout: None,
+            slide: 0,
+            slide_jump: None,
+            reload: false,
+            sheet_scroll: egui::Vec2::ZERO,
+            scroll_to_cell: false,
+            find: None,
+            tx,
+            rx,
+            generation: Arc::new(AtomicU64::new(0)),
+            pictures_tx: None,
+        }
+    }
+
     fn start(&mut self, ctx: &egui::Context) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.layout = None;

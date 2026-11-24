@@ -374,6 +374,7 @@ impl App {
                                                     ui.add(
                                                         egui::TextEdit::multiline(&mut text)
                                                             .id(id)
+                                                            .char_limit(32_768)
                                                             .frame(egui::Frame::NONE)
                                                             .margin(egui::Margin::ZERO)
                                                             .desired_width(text_rect.width())

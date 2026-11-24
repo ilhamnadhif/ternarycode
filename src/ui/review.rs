@@ -1449,6 +1449,10 @@ pub(super) fn word_pairs(lines: &[tc_git::DiffLine]) -> Vec<Option<usize>> {
 pub(super) fn changed_part(text: &str, other: &str) -> Option<std::ops::Range<usize>> {
     let text = text.trim_end_matches(['\n', '\r']);
     let other = other.trim_end_matches(['\n', '\r']);
+    // Avoid multi-MB per-frame `Vec<char>` diff allocations on minified single-line files.
+    if text.len() > 8_192 || other.len() > 8_192 {
+        return None;
+    }
     let a: Vec<(usize, char)> = text.char_indices().collect();
     let b: Vec<char> = other.chars().collect();
     let prefix = a.iter().zip(&b).take_while(|((_, x), y)| x == *y).count();
@@ -1584,7 +1588,11 @@ pub(super) fn diff_view(ui: &mut Ui, rect: Rect, id: impl std::hash::Hash + std:
     let syntax = crate::editor::syntax_for(std::path::Path::new(path));
     let look = LineLook::DIFF;
     let char_w = ui.fonts_mut(|f| f.glyph_width(&style::mono(look.font), '0'));
-    let max_cols = if split { 0 } else { d.hunks.iter().flat_map(|h| h.lines.iter()).map(|l| l.text.chars().count()).max().unwrap_or(0) };
+    let max_cols = if split {
+        0
+    } else {
+        d.hunks.iter().flat_map(|h| h.lines.iter()).map(|l| l.text.chars().take(2_000).count()).max().unwrap_or(0)
+    };
     let content_w = if split { rect.width() } else { rect.width().max(UNIFIED_CODE_X + max_cols as f32 * char_w + 16.0) };
     let hunks = d.hunks.len();
     let mut step = 0;
@@ -1658,7 +1666,18 @@ pub(super) fn paint_line(ui: &Ui, r: Rect, kind: LineKind, old: Option<u32>, new
     }
     let plain = p.text;
     let mut job = egui::text::LayoutJob::default();
-    let text = text.trim_end_matches(['\n', '\r']);
+    let full_text = text.trim_end_matches(['\n', '\r']);
+    // Guard against multi-MB minified diff lines (e.g. Draw.io HTML / bundled JS) that would
+    // otherwise exceed wgpu's 256 MB vertex buffer limit and crash the app.
+    const MAX_DIFF_CHARS: usize = 2_000;
+    let (text, omitted_chars) = if full_text.len() > MAX_DIFF_CHARS {
+        match full_text.char_indices().nth(MAX_DIFF_CHARS) {
+            Some((cut, _)) => (&full_text[..cut], full_text[cut..].chars().count()),
+            None => (full_text, 0),
+        }
+    } else {
+        (full_text, 0)
+    };
     let mut at = 0;
     for (c, piece) in crate::editor::line_colors(text, syntax, dark, plain) {
         // A piece split where the changed words begin and end.
@@ -1680,6 +1699,13 @@ pub(super) fn paint_line(ui: &Ui, r: Rect, kind: LineKind, old: Option<u32>, new
             job.append(&piece[s - at..e - at], 0.0, format);
         }
         at = end;
+    }
+    if omitted_chars > 0 {
+        job.append(
+            &format!("  … (+{omitted_chars} chars)"),
+            0.0,
+            egui::TextFormat::simple(mono, p.text_faint),
+        );
     }
     let g = painter.layout_job(job);
     painter.galley(pos2(x, r.center().y - g.size().y / 2.0), g, plain);

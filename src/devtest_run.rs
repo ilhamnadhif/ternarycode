@@ -524,8 +524,25 @@ impl App {
                     None => self.devtest.check(false, &format!("mouse: no widget named {name}")),
                 }
             }
+            // `set-clipboard-files <path1>|<path2>...`: overrides the OS file clipboard for E2E
+            // paste checks without clobbering the host machine's clipboard.
+            "set-clipboard-files" => {
+                let raw = arg.trim();
+                if raw.is_empty() {
+                    crate::platform::set_e2e_clipboard_files(None);
+                } else {
+                    let paths = raw
+                        .split('|')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| std::path::PathBuf::from(devtest::unescape(s)))
+                        .collect();
+                    crate::platform::set_e2e_clipboard_files(Some(paths));
+                }
+            }
             // `drop <widget>[@fx,fy] <path>`: files dropped at a point of a widget (an OS drag
-            // can't be injected): typed into the terminal there, or added as a project.
+            // can't be injected): typed into the terminal there, copied into a Files tree folder,
+            // or added as a project.
             "drop" => {
                 let (target, path) = arg.trim().split_once(' ').unwrap_or((arg.trim(), ""));
                 let (name, at) = target.split_once('@').unwrap_or((target, "0.5,0.5"));
@@ -536,8 +553,8 @@ impl App {
                 match devtest::rect_of(name) {
                     Some(r) => {
                         let pos = r.lerp_inside(egui::vec2(fx, fy));
-                        let pane = self.term_rects.iter().find(|(_, r)| r.contains(pos)).map(|(id, _)| *id);
-                        self.route_drop(pane, vec![std::path::PathBuf::from(devtest::unescape(path))]);
+                        let drop_target = self.drop_target_at(pos);
+                        self.route_drop(drop_target, vec![std::path::PathBuf::from(devtest::unescape(path))]);
                         ctx.request_repaint();
                     }
                     None => self.devtest.check(false, &format!("drop: no widget named {name}")),

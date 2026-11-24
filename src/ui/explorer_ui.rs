@@ -52,6 +52,7 @@ impl App {
     pub fn files_column(&mut self, ui: &mut Ui, area: Rect) {
         let p = style::pal(ui);
         let Some(pid) = self.active else { return };
+        self.files_rect = Some(area);
         ui.painter().vline(area.right() - 0.5, area.y_range(), egui::Stroke::new(1.0, p.border));
         let root = self.project(pid).map(|x| x.path.clone()).unwrap_or_default();
         let git = self.project(pid).and_then(|pr| pr.git.clone());
@@ -285,6 +286,12 @@ impl App {
                 }
             });
         });
+        if click.is_some() {
+            self.files_focused = true;
+            if let Some(fid) = ui.memory(|m| m.focused()) {
+                ui.memory_mut(|m| m.surrender_focus(fid));
+            }
+        }
         match click {
             Some(Click::Open(path)) => {
                 if let Some(ex) = self.explorer_mut(pid) {
@@ -352,8 +359,11 @@ impl App {
         let mut click = None;
         let mut menu_actions = Vec::new();
         let mut outcome = None;
-        let (mut collapse, mut refresh, mut clear_multi) = (false, false, false);
+        let (mut collapse, mut refresh, mut clear_multi, mut tree_interacted) = (false, false, false, false);
+        let mut drop_rows: Vec<(PathBuf, Rect)> = Vec::new();
         let edit_id = egui::Id::new(("tree-edit", pid));
+        #[cfg(debug_assertions)]
+        crate::devtest::record("files-tree", tree);
         ui.scope_builder(egui::UiBuilder::new().max_rect(tree.shrink2(vec2(PAD_X, 0.0))), |ui| {
             // Where the rows end on screen (the blank below them has the folder's menu).
             let mut rows_end = None;
@@ -401,6 +411,12 @@ impl App {
                                 }
                             }
                             Row::Item { depth, entry, open } => {
+                                let row_dir = if entry.is_dir {
+                                    entry.path.clone()
+                                } else {
+                                    entry.path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.clone())
+                                };
+                                drop_rows.push((row_dir, rect));
                                 #[cfg(debug_assertions)]
                                 crate::devtest::record(
                                     format!("tree:{}", entry.path.strip_prefix(&root).unwrap_or(&entry.path).display()),
@@ -432,6 +448,7 @@ impl App {
                                 // records its anchor; sweeping over other rows selects the range.
                                 if !renaming && resp.drag_started() {
                                     drag_anchor = Some(entry.path.clone());
+                                    tree_interacted = true;
                                 }
                                 if let (Some(anchor), Some(pos)) = (&drag_anchor, pointer_pos)
                                     && pos.x >= tree.left()
@@ -514,6 +531,7 @@ impl App {
                                 }
 
                                 if resp.clicked() {
+                                    tree_interacted = true;
                                     if mods.shift {
                                         click = Some(Click::RangeSelect(entry.path.clone()));
                                     } else if mods.command {
@@ -526,11 +544,13 @@ impl App {
                                         });
                                     }
                                 }
-                                if resp.secondary_clicked()
-                                    && let Some(ex) = self.explorers.get_mut(&pid)
-                                    && !(ex.selected_many.len() > 1 && ex.selected_many.contains(&entry.path))
-                                {
-                                    ex.select_only(entry.path.clone());
+                                if resp.secondary_clicked() {
+                                    tree_interacted = true;
+                                    if let Some(ex) = self.explorers.get_mut(&pid)
+                                        && !(ex.selected_many.len() > 1 && ex.selected_many.contains(&entry.path))
+                                    {
+                                        ex.select_only(entry.path.clone());
+                                    }
                                 }
                                 resp.context_menu(|ui| {
                                     if multi_active && multi_set.contains(&entry.path) {
@@ -551,12 +571,33 @@ impl App {
             let rest = Rect::from_min_max(pos2(tree.left(), top.min(tree.bottom())), tree.max);
             if rest.height() > 4.0 {
                 let r = ui.interact(rest, egui::Id::new(("tree-blank", pid)), Sense::click());
-                if r.clicked() && multi_active {
-                    clear_multi = true;
+                if r.clicked() {
+                    tree_interacted = true;
+                    if multi_active {
+                        clear_multi = true;
+                    }
+                    // Clicking blank space selects project root as paste/new-item target.
+                    if let Some(ex) = self.explorers.get_mut(&pid) {
+                        ex.selected = None;
+                    }
+                }
+                if r.secondary_clicked() {
+                    tree_interacted = true;
                 }
                 r.context_menu(|ui| {
                     kit::menu_body(ui);
                     new_items_menu(ui, &root, &mut menu_actions);
+                    let has_clip_files = !crate::platform::clipboard_files().is_empty();
+                    if ui
+                        .add_enabled_ui(has_clip_files, |ui| {
+                            kit::menu_item(ui, Some(icons::CLIPBOARD_TEXT), t("Paste"), kit::keys(&Action::Paste), false)
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        menu_actions.push(Action::PasteFilesInto(root.clone()));
+                        ui.close();
+                    }
                     kit::menu_sep(ui);
                     if kit::menu_item(ui, Some(icons::TERMINAL_WINDOW), t("Open in Terminal"), None, false).clicked() {
                         menu_actions.push(Action::NewTabAt(root.clone()));
@@ -578,6 +619,15 @@ impl App {
                 });
             }
         });
+        self.files_drop_rows = drop_rows;
+        if tree_interacted {
+            self.files_focused = true;
+            if self.explorers.get(&pid).is_none_or(|e| e.edit.is_none())
+                && let Some(fid) = ui.memory(|m| m.focused())
+            {
+                ui.memory_mut(|m| m.surrender_focus(fid));
+            }
+        }
         // Persist drag-block anchor cleanly outside any lock.
         ui.data_mut(|d| {
             if let Some(a) = drag_anchor.filter(|_| primary_down) {
@@ -692,6 +742,7 @@ impl App {
             inner.size(),
             egui::TextEdit::singleline(&mut edit.text)
                 .id(id)
+                .char_limit(1_024)
                 .frame(egui::Frame::NONE)
                 .margin(egui::Margin::ZERO)
                 .font(egui::FontId::proportional(12.5))
@@ -772,8 +823,8 @@ fn new_items_menu(ui: &mut Ui, dir: &Path, out: &mut Vec<Action>) {
 
 fn tree_menu(ui: &mut Ui, entry: &Entry, root: &Path, out: &mut Vec<Action>) {
     kit::menu_body(ui);
-    let mut item = |ui: &mut Ui, icon: Option<&str>, label: &str, action: Action, danger: bool| {
-        if kit::menu_item(ui, icon, label, None, danger).clicked() {
+    let mut item_keys = |ui: &mut Ui, icon: Option<&str>, label: &str, keys: Option<&str>, action: Action, danger: bool| {
+        if kit::menu_item(ui, icon, label, keys, danger).clicked() {
             out.push(action);
             ui.close();
         }
@@ -784,25 +835,30 @@ fn tree_menu(ui: &mut Ui, entry: &Entry, root: &Path, out: &mut Vec<Action>) {
         entry.path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf())
     };
     if entry.is_dir {
-        item(ui, Some(icons::PLUS), t("New File…"), Action::NewFileIn(dir.clone()), false);
-        item(ui, Some(icons::FOLDER_PLUS), t("New Folder…"), Action::NewFolderIn(dir.clone()), false);
-        item(ui, Some(icons::TERMINAL_WINDOW), t("Open in Terminal"), Action::NewTabAt(dir), false);
+        item_keys(ui, Some(icons::PLUS), t("New File…"), None, Action::NewFileIn(dir.clone()), false);
+        item_keys(ui, Some(icons::FOLDER_PLUS), t("New Folder…"), None, Action::NewFolderIn(dir.clone()), false);
+        item_keys(ui, Some(icons::TERMINAL_WINDOW), t("Open in Terminal"), None, Action::NewTabAt(dir.clone()), false);
     } else {
-        item(ui, Some(icons::CODE), t("Open in Editor"), Action::OpenFile(entry.path.clone(), None), false);
+        item_keys(ui, Some(icons::CODE), t("Open in Editor"), None, Action::OpenFile(entry.path.clone(), None), false);
         if crate::platform::browser_file(&entry.path) {
-            item(ui, Some(icons::GLOBE), t("Open in Browser"), Action::OpenInBrowser(entry.path.clone()), false);
-            item(ui, Some(icons::ARROW_SQUARE_OUT), t("Open in Default Browser"), Action::OpenInDefaultBrowser(entry.path.clone()), false);
+            item_keys(ui, Some(icons::GLOBE), t("Open in Browser"), None, Action::OpenInBrowser(entry.path.clone()), false);
+            item_keys(ui, Some(icons::ARROW_SQUARE_OUT), t("Open in Default Browser"), None, Action::OpenInDefaultBrowser(entry.path.clone()), false);
         }
-        item(ui, Some(icons::PLUS), t("New File…"), Action::NewFileIn(dir.clone()), false);
-        item(ui, Some(icons::FOLDER_PLUS), t("New Folder…"), Action::NewFolderIn(dir), false);
+        item_keys(ui, Some(icons::PLUS), t("New File…"), None, Action::NewFileIn(dir.clone()), false);
+        item_keys(ui, Some(icons::FOLDER_PLUS), t("New Folder…"), None, Action::NewFolderIn(dir.clone()), false);
     }
-    item(ui, Some(icons::TERMINAL), t("Insert Path in Terminal"), Action::InsertPath(entry.path.clone()), false);
+    item_keys(ui, Some(icons::TERMINAL), t("Insert Path in Terminal"), None, Action::InsertPath(entry.path.clone()), false);
     kit::menu_sep(ui);
-    item(ui, Some(icons::PENCIL_SIMPLE), t("Rename…"), Action::RenamePath(entry.path.clone()), false);
+    item_keys(ui, Some(icons::COPY), t("Copy"), kit::keys(&Action::Copy), Action::CopyFiles(vec![entry.path.clone()]), false);
+    let has_clip_files = !crate::platform::clipboard_files().is_empty();
+    ui.add_enabled_ui(has_clip_files, |ui| {
+        item_keys(ui, Some(icons::CLIPBOARD_TEXT), t("Paste"), kit::keys(&Action::Paste), Action::PasteFilesInto(dir), false);
+    });
+    item_keys(ui, Some(icons::PENCIL_SIMPLE), t("Rename…"), None, Action::RenamePath(entry.path.clone()), false);
     if !entry.is_dir {
-        item(ui, Some(icons::COPY), t("Duplicate"), Action::DuplicatePath(entry.path.clone()), false);
+        item_keys(ui, Some(icons::COPY), t("Duplicate"), None, Action::DuplicatePath(entry.path.clone()), false);
     }
-    item(ui, Some(icons::TRASH), t("Move to Trash"), Action::TrashPath(entry.path.clone()), true);
+    item_keys(ui, Some(icons::TRASH), t("Move to Trash"), None, Action::TrashPath(entry.path.clone()), true);
     kit::menu_sep(ui);
     if kit::menu_item(ui, Some(icons::COPY), t("Copy Path"), None, false).clicked() {
         ui.ctx().copy_text(entry.path.to_string_lossy().into_owned());
@@ -813,7 +869,7 @@ fn tree_menu(ui: &mut Ui, entry: &Entry, root: &Path, out: &mut Vec<Action>) {
         ui.ctx().copy_text(rel.to_string_lossy().into_owned());
         ui.close();
     }
-    item(ui, Some(icons::FOLDER_OPEN), reveal_label(), Action::RevealPath(entry.path.clone()), false);
+    item_keys(ui, Some(icons::FOLDER_OPEN), reveal_label(), None, Action::RevealPath(entry.path.clone()), false);
 }
 
 /// Bulk context menu when 2+ files/folders are multi-selected in the file tree.
@@ -839,6 +895,11 @@ fn multi_tree_menu(ui: &mut Ui, paths: &[PathBuf], root: &Path, out: &mut Vec<Ac
         ui.close();
     }
     kit::menu_sep(ui);
+    let copy_items_label = tf("Copy {} Items", &[&n.to_string()]);
+    if kit::menu_item(ui, Some(icons::COPY), &copy_items_label, kit::keys(&Action::Copy), false).clicked() {
+        out.push(Action::CopyFiles(paths.to_vec()));
+        ui.close();
+    }
     let copy_label = tf("Copy {} Paths", &[&n.to_string()]);
     if kit::menu_item(ui, Some(icons::COPY), &copy_label, None, false).clicked() {
         let text = paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n");

@@ -1076,6 +1076,7 @@ fn key_field(ui: &mut Ui, id: egui::Id, key: &mut String, reveal: bool, width: f
         inner.size(),
         egui::TextEdit::singleline(key)
             .id(id)
+            .char_limit(4_096)
             .password(!reveal)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)

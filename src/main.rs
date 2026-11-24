@@ -117,11 +117,12 @@ fn native_options(saved: Option<[f32; 4]>, renderer: eframe::Renderer) -> eframe
         viewport = viewport.with_decorations(false);
     }
     if let Some([x, y, w, h]) = saved {
-        // A place far off the screens (a display unplugged since) is left to the system.
-        if (-200.0..8000.0).contains(&x) && (0.0..8000.0).contains(&y) {
+        // A place far off the screens (a display unplugged since) or corrupt non-finite values
+        // are left to the system so swapchain creation can never fail.
+        if x.is_finite() && y.is_finite() && (-200.0..8000.0).contains(&x) && (0.0..8000.0).contains(&y) {
             viewport = viewport.with_position([x, y]);
         }
-        if w >= 400.0 && h >= 300.0 {
+        if w.is_finite() && h.is_finite() && (400.0..=4096.0).contains(&w) && (300.0..=4096.0).contains(&h) {
             viewport = viewport.with_inner_size([w, h]);
         }
     }

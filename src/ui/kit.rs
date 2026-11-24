@@ -418,6 +418,14 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str) -> Response {
     icon_button_ex(ui, icon, tooltip, false, 28.0)
 }
 
+/// Paints a geometrically centred crisp close `×` at `center` (avoids font baseline / bearing
+/// drift inside small square tab-close hover boxes).
+pub fn paint_close_x(painter: &egui::Painter, center: egui::Pos2, half: f32, color: Color32) {
+    let stroke = Stroke::new(1.25, color);
+    painter.line_segment([egui::pos2(center.x - half, center.y - half), egui::pos2(center.x + half, center.y + half)], stroke);
+    painter.line_segment([egui::pos2(center.x + half, center.y - half), egui::pos2(center.x - half, center.y + half)], stroke);
+}
+
 /// An icon button showing an on/off state (sidebar toggle, split, ...).
 pub fn icon_toggle(ui: &mut Ui, icon: &str, tooltip: &str, on: bool) -> Response {
     icon_button_ex(ui, icon, tooltip, on, 28.0)
@@ -1483,6 +1491,7 @@ pub fn field(ui: &mut Ui, id: egui::Id, text: &mut String, icon: Option<&str>, h
         inner.size(),
         egui::TextEdit::singleline(text)
             .id(id)
+            .char_limit(4_096)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .font(font)
@@ -1879,6 +1888,7 @@ pub fn filter_field(ui: &mut Ui, id: egui::Id, text: &mut String, icon: Option<&
         inner.size(),
         egui::TextEdit::singleline(text)
             .id(id)
+            .char_limit(4_096)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .font(egui::FontId::proportional(style::SMALL))

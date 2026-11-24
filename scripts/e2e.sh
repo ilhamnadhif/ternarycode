@@ -485,6 +485,34 @@ FP="$WORK/files-polish"; mkdir -p "$FP/src"
     && git add -A && git -c user.name=t -c user.email=t@t commit -qm init)
 run files-panel-polish 60 "sleep 1000;; action add-project $FP;; sleep 1500;; write-file $FP/edit.txt line 1 changed for header\\n;; write-file $FP/new_feature.txt hello\\n;; write-file $FP/notes_extra.txt extra\\n;; sleep 1200;; action editor;; sleep 600;; wait-tree edit.txt;; expect-shown files-edge;; expect-shown files-head-changes-info;; expect-shown files-head-changes;; mouse down files-edge;; sleep 100;; mouse drag files-edge@0.5,0.5;; sleep 100;; mouse drag panel@0.55,0.5;; sleep 150;; mouse up panel@0.55,0.5;; sleep 400;; shot e2e-files-panel-resized;; mouse down tree:edit.txt@0.4,0.5;; sleep 100;; mouse drag tree:new_feature.txt@0.4,0.5;; sleep 100;; mouse drag tree:notes_extra.txt@0.4,0.5;; sleep 150;; mouse up tree:notes_extra.txt@0.4,0.5;; sleep 300;; expect-shown files-multi-count;; shot e2e-files-multi-select;; click files-multi-count;; sleep 300;; expect-hidden files-multi-count;; click files-head-changes;; sleep 800;; wait-review Added:new_feature.txt,Added:notes_extra.txt,Modified:edit.txt;; shot e2e-files-head-changes-jump;; quit"
 
+# Finder -> Code Editor file copy/paste & drag-drop into folders:
+# - Cmd+V pastes Finder clipboard files + folders into the clicked folder,
+# - pasting again creates non-destructive `<name> copy.<ext>` without overwriting,
+# - Cmd+C inside the file tree + Cmd+V into another folder copies cleanly,
+# - dropping an external file onto a folder row copies it directly into that folder.
+FCP="$WORK/files-paste"; EXT="$WORK/finder-ext"
+mkdir -p "$FCP/assets" "$FCP/src" "$EXT/icons/sub"
+printf 'hello-from-finder\n' > "$EXT/logo.txt"
+printf '<svg/>\n' > "$EXT/icons/sub/arrow.svg"
+printf 'dropped-from-finder\n' > "$EXT/dropped.txt"
+printf 'fn main() {}\n' > "$FCP/src/main.rs"
+run files-copy-paste 60 "sleep 1000;; action add-project $FCP;; sleep 1200;; action editor;; sleep 600;; wait-tree assets;; set-clipboard-files $EXT/logo.txt|$EXT/icons;; click tree:assets;; sleep 300;; key cmd+v;; sleep 700;; expect-file $FCP/assets/logo.txt hello-from-finder;; expect-file $FCP/assets/icons/sub/arrow.svg <svg/>;; wait-tree assets/logo.txt;; click tree:assets;; sleep 250;; key cmd+v;; wait-toast Pasted 2 items into assets;; click tree:assets/logo.txt;; sleep 250;; key cmd+c;; sleep 300;; click tree:src;; sleep 250;; key cmd+v;; sleep 700;; expect-file $FCP/src/logo.txt hello-from-finder;; drop tree:src $EXT/dropped.txt;; sleep 700;; expect-file $FCP/src/dropped.txt dropped-from-finder;; shot e2e-files-copy-paste;; quit"
+
+# Editor viewers hardening:
+# - Opening a 2.6 MB single-line minified HTML (like Draw.io exports) renders cleanly in the
+#   virtualized fast viewer with 0 crash and offers Open in Browser,
+# - Opening a .bin binary file opens an informative unsupported-binary card instead of failing silently.
+VH="$WORK/viewers-hardening"; mkdir -p "$VH"
+python3 -c '
+import sys, os
+d = sys.argv[1]
+with open(os.path.join(d, "huge-flow.html"), "w") as f:
+    f.write("<!DOCTYPE html>\n<html><body><div data-mx=\"" + ("A" * 2_600_000) + "\"></div></body></html>\n")
+with open(os.path.join(d, "firmware.bin"), "wb") as f:
+    f.write(b"\x00\x01\x02\x03BINARY_FIRMWARE_PAYLOAD\x00\xff\xfe" * 64)
+' "$VH"
+run editor-viewers-hardening 60 "sleep 1000;; action add-project $VH;; sleep 1200;; open-file $VH/huge-flow.html;; sleep 1000;; expect-shown editor-text;; expect-shown editor-open-browser;; shot e2e-viewer-huge-html;; open-file $VH/firmware.bin;; sleep 800;; wait-doc kind=unsupported state=failed;; expect-shown doc-body;; shot e2e-viewer-binary;; quit"
+
 
 # Terminal tabs (v1.1): drag a tab along the strip to reorder; drop it on a pane's right half to
 # make it a split of the tab in view. Ctrl+D in a shell closes its pane.
@@ -535,6 +563,17 @@ W="$WORK/wtrepo"; mkdir -p "$W"
 (cd "$W" && git init -q -b main && git config user.name t && git config user.email t@t && printf '.env\n' > .gitignore && printf 'KEY=1\n' > .env && printf 'one\n' > a.txt && git add -A && git commit -qm init)
 WT="$WORK/wtrepo.worktrees/feat"
 run worktree 90 "sleep 1000;; action add-project $W;; sleep 1500;; action worktree none feat main;; wait-project feat;; sleep 800;; expect-project feat;; expect-shown project:feat;; expect-file $WT/.env KEY=1;; expect-file $WT/a.txt one;; keys echo two >> a.txt && git commit -qam work && echo new > b.txt\\r;; sleep 1500;; action review;; sleep 1500;; wait-review Added:b.txt,Modified:a.txt;; shot e2e-worktree-review;; key esc;; sleep 400;; write-file $WT/b.txt new\\n;; rm-file $WT/b.txt;; sleep 800;; action merge-worktree;; sleep 500;; expect-dialog open;; click dialog-ok;; sleep 400;; expect-project wtrepo;; wait-screen Merge made;; wait-toast Merged tc/feat;; expect-file $W/a.txt two;; action select-name feat;; sleep 600;; action remove-worktree;; sleep 500;; expect-dialog open;; shot e2e-worktree-remove;; click dialog-ok;; sleep 2500;; expect-hidden project:feat;; expect-not-file $WT/a.txt one;; quit"
+
+# Worktree nested agents & redesigned sidebar hierarchy:
+# - idle root zsh is hidden while a worktree is selected,
+# - multiple agents inside a worktree render at Level 2 under the worktree row,
+# - outer Level-1 rail continues cleanly to subsequent worktrees,
+# - fold/unfold caret toggles worktree sessions without switching focus,
+# - clicking root project reveals root's own tab while active worktree agents stay visible.
+WA="$WORK/wt-agents"; mkdir -p "$WA"
+(cd "$WA" && git init -q -b main && git config user.name t && git config user.email t@t && printf 'hello\n' > README.md && git add -A && git commit -qm init)
+WT1="$WORK/wt-agents.worktrees/update-readme-2"
+run worktree-sidebar-agents 90 "sleep 1000;; action add-project $WA;; sleep 1400;; action worktree none update-readme-2 main;; wait-project update-readme-2;; sleep 800;; action new-tab;; sleep 800;; hook 4 claude UserPromptSubmit - gausah baca codebase;; sleep 250;; hook 5 codex UserPromptSubmit - hai;; sleep 250;; write-file $WT1/README.md updated readme\\n;; sleep 600;; action worktree none z-fix-auth main;; wait-project z-fix-auth;; sleep 800;; action select-name update-readme-2;; sleep 600;; expect-project update-readme-2;; expect-hidden session-pane:2;; expect-shown project:update-readme-2;; expect-shown project:z-fix-auth;; expect-shown session-pane:4;; expect-shown session-pane:5;; shot e2e-worktree-sidebar-agents;; click session-pane:4;; sleep 400;; expect-tab 0;; click session-pane:5;; sleep 400;; expect-tab 1;; click wt-fold:update-readme-2;; sleep 400;; expect-hidden session-pane:4;; expect-hidden session-pane:5;; shot e2e-worktree-sidebar-folded;; click wt-fold:update-readme-2;; sleep 400;; expect-shown session-pane:4;; expect-shown session-pane:5;; click project:wt-agents;; sleep 500;; expect-project wt-agents;; expect-shown session-pane:2;; expect-shown session-pane:4;; expect-shown session-pane:5;; shot e2e-worktree-sidebar-root;; quit"
 
 # The commit box: the message comes from the agent's task and last words; a file left out of
 # the commit stays out; Commit & Push sends the rest to the remote (a local bare repository:
