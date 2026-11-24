@@ -59,8 +59,10 @@ pub struct Explorer {
     pub root: PathBuf,
     dirs: HashMap<PathBuf, Listing>,
     expanded: BTreeSet<PathBuf>,
-    /// The file or folder last clicked.
+    /// The file or folder last clicked (also the anchor for Shift-click / drag range selection).
     pub selected: Option<PathBuf>,
+    /// Multi-selected files/folders in the tree (via Cmd/Ctrl-click, Shift-click, or drag-select).
+    pub selected_many: BTreeSet<PathBuf>,
     rows: Option<Vec<Row>>,
     /// A name being typed in the tree.
     pub edit: Option<Edit>,
@@ -77,11 +79,131 @@ impl Explorer {
             dirs: HashMap::new(),
             expanded: BTreeSet::new(),
             selected: None,
+            selected_many: BTreeSet::new(),
             rows: None,
             edit: None,
             reads: 0,
             filter: String::new(),
         }
+    }
+
+    /// Selects a single item and clears any multi-selection.
+    pub fn select_only(&mut self, path: PathBuf) {
+        self.selected_many.clear();
+        self.selected_many.insert(path.clone());
+        self.selected = Some(path);
+    }
+
+    /// Clears multi-selection (keeping `selected` unset when empty).
+    pub fn clear_multi(&mut self) {
+        self.selected_many.clear();
+    }
+
+    /// Toggles `path` in the multi-selection (Cmd/Ctrl-click). Seeds from `self.selected` when
+    /// starting a multi-selection from a single highlighted file so the first file stays selected.
+    pub fn toggle_select(&mut self, path: PathBuf) {
+        if self.selected_many.is_empty()
+            && let Some(cur) = self.selected.clone()
+        {
+            self.selected_many.insert(cur);
+        }
+        if !self.selected_many.remove(&path) {
+            self.selected_many.insert(path.clone());
+            self.selected = Some(path);
+        } else if self.selected.as_deref() == Some(path.as_path()) {
+            self.selected = self.selected_many.iter().next().cloned();
+        }
+    }
+
+    /// Selects all visible rows from the current anchor (`self.selected`) to `target` (Shift-click).
+    pub fn select_range(&mut self, target: &Path) {
+        let Some(anchor) = self.selected.clone() else {
+            self.select_only(target.to_path_buf());
+            return;
+        };
+        self.select_range_from(&anchor, target);
+    }
+
+    /// Selects all visible rows from `anchor` to `target` (inclusive), keeping `anchor` as
+    /// `self.selected` so subsequent Shift-clicks or drag motion smoothly adjusts the range.
+    pub fn select_range_from(&mut self, anchor: &Path, target: &Path) {
+        let paths: Vec<PathBuf> = self
+            .rows()
+            .iter()
+            .filter_map(|r| match r {
+                Row::Item { entry, .. } => Some(entry.path.clone()),
+                _ => None,
+            })
+            .collect();
+        let a = paths.iter().position(|p| p == anchor);
+        let b = paths.iter().position(|p| p == target);
+        if let (Some(a), Some(b)) = (a, b) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            self.selected_many.clear();
+            for p in &paths[lo..=hi] {
+                self.selected_many.insert(p.clone());
+            }
+            self.selected = Some(anchor.to_path_buf());
+        } else {
+            self.select_only(target.to_path_buf());
+        }
+    }
+
+    /// Selects a contiguous range inside an explicit ordered slice (e.g. filtered search results).
+    pub fn select_range_in(&mut self, ordered: &[PathBuf], target: &Path) {
+        let Some(anchor) = self.selected.clone() else {
+            self.select_only(target.to_path_buf());
+            return;
+        };
+        let a = ordered.iter().position(|p| p == &anchor);
+        let b = ordered.iter().position(|p| p == target);
+        if let (Some(a), Some(b)) = (a, b) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            self.selected_many.clear();
+            for p in &ordered[lo..=hi] {
+                self.selected_many.insert(p.clone());
+            }
+        } else {
+            self.select_only(target.to_path_buf());
+        }
+    }
+
+    /// Selected paths in visible tree order (any collapsed/off-tree selections appended sorted).
+    pub fn selected_paths_in_order(&mut self) -> Vec<PathBuf> {
+        if self.selected_many.is_empty() {
+            return self.selected.iter().cloned().collect();
+        }
+        let _ = self.rows();
+        let mut out = Vec::with_capacity(self.selected_many.len());
+        let mut seen = BTreeSet::new();
+        for r in self.rows.as_deref().unwrap_or_default() {
+            if let Row::Item { entry, .. } = r
+                && self.selected_many.contains(&entry.path)
+            {
+                out.push(entry.path.clone());
+                seen.insert(entry.path.clone());
+            }
+        }
+        for p in &self.selected_many {
+            if !seen.contains(p) {
+                out.push(p.clone());
+            }
+        }
+        out
+    }
+
+    /// Drops child paths whose ancestor folder is already included so bulk Trash never fails
+    /// trying to delete a file after its parent directory was already moved.
+    pub fn prune_descendants(paths: &[PathBuf]) -> Vec<PathBuf> {
+        let mut sorted: Vec<PathBuf> = paths.to_vec();
+        sorted.sort_by_key(|p| p.components().count());
+        let mut kept: Vec<PathBuf> = Vec::with_capacity(sorted.len());
+        for p in sorted {
+            if !kept.iter().any(|anc| p == *anc || p.starts_with(anc)) {
+                kept.push(p);
+            }
+        }
+        kept
     }
 
     /// Opens a closed folder, closes an open one.
@@ -119,6 +241,12 @@ impl Explorer {
             if hit {
                 self.rows = None;
             }
+            if path.symlink_metadata().is_err() {
+                self.selected_many.retain(|p| !p.starts_with(path));
+                if self.selected.as_ref().is_some_and(|s| s.starts_with(path)) {
+                    self.selected = self.selected_many.iter().next().cloned();
+                }
+            }
         }
     }
 
@@ -134,7 +262,7 @@ impl Explorer {
             dir.push(part);
             self.expanded.insert(dir.clone());
         }
-        self.selected = Some(file.to_path_buf());
+        self.select_only(file.to_path_buf());
         self.rows = None;
     }
 
@@ -532,5 +660,47 @@ mod tests {
             let renamed = apply_edit(root, &EditKind::Rename(broken), "still-dangling").unwrap();
             assert!(renamed.symlink_metadata().unwrap().file_type().is_symlink());
         }
+    }
+
+    #[test]
+    fn multi_select_toggle_range_order_and_prune() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/child.rs"), "").unwrap();
+        std::fs::write(root.join("a.txt"), "").unwrap();
+        std::fs::write(root.join("b.txt"), "").unwrap();
+        std::fs::write(root.join("c.txt"), "").unwrap();
+        let mut ex = Explorer::new(root.to_path_buf());
+        ex.toggle(&root.join("sub"));
+        let _ = ex.rows();
+
+        // Single select -> Cmd-toggle adds second file while preserving first.
+        ex.select_only(root.join("a.txt"));
+        ex.toggle_select(root.join("c.txt"));
+        assert_eq!(ex.selected_paths_in_order(), vec![root.join("a.txt"), root.join("c.txt")]);
+
+        // Shift-range from anchor selects contiguous visible rows.
+        ex.select_only(root.join("a.txt"));
+        ex.select_range(&root.join("c.txt"));
+        assert_eq!(ex.selected_paths_in_order(), vec![root.join("a.txt"), root.join("b.txt"), root.join("c.txt")]);
+
+        // Drag-range upward works identically.
+        ex.select_range_from(&root.join("c.txt"), &root.join("sub"));
+        assert_eq!(
+            ex.selected_paths_in_order(),
+            vec![root.join("sub"), root.join("sub/child.rs"), root.join("a.txt"), root.join("b.txt"), root.join("c.txt")]
+        );
+
+        // Pruning descendants drops `sub/child.rs` when `sub` is also selected.
+        let pruned = Explorer::prune_descendants(&ex.selected_paths_in_order());
+        assert!(pruned.contains(&root.join("sub")));
+        assert!(!pruned.contains(&root.join("sub/child.rs")));
+        assert_eq!(pruned.len(), 4);
+
+        // Removing a file on disk + invalidating prunes it from multi-selection.
+        std::fs::remove_file(root.join("b.txt")).unwrap();
+        ex.invalidate(&[root.join("b.txt")]);
+        assert!(!ex.selected_many.contains(&root.join("b.txt")));
     }
 }

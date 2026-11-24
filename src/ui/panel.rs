@@ -10,7 +10,7 @@ use tc_core::ProjectId;
 use super::{icons, kit, style};
 use crate::actions::Action;
 use crate::app::App;
-use crate::i18n::t;
+use crate::i18n::{t, tf};
 
 /// Height of the panel's header (aligned with the terminal tab strip beside it).
 pub const HEAD_H: f32 = 40.0;
@@ -154,7 +154,7 @@ impl App {
         let max_w = (body.width() - MIN_STAGE - style::GAP).max(MIN_W.min(body.width() * 0.5));
         // Files keeps room for its tree beside the code.
         let least = if tab == PanelTab::Files { FILES_MIN_W } else { MIN_W };
-        let w = (body.width() * share).max(least).min(max_w.max(MIN_W)).round();
+        let w = (body.width() * share).max(least).min(max_w).round();
         let panel = Rect::from_min_max(pos2(body.right() - w, body.top()), body.max);
         let stage = Rect::from_min_max(body.min, pos2(panel.left() - style::GAP, body.bottom()));
         (Some(stage), Some((panel, tab)))
@@ -235,30 +235,143 @@ impl App {
     }
 
     /// The header: the active panel's title (with its count when relevant), then at the right a
-    /// note while it fills the body, Expand / Back beside the terminals, and Close. Switching
-    /// between panels lives solely in the project toolbar above (no duplicate tab buttons here).
+    /// note while it fills the body, Expand / Back beside the terminals, and Close. When viewing
+    /// `Files`, shows live git changes info and a quick button right beside the title to jump
+    /// straight to the `Changes` tab.
     fn panel_head(&mut self, ui: &mut Ui, project: ProjectId, rect: Rect, tab: PanelTab) {
         let p = style::pal(ui);
-        let changed = self.project(project).and_then(|x| x.git.as_ref()).map_or(0, |g| g.changed);
+        let git = self.project(project).and_then(|x| x.git.clone());
+        let changed = git.as_ref().map_or(0, |g| g.changed);
         let inner = Rect::from_min_max(pos2(rect.left() + 8.0, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
         // Right side first.
         let right_left = self.panel_head_controls(ui, project, rect, 520.0);
         let title_rect = Rect::from_min_max(inner.min, pos2((right_left - 8.0).max(inner.left()), inner.bottom()));
-        let painter = ui.painter().with_clip_rect(title_rect.intersect(ui.clip_rect()));
+        let clip = title_rect.intersect(ui.clip_rect());
         let cy = title_rect.center().y;
         let mut x = title_rect.left() + 6.0;
-        painter.text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, tab.icon(), style::icon_font(14.0), p.text_muted);
-        x += 14.0 + 7.0;
-        let g = painter.layout_no_wrap(tab.label().to_string(), style::medium(style::BODY), p.text);
-        let gw = g.size().x;
-        painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
-        x += gw;
-        let count = match tab {
-            PanelTab::Changes if changed > 0 => Some(changed),
-            _ => None,
-        };
-        if let Some(n) = count {
-            painter.text(pos2(x + 7.0, cy), Align2::LEFT_CENTER, n.to_string(), style::mono(style::DATA), p.text_faint);
+        {
+            let painter = ui.painter().with_clip_rect(clip);
+            painter.text(pos2(x + 7.0, cy), Align2::CENTER_CENTER, tab.icon(), style::icon_font(14.0), p.text_muted);
+            x += 14.0 + 7.0;
+            let g = painter.layout_no_wrap(tab.label().to_string(), style::medium(style::BODY), p.text);
+            let gw = g.size().x;
+            painter.galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
+            x += gw;
+            if tab == PanelTab::Changes && changed > 0 {
+                painter.text(pos2(x + 7.0, cy), Align2::LEFT_CENTER, changed.to_string(), style::mono(style::DATA), p.text_faint);
+            }
+        }
+        // Beside the Files title: live changes summary + quick button that jumps straight to Changes.
+        if tab == PanelTab::Files {
+            const COMPACT_W: f32 = 8.0 + 13.0 + 8.0;
+            let mut open_changes = false;
+            let avail_right = title_rect.right();
+            if x + 20.0 + COMPACT_W <= avail_right {
+                let sep_x = x + 10.0;
+                ui.painter()
+                    .with_clip_rect(clip)
+                    .vline(sep_x, (cy - 7.0)..=(cy + 7.0), Stroke::new(1.0, p.border));
+                let mut cx = sep_x + 10.0;
+
+                // Measure the Changes jump button first so we always reserve space for it.
+                let btn_label = t("Changes");
+                let btn_g = ui.painter().layout_no_wrap(btn_label.to_string(), style::medium(style::SMALL), p.text);
+                let btn_w = 8.0 + 13.0 + 5.0 + btn_g.size().x + 4.0 + 10.0 + 8.0;
+
+                // Changes info pill / muted status (shown whenever room allows alongside the button).
+                if changed > 0 {
+                    let info_text = tf("{} changed", &[&changed.to_string()]);
+                    let info_g = ui.painter().layout_no_wrap(info_text, style::mono(style::DATA), p.accent_text);
+                    let info_w = 7.0 + 5.0 + 5.0 + info_g.size().x + 8.0;
+                    if cx + info_w + 6.0 + btn_w <= avail_right {
+                        let pill = Rect::from_min_size(pos2(cx, cy - 10.5), vec2(info_w, 21.0));
+                        let resp = ui.interact(pill, egui::Id::new(("files-head-changes-info", project)), Sense::click());
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record("files-head-changes-info", pill);
+                        let fill = if resp.hovered() { p.accent_soft } else { p.accent_tint };
+                        let painter = ui.painter().with_clip_rect(clip);
+                        painter.rect_filled(pill, CornerRadius::same(6), fill);
+                        painter.circle_filled(pos2(pill.left() + 9.5, cy), 2.5, p.accent_text);
+                        painter.galley(pos2(pill.left() + 17.0, cy - info_g.size().y / 2.0), info_g, p.accent_text);
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        let resp = resp.on_hover_ui(|ui| {
+                            ui.label(changes_breakdown(git.as_deref(), changed));
+                        });
+                        if resp.clicked() {
+                            open_changes = true;
+                        }
+                        cx = pill.right() + 6.0;
+                    }
+                } else if git.is_some() {
+                    let clean_g = ui.painter().layout_no_wrap(t("No changes").to_string(), style::mono(style::DATA), p.text_faint);
+                    let clean_w = clean_g.size().x;
+                    if cx + clean_w + 8.0 + btn_w <= avail_right {
+                        ui.painter()
+                            .with_clip_rect(clip)
+                            .galley(pos2(cx, cy - clean_g.size().y / 2.0), clean_g, p.text_faint);
+                        cx += clean_w + 8.0;
+                    }
+                }
+
+                // Clickable button to switch directly to the Changes tab.
+                let (use_full, w) = if cx + btn_w <= avail_right {
+                    (true, btn_w)
+                } else if cx + COMPACT_W <= avail_right {
+                    (false, COMPACT_W)
+                } else {
+                    (false, 0.0)
+                };
+                if w > 0.0 {
+                    let btn = Rect::from_min_size(pos2(cx, cy - 11.5), vec2(w, 23.0));
+                    let resp = ui.interact(btn, egui::Id::new(("files-head-changes", project)), Sense::click());
+                    #[cfg(debug_assertions)]
+                    crate::devtest::record("files-head-changes", btn);
+                    let hot = resp.hovered();
+                    let fill = if hot { p.subtle } else { p.hover };
+                    let stroke = if hot { p.border_strong } else { p.border };
+                    let ink = if hot { p.text } else { p.text_muted };
+                    let painter = ui.painter().with_clip_rect(clip);
+                    painter.rect(btn, CornerRadius::same(6), fill, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+                    painter.text(
+                        pos2(btn.left() + 8.0 + 6.5, cy),
+                        Align2::CENTER_CENTER,
+                        icons::GIT_DIFF,
+                        style::icon_font(13.0),
+                        if changed > 0 && !hot { p.accent_text } else { ink },
+                    );
+                    if use_full {
+                        let tx = btn.left() + 8.0 + 13.0 + 5.0;
+                        let tw = btn_g.size().x;
+                        painter.galley(pos2(tx, cy - btn_g.size().y / 2.0), btn_g, ink);
+                        painter.text(
+                            pos2(tx + tw + 4.0 + 5.0, cy),
+                            Align2::CENTER_CENTER,
+                            icons::CARET_RIGHT,
+                            style::icon_font(10.0),
+                            if hot { p.text_muted } else { p.text_faint },
+                        );
+                    }
+                    if hot {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    let resp = resp.on_hover_ui(|ui| {
+                        let tip = if changed > 0 {
+                            tf("Open Changes ({} changed)", &[&changed.to_string()])
+                        } else {
+                            t("Open Changes").to_string()
+                        };
+                        ui.label(tip);
+                    });
+                    if resp.clicked() {
+                        open_changes = true;
+                    }
+                }
+            }
+            if open_changes {
+                self.switch_panel(PanelTab::Changes, false);
+            }
         }
     }
 
@@ -283,5 +396,40 @@ impl App {
         if r.drag_stopped() {
             self.mark_dirty();
         }
+    }
+}
+
+/// Concise tooltip breakdown of working-tree changes for the Files header pill.
+fn changes_breakdown(git: Option<&crate::project::GitInfo>, changed: usize) -> String {
+    use crate::project::Change;
+    let Some(g) = git.filter(|g| g.changes.len() == changed) else {
+        return tf("Open Changes ({} changed)", &[&changed.to_string()]);
+    };
+    let (mut modified, mut added, mut deleted, mut renamed) = (0usize, 0usize, 0usize, 0usize);
+    for ch in g.changes.values() {
+        match ch {
+            Change::Modified | Change::Conflict => modified += 1,
+            Change::Added | Change::Untracked => added += 1,
+            Change::Deleted => deleted += 1,
+            Change::Renamed => renamed += 1,
+        }
+    }
+    let mut parts = Vec::new();
+    if modified > 0 {
+        parts.push(format!("{modified} {}", t("modified")));
+    }
+    if added > 0 {
+        parts.push(format!("{added} {}", t("added")));
+    }
+    if deleted > 0 {
+        parts.push(format!("{deleted} {}", t("deleted")));
+    }
+    if renamed > 0 {
+        parts.push(format!("{renamed} {}", t("renamed")));
+    }
+    if parts.is_empty() {
+        tf("Open Changes ({} changed)", &[&changed.to_string()])
+    } else {
+        format!("{} · {}", parts.join(" · "), t("Open Changes"))
     }
 }

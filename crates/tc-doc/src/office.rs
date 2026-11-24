@@ -166,7 +166,7 @@ impl Package {
         if f.size() > limit {
             return None;
         }
-        let mut out = Vec::with_capacity(f.size() as usize);
+        let mut out = Vec::with_capacity(f.size().min(1024 * 1024) as usize);
         // The size the zip says is not trusted: reading stops past the limit.
         f.take(limit + 1).read_to_end(&mut out).ok()?;
         if out.len() as u64 > limit {
@@ -309,7 +309,7 @@ impl Alternates {
 
 /// EMUs (English Metric Units) to points.
 fn emu_pt(v: &str) -> Option<f32> {
-    v.parse::<f64>().ok().map(|e| (e / 12700.0) as f32)
+    v.parse::<f64>().ok().map(|e| (e / 12700.0) as f32).filter(|pt| pt.is_finite() && *pt > 0.0)
 }
 
 // ----- runs ----------------------------------------------------------------------------------
@@ -723,7 +723,9 @@ pub fn read_docx(path: &Path) -> Result<RichDoc, String> {
                     b"i" if in_rpr && !in_ppr => props.italic = on(&e),
                     b"u" if in_rpr && !in_ppr => props.underline = attr(&e, b"val").as_deref() != Some("none"),
                     b"strike" | b"dstrike" if in_rpr && !in_ppr => props.strike = on(&e),
-                    b"sz" if in_rpr && !in_ppr => props.size = attr(&e, b"val").and_then(|v| v.parse::<f32>().ok()).map(|h| h / 2.0),
+                    b"sz" if in_rpr && !in_ppr => {
+                        props.size = attr(&e, b"val").and_then(|v| v.parse::<f32>().ok()).map(|h| h / 2.0).filter(|s| s.is_finite() && *s > 0.0)
+                    }
                     b"color" if in_rpr && !in_ppr => props.color = attr(&e, b"val").and_then(|v| hex_color(&v)),
                     b"rFonts" if in_rpr && !in_ppr => {
                         props.code = attr(&e, b"ascii").is_some_and(|f| monospace_font(&f));
@@ -1069,7 +1071,7 @@ fn read_slide(pkg: &mut Package, part: &str, images: &mut Images) -> Slide {
                     props.italic = attr(&e, b"i").is_some_and(|v| v == "1" || v == "true");
                     props.underline = attr(&e, b"u").is_some_and(|v| v != "none");
                     props.strike = attr(&e, b"strike").is_some_and(|v| v != "noStrike");
-                    props.size = attr(&e, b"sz").and_then(|v| v.parse::<f32>().ok()).map(|s| s / 100.0);
+                    props.size = attr(&e, b"sz").and_then(|v| v.parse::<f32>().ok()).map(|s| s / 100.0).filter(|s| s.is_finite() && *s > 0.0);
                 }
                 b"srgbClr" if in_rpr && rpr_open == [true] => props.color = attr(&e, b"val").and_then(|v| hex_color(&v)),
                 b"latin" if in_rpr => props.code = attr(&e, b"typeface").is_some_and(|f| monospace_font(&f)),
@@ -1187,10 +1189,11 @@ pub fn read_pptx(path: &Path) -> Result<Slides, String> {
                     }
                 }
                 b"sldSz" => {
-                    if let (Some(cx), Some(cy)) = (attr(&e, b"cx").and_then(|v| v.parse::<f32>().ok()), attr(&e, b"cy").and_then(|v| v.parse::<f32>().ok()))
-                        && cy > 0.0
-                    {
-                        aspect = cx / cy;
+                    if let (Some(cx), Some(cy)) = (
+                        attr(&e, b"cx").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v > 0.0),
+                        attr(&e, b"cy").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v > 0.0),
+                    ) {
+                        aspect = (cx / cy).clamp(0.2, 5.0);
                     }
                 }
                 _ => {}

@@ -61,7 +61,8 @@ impl App {
         if allow_keys && ui.input(|i| i.pointer.primary_pressed()) && ui.rect_contains_pointer(content) {
             doc_area.request_focus();
         }
-        if doc_area.has_focus() && allow_keys {
+        let doc_focused = doc_area.has_focus();
+        if doc_focused && allow_keys {
             self.editor_seen = true;
             // ← → move through a deck's slides.
             if let State::Ready(Content::Slides(deck)) = &view.state {
@@ -109,7 +110,7 @@ impl App {
                 State::Ready(Content::Pdf) => {
                     // Pages lie on the sunken colour.
                     ui.painter().rect_filled(content, CornerRadius::ZERO, p.inset);
-                    pdf_body(ui, view, content);
+                    pdf_body(ui, view, content, doc_focused);
                 }
                 State::Ready(Content::Text(_) | Content::Slides(_)) => rich_body(ui, view, content, &p),
                 State::Ready(Content::Sheet(_)) => sheet_focused = sheet_body(ui, view, content, &p),
@@ -199,7 +200,8 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
         *ask = Some(Ask::OpenDefault);
     }
     let ready = matches!(view.state, State::Ready(_));
-    if ready && button(ui, icons::MAGNIFYING_GLASS, &format!("{}   {}", t("Find"), kit::keys(&crate::actions::Action::Find).unwrap_or(""))) {
+    let searchable = ready && !matches!(view.state, State::Ready(Content::Image));
+    if searchable && button(ui, icons::MAGNIFYING_GLASS, &format!("{}   {}", t("Find"), kit::keys(&crate::actions::Action::Find).unwrap_or(""))) {
         view.open_find();
     }
     if ready {
@@ -234,14 +236,18 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
                 None => view.slide_jump = Some(to),
             };
             let (prev, next) = if deck { (t("Previous Slide"), t("Next Slide")) } else { (t("Previous Page"), t("Next Page")) };
+            let mut prev_clicked = false;
             if kit::icon_button_ex(ui, icons::CARET_UP, prev, false, ICON_S).clicked() {
                 jump(view, page.saturating_sub(1));
+                prev_clicked = true;
             }
             // The number can be typed (Enter goes there, Esc leaves it).
             let id = egui::Id::new(("doc-page", view.path.clone()));
             let focused_id = id.with("was-focused");
+            let edited_id = id.with("edited");
             let focused = ui.ctx().memory(|m| m.has_focus(id));
             let was_focused = ui.data(|d| d.get_temp::<bool>(focused_id)).unwrap_or(false);
+            let mut edited = ui.data(|d| d.get_temp::<bool>(edited_id)).unwrap_or(false);
             let mut text: String = ui.data(|d| d.get_temp::<String>(id)).filter(|_| focused || was_focused).unwrap_or_else(|| (page + 1).to_string());
             let (well, _) = ui.allocate_exact_size(vec2(32.0, 24.0), Sense::hover());
             ui.painter().rect(well, CornerRadius::same(5), p.inset, Stroke::new(1.0, if focused { p.accent } else { Color32::TRANSPARENT }), egui::StrokeKind::Inside);
@@ -259,14 +265,23 @@ fn toolbar(ui: &mut Ui, view: &mut DocView, rect: Rect, root: &std::path::Path, 
                     )
                 })
                 .inner;
+            if r.changed() {
+                edited = true;
+            }
+            // Read focus BEFORE taking `ui.data_mut` — calling `r.has_focus()` inside `data_mut`
+            // re-enters `egui::ContextImpl`'s non-reentrant `RwLock::write` and deadlocks the app!
+            let now_focused = r.has_focus();
+            let lost = r.lost_focus();
+            let commit = lost && edited && !prev_clicked && !ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if !now_focused {
+                edited = false;
+            }
             ui.data_mut(|d| {
                 d.insert_temp(id, text.clone());
-                d.insert_temp(focused_id, r.has_focus());
+                d.insert_temp(focused_id, now_focused);
+                d.insert_temp(edited_id, edited);
             });
-            if r.lost_focus()
-                && !ui.input(|i| i.key_pressed(egui::Key::Escape))
-                && let Ok(n_typed) = text.trim().parse::<usize>()
-            {
+            if commit && let Ok(n_typed) = text.trim().parse::<usize>() {
                 jump(view, n_typed.clamp(1, n) - 1);
             }
             ui.label(egui::RichText::new(tf("of {}", &[&n.to_string()])).size(style::SMALL).color(p.text_faint));
@@ -328,17 +343,21 @@ fn summary(ui: &Ui, view: &DocView) -> String {
     {
         s = format!("{s} · {}", ext.to_string_lossy().to_uppercase());
     }
-    // Its size, read once while it is shown (again after a reload).
+    // Its size, read once while it is shown (again after a reload). Caching `Option<u64>` ensures
+    // a missing or renamed file does not hit `std::fs::metadata` synchronously on every frame.
     let id = egui::Id::new(("doc-size", view.path.clone()));
     if matches!(view.state, State::Loading) {
-        ui.data_mut(|d| d.remove::<u64>(id));
+        ui.data_mut(|d| d.remove::<Option<u64>>(id));
         return s;
     }
-    let size = ui.data(|d| d.get_temp::<u64>(id)).or_else(|| {
-        let n = std::fs::metadata(&view.path).ok()?.len();
-        ui.data_mut(|d| d.insert_temp(id, n));
-        Some(n)
-    });
+    let size = match ui.data(|d| d.get_temp::<Option<u64>>(id)) {
+        Some(cached) => cached,
+        None => {
+            let n = std::fs::metadata(&view.path).ok().map(|m| m.len());
+            ui.data_mut(|d| d.insert_temp(id, n));
+            n
+        }
+    };
     match size {
         Some(n) => format!("{s} · {}", super::update_ui::human_size(n)),
         None => s,
@@ -466,15 +485,22 @@ fn find_bar(ui: &mut Ui, view: &mut DocView, content: Rect, top: f32, project: P
 /// Finds the query again when it or the document changed (more of a PDF's text read, another
 /// layout). Typing jumps to the first match.
 fn refresh_find(view: &mut DocView) {
+    if matches!(view.state, State::Loading) {
+        if let Some(f) = view.find.as_mut() {
+            f.searching = !f.query.trim().is_empty();
+        }
+        return;
+    }
     let stamp = match &view.state {
-        State::Ready(Content::Pdf) => view.pdf.as_ref().map_or(0, |p| p.text.iter().filter(|t| t.is_some()).count() as u64),
+        State::Ready(Content::Pdf) => view.pdf.as_ref().map_or(0, |p| p.text.iter().filter(|t| t.is_some()).count() as u64) + 1,
         // No layout yet (let go while the tab was not shown, made again below): the matches
         // stay as they are, so coming back keeps the current one.
         State::Ready(Content::Text(_) | Content::Slides(_)) => match view.layout.as_ref() {
-            Some(l) => l.items.len() as u64,
+            Some(l) => l.items.len() as u64 + 1,
             None => return,
         },
-        _ => 0,
+        State::Ready(Content::Sheet(_)) => 1,
+        _ => 2,
     };
     let Some(f) = view.find.as_mut() else { return };
     let query = f.query.trim().to_lowercase();
@@ -485,20 +511,55 @@ fn refresh_find(view: &mut DocView) {
     let new_query = f.key.as_ref().is_none_or(|(q, _)| *q != query);
     f.key = Some(key);
     f.searching = false;
+    if new_query {
+        f.searched_pages = 0;
+    }
+    // Incremental PDF search: when query is unchanged and new pages' text arrived, scan ONLY the
+    // newly ready pages instead of rescanning all earlier pages O(N²) on the UI thread.
+    if !new_query
+        && !query.is_empty()
+        && let State::Ready(Content::Pdf) = &view.state
+        && let Some(pdf) = &view.pdf
+    {
+        f.searching = pdf.text.iter().any(Option::is_none);
+        let had = f.matches.len();
+        while f.searched_pages < pdf.text.len() {
+            let Some(text) = pdf.text[f.searched_pages].as_ref() else { break };
+            if f.matches.len() < MAX_DOC_MATCHES {
+                for rects in text.find(&query) {
+                    f.matches.push(DocMatch::Pdf { page: f.searched_pages, rects });
+                    if f.matches.len() >= MAX_DOC_MATCHES {
+                        break;
+                    }
+                }
+            }
+            f.searched_pages += 1;
+        }
+        if had == 0 && !f.matches.is_empty() {
+            f.current = None;
+            f.step(true);
+        }
+        return;
+    }
     let mut found = Vec::new();
     if !query.is_empty() {
         match &view.state {
             State::Ready(Content::Pdf) => {
                 if let Some(pdf) = &view.pdf {
                     f.searching = pdf.text.iter().any(Option::is_none);
+                    let mut scanned = 0usize;
                     'pages: for (page, text) in pdf.text.iter().enumerate() {
-                        for rects in text.as_ref().map(|t| t.find(&query)).unwrap_or_default() {
+                        let Some(text) = text.as_ref() else { break };
+                        for rects in text.find(&query) {
                             found.push(DocMatch::Pdf { page, rects });
                             if found.len() >= MAX_DOC_MATCHES {
+                                scanned = page + 1;
                                 break 'pages;
                             }
                         }
+                        scanned = page + 1;
                     }
+                    f.searched_pages = scanned;
                 }
             }
             State::Ready(Content::Text(_) | Content::Slides(_)) => {
@@ -520,10 +581,22 @@ fn refresh_find(view: &mut DocView) {
                 }
             }
             State::Ready(Content::Sheet(book)) => {
+                let ascii = query.is_ascii();
+                let q_bytes = query.as_bytes();
                 'sheets: for (sheet, s) in book.sheets.iter().enumerate() {
                     for row in 0..s.rows {
                         for col in 0..s.cols {
-                            if s.cell(row, col).text().to_lowercase().contains(&query) {
+                            let cell = s.cell(row, col);
+                            if matches!(cell, tc_doc::sheet::Cell::Empty) {
+                                continue;
+                            }
+                            let text = cell.text();
+                            let hit = if ascii {
+                                contains_ascii_ci(text.as_bytes(), q_bytes)
+                            } else {
+                                text.to_lowercase().contains(&query)
+                            };
+                            if hit {
                                 found.push(DocMatch::Cell { sheet, row, col });
                                 if found.len() >= MAX_DOC_MATCHES {
                                     break 'sheets;
@@ -546,6 +619,17 @@ fn refresh_find(view: &mut DocView) {
     } else if let Some(c) = f.current {
         f.current = Some(c.min(f.matches.len().saturating_sub(1)));
     }
+}
+
+/// Allocation-free ASCII case-insensitive substring check (`needle` must already be lowercase ASCII).
+fn contains_ascii_ci(hay: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if hay.len() < needle.len() {
+        return false;
+    }
+    hay.windows(needle.len()).any(|w| w.iter().zip(needle).all(|(a, b)| a.to_ascii_lowercase() == *b))
 }
 
 /// A sheet's search moves the selected cell to the current match (and its sheet).
@@ -597,7 +681,7 @@ fn quantize(scale: f32) -> f32 {
     2f32.powf(steps / 4.0)
 }
 
-fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
+fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect, doc_focused: bool) {
     let p = style::pal(ui);
     let Some(pdf) = view.pdf.as_mut() else { return };
     if pdf.pages.is_empty() {
@@ -608,7 +692,7 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
     let avail = (rect.width() - margin * 2.0 - 10.0).max(80.0);
     let max_w = pdf.pages.iter().map(|p| p.0).fold(1.0f32, f32::max);
     // Fit the width (but small pages are not blown up past twice their size).
-    let k = avail.min(max_w * 2.0) / max_w * view.zoom;
+    let k = (avail.min(max_w * 2.0) / max_w * view.zoom).max(1e-4);
     let mut tops = Vec::with_capacity(pdf.pages.len());
     let mut y = margin;
     for (_, h) in &pdf.pages {
@@ -669,35 +753,44 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
         };
         // A point of the view as a page and a point on it (in points), clamped to the page.
         let page_at = |pos: Pos2| -> (usize, [f32; 2]) {
-            let i = (0..pages.len()).rfind(|i| o.y + tops[*i] <= pos.y).unwrap_or(0);
+            let i = tops.partition_point(|&t| o.y + t <= pos.y).saturating_sub(1);
             let pr = page_rect(i);
             let q = (pos.clamp(pr.min, pr.max) - pr.min) / k;
             (i, [q.x, q.y])
         };
+        // Find visible pages in O(log N) so 500+ page PDFs stay fast on every scroll frame.
+        let vis_start = tops
+            .partition_point(|&t| t <= vp.min.y)
+            .saturating_sub(1);
+        let vis_end = tops.partition_point(|&t| t <= vp.max.y);
+        let visible: Vec<usize> = (vis_start..vis_end)
+            .filter(|&i| tops[i] + pages[i].1 * k >= vp.min.y && tops[i] <= vp.max.y)
+            .collect();
         // Selecting text: drag over it, double-click a word, click elsewhere to clear.
         if let Some(h) = resp.hover_pos()
-            && (0..pages.len()).any(|i| page_rect(i).contains(h))
+            && visible.iter().any(|&i| page_rect(i).contains(h))
         {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
         if resp.drag_started() || resp.double_clicked() {
             view.want_text();
         }
-        let visible: Vec<usize> = (0..pages.len())
-            .filter(|i| {
-                let top = tops[*i];
-                top + pages[*i].1 * k >= vp.min.y && top <= vp.max.y
-            })
-            .collect();
-        let (first, last) = (visible.first().copied().unwrap_or(0), visible.last().copied().unwrap_or(0));
-        // The pages shown, and one either side so scrolling finds them ready.
-        for i in first.saturating_sub(1)..(last + 2).min(pages.len()) {
-            view.want_page(i, scale);
+        if let (Some(&first), Some(&last)) = (visible.first(), visible.last()) {
+            // The pages shown, and one either side so scrolling finds them ready.
+            for i in first.saturating_sub(1)..(last + 2).min(pages.len()) {
+                view.want_page(i, scale);
+            }
+            view.keep_pages(first.saturating_sub(2)..(last + 3).min(pages.len()));
         }
-        view.keep_pages(first.saturating_sub(2)..(last + 3).min(pages.len()));
-        let mid = vp.center().y;
         let Some(pdf) = view.pdf.as_mut() else { return };
-        pdf.page = (0..pages.len()).rfind(|i| tops[*i] <= mid).unwrap_or(0);
+        pdf.page = if vp.min.y <= 1.0 {
+            0
+        } else if vp.max.y >= total.y - 1.0 {
+            pages.len().saturating_sub(1)
+        } else {
+            let mid = vp.center().y;
+            tops.partition_point(|&t| t <= mid).saturating_sub(1)
+        };
         if resp.drag_started()
             && let Some(at) = ui.input(|i| i.pointer.press_origin())
         {
@@ -720,7 +813,9 @@ fn pdf_body(ui: &mut Ui, view: &mut DocView, rect: Rect) {
             pdf.sel = None;
         }
         let selection = pdf.selection();
-        if !selection.is_empty() {
+        // Only advertise PDF selection / handle ⌘C when the document actually owns keyboard focus,
+        // so a lingering PDF selection never hijacks Terminal ⌘C or toolbar text-field copy.
+        if doc_focused && !selection.is_empty() {
             set_doc_selection(ui.ctx());
             if ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
                 ui.ctx().copy_text(pdf.selected_text());
@@ -829,7 +924,7 @@ impl Builder<'_> {
             match span {
                 Span::Text { text, bold, italic, underline, strike, code, link, size: run_size, color: run_color } => {
                     let sz = match (para.style, run_size) {
-                        (ParaStyle::Normal, Some(pt)) => (pt * 1.25 * self.zoom).clamp(9.0 * self.zoom, 40.0 * self.zoom),
+                        (ParaStyle::Normal, Some(pt)) if pt.is_finite() && *pt > 0.0 => (pt * 1.25 * self.zoom).clamp(9.0 * self.zoom, 40.0 * self.zoom),
                         _ => size,
                     };
                     let font = if *code || mono_all {
@@ -885,12 +980,12 @@ impl Builder<'_> {
         let mut x = x;
         let mut w = w;
         if let Some(list) = &para.list {
-            let indent = 22.0 * z * (list.level as f32 + 1.0);
+            let indent = (22.0 * z * (list.level.min(8) as f32 + 1.0)).min((w - 40.0).max(0.0));
             let mark = self.ui.painter().layout_no_wrap(list.mark.clone(), egui::FontId::proportional(base), self.p.text_faint);
             let mr = Rect::from_min_size(pos2(x + indent - mark.size().x - 6.0 * z, y), mark.size());
             self.items.push(Item::Text { rect: mr, galley: mark });
             x += indent;
-            w -= indent;
+            w = (w - indent).max(20.0);
         }
         if para.style == ParaStyle::Quote {
             self.items.push(Item::Fill { rect: Rect::from_min_size(pos2(x, y), vec2(3.0 * z, 1.0)), color: self.p.border_heavy, radius: 1, stroke: Stroke::NONE });
@@ -1073,6 +1168,9 @@ fn rich_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
         && let State::Ready(content) = &view.state
     {
         view.layout = Some(build_layout(ui, content, width, view.zoom, key));
+        if view.find.is_some() {
+            ui.ctx().request_repaint();
+        }
     }
     let ctx = ui.ctx().clone();
     let mut wanted = Vec::new();
@@ -1114,9 +1212,16 @@ fn rich_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
             let (r, _) = ui.allocate_exact_size(vec2(rect.width(), layout.height), Sense::hover());
             let o = r.min.to_vec2();
             if !layout.slides.is_empty() {
-                // The slide at the view's upper third.
-                let at = vp.min.y + vp.height() / 3.0;
-                view.slide = layout.slides.iter().rposition(|top| *top <= at).unwrap_or(0);
+                // Anchor cleanly at scroll top/bottom so first & last slides are always reachable.
+                view.slide = if vp.min.y <= 1.0 {
+                    0
+                } else if vp.max.y >= layout.height - 1.0 {
+                    layout.slides.len().saturating_sub(1)
+                } else {
+                    let probe = (vp.height() / 3.0).min(120.0);
+                    let at = vp.min.y + probe;
+                    layout.slides.iter().rposition(|top| *top <= at).unwrap_or(0)
+                };
             }
             let painter = ui.painter();
             for (ix, item) in layout.items.iter().enumerate() {
@@ -1249,17 +1354,15 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
         let g = ui.painter().layout_job(job);
         ui.painter().galley(pos2(nr.right() + 10.0, cy - g.size().y / 2.0), g, p.text);
     }
-    if let Some(e) = &sheet.error {
-        ui.painter().text(grid_rect.center(), Align2::CENTER_CENTER, e, egui::FontId::proportional(style::BODY), p.err);
-        return false;
-    }
-
-    // The grid has a margin round it (8 at 100%), its gutters lit, the cells on the sheet.
-    let pad = (8.0 * z).round();
-    let total = vec2(pad + rn_w + acc + pad, pad + head_h + sheet.rows as f32 * row_h + pad);
     let mut select = None;
     let mut keys_moved = None;
     let mut focused = false;
+    if let Some(e) = &sheet.error {
+        ui.painter().text(grid_rect.center(), Align2::CENTER_CENTER, e, egui::FontId::proportional(style::BODY), p.err);
+    } else {
+    // The grid has a margin round it (8 at 100%), its gutters lit, the cells on the sheet.
+    let pad = (8.0 * z).round();
+    let total = vec2(pad + rn_w + acc + pad, pad + head_h + sheet.rows as f32 * row_h + pad);
     ui.scope_builder(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
         ui.set_clip_rect(grid_rect);
         let salt = ("sheet", view.path.clone(), view.sheet);
@@ -1463,6 +1566,7 @@ fn sheet_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) -
             }
         });
     });
+    }
     if let Some(cell) = select {
         view.cell = Some(cell);
     }
@@ -1560,27 +1664,37 @@ fn image_body(ui: &mut Ui, view: &mut DocView, rect: Rect, p: &style::Palette) {
             let total = vec2(size.x + margin * 2.0, size.y + margin * 2.0).max(vp.size());
             let (r, _) = ui.allocate_exact_size(total, Sense::hover());
             let img = Rect::from_center_size(r.center(), size);
-            // A checkerboard shows through transparent parts.
+            // A single GPU-tiled 2×2 checkerboard texture shows through transparent parts
+            // (1 quad instead of up to 18,432 individual rect shapes per frame, zero overflow).
             let cell = 10.0;
             let painter = ui.painter_at(img);
-            painter.rect_filled(img, CornerRadius::ZERO, Color32::from_gray(if ui.visuals().dark_mode { 60 } else { 235 }));
-            let shown = img.intersect(vp.translate(r.min.to_vec2()));
-            let dark_cell = Color32::from_gray(if ui.visuals().dark_mode { 75 } else { 215 });
-            let (cx0, cy0) = (((shown.left() - img.left()) / cell).floor() as i32, ((shown.top() - img.top()) / cell).floor() as i32);
-            let (cx1, cy1) = (((shown.right() - img.left()) / cell).ceil() as i32, ((shown.bottom() - img.top()) / cell).ceil() as i32);
-            if (cx1 - cx0) * (cy1 - cy0) < 40_000 {
-                for y in cy0..cy1 {
-                    for x in cx0..cx1 {
-                        if (x + y) % 2 == 0 {
-                            let c = Rect::from_min_size(pos2(img.left() + x as f32 * cell, img.top() + y as f32 * cell), vec2(cell, cell));
-                            painter.rect_filled(c, CornerRadius::ZERO, dark_cell);
-                        }
-                    }
-                }
-            }
+            let dark = ui.visuals().dark_mode;
+            let checker = checkerboard_texture(ui.ctx(), dark);
+            let uv_max = pos2(img.width() / (cell * 2.0), img.height() / (cell * 2.0));
+            painter.image(checker.id(), img, Rect::from_min_max(pos2(0.0, 0.0), uv_max), Color32::WHITE);
             painter.image(tex, img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             ui.painter().rect_stroke(img, CornerRadius::ZERO, Stroke::new(1.0, p.border), egui::StrokeKind::Outside);
         });
+}
+
+/// Cached 2×2 repeating checkerboard texture (dark or light) for image transparency.
+fn checkerboard_texture(ctx: &egui::Context, dark: bool) -> egui::TextureHandle {
+    let id = egui::Id::new(("doc-checkerboard", dark));
+    if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return tex;
+    }
+    let a = Color32::from_gray(if dark { 60 } else { 235 });
+    let b = Color32::from_gray(if dark { 75 } else { 215 });
+    let image = egui::ColorImage { size: [2, 2], source_size: vec2(2.0, 2.0), pixels: vec![b, a, a, b] };
+    let opts = egui::TextureOptions {
+        magnification: egui::TextureFilter::Nearest,
+        minification: egui::TextureFilter::Nearest,
+        wrap_mode: egui::TextureWrapMode::Repeat,
+        mipmap_mode: None,
+    };
+    let tex = ctx.load_texture(if dark { "doc-checker-dark" } else { "doc-checker-light" }, image, opts);
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    tex
 }
 
 /// What kind of value a cell holds, for the cell bar.

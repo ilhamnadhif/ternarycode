@@ -26,6 +26,9 @@ pub fn decode(bytes: &[u8], max_side: u32) -> Result<Rgba, String> {
         img
     };
     let rgba = img.into_rgba8();
+    if rgba.width() == 0 || rgba.height() == 0 {
+        return Err("the image is empty".into());
+    }
     Ok(Rgba {
         width: rgba.width(),
         height: rgba.height(),

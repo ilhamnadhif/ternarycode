@@ -497,6 +497,9 @@ pub struct Settings {
     pub sidebar_compact: bool,
     /// Height of the Files section of the sidebar.
     pub files_height: f32,
+    /// Width (px) of the file-tree column inside the Files / Code Editor panel.
+    #[serde(default = "default_files_width")]
+    pub files_width: f32,
     pub files_hidden: bool,
     /// UI defaults revision; a file without it was written before revision 1.
     #[serde(default)]
@@ -623,6 +626,10 @@ fn default_sidebar_font_size() -> f32 {
     14.0
 }
 
+fn default_files_width() -> f32 {
+    230.0
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -663,6 +670,7 @@ impl Default for Settings {
             sidebar_hidden: false,
             sidebar_compact: false,
             files_height: 0.0,
+            files_width: default_files_width(),
             files_hidden: false,
             ui_rev: UI_REV,
             lsp: true,
@@ -693,6 +701,7 @@ impl Settings {
         self.sidebar_width = fix(self.sidebar_width, 180.0, 420.0, d.sidebar_width);
         self.sidebar_font_size = fix(self.sidebar_font_size, 11.0, 18.0, d.sidebar_font_size);
         self.files_height = fix(self.files_height, 0.0, 4000.0, d.files_height);
+        self.files_width = fix(self.files_width, 150.0, 520.0, d.files_width);
         self.drawer_size = fix(self.drawer_size, 0.18, 0.70, d.drawer_size);
         self.scrollback = self.scrollback.clamp(100, 1_000_000);
         self.scrollback_budget_mb = self.scrollback_budget_mb.clamp(16, 16_384);

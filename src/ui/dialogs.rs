@@ -704,6 +704,40 @@ impl App {
                         keep = false;
                     }
                 }
+                Dialog::ConfirmTrashMany(paths) => {
+                    begin(ui, W_CONFIRM);
+                    if header(
+                        ui,
+                        icons::TRASH,
+                        p.err,
+                        &tf("Move {} items to the Trash?", &[&paths.len().to_string()]),
+                        Some(t("You can put them back from the Trash.")),
+                    ) {
+                        keep = false;
+                    }
+                    body(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        for path in paths.iter().take(6) {
+                            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            ui.label(egui::RichText::new(name).font(style::mono(style::DATA)).color(p.text_muted));
+                        }
+                        if paths.len() > 6 {
+                            ui.label(
+                                egui::RichText::new(tf("… and {} more", &[&(paths.len() - 6).to_string()]))
+                                    .size(style::SMALL)
+                                    .color(p.text_faint),
+                            );
+                        }
+                    });
+                    let (cancel, ok) = footer(ui, None, t("Move to Trash"), Confirm::Danger, true);
+                    if cancel {
+                        keep = false;
+                    }
+                    if ok {
+                        self.actions.push(Action::TrashPathsNow(paths.clone()));
+                        keep = false;
+                    }
+                }
                 Dialog::ConfirmClearBrowsing => {
                     begin(ui, W_CONFIRM);
                     if header(

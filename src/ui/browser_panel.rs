@@ -437,11 +437,38 @@ impl App {
     fn page_tab(&mut self, ui: &mut Ui, id: PaneId, r: Rect, front: bool, look: &TabLook) -> (bool, bool) {
         let p = style::pal(ui);
         let Some(b) = self.browsers.get(&id) else { return (false, false) };
+        let cy = r.center().y;
+        let x_rect = Rect::from_center_size(pos2(r.right() - TAB_PAD - 5.0, cy), vec2(16.0, 16.0));
+        let mut lead_x = r.left() + TAB_PAD;
+        match &look.agent {
+            Some(a) => {
+                lead_x += 16.0;
+                if !a.number.is_empty() {
+                    let g = ui.painter().layout_no_wrap(a.number.clone(), style::mono_semibold(9.5), p.text_faint);
+                    lead_x += 2.0 + g.size().x;
+                }
+            }
+            None => {
+                lead_x += 13.0;
+                if look.borrowed.is_some() {
+                    lead_x += 3.0 + 16.0;
+                }
+            }
+        }
+        let speaker = look.speaker.map(|_| Rect::from_center_size(pos2(lead_x + 4.0 + 6.0, cy), vec2(16.0, 16.0)));
+
+        // Register tab and child hitboxes unconditionally before computing `hovered`, so moving
+        // the pointer onto `×` or the mute icon never steals hover from the tab and causes a
+        // 60/120 Hz show/hide flicker loop when trying to close an inactive tab.
         let resp = ui.interact(r, egui::Id::new(("page-tab", id)), Sense::click());
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("page-tab:{id}"), r);
-        let hovered = resp.hovered();
-        if hovered && !front {
+        let mr = speaker.map(|sr| ui.interact(sr, egui::Id::new(("page-mute", id)), Sense::click()));
+        let xr = ui.interact(x_rect, egui::Id::new(("page-close", id)), Sense::click());
+        let mute_hovered = mr.as_ref().is_some_and(egui::Response::hovered);
+        let close_hovered = xr.hovered();
+        let hovered = resp.hovered() || mute_hovered || close_hovered;
+        if (hovered && !front) || close_hovered || mute_hovered {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let painter = ui.painter_at(r);
@@ -452,7 +479,6 @@ impl App {
             painter.rect_filled(r, radius, p.hover);
         }
         let ended = look.agent.as_ref().is_some_and(|a| a.ended);
-        let cy = r.center().y;
         let mut x = r.left() + TAB_PAD;
         // The lead: the agent's avatar (its page), the user's globe (or the moon: asleep) with
         // the avatar of an agent at work in it; the speaker while it plays sound.
@@ -476,15 +502,14 @@ impl App {
                 }
             }
         }
-        let speaker = look.speaker.map(|_| {
-            let sr = Rect::from_center_size(pos2(x + 4.0 + 6.0, cy), vec2(16.0, 16.0));
+        if speaker.is_some() {
             x += 4.0 + 12.0;
-            sr
-        });
+        }
         x += TAB_GAP_IN;
         let show_x = hovered || front;
-        let x_rect = Rect::from_center_size(pos2(r.right() - TAB_PAD - 5.0, cy), vec2(16.0, 16.0));
-        let mut text_right = if show_x { x_rect.center().x - 5.0 - TAB_GAP_IN } else { r.right() - TAB_PAD };
+        // Keep text width stable across hover/unhover by reserving the close-button slot
+        // consistently (no sudden truncation jump when hovering to close).
+        let mut text_right = x_rect.center().x - 5.0 - TAB_GAP_IN;
         // The dot: it needs the user (a site to allow, a dialog), or an agent works in it.
         if let Some(dot) = look.dot {
             let c = match dot {
@@ -501,27 +526,25 @@ impl App {
         let g = painter.layout_job(job);
         painter.galley(pos2(x, cy - g.size().y / 2.0), g, text_color);
         let mut toggled = false;
-        if let (Some(sr), Some(muted)) = (speaker, look.speaker) {
-            let mr = ui.interact(sr, egui::Id::new(("page-mute", id)), Sense::click());
+        if let (Some(sr), Some(mr), Some(muted)) = (speaker, mr, look.speaker) {
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("page-mute:{id}"), sr);
-            if mr.hovered() {
+            if mute_hovered {
                 painter.rect_filled(sr, CornerRadius::same(4), p.subtle);
             }
             let icon = if muted { icons::SPEAKER_SLASH } else { icons::SPEAKER_HIGH };
-            let ink = if mr.hovered() { p.text } else if muted { p.text_faint } else { p.text_muted };
+            let ink = if mute_hovered { p.text } else if muted { p.text_faint } else { p.text_muted };
             painter.text(sr.center(), Align2::CENTER_CENTER, icon, style::icon_font(12.0), ink);
             toggled = mr.on_hover_text(if muted { t("Unmute Page") } else { t("Mute Page") }).clicked();
         }
         let mut closed = false;
         if show_x {
-            let xr = ui.interact(x_rect, egui::Id::new(("page-close", id)), Sense::click());
             #[cfg(debug_assertions)]
             crate::devtest::record(format!("page-close:{id}"), x_rect);
-            if xr.hovered() {
+            if close_hovered {
                 painter.rect_filled(x_rect, CornerRadius::same(4), p.subtle);
             }
-            painter.text(x_rect.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), if xr.hovered() { p.text } else { p.text_faint });
+            painter.text(x_rect.center(), Align2::CENTER_CENTER, icons::X, style::icon_font(10.0), if close_hovered { p.text } else { p.text_faint });
             closed = xr.on_hover_text(t("Close page")).clicked();
         }
         let who = look.agent.as_ref().and_then(|a| {
@@ -619,7 +642,7 @@ fn tab_natural(ui: &Ui, l: &TabLook, front: bool) -> f32 {
         lead += 4.0 + 12.0;
     }
     let font = if front { style::medium(style::SMALL) } else { egui::FontId::proportional(style::SMALL) };
-    let fixed = TAB_PAD + lead + TAB_GAP_IN + if l.dot.is_some() { TAB_GAP_IN + 6.0 } else { 0.0 } + if front { TAB_GAP_IN + 10.0 } else { 0.0 } + TAB_PAD;
+    let fixed = TAB_PAD + lead + TAB_GAP_IN + if l.dot.is_some() { TAB_GAP_IN + 6.0 } else { 0.0 } + TAB_GAP_IN + 10.0 + TAB_PAD;
     (fixed + w(&l.title, font).max(24.0)).min(TAB_MAX)
 }
 

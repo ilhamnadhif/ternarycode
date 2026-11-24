@@ -51,6 +51,8 @@ pub struct Pdf {
     /// Rendered pages on screen, and the scale each was rendered at.
     pub textures: HashMap<usize, (f32, egui::TextureHandle)>,
     asked: HashMap<usize, f32>,
+    /// Last keep-range sent to the worker thread so scrolled-away queued pages are dropped.
+    kept: std::ops::Range<usize>,
     /// The page at the middle of the view (0-based).
     pub page: usize,
     /// Scroll to this page on the next frame.
@@ -127,6 +129,8 @@ pub struct DocFind {
     pub jump: bool,
     /// A PDF's text is still being read: more matches may come.
     pub searching: bool,
+    /// Number of PDF pages already scanned for the current query (enables O(N) incremental find).
+    pub searched_pages: usize,
 }
 
 /// Matches stop being counted here.
@@ -230,9 +234,13 @@ impl DocView {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.layout = None;
         self.pictures.clear();
+        self.pictures_tx = None;
         self.image = None;
         if let Some(f) = self.find.as_mut() {
             f.key = None;
+            f.matches.clear();
+            f.current = None;
+            f.searched_pages = 0;
         }
         match self.kind {
             Kind::Unsupported => {
@@ -247,6 +255,7 @@ impl DocView {
                     pages: Vec::new(),
                     textures: HashMap::new(),
                     asked: HashMap::new(),
+                    kept: 0..0,
                     page,
                     jump: (page > 0).then_some(page),
                     text: Vec::new(),
@@ -276,6 +285,7 @@ impl DocView {
             self.start(ctx);
         }
         let generation = self.generation.load(Ordering::Relaxed);
+        let mut pic_uploads = 0usize;
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Loaded(g, _) | Msg::Picture(g, ..) if g != generation => {}
@@ -301,19 +311,35 @@ impl DocView {
                 }
                 Msg::Loaded(_, Err(e)) => self.state = State::Failed(e),
                 Msg::Picture(_, ix, Ok(img)) => {
-                    let tex = texture(ctx, &format!("doc-pic-{ix}"), &img);
-                    self.pictures.insert(ix, Pic::Ready(tex));
+                    if matches!(self.pictures.get(&ix), Some(Pic::Pending)) && img.width > 0 && img.height > 0 {
+                        let tex = texture(ctx, &format!("doc-pic-{ix}"), &img);
+                        self.pictures.insert(ix, Pic::Ready(tex));
+                        pic_uploads += 1;
+                        if pic_uploads >= 2 {
+                            ctx.request_repaint();
+                            break;
+                        }
+                    } else if matches!(self.pictures.get(&ix), Some(Pic::Pending)) {
+                        self.pictures.insert(ix, Pic::Failed);
+                    }
                 }
                 Msg::Picture(_, ix, Err(_)) => {
-                    self.pictures.insert(ix, Pic::Failed);
+                    if matches!(self.pictures.get(&ix), Some(Pic::Pending)) {
+                        self.pictures.insert(ix, Pic::Failed);
+                    }
                 }
             }
         }
         if let Some(pdf) = self.pdf.as_mut() {
+            // Upload at most 2 rendered PDF pages per frame so fast scrolling never stalls the UI
+            // thread with a burst of GPU texture uploads.
+            let mut uploaded = 0usize;
             while let Ok(e) = pdf.renderer.events.try_recv() {
                 match e {
                     tc_doc::pdf::Event::Opened { pages } => {
-                        pdf.page = pdf.page.min(pages.len().saturating_sub(1));
+                        let last = pages.len().saturating_sub(1);
+                        pdf.page = pdf.page.min(last);
+                        pdf.jump = pdf.jump.map(|j| j.min(last));
                         pdf.text = vec![None; pages.len()];
                         pdf.pages = pages;
                         self.state = State::Ready(Content::Pdf);
@@ -329,10 +355,16 @@ impl DocView {
                         }
                     }
                     tc_doc::pdf::Event::Page { index, scale, image } => {
-                        // Still wanted at that scale (the view may have moved on).
-                        if pdf.asked.get(&index) == Some(&scale) && image.width > 0 {
-                            let tex = texture(ctx, &format!("pdf-page-{index}"), &image);
+                        // Still wanted at that scale (the view may have moved on); guard against
+                        // zero-width or zero-height renders that would panic wgpu create_texture.
+                        if pdf.asked.get(&index) == Some(&scale) && image.width > 0 && image.height > 0 {
+                            let tex = texture_opaque(ctx, &format!("pdf-page-{index}"), &image);
                             pdf.textures.insert(index, (scale, tex));
+                            uploaded += 1;
+                            if uploaded >= 2 {
+                                ctx.request_repaint();
+                                break;
+                            }
                         }
                     }
                     tc_doc::pdf::Event::Failed(e) => self.state = State::Failed(e),
@@ -340,8 +372,12 @@ impl DocView {
             }
         }
         if let Some(img) = self.image.take() {
-            let tex = texture(ctx, "doc-image", &img);
-            self.pictures.insert(0, Pic::Ready(tex));
+            if img.width > 0 && img.height > 0 {
+                let tex = texture(ctx, "doc-image", &img);
+                self.pictures.insert(0, Pic::Ready(tex));
+            } else {
+                self.state = State::Failed(crate::i18n::t("The image could not be decoded.").to_string());
+            }
         }
     }
 
@@ -372,11 +408,17 @@ impl DocView {
         pdf.renderer.request(index, scale);
     }
 
-    /// Lets go of pages far from the view (they are rendered again when they come back).
+    /// Lets go of pages far from the view (they are rendered again when they come back) and
+    /// cancels queued renders outside `keep` so the background worker never burns CPU on pages
+    /// the user already scrolled past.
     pub fn keep_pages(&mut self, keep: std::ops::Range<usize>) {
         if let Some(pdf) = self.pdf.as_mut() {
             pdf.textures.retain(|i, _| keep.contains(i));
             pdf.asked.retain(|i, _| keep.contains(i));
+            if pdf.kept != keep {
+                pdf.kept = keep.clone();
+                pdf.renderer.keep(keep);
+            }
         }
     }
 
@@ -402,7 +444,9 @@ impl DocView {
                     if generation != current.load(Ordering::Relaxed) {
                         continue;
                     }
-                    if tx.send(Msg::Picture(generation, ix, tc_doc::img::decode(&bytes, 2048))).is_err() {
+                    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tc_doc::img::decode(&bytes, 2048)))
+                        .unwrap_or_else(|_| Err("picture decode failed".into()));
+                    if tx.send(Msg::Picture(generation, ix, decoded)).is_err() {
                         return;
                     }
                     c.request_repaint();
@@ -412,6 +456,7 @@ impl DocView {
         }
         let generation = self.generation.load(Ordering::Relaxed);
         if self.pictures_tx.as_ref().is_none_or(|t| t.send((generation, ix, bytes)).is_err()) {
+            self.pictures_tx = None;
             self.pictures.insert(ix, Pic::Failed);
         }
     }
@@ -428,11 +473,14 @@ impl DocView {
     pub fn release(&mut self) {
         if !matches!(self.kind, Kind::Image) {
             self.pictures.clear();
+            self.pictures_tx = None;
         }
         self.layout = None;
         if let Some(pdf) = self.pdf.as_mut() {
             pdf.textures.clear();
             pdf.asked.clear();
+            pdf.kept = 0..0;
+            pdf.renderer.keep(0..0);
         }
     }
 
@@ -501,6 +549,13 @@ impl DocView {
 
 fn texture(ctx: &egui::Context, name: &str, img: &Rgba) -> egui::TextureHandle {
     let image = egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.pixels);
+    ctx.load_texture(name, image, egui::TextureOptions::LINEAR)
+}
+
+/// Fast path for opaque white-backed PDF renders (alpha is already 255 on every pixel, so
+/// premultiplied == straight and we skip per-pixel alpha premultiplication on the UI thread).
+fn texture_opaque(ctx: &egui::Context, name: &str, img: &Rgba) -> egui::TextureHandle {
+    let image = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     ctx.load_texture(name, image, egui::TextureOptions::LINEAR)
 }
 

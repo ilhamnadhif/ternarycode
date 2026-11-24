@@ -479,6 +479,12 @@ T="$WORK/tree"; mkdir -p "$T/src"
     && git add -A && git -c user.name=t -c user.email=t@t commit -qm init)
 run explorer 60 "sleep 1000;; action add-project $T;; sleep 1500;; action editor;; sleep 600;; wait-tree edit.txt;; expect-shown tree:edit.txt;; action files;; sleep 400;; expect-hidden tree:edit.txt;; action files;; sleep 400;; expect-shown tree:edit.txt;; click tree:edit.txt;; wait-open edit.txt;; expect-rect editor-text;; write-file $T/edit.txt line 1 changed by agent\\n;; wait-git edit.txt M;; write-file $T/added.txt new\\n;; wait-tree added.txt;; wait-git added.txt U;; click panel-close;; sleep 400;; expect-hidden panel;; click panel-toggle:Files;; wait-open edit.txt;; shot e2e-explorer;; quit"
 
+# Resizable file-tree column + multi-file drag-block selection + Files header Changes info pill & jump-to-Changes button.
+FP="$WORK/files-polish"; mkdir -p "$FP/src"
+(cd "$FP" && git init -q -b main && printf 'line 1\n' > edit.txt && printf 'fn main() {}\n' > src/main.rs \
+    && git add -A && git -c user.name=t -c user.email=t@t commit -qm init)
+run files-panel-polish 60 "sleep 1000;; action add-project $FP;; sleep 1500;; write-file $FP/edit.txt line 1 changed for header\\n;; write-file $FP/new_feature.txt hello\\n;; write-file $FP/notes_extra.txt extra\\n;; sleep 1200;; action editor;; sleep 600;; wait-tree edit.txt;; expect-shown files-edge;; expect-shown files-head-changes-info;; expect-shown files-head-changes;; mouse down files-edge;; sleep 100;; mouse drag files-edge@0.5,0.5;; sleep 100;; mouse drag panel@0.55,0.5;; sleep 150;; mouse up panel@0.55,0.5;; sleep 400;; shot e2e-files-panel-resized;; mouse down tree:edit.txt@0.4,0.5;; sleep 100;; mouse drag tree:new_feature.txt@0.4,0.5;; sleep 100;; mouse drag tree:notes_extra.txt@0.4,0.5;; sleep 150;; mouse up tree:notes_extra.txt@0.4,0.5;; sleep 300;; expect-shown files-multi-count;; shot e2e-files-multi-select;; click files-multi-count;; sleep 300;; expect-hidden files-multi-count;; click files-head-changes;; sleep 800;; wait-review Added:new_feature.txt,Added:notes_extra.txt,Modified:edit.txt;; shot e2e-files-head-changes-jump;; quit"
+
 
 # Terminal tabs (v1.1): drag a tab along the strip to reorder; drop it on a pane's right half to
 # make it a split of the tab in view. Ctrl+D in a shell closes its pane.

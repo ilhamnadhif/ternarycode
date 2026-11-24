@@ -160,9 +160,11 @@ pub enum Action {
     /// A file or folder was renamed: open files follow it.
     PathRenamed { old: PathBuf, new: PathBuf },
     DuplicatePath(PathBuf),
-    /// Asks, then moves a file or folder to the Trash.
+    /// Asks, then moves a file or folder (or several selected items) to the Trash.
     TrashPath(PathBuf),
     TrashPathNow(PathBuf),
+    TrashPaths(Vec<PathBuf>),
+    TrashPathsNow(Vec<PathBuf>),
     /// A new terminal tab of the active project, in this folder.
     NewTabAt(PathBuf),
     QuickOpen,

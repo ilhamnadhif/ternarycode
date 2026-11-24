@@ -99,9 +99,10 @@ pub fn paint_spinner(painter: &egui::Painter, center: egui::Pos2, size: f32, col
     let r_out_aa = r + hw + aa;
     let clear = Color32::TRANSPARENT;
 
+    let cap_steps = 8usize;
     let mut mesh = egui::Mesh::default();
-    mesh.vertices.reserve((steps + 1) * 4 + 20);
-    mesh.indices.reserve(steps * 18 + 48);
+    mesh.vertices.reserve((steps + 1) * 4 + 1 + (cap_steps + 1) * 2);
+    mesh.indices.reserve(steps * 18 + cap_steps * 9);
 
     for i in 0..=steps {
         let frac = i as f32 / steps as f32;
@@ -127,7 +128,6 @@ pub fn paint_spinner(painter: &egui::Painter, center: egui::Pos2, size: f32, col
     // the arc strip (so both opaque and translucent colors stay completely seam-free).
     let (hsin, hcos) = head.sin_cos();
     let tip = egui::pos2(center.x + r * hcos, center.y + r * hsin);
-    let cap_steps = 8usize;
     let tip_idx = mesh.vertices.len() as u32;
     mesh.colored_vertex(tip, color);
     let base_idx = mesh.vertices.len() as u32;

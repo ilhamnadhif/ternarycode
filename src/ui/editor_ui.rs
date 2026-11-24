@@ -15,32 +15,81 @@ use crate::i18n::{t, tf};
 pub const TAB_H: f32 = 40.0;
 const CRUMB_H: f32 = 30.0;
 const STATUS_H: f32 = 28.0;
-/// The Files column of the code panel, and the narrowest panel that shows it.
+/// Default width, drag bounds, and minimum drawer width for the resizable Files column.
 pub const FILES_W: f32 = 230.0;
+pub const FILES_MIN_W: f32 = 150.0;
+pub const FILES_MAX_W: f32 = 520.0;
+const EDITOR_MIN_W: f32 = 240.0;
 pub const FILES_MIN_DRAWER: f32 = 520.0;
 
 impl App {
-    /// The Code drawer at the right of the panes: the Files column (unless hidden, or the
-    /// drawer is too narrow for it), then the editor or document of the open file.
+    /// The Code drawer at the right of the panes: the resizable Files column (unless hidden, or
+    /// the drawer is too narrow for it), a draggable divider between the tree and the editor, then
+    /// the editor or document of the open file.
     pub fn code_drawer(&mut self, ui: &mut Ui, project: ProjectId, root: PathBuf) {
         let full = ui.max_rect();
         let files = !self.settings.files_hidden && full.width() >= FILES_MIN_DRAWER;
-        let editor = if files {
-            let col = Rect::from_min_size(full.min, vec2(FILES_W, full.height()));
+        let (col_opt, max_tree, editor) = if files {
+            let max_tree = (full.width() - EDITOR_MIN_W).clamp(FILES_MIN_W, FILES_MAX_W);
+            let tree_w = self.settings.files_width.clamp(FILES_MIN_W, max_tree).round();
+            let col = Rect::from_min_size(full.min, vec2(tree_w, full.height()));
             #[cfg(debug_assertions)]
             crate::devtest::record("files-column", col);
             ui.scope_builder(egui::UiBuilder::new().max_rect(col), |ui| {
                 ui.set_clip_rect(col);
                 self.files_column(ui, col);
             });
-            Rect::from_min_max(pos2(col.right(), full.top()), full.max)
+            (Some(col), max_tree, Rect::from_min_max(pos2(col.right(), full.top()), full.max))
         } else {
-            full
+            (None, FILES_MAX_W, full)
         };
         ui.scope_builder(egui::UiBuilder::new().max_rect(editor), |ui| {
             ui.set_clip_rect(editor);
             self.editor_panel(ui, project, root, !files);
         });
+        if let Some(col) = col_opt {
+            self.files_resize_edge(ui, project, col, full, max_tree);
+        }
+    }
+
+    /// Draggable vertical divider between the file tree and the editor/document view.
+    /// Double-clicking resets the file-tree width to its default (`FILES_W`).
+    fn files_resize_edge(&mut self, ui: &mut Ui, project: ProjectId, col: Rect, full: Rect, max_tree: f32) {
+        let p = style::pal(ui);
+        let mid = col.right();
+        let grab = Rect::from_min_max(
+            pos2(mid - super::focus::DIVIDER_GRAB, full.top()),
+            pos2(mid + super::focus::DIVIDER_GRAB, full.bottom()),
+        );
+        let r = ui.interact(grab, egui::Id::new(("files-edge", project)), Sense::click_and_drag());
+        #[cfg(debug_assertions)]
+        crate::devtest::record("files-edge", grab);
+        if r.hovered() || r.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            ui.painter().rect_filled(
+                Rect::from_center_size(pos2(mid, full.center().y), vec2(2.0, (full.height() - 16.0).max(0.0))),
+                CornerRadius::same(1),
+                p.accent,
+            );
+        }
+        if r.dragged()
+            && let Some(pos) = r.interact_pointer_pos()
+        {
+            let next = (pos.x - full.left()).clamp(FILES_MIN_W, max_tree).round();
+            if (next - self.settings.files_width).abs() > 0.5 {
+                self.settings.files_width = next;
+                ui.ctx().request_repaint();
+            }
+        }
+        if r.double_clicked() {
+            if (self.settings.files_width - FILES_W).abs() > 0.5 {
+                self.settings.files_width = FILES_W;
+                self.settings_changed();
+                ui.ctx().request_repaint();
+            }
+        } else if r.drag_stopped() {
+            self.settings_changed();
+        }
     }
 
     pub fn editor_panel(&mut self, ui: &mut Ui, project: ProjectId, root: PathBuf, files_toggle: bool) {
@@ -146,15 +195,19 @@ impl App {
                             }
                             let close_r = Rect::from_center_size(pos2(r.right() - 9.0 - 6.0, r.center().y), vec2(14.0, 14.0));
                             let close_resp = ui.interact(close_r, egui::Id::new(("tab-close", project, i)), Sense::click());
+                            let tab_hot = resp.hovered() || close_resp.hovered();
+                            if tab_hot {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
                             let painter = ui.painter();
                             if on {
                                 painter.rect(r, CornerRadius::same(style::RADIUS_ROW), p.surface, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
-                            } else if resp.hovered() {
+                            } else if tab_hot {
                                 painter.rect_filled(r, CornerRadius::same(style::RADIUS_ROW), p.hover);
                             }
                             let (icon, _) = icons::file_icon(name, false, false, &p);
                             painter.text(pos2(r.left() + 9.0 + 6.5, r.center().y), Align2::CENTER_CENTER, icon, style::icon_font(13.0), if on { p.text_muted } else { p.text_faint });
-                            let text_color = if on { p.text } else { p.text_muted };
+                            let text_color = if on || tab_hot { p.text } else { p.text_muted };
                             let gw = galley.size().x;
                             painter.galley(pos2(r.left() + 9.0 + 13.0 + 6.0, r.center().y - galley.size().y / 2.0), galley, text_color);
                             if let Some(g) = letter {
@@ -162,7 +215,7 @@ impl App {
                                 painter.galley(pos2(r.left() + 9.0 + 13.0 + 6.0 + gw + 6.0, r.center().y - g.size().y / 2.0), g, c);
                             }
                             // × when hovered or in front; ● for unsaved edits otherwise.
-                            let show_x = close_resp.hovered() || resp.hovered() || (on && !dirty);
+                            let show_x = tab_hot || (on && !dirty);
                             if close_resp.hovered() {
                                 painter.rect_filled(close_r, CornerRadius::same(4), p.subtle);
                             }
@@ -852,7 +905,7 @@ impl App {
         changed.truncate(8);
 
         let area = ui.max_rect();
-        let col_w = (area.width() - 64.0).clamp(280.0, 680.0);
+        let col_w = (area.width() - 32.0).clamp(160.0, 680.0);
         let top_pad = (area.height() * 0.10).clamp(20.0, 72.0);
 
         egui::ScrollArea::vertical()

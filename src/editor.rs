@@ -434,6 +434,11 @@ fn load_again(file: &mut OpenFile) {
 
 /// Throws the edits away and takes the file from disk.
 pub fn reload(file: &mut OpenFile) {
+    if let Some(doc) = file.doc.as_mut() {
+        doc.reload = true;
+        file.mtime = mtime(&file.path);
+        return;
+    }
     if file.truncated || file.read_only || std::fs::metadata(&file.path).is_ok_and(|m| m.len() > SHOW_AT_MOST as u64) {
         load_again(file);
     } else if let Ok(disk) = std::fs::read_to_string(&file.path) {

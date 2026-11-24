@@ -823,16 +823,26 @@ impl App {
             .filter(|id| !self.browsers.contains_key(id))
             .count()
             == 1;
+        let pane_title = |p: &crate::pane::Pane| -> String {
+            if p.title.is_none()
+                && p.tracker.agent.is_none()
+                && !matches!(p.tracker.fg, tc_core::status::Foreground::Program { .. })
+                && let Some(a) = p.resume.as_ref().map(|(a, _)| *a).or(p.last_agent)
+            {
+                return a.label().to_string();
+            }
+            p.name()
+        };
         let title = if single_in_tab {
             tab.title
                 .clone()
-                .unwrap_or_else(|| pane.map(crate::pane::Pane::name).unwrap_or_else(|| self.leaf_label(pane_id)))
+                .unwrap_or_else(|| pane.map(pane_title).unwrap_or_else(|| self.leaf_label(pane_id)))
         } else {
-            pane.map(crate::pane::Pane::name).unwrap_or_else(|| self.leaf_label(pane_id))
+            pane.map(pane_title).unwrap_or_else(|| self.leaf_label(pane_id))
         };
         let status = pane.map(|x| x.tracker.status).filter(|s| shows_status(*s));
-        let server = self.project_servers(project).into_iter().find(|(id, _)| *id == pane_id).map(|(_, s)| s.url);
-        let meta = match (&server, pane) {
+        let server = pane.and_then(|p| p.live_servers().min_by_key(|s| s.port).map(|s| s.url.as_str()));
+        let meta = match (server, pane) {
             (Some(url), _) => super::focus::server_label(url).rsplit_once(':').map_or_else(|| super::focus::server_label(url).to_string(), |(_, port)| format!(":{port}")),
             (None, Some(x)) if x.tracker.agent.is_some() && !matches!(x.tracker.status, Status::Idle | Status::Unknown | Status::Ended) => short_age(x.tracker.since.elapsed().as_secs()),
             _ => String::new(),
@@ -1733,7 +1743,7 @@ impl App {
         // roll up their waiting count and most urgent status onto the parent project row.
         let active_root = self.active.and_then(|id| self.root_project(id)).map(|x| x.id);
         let expanded = active_root == Some(pr.id) || self.is_sidebar_active(pr.id);
-        if !worktrees.is_empty() && (pr.folded || !expanded) {
+        if !worktrees.is_empty() && !expanded {
             for w in worktrees {
                 let kid = self.project_row(w, p);
                 row.waiting += kid.waiting;

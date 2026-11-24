@@ -23,7 +23,8 @@ use hayro::{PixmapSettings, RenderCache, RenderSettings};
 use crate::Rgba;
 
 /// Longest side of a rendered page, in pixels (bigger zooms are drawn scaled up).
-pub const MAX_SIDE: f32 = 4096.0;
+/// Capped at 2560 px so high-zoom Retina pages stay crisp without spiking CPU or GPU memory.
+pub const MAX_SIDE: f32 = 2560.0;
 
 #[derive(Debug)]
 pub enum Event {
@@ -37,10 +38,12 @@ pub enum Event {
     Failed(String),
 }
 
-/// A page and how many pixels per point it is wanted at; or every page's text.
+/// A page and how many pixels per point it is wanted at; the visible page range to keep queued;
+/// or every page's text.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Request {
     Render { index: usize, scale: f32 },
+    Keep { start: usize, end: usize },
     Text,
 }
 
@@ -196,6 +199,9 @@ fn merge_lines<'a>(rects: impl Iterator<Item = &'a [f32; 4]>) -> Vec<[f32; 4]> {
 #[derive(Default)]
 struct TextDevice {
     chars: Vec<TextChar>,
+    /// Last `Fill` run's `(transform, glyph_count)` so synthetic bold (`FillStroke`) does not
+    /// duplicate every glyph when `Stroke` immediately follows `Fill`.
+    last_fill: Option<(Affine, usize)>,
 }
 
 impl<'a> Device<'a> for TextDevice {
@@ -206,8 +212,21 @@ impl<'a> Device<'a> for TextDevice {
     fn pop_clip(&mut self) {}
     fn pop_transparency_group(&mut self) {}
 
-    fn draw_glyph_run(&mut self, run: &GlyphRun<'_, 'a>, props: DrawProps<'a>, _: &DrawMode) {
+    fn draw_glyph_run(&mut self, run: &GlyphRun<'_, 'a>, props: DrawProps<'a>, mode: &DrawMode) {
         let glyphs = run.glyphs();
+        match mode {
+            DrawMode::Fill(_) => {
+                self.last_fill = Some((props.transform, glyphs.len()));
+            }
+            DrawMode::Stroke(_) => {
+                if self.last_fill.take() == Some((props.transform, glyphs.len())) {
+                    return;
+                }
+            }
+            DrawMode::FillAndStroke(_, _) | DrawMode::Invisible => {
+                self.last_fill = None;
+            }
+        }
         for (i, g) in glyphs.iter().enumerate() {
             let Some(text) = g.as_unicode().map(|u| match u {
                 BfString::Char(c) => c.to_string(),
@@ -219,21 +238,25 @@ impl<'a> Device<'a> for TextDevice {
                 continue;
             }
             // Glyph space is 1000 units to the em: the box runs from the baseline's origin to
-            // the next glyph's (or the advance), a fifth of the em below to four fifths above.
+            // the advance width (preferred over distance to the next glyph so negative `TJ` word
+            // spacing gaps are preserved for search and copy).
             let t: Affine = props.transform * g.transform();
             let advance = match &**g {
                 Glyph::Outline(o) => o.advance_width(),
                 Glyph::Type3(t3) => t3.advance_width(),
             };
             let next = glyphs.get(i + 1).map(|n| t.inverse() * (props.transform * n.transform() * Point::ZERO));
-            let width = match (next, advance) {
-                (Some(p), _) if p.x > 1.0 && p.y.abs() < 1.0 => p.x,
-                (_, Some(a)) if a > 0.0 => a as f64,
+            let width = match (advance, next) {
+                (Some(a), _) if a.is_finite() && a > 0.0 => a as f64,
+                (_, Some(p)) if p.x.is_finite() && p.x > 1.0 && p.x < 1500.0 && p.y.is_finite() && p.y.abs() < 1.0 => p.x,
                 _ => 500.0,
             };
             let bbox = KRect::new(0.0, -200.0, width, 800.0);
             let r = t.transform_rect_bbox(bbox);
-            self.chars.push(TextChar { text, rect: [r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32] });
+            let rect = [r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32];
+            if rect.iter().all(|v| v.is_finite()) {
+                self.chars.push(TextChar { text, rect });
+            }
         }
     }
 }
@@ -282,6 +305,12 @@ impl Renderer {
         let _ = self.tx.send(Request::Render { index, scale });
     }
 
+    /// Drops queued page renders outside `range` so fast scrolling never wastes CPU on pages
+    /// already out of view.
+    pub fn keep(&self, range: std::ops::Range<usize>) {
+        let _ = self.tx.send(Request::Keep { start: range.start, end: range.end });
+    }
+
     /// Asks for every page's text ([`Event::Text`], page by page, between renders).
     pub fn request_text(&self) {
         let _ = self.tx.send(Request::Text);
@@ -324,7 +353,18 @@ fn work(path: PathBuf, requests: mpsc::Receiver<Request>, send: impl Fn(Event) -
             return;
         }
     };
-    let pages: Vec<(f32, f32)> = pdf.pages().iter().map(|p| p.render_dimensions()).collect();
+    let pages: Vec<(f32, f32)> = pdf
+        .pages()
+        .iter()
+        .map(|p| {
+            let (w, h) = p.render_dimensions();
+            if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 {
+                (w.clamp(1.0, 1_000_000.0), h.clamp(1.0, 1_000_000.0))
+            } else {
+                (595.0, 842.0)
+            }
+        })
+        .collect();
     if pages.is_empty() {
         send(Event::Failed("the PDF has no pages".into()));
         return;
@@ -332,17 +372,24 @@ fn work(path: PathBuf, requests: mpsc::Receiver<Request>, send: impl Fn(Event) -
     if !send(Event::Opened { pages: pages.clone() }) {
         return;
     }
-    let cache = RenderCache::new();
+    let mut cache = RenderCache::new();
     let interpreter = InterpreterSettings::default();
     let settings = RenderSettings::default();
-    let text_cache = InterpreterCache::new();
+    let mut text_cache: Option<InterpreterCache<'_>> = None;
     let mut queue: Vec<(usize, f32)> = Vec::new();
     // Pages whose text is still to be read (asked once; read between renders).
     let mut texts: Option<std::ops::Range<usize>> = None;
-    let add = |r: Request, queue: &mut Vec<(usize, f32)>, texts: &mut Option<std::ops::Range<usize>>| match r {
+    let mut reset_cache = false;
+    let add = |r: Request, queue: &mut Vec<(usize, f32)>, texts: &mut Option<std::ops::Range<usize>>, reset: &mut bool| match r {
         Request::Render { index, scale } => {
             queue.retain(|q| q.0 != index);
             queue.push((index, scale));
+        }
+        Request::Keep { start, end } => {
+            queue.retain(|q| q.0 >= start && q.0 < end);
+            if start >= end {
+                *reset = true;
+            }
         }
         Request::Text => {
             if texts.is_none() {
@@ -351,22 +398,27 @@ fn work(path: PathBuf, requests: mpsc::Receiver<Request>, send: impl Fn(Event) -
         }
     };
     loop {
+        if std::mem::take(&mut reset_cache) {
+            cache = RenderCache::new();
+        }
         // Wait for work, then take everything asked meanwhile.
         if queue.is_empty() && texts.as_ref().is_none_or(|t| t.is_empty()) {
+            text_cache = None;
             match requests.recv() {
-                Ok(r) => add(r, &mut queue, &mut texts),
+                Ok(r) => add(r, &mut queue, &mut texts, &mut reset_cache),
                 Err(_) => return,
             }
         }
         while let Ok(r) = requests.try_recv() {
-            add(r, &mut queue, &mut texts);
+            add(r, &mut queue, &mut texts, &mut reset_cache);
         }
         // Pictures first (they are on screen); a page's text when none is waiting.
         let Some((index, asked)) = queue.pop() else {
             if let Some(i) = texts.as_mut().and_then(Iterator::next)
                 && let Some(page) = pdf.pages().get(i)
             {
-                let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| page_text(page, &text_cache, &interpreter)))
+                let tc = text_cache.get_or_insert_with(InterpreterCache::new);
+                let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| page_text(page, tc, &interpreter)))
                     .unwrap_or_default();
                 if !send(Event::Text { index: i, text }) {
                     return;
@@ -394,12 +446,12 @@ fn work(path: PathBuf, requests: mpsc::Receiver<Request>, send: impl Fn(Event) -
         }));
         let image = match rendered {
             // On white, every pixel is opaque: premultiplied is the same as straight.
-            Ok(pixmap) => Rgba {
+            Ok(pixmap) if pixmap.width() > 0 && pixmap.height() > 0 => Rgba {
                 width: pixmap.width() as u32,
                 height: pixmap.height() as u32,
                 pixels: pixmap.data_as_u8_slice().to_vec(),
             },
-            Err(_) => Rgba::default(),
+            _ => Rgba::default(),
         };
         if !send(Event::Page { index, scale: asked, image }) {
             return;

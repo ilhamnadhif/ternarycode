@@ -155,6 +155,10 @@ impl App {
             self.show_focus();
         }
         // Always open docked inside the Code stage (`Files | Changes | History`).
+        if self.review.as_ref().is_none_or(|r| r.project != project_id) {
+            self.review_filter.clear();
+            self.review_hunk = 0;
+        }
         self.history = None;
         self.drawer_maximized = false;
         self.editors.entry(project_id).or_insert_with(|| crate::editor::Editor { width: 0.54, ..Default::default() }).visible = true;

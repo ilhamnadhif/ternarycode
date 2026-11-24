@@ -128,8 +128,9 @@ pub enum Dialog {
     /// Restarting to install an update would stop these programs.
     ConfirmUpdate(Vec<Busy>),
     ConfirmRemove(ProjectId, Vec<Busy>),
-    /// Moving a file or folder to the Trash.
+    /// Moving a file or folder (or several selected items) to the Trash.
     ConfirmTrash(PathBuf),
+    ConfirmTrashMany(Vec<PathBuf>),
     /// Forgetting every page's logins, cookies, cache and history (Settings → Browser).
     ConfirmClearBrowsing,
     /// Closing a tab (index in the active project) would stop these programs.
@@ -1496,9 +1497,14 @@ impl App {
             || self.updater.dialog_open
     }
 
-    /// Exits Zen Mode and ensures the Secondary Drawer is open on the Terminals tab.
+    /// Exits Zen Mode, un-expands a full-width right panel, and ensures terminals are visible.
     pub fn ensure_terminals_visible(&mut self) {
         self.exit_zen_mode();
+        if let Some(pid) = self.active
+            && let Some(panel) = self.panel_mut(pid)
+        {
+            panel.max = false;
+        }
         self.settings.drawer_open = true;
         self.drawer_tab = tc_core::model::DrawerTab::Terminals;
     }
@@ -3771,7 +3777,7 @@ impl App {
                 let Some(pid) = self.active else { return };
                 let files_open = self.panel_tab(pid) == Some(crate::ui::panel::PanelTab::Files);
                 let full_rect = self.last_full_body.unwrap_or(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0)));
-                let panel_w = self.panel_split(pid, full_rect).1.map_or(full_rect.width(), |(r, _)| r.width());
+                let panel_w = self.panel_split(pid, full_rect).1.map_or(full_rect.width(), |(r, _)| (r.width() - 2.0).max(0.0));
                 if !files_open {
                     self.switch_panel(crate::ui::panel::PanelTab::Files, false);
                     self.settings.files_hidden = false;
@@ -3841,6 +3847,9 @@ impl App {
                     for f in e.files.iter_mut() {
                         if let Ok(rest) = f.path.strip_prefix(&old) {
                             f.path = if rest.as_os_str().is_empty() { new.clone() } else { new.join(rest) };
+                            if let Some(doc) = f.doc.as_deref_mut() {
+                                doc.path = f.path.clone();
+                            }
                             f.syntax = crate::editor::syntax_for(&f.path);
                             f.highlight = Default::default();
                             moved.push(f.path.clone());
@@ -3865,6 +3874,14 @@ impl App {
                 }
             }
             Action::TrashPath(path) => self.dialog = Some(Dialog::ConfirmTrash(path)),
+            Action::TrashPaths(paths) => {
+                let pruned = crate::explorer::Explorer::prune_descendants(&paths);
+                match pruned.len() {
+                    0 => {}
+                    1 => self.dialog = Some(Dialog::ConfirmTrash(pruned.into_iter().next().unwrap())),
+                    _ => self.dialog = Some(Dialog::ConfirmTrashMany(pruned)),
+                }
+            }
             Action::TrashPathNow(path) => match platform::trash(&path) {
                 Ok(()) => {
                     if let Some(ex) = self.active.and_then(|pid| self.explorer_mut(pid)) {
@@ -3887,6 +3904,43 @@ impl App {
                 }
                 Err(e) => self.toast_err(e),
             },
+            Action::TrashPathsNow(paths) => {
+                let pruned = crate::explorer::Explorer::prune_descendants(&paths);
+                let mut trashed = Vec::new();
+                let mut first_err: Option<String> = None;
+                for path in pruned {
+                    match platform::trash(&path) {
+                        Ok(()) => {
+                            for e in self.editors.values_mut() {
+                                let gone: Vec<usize> = e
+                                    .files
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, f)| f.path.starts_with(&path) && !f.dirty())
+                                    .map(|(i, _)| i)
+                                    .collect();
+                                for i in gone.into_iter().rev() {
+                                    e.close(i);
+                                }
+                            }
+                            trashed.push(path);
+                        }
+                        Err(e) if first_err.is_none() => first_err = Some(e),
+                        Err(_) => {}
+                    }
+                }
+                if !trashed.is_empty()
+                    && let Some(ex) = self.active.and_then(|pid| self.explorer_mut(pid))
+                {
+                    ex.invalidate(&trashed);
+                    ex.clear_multi();
+                }
+                if let Some(err) = first_err {
+                    self.toast_err(err);
+                } else if !trashed.is_empty() {
+                    self.toast_ok(tf("{} items moved to the Trash.", &[&trashed.len().to_string()]));
+                }
+            }
             Action::NewTabAt(dir) => {
                 self.show_focus();
                 self.new_tab_in(ctx, Some(dir));
