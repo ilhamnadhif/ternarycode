@@ -893,16 +893,19 @@ impl App {
         }
         let Some(b) = self.browsers.get(&id) else { return };
         let driven = b.driven();
-        // The page in its own rounded frame, ringed in the accent while an agent uses it (as in
-        // the Browser panel).
-        let round = super::browser_ui::PAGE_ROUND;
+        // The page in its own frame, ringed in the accent while an agent uses it (as in
+        // the Browser panel). Snapped to physical pixels so the web view sits flush on all OSes.
+        let ppp = ui.ctx().pixels_per_point();
+        let rect = super::browser_ui::snap_rect_px(rect, ppp);
+        let round = super::browser_ui::WEB_FRAME_ROUND;
+        let border_w = super::browser_ui::snap_stroke_pt(if driven { 2.0 } else { 1.0 }, ppp);
         if driven {
             ui.painter().rect_stroke(rect, CornerRadius::same(round as u8), Stroke::new(3.0, style::soft(p.accent, 0.16)), egui::StrokeKind::Outside);
         }
-        ui.painter().rect(rect, CornerRadius::same(round as u8), p.canvas, Stroke::new(if driven { 2.0 } else { 1.0 }, if driven { p.accent } else { p.border }), egui::StrokeKind::Inside);
-        let page = rect.shrink(if driven { 2.0 } else { 1.0 });
+        ui.painter().rect(rect, CornerRadius::same(round as u8), p.canvas, Stroke::new(border_w, if driven { p.accent } else { p.border }), egui::StrokeKind::Inside);
+        let page = rect.shrink(border_w);
         // Its corners within the frame's rounded border (`browser::round_corners`).
-        let corner = round - if driven { 2.0 } else { 1.0 };
+        let corner = (round - border_w).max(0.0);
         let whole = ui.clip_rect().contains_rect(page) && page.width() >= 40.0 && page.height() >= 40.0;
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("tile-browser:{id}"), page);

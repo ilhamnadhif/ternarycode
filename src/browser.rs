@@ -371,8 +371,11 @@ pub struct Browser {
     pub(crate) view: Option<View>,
     /// Drawn (shown on screen) after the last frame.
     pub(crate) shown: bool,
-    /// Where its web view was last laid (moved only when that changes).
+    /// Where its web view was last laid (moved only when that or the DPI scale changes).
     pub(crate) placed: Option<eframe::egui::Rect>,
+    /// `ctx.pixels_per_point().to_bits()` when `placed` was last applied (triggers re-sync on
+    /// multi-monitor DPI transitions or UI zoom changes).
+    pub(crate) placed_ppp: u32,
     /// Laid outside the window: out of view while an agent uses it (it keeps drawing, so its
     /// screenshots and timers work).
     pub(crate) offscreen: bool,
@@ -430,6 +433,7 @@ impl Browser {
             view: None,
             shown: false,
             placed: None,
+            placed_ppp: 0,
             offscreen: false,
             dimmed: false,
             zoom: 1.0,
@@ -655,6 +659,7 @@ impl Browser {
     pub fn sleep(&mut self) {
         self.view = None;
         self.placed = None;
+        self.placed_ppp = 0;
         self.shown = false;
         self.offscreen = false;
         self.dimmed = false;
@@ -1292,8 +1297,8 @@ pub fn round_corners(view: &View, radius: f64) {
     view.set_corner_radius(radius);
 }
 
-/// [`round_corners`]: a page's own window on Windows and Linux keeps square corners (its web view
-/// keeps clear of its frame's rounded border instead, `WEB_INSET`).
+/// [`round_corners`]: native child web views on Windows and Linux are strictly rectangular
+/// (their frame uses [`crate::ui::browser_ui::WEB_FRAME_ROUND`] = 0 so the border sits flush).
 #[cfg(not(target_os = "macos"))]
 pub fn round_corners(_view: &View, _radius: f64) {}
 

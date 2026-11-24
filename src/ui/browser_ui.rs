@@ -16,10 +16,30 @@ use crate::i18n::{t, tf};
 
 /// The toolbar at the top of a browser pane (its header, also in a split).
 pub const BAR_H: f32 = 44.0;
-/// How far a page's web view keeps from its pane's sides and foot (see `browser_pane`).
-const WEB_INSET: f32 = 3.0;
-/// How round a page's frame is (in the Browser panel and in a Grid tile).
+/// How round a page's frame is on macOS (in the Browser panel and in a Grid tile).
 pub const PAGE_ROUND: f32 = 10.0;
+/// Corner radius of the frame directly enclosing the native web view: rounded on macOS (where
+/// `CALayer` clips `WKWebView` with anti-aliased corners), 0 on Windows and Linux (where native
+/// child web views — WebView2 and WebKitGTK X11 — are strictly rectangular so a flush 0-radius
+/// border aligns pixel-for-pixel on every edge and corner).
+pub const WEB_FRAME_ROUND: f32 = if cfg!(target_os = "macos") { PAGE_ROUND } else { 0.0 };
+
+/// Snaps `rect` to exact physical pixel boundaries so the border painted by egui and the native
+/// web view placed inside it share the exact same pixel edges at every DPI scale (100%–250%).
+pub(super) fn snap_rect_px(rect: Rect, ppp: f32) -> Rect {
+    let ppp = ppp.max(0.25);
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let min = pos2(snap(rect.left()), snap(rect.top()));
+    let max = pos2(snap(rect.right()).max(min.x), snap(rect.bottom()).max(min.y));
+    Rect::from_min_max(min, max)
+}
+
+/// Snaps a border stroke thickness (in points) to an exact whole number of physical pixels
+/// (at least 1 px) so `frame.shrink(stroke)` lands cleanly on integer physical pixels.
+pub(super) fn snap_stroke_pt(width_pt: f32, ppp: f32) -> f32 {
+    let ppp = ppp.max(0.25);
+    (width_pt * ppp).round().max(1.0) / ppp
+}
 /// The room around the page's frame, its notices and its console.
 const EDGE: f32 = 8.0;
 /// A find bar's height (pages and documents).
@@ -110,16 +130,20 @@ impl App {
                 bottom = r.top() - EDGE;
             }
         }
-        // The page: inset in the sheet, rounded, a hairline round it; ringed in the accent with
-        // a soft halo while an agent has it (the web view sits inside).
-        let frame = Rect::from_min_max(pos2(rect.left() + EDGE, top.min(bottom)), pos2(rect.right() - EDGE, bottom.max(top.min(bottom))));
+        // The page: inset in the sheet, snapped to exact physical pixels, a crisp border round it;
+        // ringed in the accent with a soft halo while an agent has it (the web view sits flush
+        // inside on all four edges on every OS).
+        let ppp = ui.ctx().pixels_per_point();
+        let raw_frame = Rect::from_min_max(pos2(rect.left() + EDGE, top.min(bottom)), pos2(rect.right() - EDGE, bottom.max(top.min(bottom))));
+        let frame = snap_rect_px(raw_frame, ppp);
         let agent_on = driver.as_ref().is_some_and(|d| !d.paused);
-        let round = CornerRadius::same(PAGE_ROUND as u8);
+        let round = CornerRadius::same(WEB_FRAME_ROUND as u8);
+        let border_w = snap_stroke_pt(if agent_on { 2.0 } else { 1.0 }, ppp);
         if agent_on {
             ui.painter().rect_stroke(frame, round, Stroke::new(3.0, style::soft(p.accent, 0.2)), egui::StrokeKind::Outside);
         }
-        ui.painter().rect(frame, round, p.canvas, Stroke::new(if agent_on { 2.0 } else { 1.0 }, if agent_on { p.accent } else { p.border }), egui::StrokeKind::Inside);
-        let page = frame.shrink(if agent_on { 2.0 } else { 1.0 });
+        ui.painter().rect(frame, round, p.canvas, Stroke::new(border_w, if agent_on { p.accent } else { p.border }), egui::StrokeKind::Inside);
+        let page = frame.shrink(border_w);
         // Its server does not answer: which terminal served it, and Reload.
         if self.browsers.get(&id).is_some_and(|b| b.down) {
             self.down_card(ui, id, page, &host);
@@ -138,17 +162,14 @@ impl App {
         }
         #[cfg(debug_assertions)]
         crate::devtest::record(format!("browser:{id}"), page);
-        // The web view keeps clear of the pane's sides and foot: a divider (or the Code drawer's
-        // edge, the sidebar's) is dragged by a strip either side of it, and the page, always
-        // drawn over the app, would take its half. The frame is inset farther than that strip
-        // reaches; on macOS the page fills it, its corners rounded within the frame's border
-        // (`browser::round_corners`); elsewhere the web view's square corners keep clear of it.
-        let inset = if cfg!(target_os = "macos") { 0.0 } else { WEB_INSET };
-        let web = Rect::from_min_max(pos2(page.left() + inset, page.top()), pos2(page.right() - inset, page.bottom() - inset));
+        // `EDGE` (8 pt) already keeps the frame clear of the panel's divider grab strip. Inside
+        // the frame, the web view fills `page` flush on all four edges; on macOS its corners are
+        // rounded to `WEB_FRAME_ROUND - border_w` via `CALayer`, while on Windows and Linux
+        // `WEB_FRAME_ROUND` is 0 so the border matches the rectangular child web view exactly.
         if let Some(b) = self.browsers.get_mut(&id) {
-            b.corner_want = PAGE_ROUND - if agent_on { 2.0 } else { 1.0 };
+            b.corner_want = (WEB_FRAME_ROUND - border_w).max(0.0);
         }
-        self.browser_pages.insert(id, web);
+        self.browser_pages.insert(id, page);
         if self.focus_request == Some(id) {
             self.focus_request = None;
             self.browser_focus_request = Some(id);
@@ -425,7 +446,7 @@ impl App {
             lines.extend(b.console.iter().filter(|l| !l.is_error()).cloned());
         }
         let painter = ui.painter_at(r.expand(1.0));
-        painter.rect(r, CornerRadius::same(PAGE_ROUND as u8), p.canvas, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+        painter.rect(r, CornerRadius::same(WEB_FRAME_ROUND as u8), p.canvas, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
         let head = Rect::from_min_size(r.min, vec2(r.width(), CONSOLE_HEAD));
         painter.hline(head.x_range().shrink(1.0), head.bottom() - 0.5, Stroke::new(1.0, p.border));
         let cy = head.center().y;
@@ -1386,6 +1407,8 @@ impl App {
     pub fn sync_browsers(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         #[cfg(target_os = "linux")]
         crate::browser_linux::note_window(frame, ctx);
+        #[cfg(windows)]
+        crate::browser_win::note_window(ctx);
         if self.browsers.is_empty() {
             self.browser_pages.clear();
             self.run_browser_jobs(ctx);
@@ -1404,6 +1427,7 @@ impl App {
             || self.monitor_popover
             || egui::Popup::is_any_open(ctx);
         let zoom = ctx.zoom_factor();
+        let ppp_bits = ctx.pixels_per_point().to_bits();
         let sleep = crate::browser::sleep_after(self.settings.browser_sleep_minutes);
         // Memory runs low (the system says so): pages out of view sleep sooner, the oldest first.
         let pressure = self.memory_pressure(now);
@@ -1447,6 +1471,7 @@ impl App {
                                         let off = crate::browser::bounds(Rect::from_min_size(pos2(-30000.0, 0.0), rect.size()), zoom);
                                         let _ = v.set_bounds(off);
                                         b.placed = None;
+                                        b.placed_ppp = 0;
                                         b.offscreen = true;
                                     } else {
                                         let _ = v.set_visible(false);
@@ -1472,16 +1497,18 @@ impl App {
                             b.asleep_since = None;
                         }
                         b.placed = Some(*rect);
+                        b.placed_ppp = ppp_bits;
                         b.shown = b.view.is_some();
                         b.dimmed = false;
                         b.zoom = 1.0;
                         b.corner = 0.0;
                     } else if b.view.is_some() {
-                        if b.placed != Some(*rect)
+                        if (b.placed != Some(*rect) || b.placed_ppp != ppp_bits)
                             && let Some(v) = &b.view
                         {
                             let _ = v.set_bounds(crate::browser::bounds(*rect, zoom));
                             b.placed = Some(*rect);
+                            b.placed_ppp = ppp_bits;
                         }
                         if !b.shown
                             && let Some(v) = &b.view
@@ -1526,6 +1553,7 @@ impl App {
                     }
                     b.offscreen = b.view.is_some();
                     b.placed = None;
+                    b.placed_ppp = 0;
                     b.shown = false;
                     b.last_seen = now;
                 }
@@ -2009,5 +2037,32 @@ fn file_icon(name: &str, p: &style::Palette) -> (&'static str, Color32) {
         "ppt" | "pptx" | "key" => (icons::FILE_PPT, p.rate_limited),
         "txt" | "md" | "log" => (icons::FILE_TEXT, p.text_faint),
         _ => (icons::FILE, p.text_faint),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_frame_snaps_to_exact_physical_pixels_at_all_dpi_scales() {
+        for ppp in [1.0_f32, 1.25, 1.5, 1.75, 2.0, 2.5] {
+            let raw = Rect::from_min_max(pos2(650.33, 91.7), pos2(1271.4, 790.6));
+            let frame = snap_rect_px(raw, ppp);
+            let border = snap_stroke_pt(1.0, ppp);
+            let page = frame.shrink(border);
+            for edge in [frame.left(), frame.top(), frame.right(), frame.bottom(), page.left(), page.top(), page.right(), page.bottom()] {
+                let px = edge * ppp;
+                assert!((px - px.round()).abs() < 1e-3, "edge {edge} at ppp={ppp} should be integer px (got {px})");
+            }
+            let border_px = border * ppp;
+            assert!((border_px - border_px.round()).abs() < 1e-3 && border_px >= 1.0);
+            assert!(page.left() > frame.left() && page.right() < frame.right());
+            assert!(page.top() > frame.top() && page.bottom() < frame.bottom());
+        }
+        #[cfg(target_os = "macos")]
+        assert_eq!(WEB_FRAME_ROUND, PAGE_ROUND);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(WEB_FRAME_ROUND, 0.0);
     }
 }

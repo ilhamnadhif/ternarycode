@@ -301,11 +301,28 @@ fn egui_key(vk: u32) -> Option<eframe::egui::Key> {
     })
 }
 
-/// A rectangle in egui points as the web view's bounds.
-pub fn bounds(rect: eframe::egui::Rect, zoom: f32) -> wry::Rect {
+/// egui's pixels per point (Windows DPI scale × UI zoom), for exact physical-pixel placement of
+/// WebView2 child HWNDs without fractional-DPI rounding drift.
+static PPP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// Notes the window's current `pixels_per_point` each frame (cheap atomic store).
+pub fn note_window(ctx: &eframe::egui::Context) {
+    PPP.store(ctx.pixels_per_point().to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A rectangle in egui points as the web view's exact physical-pixel bounds on Windows.
+/// Snaps both opposite edges (`left`/`right` and `top`/`bottom`) in physical pixels so the
+/// right/bottom edge never drifts by ±1 px relative to egui's painted border at 125%/150%/175%.
+pub fn bounds(rect: eframe::egui::Rect, _zoom: f32) -> wry::Rect {
+    let ppp = f64::from(f32::from_bits(PPP.load(std::sync::atomic::Ordering::Relaxed))).max(0.25);
+    let snap = |v: f32| (f64::from(v) * ppp).round() as i32;
+    let x0 = snap(rect.left());
+    let y0 = snap(rect.top());
+    let x1 = snap(rect.right());
+    let y1 = snap(rect.bottom());
     wry::Rect {
-        position: wry::dpi::LogicalPosition::new(f64::from(rect.left() * zoom), f64::from(rect.top() * zoom)).into(),
-        size: wry::dpi::LogicalSize::new(f64::from(rect.width() * zoom), f64::from(rect.height() * zoom)).into(),
+        position: wry::dpi::PhysicalPosition::new(x0, y0).into(),
+        size: wry::dpi::PhysicalSize::new((x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32).into(),
     }
 }
 

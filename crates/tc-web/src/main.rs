@@ -143,14 +143,25 @@ mod linux {
     }
 
     /// The bounds the app gives (pixels of the screen), as wry takes them (GTK's units: pixels
-    /// over GTK's whole-number scale).
+    /// over GTK's whole-number scale), with opposite edges snapped together so HiDPI never
+    /// overshoots the frame border by ±1–2 px.
     fn rect(c: &Value) -> wry::Rect {
         let f = |k: &str| c[k].as_f64().unwrap_or(0.0);
         // X11 places windows within ±32767 (an agent's page out of view sits far left).
         let x = f("x").max(-30000.0);
+        let y = f("y");
+        let w = f("w").max(0.0);
+        let h = f("h").max(0.0);
         let scale = gdk::Display::default().and_then(|d| d.monitor(0)).map_or(1, |m| m.scale_factor()).max(1);
         let s = f64::from(scale);
-        wry::Rect { position: wry::dpi::LogicalPosition::new(x / s, f("y") / s).into(), size: wry::dpi::LogicalSize::new((f("w") / s).max(1.0), (f("h") / s).max(1.0)).into() }
+        let x0 = (x / s).round();
+        let y0 = (y / s).round();
+        let x1 = ((x + w) / s).round();
+        let y1 = ((y + h) / s).round();
+        wry::Rect {
+            position: wry::dpi::LogicalPosition::new(x0, y0).into(),
+            size: wry::dpi::LogicalSize::new((x1 - x0).max(1.0), (y1 - y0).max(1.0)).into(),
+        }
     }
 
     fn with<R>(id: u64, f: impl FnOnce(&mut Page) -> R) -> Option<R> {
