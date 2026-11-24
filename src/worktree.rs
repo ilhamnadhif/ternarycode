@@ -380,6 +380,73 @@ impl App {
         files
     }
 
+    /// Suggests a clean default commit message when committing worktree changes before a merge:
+    /// prefers any drafted Ship message, then the worktree agent's task/summary, else the
+    /// worktree's name humanized (e.g. `update-readme-2` → `Update readme 2`).
+    pub fn default_merge_commit_message(&self, id: ProjectId) -> String {
+        if let Some(draft) = self.ship.get(&id).map(|s| s.message.trim()).filter(|m| !m.is_empty())
+            && let Some(first) = draft.lines().next().map(str::trim).filter(|l| !l.is_empty())
+        {
+            return first.to_string();
+        }
+        if let Some((pane_id, _)) = self.ship_agent_pane(id)
+            && let Some(pane) = self.panes.get(&pane_id)
+        {
+            let drafted = crate::ship::message_from(pane.task.as_deref(), pane.last_words.as_deref());
+            if let Some(first) = drafted.lines().next().map(str::trim).filter(|l| !l.is_empty()) {
+                return first.to_string();
+            }
+        }
+        let name = self.project(id).map(|p| p.name.as_str()).unwrap_or("worktree");
+        humanize_worktree_name(name)
+    }
+
+    /// Commits all uncommitted files in the worktree off the UI thread, then notifies
+    /// [`App::on_worktree_committed_for_merge`] to proceed into `git merge`.
+    pub fn commit_and_merge_worktree(&mut self, id: ProjectId, message: String) {
+        let Some(dir) = self.project(id).filter(|p| p.worktree.is_some()).map(|p| p.path.clone()) else {
+            return;
+        };
+        let (tx, ctx) = (self.app_tx.clone(), self.ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let result = tc_git::worktree::commit_all(&dir, &message);
+            let _ = tx.send(AppMsg::WorktreeCommittedForMerge(id, result));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Handles completion of [`App::commit_and_merge_worktree`]: on success closes the dialog and
+    /// runs `git merge` in the parent project; on failure shows the git/hook error inside the dialog.
+    pub fn on_worktree_committed_for_merge(&mut self, ctx: &egui::Context, id: ProjectId, result: Result<String, String>) {
+        let name = self.project(id).map(|p| p.name.clone()).unwrap_or_default();
+        let waiting_in_dialog = matches!(
+            &self.dialog,
+            Some(crate::app::Dialog::MergeWorktree { id: did, committing: true, .. }) if *did == id
+        );
+        match result {
+            Ok(short) => {
+                self.worktree_dirty.remove(&id);
+                self.refresh_git(id);
+                self.toast_with(ToastKind::Ok, tf("Committed {} in {}.", &[&short, &name]), None);
+                if waiting_in_dialog {
+                    ctx.data_mut(|d| d.remove::<(usize, u32, u32)>(egui::Id::new(("merge-stat", id))));
+                    self.dialog = None;
+                    self.merge_worktree_now(ctx, id);
+                }
+            }
+            Err(err) => {
+                if let Some(crate::app::Dialog::MergeWorktree { id: did, committing, error, .. }) = &mut self.dialog
+                    && *did == id
+                {
+                    *committing = false;
+                    *error = Some(err);
+                } else {
+                    self.toast_err(tf("Commit failed: {}", &[&err]));
+                }
+            }
+        }
+    }
+
     /// Types `git merge --no-ff --no-edit ‹branch›` in a new tab of the worktree's project, so the
     /// merge and any conflict are seen and handled in a terminal (git's own message, no editor
     /// opening in the pane).
@@ -394,5 +461,32 @@ impl App {
         {
             p.type_command(format!("git merge --no-ff --no-edit {branch}"));
         }
+    }
+}
+
+/// Turns a slug like `update-readme-2` or `fix_auth` into a clean commit subject (`Update readme 2`).
+fn humanize_worktree_name(name: &str) -> String {
+    let words: Vec<&str> = name.split(['-', '_', '/']).filter(|s| !s.is_empty()).collect();
+    if words.is_empty() {
+        return "Worktree changes".to_string();
+    }
+    let joined = words.join(" ");
+    let mut chars = joined.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => "Worktree changes".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::humanize_worktree_name;
+
+    #[test]
+    fn humanizes_worktree_slugs_into_commit_subjects() {
+        assert_eq!(humanize_worktree_name("update-readme-2"), "Update readme 2");
+        assert_eq!(humanize_worktree_name("fix_auth_flow"), "Fix auth flow");
+        assert_eq!(humanize_worktree_name("feat"), "Feat");
+        assert_eq!(humanize_worktree_name("---"), "Worktree changes");
     }
 }

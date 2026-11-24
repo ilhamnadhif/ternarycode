@@ -70,6 +70,8 @@ pub enum AppMsg {
     WorktreeRemoved(String, Result<(), String>),
     /// The files not committed in a worktree (each file, for Merge and Remove).
     WorktreeDirty(ProjectId, Vec<String>),
+    /// Result of committing uncommitted worktree files before merging into its base branch.
+    WorktreeCommittedForMerge(ProjectId, Result<String, String>),
     /// The update was put in place for a restart in place (the new program), or why not.
     UpdateInstalled(Result<PathBuf, crate::update::Outcome>),
     /// The commit box: a branch's facts, a run's steps, a message written by an agent.
@@ -120,8 +122,16 @@ pub enum Dialog {
     /// earlier ones, or its last), where it runs (0 new tab, 1 split right, 2 split down), and
     /// the new worktree it may run in.
     RunAgent { selected: usize, session: usize, place: usize, wt: crate::worktree::Form },
-    /// Merging a worktree's branch into its base (typed in a terminal of its project).
-    MergeWorktree(ProjectId),
+    /// Merging a worktree's branch into its base (optionally committing uncommitted files first,
+    /// then typing `git merge` in a terminal of its project).
+    MergeWorktree {
+        id: ProjectId,
+        commit_first: Option<bool>,
+        message: String,
+        message_init: bool,
+        committing: bool,
+        error: Option<String>,
+    },
     /// Removing a worktree; whether its branch goes too (`None`: not chosen yet).
     RemoveWorktree(ProjectId, Option<bool>),
     /// What a new worktree of a project gets: files copied, a name being added, a command, and
@@ -1881,6 +1891,9 @@ impl App {
                 AppMsg::WorktreeMade(made) => self.on_worktree_made(ctx, *made),
                 AppMsg::WorktreeDirty(id, files) => {
                     self.worktree_dirty.insert(id, files);
+                }
+                AppMsg::WorktreeCommittedForMerge(id, result) => {
+                    self.on_worktree_committed_for_merge(ctx, id, result);
                 }
                 AppMsg::UpdateInstalled(result) => {
                     self.updating = false;
@@ -4119,12 +4132,24 @@ impl App {
             }
             Action::RemoveWorktreeNow(id, branch) => self.remove_worktree_now(id, branch),
             Action::MergeWorktree(id) => {
-                if self.project(id).is_some_and(|p| p.worktree.is_some()) {
+                if let Some(parent) = self.project(id).filter(|p| p.worktree.is_some()).map(|p| p.parent) {
                     self.list_worktree_dirty(id);
-                    self.dialog = Some(Dialog::MergeWorktree(id));
+                    self.refresh_git(id);
+                    if let Some(parent_id) = parent {
+                        self.refresh_git(parent_id);
+                    }
+                    self.dialog = Some(Dialog::MergeWorktree {
+                        id,
+                        commit_first: None,
+                        message: String::new(),
+                        message_init: false,
+                        committing: false,
+                        error: None,
+                    });
                 }
             }
             Action::MergeWorktreeNow(id) => self.merge_worktree_now(ctx, id),
+            Action::CommitAndMergeWorktree(id, message) => self.commit_and_merge_worktree(id, message),
             Action::WorktreeSetup(id) => {
                 let setup = self.worktree_setup_of(id);
                 let fresh = self.project(id).is_some_and(|p| p.worktree_setup.is_none());

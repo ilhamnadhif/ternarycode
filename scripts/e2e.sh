@@ -575,6 +575,16 @@ WA="$WORK/wt-agents"; mkdir -p "$WA"
 WT1="$WORK/wt-agents.worktrees/update-readme-2"
 run worktree-sidebar-agents 90 "sleep 1000;; action add-project $WA;; sleep 1400;; action worktree none update-readme-2 main;; wait-project update-readme-2;; sleep 800;; action new-tab;; sleep 800;; hook 4 claude UserPromptSubmit - gausah baca codebase;; sleep 250;; hook 5 codex UserPromptSubmit - hai;; sleep 250;; write-file $WT1/README.md updated readme\\n;; sleep 600;; action worktree none z-fix-auth main;; wait-project z-fix-auth;; sleep 800;; action select-name update-readme-2;; sleep 600;; expect-project update-readme-2;; expect-hidden session-pane:2;; expect-shown project:update-readme-2;; expect-shown project:z-fix-auth;; expect-shown session-pane:4;; expect-shown session-pane:5;; shot e2e-worktree-sidebar-agents;; click session-pane:4;; sleep 400;; expect-tab 0;; click session-pane:5;; sleep 400;; expect-tab 1;; click wt-fold:update-readme-2;; sleep 400;; expect-hidden session-pane:4;; expect-hidden session-pane:5;; shot e2e-worktree-sidebar-folded;; click wt-fold:update-readme-2;; sleep 400;; expect-shown session-pane:4;; expect-shown session-pane:5;; click project:wt-agents;; sleep 500;; expect-project wt-agents;; expect-shown session-pane:2;; expect-shown session-pane:4;; expect-shown session-pane:5;; shot e2e-worktree-sidebar-root;; quit"
 
+# Worktree Merge UX:
+# - Empty worktree (0 commits, 0 uncommitted files): Merge is disabled and does not spawn a no-op tab,
+# - Uncommitted-only worktree (0 commits, 1 untracked file): auto-enables Commit & Merge with editable message,
+#   commits off-thread and merges into main cleanly,
+# - Already-merged worktree: offers Remove Worktree directly as primary CTA.
+WM="$WORK/wt-merge"; mkdir -p "$WM"
+(cd "$WM" && git init -q -b main && git config user.name t && git config user.email t@t && printf 'init\n' > README.md && git add -A && git commit -qm init)
+WMWT="$WORK/wt-merge.worktrees/update-readme-2"
+run worktree-merge-ux 90 "sleep 1000;; action add-project $WM;; sleep 1400;; action worktree none update-readme-2 main;; wait-project update-readme-2;; sleep 800;; action merge-worktree;; sleep 600;; expect-dialog open;; shot e2e-wt-merge-empty;; key enter;; sleep 300;; click dialog-ok;; sleep 300;; expect-dialog open;; expect-project update-readme-2;; key esc;; sleep 300;; expect-dialog closed;; write-file $WMWT/readme2.md hello from worktree\\n;; sleep 800;; action merge-worktree;; sleep 600;; expect-dialog open;; expect-shown merge-commit-toggle;; expect-shown merge-commit-msg;; expect-shown merge-review-first;; shot e2e-wt-merge-uncommitted;; click dialog-ok;; sleep 1200;; expect-project wt-merge;; wait-screen Merge made;; wait-toast Merged tc/update-readme-2;; expect-file $WM/readme2.md hello from worktree;; action select-name update-readme-2;; sleep 800;; action merge-worktree;; sleep 600;; expect-dialog open;; shot e2e-wt-merge-already;; click dialog-ok;; sleep 500;; expect-dialog open;; click dialog-ok;; sleep 2500;; expect-hidden project:update-readme-2;; quit"
+
 # The commit box: the message comes from the agent's task and last words; a file left out of
 # the commit stays out; Commit & Push sends the rest to the remote (a local bare repository:
 # no pages, so no pull request).

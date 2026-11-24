@@ -538,8 +538,8 @@ impl App {
                 Dialog::RunAgent { selected, session, place, wt } => {
                     keep = self.run_agent_dialog(ui, selected, session, place, wt, enter);
                 }
-                Dialog::MergeWorktree(id) => {
-                    keep = self.merge_worktree_dialog(ui, *id, enter);
+                Dialog::MergeWorktree { id, commit_first, message, message_init, committing, error } => {
+                    keep = self.merge_worktree_dialog(ui, *id, commit_first, message, message_init, committing, error, enter);
                 }
                 Dialog::RemoveWorktree(id, branch) => {
                     keep = self.remove_worktree_dialog(ui, *id, branch);
@@ -915,7 +915,7 @@ impl App {
                 self.actions.push(Action::Integrations);
             }
             match &dialog {
-                Dialog::MergeWorktree(id) => ctx.data_mut(|d| d.remove::<(usize, u32, u32)>(egui::Id::new(("merge-stat", *id)))),
+                Dialog::MergeWorktree { id, .. } => ctx.data_mut(|d| d.remove::<(usize, u32, u32)>(egui::Id::new(("merge-stat", *id)))),
                 Dialog::RemoveWorktree(id, _) => ctx.data_mut(|d| d.remove::<Vec<(String, String)>>(egui::Id::new(("remove-commits", *id)))),
                 _ => {}
             }

@@ -225,6 +225,25 @@ pub fn ignored_top(repo: &Path) -> Vec<String> {
     names
 }
 
+/// Stages every change (added, modified, deleted, renamed) in `dir` and commits it with `message`.
+/// Runs non-interactively with timeouts so hooks cannot hang the caller. Returns the new commit's
+/// short id, or git's/hook's output on failure.
+pub fn commit_all(dir: &Path, message: &str) -> Result<String, String> {
+    if message.trim().is_empty() {
+        return Err("Write a commit message first.".to_string());
+    }
+    let mut add = git(dir);
+    add.env("GIT_TERMINAL_PROMPT", "0").args(["add", "-A"]);
+    super::ship::output_of(&mut add, None, Some(std::time::Duration::from_secs(60)))?;
+    let mut commit = git(dir);
+    commit
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["commit", "--cleanup=whitespace", "-F", "-"]);
+    super::ship::output_of(&mut commit, Some(message.as_bytes()), Some(std::time::Duration::from_secs(120)))?;
+    let out = run(git(dir).args(["rev-parse", "--short", "HEAD"])).map_err(reason)?;
+    Ok(String::from_utf8_lossy(trim_line(&out)).into_owned())
+}
+
 /// Rejects branch names git would read as an option or would not take.
 fn check_branch(name: &str) -> Result<(), String> {
     if valid_branch(name) { Ok(()) } else { Err(format!("invalid branch name {name:?}")) }
@@ -277,5 +296,33 @@ mod tests {
         let e = "`git worktree add -b tc/x /tmp/x main` failed in /r: fatal: a branch named 'tc/x' already exists".to_string();
         assert_eq!(reason(e), "a branch named 'tc/x' already exists");
         assert_eq!(reason("could not run git: not found".into()), "could not run git: not found");
+    }
+
+    #[test]
+    fn commit_all_stages_and_commits_all_changes() {
+        let tmp = std::env::temp_dir().join(format!("tc-wt-commit-all-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let _ = run(git(&tmp).args(["init", "-q", "-b", "main"])).unwrap();
+        let _ = run(git(&tmp).args(["config", "user.name", "Tester"])).unwrap();
+        let _ = run(git(&tmp).args(["config", "user.email", "t@example.com"])).unwrap();
+        std::fs::write(tmp.join("a.txt"), "v1\n").unwrap();
+        std::fs::write(tmp.join("old.txt"), "bye\n").unwrap();
+        let _ = run(git(&tmp).args(["add", "-A"])).unwrap();
+        let _ = run(git(&tmp).args(["commit", "-qm", "init"])).unwrap();
+
+        // Empty message rejected without committing.
+        assert!(commit_all(&tmp, "   ").is_err());
+
+        // Mix of untracked, modified, and deleted files.
+        std::fs::write(tmp.join("a.txt"), "v2\n").unwrap();
+        std::fs::write(tmp.join("readme2.md"), "# New\n").unwrap();
+        std::fs::remove_file(tmp.join("old.txt")).unwrap();
+        assert_eq!(dirty_files(&tmp).len(), 3);
+
+        let short = commit_all(&tmp, "Update readme 2").expect("commit_all succeeds");
+        assert!(!short.is_empty());
+        assert!(dirty_files(&tmp).is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

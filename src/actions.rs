@@ -90,6 +90,8 @@ pub enum Action {
     MergeWorktree(ProjectId),
     /// Types the merge in a new tab of the worktree's project.
     MergeWorktreeNow(ProjectId),
+    /// Commits uncommitted changes in a worktree (off the UI thread) and then merges it into its base.
+    CommitAndMergeWorktree(ProjectId, String),
     /// Opens what a new worktree of a project gets.
     WorktreeSetup(ProjectId),
     SetWorktreeSetup(ProjectId, tc_core::model::WorktreeSetup),
