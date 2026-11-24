@@ -33,7 +33,7 @@
   const NAME = { mac: 'macOS', win: 'Windows', linux: 'Linux' };
 
   /* ---------------------------------------------------------- release: version, files, sizes */
-  const FALLBACK = '0.2.5';
+  const FALLBACK = '0.3.12';
   const FILE = {
     'dmg': v => `TernaryCode-${v}.dmg`,
     'win-setup': v => `TernaryCode-${v}-windows-x64-setup.exe`,
@@ -51,15 +51,16 @@
   $$('[data-size]').forEach(el => { el.dataset.base = el.textContent; });
   function applyRelease(v, sizes) {
     $$('[data-version]').forEach(el => { el.textContent = v; });
-    $$('[data-release-link]').forEach(a => { a.href = `${GH}/releases/tag/v${v}`; });
+    $$('[data-release-link]').forEach(a => { a.href = sizes ? `${GH}/releases/tag/v${v}` : `${GH}/releases/latest`; });
     $$('[data-asset]').forEach(a => {
       const name = FILE[a.dataset.asset](v);
-      const known = !sizes || name in sizes;
+      const known = Boolean(sizes && name in sizes);
       a.href = known ? `${GH}/releases/download/v${v}/${name}` : `${GH}/releases/latest`;
       const s = $('[data-size]', a);
-      if (s && sizes && sizes[name]) s.textContent = `${s.dataset.base} · ${mb(sizes[name])}`;
+      if (s && known && sizes[name]) s.textContent = `${s.dataset.base} · ${mb(sizes[name])}`;
     });
-    winDirect = $('[data-asset="win-setup"]').href;
+    const winHref = $('[data-asset="win-setup"]').href;
+    winDirect = sizes && winHref.includes('/releases/download/') ? winHref : '';
     setCta();
   }
   let winDirect = '';

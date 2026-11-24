@@ -40,7 +40,7 @@ STAGE=""
 OLD=""
 cleanup() {
     # Interrupted between moving the old app aside and moving the new one in: put it back.
-    if [ -n "$OLD" ] && [ -e "$OLD" ] && [ ! -e "$APP" ]; then
+    if [ -n "$OLD" ] && { [ -e "$OLD" ] || [ -L "$OLD" ]; } && [ ! -e "$APP" ] && [ ! -L "$APP" ]; then
         $SUDO mv -h "$OLD" "$APP" || true
     fi
     [ -z "$STAGE" ] || $SUDO rm -rf "$STAGE" || true
@@ -114,7 +114,7 @@ INSTALLED_TEAM=""
 [ ! -e "$APP" ] || INSTALLED_TEAM="$(team "$APP")"
 check_app "$SRC"
 
-if [ ! -w "$APP_DIR" ] || { [ -e "$APP" ] && { [ ! -w "$APP" ] || [ ! -w "$APP/Contents" ]; }; }; then
+if [ ! -w "$APP_DIR" ] || { [ -e "$APP" ] && [ ! -L "$APP" ] && { [ ! -w "$APP" ] || [ ! -w "$APP/Contents" ]; }; }; then
     SUDO="sudo"
     say "$APP_DIR or the installed TernaryCode.app is not writable by $(id -un)."
     say "sudo will ask for your password to replace it."
@@ -142,8 +142,12 @@ fi
 $SUDO chmod -R u+rwX,go+rX,go-w,a-st "$NEW"
 check_app "$NEW"
 
-if [ -e "$APP" ]; then
-    say "Replacing TernaryCode $(plist "$APP" CFBundleShortVersionString) in $APP_DIR with $VERSION"
+if [ -e "$APP" ] || [ -L "$APP" ]; then
+    if [ -e "$APP" ]; then
+        say "Replacing TernaryCode $(plist "$APP" CFBundleShortVersionString) in $APP_DIR with $VERSION"
+    else
+        say "Replacing broken symlink $APP with TernaryCode $VERSION"
+    fi
     OLD="$(mktemp -u "$APP_DIR/.TernaryCode.app.old-XXXXXXXX")"
     # -h: never move into a directory a link points to.
     $SUDO mv -h "$APP" "$OLD" || die "the installed app could not be moved aside; nothing was changed"

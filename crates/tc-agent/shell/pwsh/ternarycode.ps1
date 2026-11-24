@@ -39,13 +39,19 @@ function Global:prompt {
     if (-not $t.Wrapped) { __TernaryCodeWrapReadLine }
     $loc = $ExecutionContext.SessionState.Path.CurrentLocation
     if ($loc.Provider.Name -eq 'FileSystem') {
-        try { $out += "$($t.Esc)]7;$(([System.Uri]::new($loc.ProviderPath)).AbsoluteUri)$($t.Bel)" } catch {}
+        $fsPath = $loc.ProviderPath
+        if ($fsPath.StartsWith('\\?\UNC\')) { $fsPath = '\\' + $fsPath.Substring(8) }
+        elseif ($fsPath.StartsWith('\\?\')) { $fsPath = $fsPath.Substring(4) }
+        try { $out += "$($t.Esc)]7;$(([System.Uri]::new($fsPath)).AbsoluteUri)$($t.Bel)" } catch {}
     }
     $out += "$($t.Esc)]133;A$($t.Bel)"
+    # Emit 133;D, OSC 7 and 133;A before calling the user's prompt so prompts using Write-Host
+    # (such as posh-git) cannot print prompt text ahead of the 133;A boundary.
+    [Console]::Write($out)
     # The user's prompt sees the command's status.
     $Global:LASTEXITCODE = $code
     if (-not $ok) { Write-Error 'failed' -ErrorAction Ignore }
     if ($t.Prompt) { $text = & $t.Prompt } else { $text = "PS $($loc.Path)$('>' * ($NestedPromptLevel + 1)) " }
     $Global:LASTEXITCODE = $code
-    "$out$(-join $text)$($t.Esc)]133;B$($t.Bel)"
+    "$(-join $text)$($t.Esc)]133;B$($t.Bel)"
 }

@@ -1293,17 +1293,15 @@ impl App {
                         }
                     });
                 let output = profiles::redact_secrets(&p.screen_tail(45), &secrets);
-                let supports_profiles = p
-                    .tracker
-                    .agent
-                    .or(p.last_agent)
-                    .is_some_and(profiles::supports_profile);
+                let pane_agent = p.tracker.agent.or(p.last_agent);
+                let supports_profiles = pane_agent.is_some_and(profiles::supports_profile);
                 CompanionPane {
                     id: p.id,
                     project_id: p.project,
                     project_name: self.project_label(p.project),
                     label: p.label(),
                     branch: proj.and_then(|x| x.git.as_ref()).map(|g| g.branch.clone()),
+                    provider: pane_agent.map(|a| a.label().into()),
                     profile: supports_profiles.then(|| p.active_profile.clone()).flatten(),
                     supports_profiles,
                     status: status_slug(p.tracker.status).into(),
@@ -1384,6 +1382,7 @@ impl App {
             .collect();
 
         CompanionSnapshot {
+            host_os: if cfg!(target_os = "macos") { "Mac" } else { "computer" }.into(),
             failover_mode: match self.settings.failover.mode {
                 FailoverMode::Auto => "auto".into(),
                 FailoverMode::Manual => "manual".into(),

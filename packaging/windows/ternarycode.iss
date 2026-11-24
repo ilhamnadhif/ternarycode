@@ -74,7 +74,7 @@ Root: HKA; Subkey: "{code:EnvKey}"; ValueType: expandsz; ValueName: "Path"; Valu
   Check: NeedsAddPath(ExpandConstant('{app}')); Tasks: addtopath
 
 [Run]
-Filename: "{app}\ternarycode.exe"; Description: "{cm:LaunchProgram,TernaryCode}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\ternarycode.exe"; Description: "{cm:LaunchProgram,TernaryCode}"; Flags: nowait postinstall skipifsilent; Check: not IsAppUpdate
 ; After an update from the app: open TernaryCode again, as the user (not elevated).
 Filename: "{app}\ternarycode.exe"; Flags: nowait runasoriginaluser; Check: IsAppUpdate
 
@@ -97,16 +97,35 @@ begin
   if IsAdminInstallMode then Result := HKEY_LOCAL_MACHINE else Result := HKEY_CURRENT_USER;
 end;
 
+function NormalizePathEntry(Entry: String): String;
+begin
+  Result := RemoveBackslashUnlessRoot(Trim(Entry));
+end;
+
 function NeedsAddPath(Dir: String): Boolean;
 var
-  Paths: String;
+  Paths, Rest, Entry, NormDir: String;
+  I: Integer;
 begin
   if not RegQueryStringValue(EnvRootKey, EnvKey(''), 'Path', Paths) then
   begin
     Result := True;
     exit;
   end;
-  Result := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Paths) + ';') = 0;
+  NormDir := NormalizePathEntry(Dir);
+  Rest := Paths + ';';
+  while Rest <> '' do
+  begin
+    I := Pos(';', Rest);
+    Entry := Copy(Rest, 1, I - 1);
+    Delete(Rest, 1, I);
+    if CompareText(NormalizePathEntry(Entry), NormDir) = 0 then
+    begin
+      Result := False;
+      exit;
+    end;
+  end;
+  Result := True;
 end;
 
 // Path with the app's folder at the end, and no empty entry before it when there was no Path
@@ -123,8 +142,8 @@ begin
   end;
 end;
 
-// Takes the app's folder off Path: every entry equal to it in any case goes, the others stay as
-// they are.
+// Takes the app's folder off Path: every entry equal to it in any case (with or without a
+// trailing backslash) goes, the others stay as they are.
 procedure RemoveAppFromPath;
 var
   Paths, Rest, Entry, Kept, Dir: String;
@@ -132,7 +151,7 @@ var
   First: Boolean;
 begin
   if not RegQueryStringValue(EnvRootKey, EnvKey(''), 'Path', Paths) then exit;
-  Dir := ExpandConstant('{app}');
+  Dir := NormalizePathEntry(ExpandConstant('{app}'));
   Kept := '';
   First := True;
   Rest := Paths + ';';
@@ -141,7 +160,7 @@ begin
     I := Pos(';', Rest);
     Entry := Copy(Rest, 1, I - 1);
     Delete(Rest, 1, I);
-    if CompareText(Entry, Dir) <> 0 then
+    if CompareText(NormalizePathEntry(Entry), Dir) <> 0 then
     begin
       if not First then Kept := Kept + ';';
       Kept := Kept + Entry;

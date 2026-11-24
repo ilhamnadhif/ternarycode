@@ -143,7 +143,7 @@
       `<span class="y">▌ </span><span class="b">› 1. Yes, run it</span>`,
       `<span class="y">▌ </span>  2. Yes, and don't ask again for <span class="p">cargo test</span>`,
       `<span class="y">▌ </span>  3. No, and tell Codex what to do differently <span class="d">(esc)</span>`];
-    else if (stg === 2) lines = [...head, ran, `<span class="d">  └ Compiling ternarycode v0.2.5</span>`, '', cxWork(secs(ts))];
+    else if (stg === 2) lines = [...head, ran, `<span class="d">  └ Compiling ternarycode v0.3.12</span>`, '', cxWork(secs(ts))];
     else lines = [...head, ran, `<span class="d">  └ </span><span class="g">✓ 214 passed </span><span class="d">(18.4s)</span>`, '',
       `<span class="g">✓ </span>The find bar counts its matches now: “3 of 12”.`, '', `<span class="d">› </span>${CUR}`];
     const st = stOf(stg);
@@ -160,7 +160,7 @@
         pane({ name: 'cargo watch', st: 'run', task: 'Checking ternarycode', lines: [
           `${ps1('ternarycode')}cargo watch -x check`,
           `<span class="y">[Running 'cargo check']</span>`,
-          `<span class="g">    Checking </span>ternarycode v0.2.5 (~/code/ternarycode)`,
+          `<span class="g">    Checking </span>ternarycode v0.3.12 (~/code/ternarycode)`,
           `<span class="g">    Finished </span>\`dev\` profile in 3.41s`,
           `<span class="y">[Finished running. Exit status: 0]</span>`] })),
     };
@@ -348,7 +348,7 @@
     if (!inView || e.defaultPrevented) return;
     if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
     const k = (e.key || '').toLowerCase();
-    if (k === 'j' && !e.altKey && (MAC ? !e.ctrlKey : !e.metaKey)) {
+    if (k === 'j' && !e.altKey && !e.ctrlKey && (MAC || !e.metaKey)) {
       e.preventDefault(); userDrove = true;
       e.shiftKey ? back() : jump(); render();
     } else if ((k === 'enter' || k === '1' || k === 'y') && !e.metaKey && !e.ctrlKey && !e.altKey && S.stage[S.view] === 1) {

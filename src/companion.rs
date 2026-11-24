@@ -47,6 +47,7 @@ pub enum CompanionCmd {
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct CompanionSnapshot {
+    pub host_os: String,
     pub failover_mode: String,
     pub projects: Vec<CompanionProject>,
     pub panes: Vec<CompanionPane>,
@@ -80,6 +81,7 @@ pub struct CompanionPane {
     pub project_name: String,
     pub label: String,
     pub branch: Option<String>,
+    pub provider: Option<String>,
     pub profile: Option<String>,
     pub supports_profiles: bool,
     pub status: String,

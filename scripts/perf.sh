@@ -54,7 +54,10 @@ measure() {
         sleep 0.2; n=$((n + 1)); [ $n -gt 500 ] && { echo "$name: no start mark"; kill $pid 2>/dev/null; return; }
     done
     t0=$(secs $pid)
-    until grep -q "DEVTEST LOG: perf-end" "$log" 2>/dev/null; do sleep 0.1; done
+    until grep -q "DEVTEST LOG: perf-end" "$log" 2>/dev/null; do
+        kill -0 "$pid" 2>/dev/null || { echo "$name: process exited before perf-end"; return; }
+        sleep 0.1
+    done
     t1=$(secs $pid)
     wait $pid 2>/dev/null
     local frames mem

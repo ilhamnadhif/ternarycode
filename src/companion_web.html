@@ -231,12 +231,16 @@ let retryTimer = null;
 let retryMs = 1000;
 let connected = false;
 let pairError = "";
+let pairing = false;
 let toastMsg = "";
 let toastTimer = null;
 
 const params = new URLSearchParams(location.search);
 const urlPair = params.get("pair") || "";
+let draftCode = urlPair;
+let draftName = /iPhone/.test(navigator.userAgent)?"iPhone":/Android/.test(navigator.userAgent)?"Android Phone":"Mobile Browser";
 const root = document.getElementById("root");
+function hostName(){ return (state && state.host_os) || "computer"; }
 
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function fmtTok(n){n=Number(n||0);if(n>=1e6)return(n/1e6).toFixed(1)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
@@ -314,7 +318,12 @@ async function api(path, opts={}){
 }
 
 async function doPair(code, deviceName){
+  if(pairing) return;
+  draftCode = code;
+  draftName = deviceName;
+  pairing = true;
   pairError = "";
+  render();
   try{
     const res = await fetch("/api/pair", {
       method:"POST",
@@ -324,16 +333,17 @@ async function doPair(code, deviceName){
     const data = await res.json().catch(()=>({}));
     if(!res.ok || !data.device_token){
       pairError = data.error || "Invalid pairing code";
-      render();
       return;
     }
     token = data.device_token;
     localStorage.setItem(KEY, token);
+    draftCode = "";
     if(urlPair){ history.replaceState({}, "", "/"); }
-    render();
     startLive();
   }catch(_){
     pairError = "Connection failed";
+  }finally{
+    pairing = false;
     render();
   }
 }
@@ -435,26 +445,38 @@ function renderPair(){
   root.innerHTML = `<div class="solo"><div class="pair">
     ${LOGO}
     <h1>Pair with TernaryCode</h1>
-    <p class="lead">Scan the code in Settings → Phone on your Mac, or paste it here.</p>
-    <label class="field${pairError?" err":""}"><input id="p-code" class="mono" value="${esc(urlPair)}" placeholder="Pairing code" aria-label="Pairing code" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"></label>
-    <label class="field">${ic("phone")}<input id="p-name" value="${esc(/iPhone/.test(navigator.userAgent)?"iPhone":/Android/.test(navigator.userAgent)?"Android Phone":"Mobile Browser")}" placeholder="Device name" aria-label="Device name"></label>
+    <p class="lead">Scan the code in Settings → Phone on your computer, or paste it here.</p>
+    <label class="field${pairError?" err":""}"><input id="p-code" class="mono" value="${esc(draftCode)}" placeholder="Pairing code" aria-label="Pairing code" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"></label>
+    <label class="field">${ic("phone")}<input id="p-name" value="${esc(draftName)}" placeholder="Device name" aria-label="Device name"></label>
     ${pairError?`<div class="err-text" role="alert">${glyph("failed", 14)}${esc(pairError)}</div>`:""}
     <button class="btn primary block" data-act="pair">Connect</button>
-    <p class="note">Each phone gets its own key. You can revoke it from the Mac at any time.</p>
+    <p class="note">Each phone gets its own key. You can revoke it from TernaryCode at any time.</p>
   </div></div>`;
+}
+
+function healthyProfilesFor(pane){
+  return (state.profiles||[])
+    .filter(p=>p.enabled && p.signed_in !== false && p.state!=="rate_limited" && p.state!=="cooldown" && p.state!=="error" && p.id!==pane.profile)
+    .sort((a,b)=>{
+      const am = pane.provider && a.provider === pane.provider ? 0 : 1;
+      const bm = pane.provider && b.provider === pane.provider ? 0 : 1;
+      return am - bm;
+    });
+}
+
+function renderChipsHtml(panes, activeId){
+  return panes.map(p=>{
+    const cls = p.id===activeId ? "chip active" : "chip";
+    return `<button class="${cls}" data-act="select-pane" data-pane="${p.id}">${glyph(p.rate_limit?"rate_limited":p.status, 12)}<span>${esc(p.project_name)}</span><span class="lbl">${esc(p.label)}</span></button>`;
+  }).join("");
 }
 
 function renderLive(){
   const panes = state.panes || [];
-  if(!panes.length) return emptyState("term", "No panes open", "Terminals and agents open on your Mac show up here.");
+  if(!panes.length) return emptyState("term", "No panes open", `Terminals and agents open on your ${esc(hostName())} show up here.`);
   const pane = panes.find(p=>p.id===selectedPane) || panes[0];
-  const healthy = (state.profiles||[]).filter(
-    p=>p.enabled && p.signed_in !== false && p.state!=="rate_limited" && p.state!=="cooldown" && p.state!=="error" && p.id!==pane.profile
-  );
-  let html = `<div class="chips">` + panes.map(p=>{
-    const cls = p.id===pane.id ? "chip active" : "chip";
-    return `<button class="${cls}" data-act="select-pane" data-pane="${p.id}">${glyph(p.rate_limit?"rate_limited":p.status, 12)}<span>${esc(p.project_name)}</span><span class="lbl">${esc(p.label)}</span></button>`;
-  }).join("") + `</div>`;
+  const healthy = healthyProfilesFor(pane);
+  let html = `<div class="chips" id="pane-chips">${renderChipsHtml(panes, pane.id)}</div>`;
 
   const where = `${pane.profile||(pane.supports_profiles?"default":pane.label)}${pane.branch?` · ${pane.branch}`:""}`;
   html += `<div class="sheet">
@@ -495,7 +517,7 @@ function renderLive(){
 
 function renderProjects(){
   const projects = state.projects || [];
-  if(!projects.length) return emptyState("folder", "No projects open", "Projects open on your Mac show up here.");
+  if(!projects.length) return emptyState("folder", "No projects open", `Projects open on your ${esc(hostName())} show up here.`);
   return projects.map(pr=>{
     const sessions = pr.sessions || [];
     return `<section class="group">
@@ -562,7 +584,7 @@ function renderProfiles(){
       ${renderWinBar(p.window_weekly)}
       ${p.active_session?`<div class="data">Active in ${esc(p.active_session)}</div>`:""}
     </div>`;
-  }).join("") : emptyState("user", "No accounts", "Add one in Settings → Accounts on your Mac.");
+  }).join("") : emptyState("user", "No accounts", `Add one in Settings → Accounts on your ${esc(hostName())}.`);
   html += `<button class="btn danger block" data-act="unpair">${ic("signout")}Unpair this device</button>`;
   return html;
 }
@@ -596,12 +618,23 @@ function tabButton(id, label, icon, count, tone){
   return `<button class="${tab===id?"active":""}" data-act="tab" data-tab="${id}"><span class="tab-ic">${ic(icon)}${count?`<span class="count t-${tone}">${count}</span>`:""}</span>${label}</button>`;
 }
 
+function renderNavHtml(urgentCount, alertLogCount, hasErr){
+  return tabButton("live", "Live", "term", urgentCount, "input") +
+    tabButton("alerts", "Inbox", "tray", alertLogCount, hasErr?"failed":"input") +
+    tabButton("projects", "Projects", "squares", 0, "") +
+    tabButton("profiles", "Accounts", "user", 0, "");
+}
+
 function render(){
   // Running glyphs spin in phase with the clock, so a re-render never restarts them.
   root.style.setProperty("--spin-delay", `-${Date.now() % 1200}ms`);
-  if(!token || (urlPair && pairError && !state)){ renderPair(); return; }
+  if(pairing){
+    root.innerHTML = `<div class="solo center">` + emptyState("phone", "Pairing…", "Exchanging pairing code with TernaryCode.") + `</div>`;
+    return;
+  }
+  if(!token || (pairError && !state)){ renderPair(); return; }
   if(!state){
-    root.innerHTML = `<div class="solo center">` + emptyState("offline", "Connecting to your Mac…", "Waiting for TernaryCode to answer.",
+    root.innerHTML = `<div class="solo center">` + emptyState("offline", "Connecting to TernaryCode…", "Waiting for TernaryCode to answer.",
       `<div class="duo">
         <button class="btn secondary" data-act="retry">Retry</button>
         <button class="btn danger" data-act="unpair">Pair again</button>
@@ -609,13 +642,20 @@ function render(){
     return;
   }
 
-  // While user is actively typing in `#prompt-input` on the same pane, patch terminal output in
-  // place so virtual keyboard / IME composition is never disrupted by DOM replacement, unless
-  // an error toast or a status/rate-limit change needs to be shown.
+  const activeCount = (state.panes||[]).filter(p=>p.status==="running").length;
+  const urgentCount = (state.panes||[]).filter(p=>p.rate_limit||p.status==="needs_input").length;
+  const loud = (state.alerts||[]).filter(a=>a.level==="warn"||a.level==="error"||a.level==="failover");
+  const alertLogCount = loud.length;
+  const hasErr = loud.some(a=>a.level==="error");
+
+  // While user is actively typing in `#prompt-input` on the same pane, patch live terminal output,
+  // header counts, pane chips, and tab badges in place so virtual keyboard / IME composition is
+  // never disrupted by DOM replacement.
   const prevInput = document.getElementById("prompt-input");
   const samePane = prevInput && Number(prevInput.dataset.pane) === selectedPane;
   const livePane = (state.panes||[]).find(p=>p.id===selectedPane);
-  const paneKey = livePane ? `${livePane.id}:${livePane.status}:${livePane.message||""}:${Boolean(livePane.rate_limit)}` : "";
+  const healthyKey = livePane ? healthyProfilesFor(livePane).slice(0,4).map(p=>p.id).join(",") : "";
+  const paneKey = livePane ? `${livePane.id}:${livePane.status}:${livePane.message||""}:${livePane.profile||""}:${livePane.rate_limit?livePane.rate_limit.reason:""}:${healthyKey}` : "";
   if(tab === "live" && samePane && !toastMsg && paneKey === lastRenderedPaneKey && document.activeElement === prevInput){
     const pane = livePane;
     const termBox = document.getElementById("term-box");
@@ -623,7 +663,12 @@ function render(){
       const nearBot = (termBox.scrollHeight - termBox.scrollTop - termBox.clientHeight) < 36;
       termBox.textContent = pane.output || "(no output yet)";
       if(nearBot) termBox.scrollTop = termBox.scrollHeight;
-      renderHeaderOnly();
+      const headConn = document.getElementById("head-conn");
+      if(headConn) headConn.innerHTML = `<span id="conn-dot" class="dot ${connected?"ok":"warn"}"></span>${activeCount} active${urgentCount?` · ${urgentCount} waiting`:""}`;
+      const chips = document.getElementById("pane-chips");
+      if(chips) chips.innerHTML = renderChipsHtml(state.panes||[], pane.id);
+      const nav = document.getElementById("tab-bar");
+      if(nav) nav.innerHTML = renderNavHtml(urgentCount, alertLogCount, hasErr);
       return;
     }
   }
@@ -640,10 +685,6 @@ function render(){
   const termNearBottom = !prevTerm || paneChanged || (prevTerm.scrollHeight - prevTerm.scrollTop - prevTerm.clientHeight) < 36;
   const savedTermScroll = prevTerm ? prevTerm.scrollTop : 0;
 
-  const activeCount = (state.panes||[]).filter(p=>p.status==="running").length;
-  const urgentCount = (state.panes||[]).filter(p=>p.rate_limit||p.status==="needs_input").length;
-  const loud = (state.alerts||[]).filter(a=>a.level==="warn"||a.level==="error"||a.level==="failover");
-  const alertLogCount = loud.length;
   const title = tab==="live"?"Live":tab==="projects"?"Projects":tab==="profiles"?"Accounts":"Inbox";
   const body = (toastMsg?notice("failed", esc(toastMsg)):"") +
     (tab==="live"?renderLive():tab==="projects"?renderProjects():tab==="profiles"?renderProfiles():renderAlerts());
@@ -652,15 +693,12 @@ function render(){
     <main>
       <div class="head">
         <h1>${title}</h1>
-        <span class="conn"><span id="conn-dot" class="dot ${connected?"ok":"warn"}"></span>${activeCount} active${urgentCount?` · ${urgentCount} waiting`:""}</span>
+        <span class="conn" id="head-conn"><span id="conn-dot" class="dot ${connected?"ok":"warn"}"></span>${activeCount} active${urgentCount?` · ${urgentCount} waiting`:""}</span>
       </div>
       ${body}
     </main>
-    <nav>
-      ${tabButton("live", "Live", "term", urgentCount, "input")}
-      ${tabButton("alerts", "Inbox", "tray", alertLogCount, loud.some(a=>a.level==="error")?"failed":"input")}
-      ${tabButton("projects", "Projects", "squares", 0, "")}
-      ${tabButton("profiles", "Accounts", "user", 0, "")}
+    <nav id="tab-bar">
+      ${renderNavHtml(urgentCount, alertLogCount, hasErr)}
     </nav>
   </div>`;
 
@@ -717,6 +755,11 @@ root.addEventListener("click", (ev)=>{
   }
 });
 
+root.addEventListener("input", (ev)=>{
+  if(ev.target && ev.target.id === "p-code") draftCode = ev.target.value;
+  else if(ev.target && ev.target.id === "p-name") draftName = ev.target.value;
+});
+
 root.addEventListener("keydown", (ev)=>{
   if(ev.key !== "Enter" || ev.isComposing) return;
   if(ev.target && ev.target.id === "prompt-input"){
@@ -730,8 +773,7 @@ root.addEventListener("keydown", (ev)=>{
 
 if(urlPair){
   // Explicit QR pairing link always takes precedence over any stale saved token.
-  render();
-  doPair(urlPair, /iPhone/.test(navigator.userAgent)?"iPhone":/Android/.test(navigator.userAgent)?"Android":"Mobile");
+  doPair(urlPair, draftName);
 }else if(token){
   render();
   startLive();
