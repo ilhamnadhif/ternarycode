@@ -551,6 +551,11 @@ run panel 70 "sleep 1000;; action add-project $R;; sleep 1200;; write-file $R/ed
 # 2. Project-nested agent session history inside the left workspace sidebar tree (collapsed by default + inline fold/unfold).
 run sessions 50 "sleep 1000;; action add-project $P1;; sleep 1200;; expect-shown session:1:0;; action add-project $P2;; sleep 1200;; expect-project beta;; expect-shown session:3:0;; expect-hidden session:1:0;; action new-tab;; sleep 800;; expect-shown session:3:1;; expect-tab 1;; click session:3:0;; sleep 500;; expect-tab 0;; shot e2e-sessions;; click project:alpha;; sleep 600;; expect-project alpha;; expect-shown session:1:0;; expect-hidden session:3:0;; quit"
 
+# 2a. Multi-agent split panes & auto-expanded Active projects: every split agent appears as its own
+# sidebar row, clicking switches directly to that pane, and ALL projects in Active stay expanded
+# simultaneously showing their agents even when another project is selected.
+run active-agents-sidebar 60 "sleep 1000;; action add-project $P1;; sleep 1200;; action split-right;; sleep 1000;; wait-tabs 0:2,3;; hook 2 claude UserPromptSubmit - First agent task;; sleep 200;; hook 3 claude UserPromptSubmit - Second agent task;; sleep 400;; expect-shown session-pane:2;; expect-shown session-pane:3;; click session-pane:2;; sleep 300;; click session-pane:3;; sleep 300;; mouse move stage@0.5,0.5;; sleep 200;; action add-project $P2;; sleep 1200;; hook 5 claude UserPromptSubmit - Beta running task;; sleep 500;; expect-project beta;; expect-shown session-pane:2;; expect-shown session-pane:3;; expect-shown session-pane:5;; shot e2e-active-agents-sidebar;; click session-pane:2;; sleep 400;; expect-project alpha;; expect-shown session-pane:2;; expect-shown session-pane:3;; expect-shown session-pane:5;; quit"
+
 # 2b. Sidebar scroll stability with 20 projects (with expanded sessions!) — verifies zero infinite scroll jump.
 SCROLL_SCRIPT="sleep 800"
 for i in $(seq -w 1 20); do

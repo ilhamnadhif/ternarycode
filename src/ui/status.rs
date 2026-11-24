@@ -71,22 +71,82 @@ pub fn paint_glyph(painter: &egui::Painter, center: egui::Pos2, s: Status, p: &P
     }
 }
 
-/// The running glyph: Phosphor's circle-notch, drawn as an arc that turns once a second in
-/// eight steps (a frame every 125 ms, not every one: running agents keep the app cheap).
+/// Smooth display-synced running spinner: subtle circular track ring with a continuously rotating,
+/// single-mesh anti-aliased tapered comet arc and rounded leading cap (no stepped jumps, no
+/// segment seams, no flat square stroke ends).
 pub fn paint_spinner(painter: &egui::Painter, center: egui::Pos2, size: f32, color: Color32) {
-    let t = painter.ctx().input(|i| i.time) as f32;
-    let r = size * 0.36;
-    let start = (t * 8.0).floor() / 8.0 * std::f32::consts::TAU;
-    let sweep = std::f32::consts::TAU * 0.72;
-    let n = 24;
-    let pts: Vec<egui::Pos2> = (0..=n)
-        .map(|i| {
-            let a = start + sweep * i as f32 / n as f32;
-            egui::pos2(center.x + r * a.cos(), center.y + r * a.sin())
-        })
-        .collect();
-    painter.add(egui::Shape::line(pts, egui::Stroke::new((size * 0.11).max(1.3), color)));
-    painter.ctx().request_repaint_after(std::time::Duration::from_millis(125));
+    let ctx = painter.ctx();
+    let t = ctx.input(|i| i.time);
+    let ppp = ctx.pixels_per_point().max(1.0);
+    let r = (size * 0.37).max(3.5);
+    let w = (size * 0.145).clamp(1.6, 2.3);
+
+    // Faint full track ring anchors the circle cleanly with zero visual wobble.
+    painter.circle_stroke(center, r, egui::Stroke::new(w, super::style::soft(color, 0.18)));
+
+    // Continuous smooth rotation (~0.88 s per turn), synced to display refresh (60/120 Hz).
+    let head = ((t * 1.14).fract() as f32) * std::f32::consts::TAU;
+    let sweep = std::f32::consts::TAU * 0.78;
+    let steps = 36usize;
+
+    // One continuous anti-aliased triangle strip with smooth per-vertex alpha tapering from an
+    // invisible tail (0%) to a crisp leading edge (100%) — zero segment joints or double-blending.
+    let aa = 0.85 / ppp;
+    let hw = ((w - aa) * 0.5).max(0.3);
+    let r_in_aa = (r - hw - aa).max(0.0);
+    let r_in = (r - hw).max(0.0);
+    let r_out = r + hw;
+    let r_out_aa = r + hw + aa;
+    let clear = Color32::TRANSPARENT;
+
+    let mut mesh = egui::Mesh::default();
+    mesh.vertices.reserve((steps + 1) * 4 + 20);
+    mesh.indices.reserve(steps * 18 + 48);
+
+    for i in 0..=steps {
+        let frac = i as f32 / steps as f32;
+        let a = head - sweep * (1.0 - frac);
+        let (sin, cos) = a.sin_cos();
+        let c = super::style::soft(color, frac.powf(1.12));
+        let p = |rad: f32| egui::pos2(center.x + rad * cos, center.y + rad * sin);
+        mesh.colored_vertex(p(r_in_aa), clear);
+        mesh.colored_vertex(p(r_in), c);
+        mesh.colored_vertex(p(r_out), c);
+        mesh.colored_vertex(p(r_out_aa), clear);
+        if i > 0 {
+            let cur = (i * 4) as u32;
+            let prev = cur - 4;
+            for band in 0..3u32 {
+                mesh.add_triangle(prev + band, cur + band, cur + band + 1);
+                mesh.add_triangle(prev + band, cur + band + 1, prev + band + 1);
+            }
+        }
+    }
+
+    // Semicircular rounded leading cap extending smoothly past `head` with zero overlap against
+    // the arc strip (so both opaque and translucent colors stay completely seam-free).
+    let (hsin, hcos) = head.sin_cos();
+    let tip = egui::pos2(center.x + r * hcos, center.y + r * hsin);
+    let cap_steps = 8usize;
+    let tip_idx = mesh.vertices.len() as u32;
+    mesh.colored_vertex(tip, color);
+    let base_idx = mesh.vertices.len() as u32;
+    for j in 0..=cap_steps {
+        let phi = head + std::f32::consts::PI * (j as f32 / cap_steps as f32);
+        let (psin, pcos) = phi.sin_cos();
+        mesh.colored_vertex(egui::pos2(tip.x + hw * pcos, tip.y + hw * psin), color);
+        mesh.colored_vertex(egui::pos2(tip.x + (hw + aa) * pcos, tip.y + (hw + aa) * psin), clear);
+        if j > 0 {
+            let c0 = base_idx + ((j - 1) * 2) as u32;
+            let c1 = base_idx + (j * 2) as u32;
+            mesh.add_triangle(tip_idx, c0, c1);
+            mesh.add_triangle(c0, c0 + 1, c1 + 1);
+            mesh.add_triangle(c0, c1 + 1, c1);
+        }
+    }
+
+    painter.add(egui::Shape::mesh(mesh));
+    ctx.request_repaint();
 }
 
 pub fn source(src: Source) -> String {

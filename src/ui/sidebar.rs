@@ -86,9 +86,9 @@ enum Line {
     /// A project (index), the letters the search found, dimmed (shown for a worktree found
     /// under it), and whether it belongs to the Active group.
     Project(usize, Vec<bool>, bool, bool),
-    /// A tab of the selected project (its index in the project's tabs, and whether it is the
-    /// last child row under the project).
-    Session(tc_core::ProjectId, usize, bool),
+    /// A pane inside a tab of an expanded project: (project, tab index, pane id, first pane in
+    /// that tab, last child row under the project).
+    Session(tc_core::ProjectId, usize, tc_core::PaneId, bool, bool),
     /// A worktree under its project, the letters found, and whether it is the last child row.
     Worktree(usize, Vec<bool>, bool),
 }
@@ -522,10 +522,12 @@ impl App {
             let push_project = |lines: &mut Vec<Line>, i: usize, is_active: bool| {
                 let pr = &self.projects[i];
                 lines.push(Line::Project(i, Vec::new(), false, is_active));
-                if active_root != Some(pr.id) {
+                let is_selected = active_root == Some(pr.id);
+                // Expand ALL Active projects (so every running agent across every active project
+                // is listed immediately), plus the currently selected project even when Idle.
+                if !is_active && !is_selected {
                     return;
                 }
-                // The selected project: its tabs, then its worktrees.
                 let wts: Vec<usize> = self
                     .projects
                     .iter()
@@ -533,9 +535,45 @@ impl App {
                     .filter(|(_, x)| x.parent == Some(pr.id))
                     .map(|(j, _)| j)
                     .collect();
-                let tab_count = pr.tabs.len();
-                for k in 0..tab_count {
-                    lines.push(Line::Session(pr.id, k, wts.is_empty() && k + 1 == tab_count));
+                let mut rows: Vec<(usize, tc_core::PaneId, bool)> = Vec::new();
+                for (k, tab) in pr.tabs.iter().enumerate() {
+                    let tab_panes: Vec<tc_core::PaneId> = tab
+                        .layout
+                        .panes()
+                        .into_iter()
+                        .filter(|id| !self.browsers.contains_key(id))
+                        .collect();
+                    for (p_idx, pane_id) in tab_panes.into_iter().enumerate() {
+                        rows.push((k, pane_id, p_idx == 0));
+                    }
+                }
+                // For non-selected Active projects, list all their live/agent panes (including
+                // multiple split agents) without cluttering with unused shell tabs.
+                if is_active && !is_selected {
+                    let agent_rows: Vec<(usize, tc_core::PaneId, bool)> = rows
+                        .iter()
+                        .copied()
+                        .filter(|(_, pane_id, _)| {
+                            self.panes.get(pane_id).is_some_and(|x| {
+                                x.tracker.agent.is_some()
+                                    || x.last_agent.is_some()
+                                    || x.resume.is_some()
+                                    || shows_status(x.tracker.status)
+                                    || matches!(x.tracker.fg, tc_core::status::Foreground::Program { .. })
+                            })
+                        })
+                        .collect();
+                    if !agent_rows.is_empty() {
+                        rows = agent_rows;
+                    } else if !wts.is_empty() {
+                        rows.clear();
+                    } else {
+                        rows.truncate(1);
+                    }
+                }
+                let row_count = rows.len();
+                for (idx, (k, pane_id, first_in_tab)) in rows.into_iter().enumerate() {
+                    lines.push(Line::Session(pr.id, k, pane_id, first_in_tab, wts.is_empty() && idx + 1 == row_count));
                 }
                 let wt_count = wts.len();
                 for (pos, j) in wts.into_iter().enumerate() {
@@ -668,23 +706,23 @@ impl App {
                                 }
                                 resp.context_menu(|ui| self.worktree_menu(ui, id));
                             }
-                            Line::Session(pid, k, is_last) => {
+                            Line::Session(pid, k, pane_id, _first_in_tab, is_last) => {
                                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), sc.session_h), Sense::click());
                                 if !ui.is_rect_visible(rect) {
                                     continue;
                                 }
                                 #[cfg(debug_assertions)]
-                                crate::devtest::record(format!("session:{pid}:{k}"), rect.intersect(ui.clip_rect()));
-                                let Some(s) = self.session_row(*pid, *k) else { continue };
+                                {
+                                    let vis = rect.intersect(ui.clip_rect());
+                                    if *_first_in_tab {
+                                        crate::devtest::record(format!("session:{pid}:{k}"), vis);
+                                    }
+                                    crate::devtest::record(format!("session-pane:{pane_id}"), vis);
+                                }
+                                let Some(s) = self.session_row(*pid, *k, *pane_id) else { continue };
                                 paint_session_row(ui, rect, &s, resp.hovered(), *is_last, sc, &p);
                                 if resp.on_hover_text(&s.title).clicked() {
-                                    pick = Some(Action::SelectTab(*k));
-                                    if self.active != Some(*pid) {
-                                        self.actions.push(Action::SelectProject(*pid));
-                                    }
-                                    if self.view != View::Focus {
-                                        self.actions.push(Action::SetView(View::Focus));
-                                    }
+                                    pick = Some(Action::FocusPane(*pane_id));
                                 }
                             }
                         }
@@ -772,22 +810,28 @@ impl App {
         out
     }
 
-    /// A tab of a project as a session row: who works there, what it is called, how long it
-    /// has been at it (or the port its server listens on), its status.
-    fn session_row(&self, project: tc_core::ProjectId, k: usize) -> Option<SessionRow> {
+    /// A pane inside a project's tab as a sidebar session row: who works there, its title/task,
+    /// how long it has been at it (or the port its server listens on), and its own live status.
+    fn session_row(&self, project: tc_core::ProjectId, k: usize, pane_id: tc_core::PaneId) -> Option<SessionRow> {
         let pr = self.project(project)?;
         let tab = pr.tabs.get(k)?;
-        let pane = self.panes.get(&tab.focused);
-        let title = tab.title.clone().unwrap_or_else(|| self.leaf_label(tab.focused));
-        let urgent = tab
+        let pane = self.panes.get(&pane_id);
+        let single_in_tab = tab
             .layout
             .panes()
-            .iter()
-            .filter_map(|id| self.panes.get(id))
-            .filter_map(|x| Some(x.tracker.status).filter(|s| shows_status(*s)))
-            .min_by_key(|s| s.priority().unwrap_or(u8::MAX));
-        // The port of a server the tab is about (its pane in front), not one beside an agent.
-        let server = self.project_servers(project).into_iter().find(|(id, _)| *id == tab.focused).map(|(_, s)| s.url);
+            .into_iter()
+            .filter(|id| !self.browsers.contains_key(id))
+            .count()
+            == 1;
+        let title = if single_in_tab {
+            tab.title
+                .clone()
+                .unwrap_or_else(|| pane.map(crate::pane::Pane::name).unwrap_or_else(|| self.leaf_label(pane_id)))
+        } else {
+            pane.map(crate::pane::Pane::name).unwrap_or_else(|| self.leaf_label(pane_id))
+        };
+        let status = pane.map(|x| x.tracker.status).filter(|s| shows_status(*s));
+        let server = self.project_servers(project).into_iter().find(|(id, _)| *id == pane_id).map(|(_, s)| s.url);
         let meta = match (&server, pane) {
             (Some(url), _) => super::focus::server_label(url).rsplit_once(':').map_or_else(|| super::focus::server_label(url).to_string(), |(_, port)| format!(":{port}")),
             (None, Some(x)) if x.tracker.agent.is_some() && !matches!(x.tracker.status, Status::Idle | Status::Unknown | Status::Ended) => short_age(x.tracker.since.elapsed().as_secs()),
@@ -797,8 +841,8 @@ impl App {
             title,
             agent: pane.and_then(|x| x.tracker.agent.or(x.last_agent)),
             meta,
-            status: urgent,
-            on: self.view == View::Focus && pr.active_tab == k && self.active == Some(project) && !self.attention_open,
+            status,
+            on: self.view == View::Focus && self.active == Some(project) && pr.active_tab == k && tab.focused == pane_id && !self.attention_open,
         })
     }
 
@@ -1685,10 +1729,11 @@ impl App {
             ahead: pr.is_worktree().then(|| pr.git.as_ref().map_or(0, |g| g.ahead)),
             web: self.browsers.values().filter(|b| b.project == pr.id && b.live()).map(|b| b.driven()).max(),
         };
-        // When a project's worktrees are not currently expanded under it (folded or unselected),
+        // When a project's worktrees are not currently expanded under it (folded or unselected Idle),
         // roll up their waiting count and most urgent status onto the parent project row.
         let active_root = self.active.and_then(|id| self.root_project(id)).map(|x| x.id);
-        if !worktrees.is_empty() && (pr.folded || active_root != Some(pr.id)) {
+        let expanded = active_root == Some(pr.id) || self.is_sidebar_active(pr.id);
+        if !worktrees.is_empty() && (pr.folded || !expanded) {
             for w in worktrees {
                 let kid = self.project_row(w, p);
                 row.waiting += kid.waiting;
