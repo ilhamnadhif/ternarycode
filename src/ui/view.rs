@@ -173,8 +173,7 @@ impl App {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let min_h = body.height().max(640.0);
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(500.0), min_h), egui::Sense::hover());
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| self.welcome(ui));
+                        self.welcome(ui, min_h);
                     });
             });
             return;
@@ -193,7 +192,7 @@ impl App {
     /// No projects yet: add the first one (drop a folder, choose one, or tick the repositories
     /// found in the usual folders), open one from any terminal, see which agents are installed,
     /// and the shortcuts worth learning first.
-    fn welcome(&mut self, ui: &mut Ui) {
+    fn welcome(&mut self, ui: &mut Ui, min_h: f32) {
         use super::{icons, kit};
         use crate::actions::Action;
         use crate::i18n::{t, tf};
@@ -219,9 +218,11 @@ impl App {
             }
         }
         // The sheet's padding (36 · 48 · 24 · 48), the content at most 1088 wide.
-        let area = ui.max_rect();
-        let w = (area.width() - 96.0).clamp(300.0, 1088.0);
-        let col = Rect::from_min_max(pos2(area.center().x - w / 2.0, area.top() + 36.0), pos2(area.center().x + w / 2.0, area.bottom() - 24.0));
+        let origin = ui.cursor().min;
+        let avail_w = ui.available_width().max(500.0);
+        let w = (avail_w - 96.0).clamp(300.0, 1088.0);
+        let col_left = origin.x + (avail_w - w) / 2.0;
+        let col = Rect::from_min_max(pos2(col_left, origin.y + 36.0), pos2(col_left + w, origin.y + min_h - 24.0));
         let painter = ui.painter().clone();
         let mut y = col.top();
         // Who we are, then what to do.
@@ -287,7 +288,16 @@ impl App {
             .into_iter()
             .filter_map(|(a, what)| Some((kit::keys(&a)?, what)))
             .collect();
-        let hint_rows = if kit::hints_width(&painter, &hints) <= w { 1.0 } else { 2.0 };
+        let mut hx = col.left();
+        let mut hint_rows = 1.0_f32;
+        for h in &hints {
+            let hw = kit::hints_width(&painter, std::slice::from_ref(h));
+            if hx > col.left() && hx + hw > col.right() {
+                hx = col.left();
+                hint_rows += 1.0;
+            }
+            hx += hw + 14.0;
+        }
         let foot_h = 18.0 + 1.0 + 18.0 + hint_rows * 18.0 + (hint_rows - 1.0) * 8.0;
 
         // Two columns when wide (the right one 380), stacked when narrow.
@@ -401,7 +411,11 @@ impl App {
                 let add_label = crate::i18n::count(n, t("Add 1 project"), t("Add {} projects"));
                 let aw = kit::button_width(ui, Some(icons::PLUS), &add_label, None, true);
                 let ar = Rect::from_min_size(pos2(foot.right() - 12.0 - aw, foot.center().y - 12.0), vec2(aw, 24.0));
-                let add = ui.add_enabled_ui(n > 0, |ui| ui.scope_builder(egui::UiBuilder::new().max_rect(ar), |ui| kit::button_ex(ui, kit::Kind::Primary, Some(icons::PLUS), &add_label, true)).inner).inner;
+                let add = ui
+                    .scope_builder(egui::UiBuilder::new().max_rect(ar), |ui| {
+                        ui.add_enabled_ui(n > 0, |ui| kit::button_ex(ui, kit::Kind::Primary, Some(icons::PLUS), &add_label, true)).inner
+                    })
+                    .inner;
                 #[cfg(debug_assertions)]
                 crate::devtest::record("welcome-add", add.rect);
                 if add.clicked() {
@@ -483,8 +497,11 @@ impl App {
             cy += 41.0;
         }
 
-        // The keys, under a line.
-        let line_y = col.bottom() - foot_h + 18.0;
+        // The keys, under a line — pinned to the sheet bottom when tall enough, otherwise pushed
+        // cleanly below the taller column so the ScrollArea scrolls without overlap or clipping.
+        let right_bottom = if agents.is_empty() { ay + 20.0 } else { (cy - 1.0).max(card_top) };
+        let content_bottom = card.bottom().max(right_bottom);
+        let line_y = (col.bottom() - foot_h + 18.0).max(content_bottom + 18.0);
         painter.hline(col.x_range(), line_y + 0.5, Stroke::new(1.0, p.border));
         let mut x = col.left();
         let mut ky = line_y + 1.0 + 18.0 + 9.0;
@@ -496,6 +513,8 @@ impl App {
             }
             x += kit::paint_hints(&painter, pos2(x, ky), std::slice::from_ref(h), &p) + 14.0;
         }
+        let total_h = (ky + 9.0 + 24.0 - origin.y).max(min_h);
+        ui.advance_cursor_after_rect(Rect::from_min_size(origin, vec2(avail_w, total_h)));
     }
 }
 

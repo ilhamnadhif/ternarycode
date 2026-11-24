@@ -121,6 +121,7 @@ impl PromptState {
     fn forget(&mut self) {
         self.start = None;
         self.input = None;
+        self.cleared = None;
     }
 
     /// Puts the history back to `limit` after it was given room, dropping the oldest lines.
@@ -398,6 +399,9 @@ impl Feeder {
             self.parser.advance(&mut *term, chunk);
             self.count_dropped(&mut term, room);
             if !term.mode().contains(TermMode::ALT_SCREEN) {
+                if !chunk.is_empty() {
+                    self.shared.prompt.lock().cleared = None;
+                }
                 let pending = std::mem::take(&mut self.shared.notes.lock().clear_history_pending);
                 if pending {
                     self.shared.prompt.lock().dropped(term.grid().history_size());
@@ -470,6 +474,7 @@ impl Feeder {
     fn note_prompt(&mut self, mark: &PromptMark) {
         let term = self.shared.term.lock();
         let mut prompt = self.shared.prompt.lock();
+        prompt.cleared = None;
         let held = self.parser.sync_bytes_count() > 0;
         let alt = term.mode().contains(TermMode::ALT_SCREEN);
         let at = term.grid().history_size() + term.grid().cursor.point.line.0.max(0) as usize;
@@ -676,7 +681,7 @@ pub fn settle_prompt(shared: &TermShared, same: bool) {
     let Some(saved) = prompt.cleared.take() else {
         return;
     };
-    if !same || saved.cols != term.columns() || term.mode().contains(TermMode::ALT_SCREEN) {
+    if !same || !prompt.at_prompt || saved.cols != term.columns() || term.mode().contains(TermMode::ALT_SCREEN) {
         return;
     }
     let anchor = match prompt.redraw {
@@ -1122,5 +1127,18 @@ mod tests {
         f.feed(ZSH);
         resize(&f.shared, GridSize { cols: 40, rows: 12 }, 8.0, 16.0);
         assert!(screen(&f).iter().any(|l| l.contains("user@host project % ls")));
+    }
+
+    #[test]
+    fn settle_prompt_does_not_overwrite_new_output_or_command() {
+        let mut f = make();
+        f.feed(ZSH);
+        resize(&f.shared, size(20), 8.0, 16.0);
+        resize(&f.shared, size(40), 8.0, 16.0);
+        // New output arrives before resize settles: must not be clobbered by stale saved prompt.
+        f.feed(b"\x1b]133;C\x07fresh output\r\n");
+        settle_prompt(&f.shared, true);
+        assert!(screen(&f).iter().any(|l| l.contains("fresh output")));
+        assert!(!screen(&f).iter().any(|l| l.contains("user@host project % ls")));
     }
 }

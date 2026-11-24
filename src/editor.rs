@@ -40,6 +40,9 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "pth", "onnx", "safetensors", "gguf",
 ];
 
+/// Cached `(start, end)` byte ranges for each line in a virtualized read-only buffer.
+pub type LineRanges = std::sync::Arc<Vec<(usize, usize)>>;
+
 pub struct OpenFile {
     pub path: PathBuf,
     pub text: String,
@@ -78,6 +81,8 @@ pub struct OpenFile {
     pub select: Option<(usize, usize)>,
     /// Where lines start, for the revision it was made for (language server positions).
     pub index: Option<(u64, tc_lsp::pos::LineIndex)>,
+    /// Cached line byte ranges for the virtualized viewer, keyed by `rev`.
+    pub virtual_lines: Option<(u64, LineRanges)>,
     pub syntax: String,
     /// Syntax colours, kept per line so an edit colours only what it changed.
     pub highlight: Highlight,
@@ -350,6 +355,7 @@ pub fn load(path: &Path) -> Result<OpenFile, OpenError> {
         goto_line: None,
         select: None,
         index: None,
+        virtual_lines: None,
         syntax: syntax_for(path),
         highlight: Highlight::default(),
         doc: None,
@@ -397,6 +403,7 @@ impl OpenFile {
             goto_line: None,
             select: None,
             index: None,
+            virtual_lines: None,
             syntax: String::new(),
             highlight: Highlight::default(),
             changed_by: None,

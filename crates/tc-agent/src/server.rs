@@ -34,6 +34,14 @@ fn hash_of(data_dir: &Path) -> u64 {
     hash
 }
 
+#[cfg(unix)]
+fn unix_socket_base(xdg_runtime: Option<&std::ffi::OsStr>, uid: u32) -> PathBuf {
+    xdg_runtime
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| PathBuf::from(format!("/tmp/ternarycode-{uid}")))
+}
+
 /// Where the socket goes. Socket paths are limited to about 100 bytes, so it is not put in the
 /// data folder: on macOS the per-user temporary folder (private), elsewhere `$XDG_RUNTIME_DIR`
 /// or a private folder in `/tmp`. The name is derived from the data folder, so separate data
@@ -44,12 +52,9 @@ pub fn socket_path(data_dir: &Path) -> PathBuf {
     let base = if cfg!(target_os = "macos") {
         std::env::temp_dir()
     } else {
-        std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                // SAFETY: getuid never fails.
-                PathBuf::from(format!("/tmp/ternarycode-{}", unsafe { libc::getuid() }))
-            })
+        // SAFETY: getuid never fails.
+        let uid = unsafe { libc::getuid() };
+        unix_socket_base(std::env::var_os("XDG_RUNTIME_DIR").as_deref(), uid)
     };
     base.join(format!("ternarycode-{:08x}", hash as u32)).join("hook.sock")
 }
@@ -125,9 +130,16 @@ pub struct HookServer {
     /// The socket's (device, inode): the path may be another instance's socket by the end.
     #[cfg(unix)]
     socket: (u64, u64),
-    /// The listening socket's fd, and the task accepting on it.
+    /// True after a successful `handoff`: `Drop` leaves the socket file for the next run.
     #[cfg(unix)]
-    listener: (std::os::fd::RawFd, tokio::task::AbortHandle),
+    keep_socket: bool,
+    /// Shutdown signal, listener handback channel, and abort handle for the accepting task.
+    #[cfg(unix)]
+    accept: Option<(
+        tokio::sync::oneshot::Sender<()>,
+        std::sync::mpsc::Receiver<io::Result<std::os::unix::net::UnixListener>>,
+        tokio::task::AbortHandle,
+    )>,
     #[cfg(windows)]
     accept: tokio::task::AbortHandle,
 }
@@ -216,7 +228,7 @@ impl HookServer {
         }
         let bound = std::fs::symlink_metadata(&path)?;
         let socket = (bound.dev(), bound.ino());
-        Ok(Self::serve(rt, path, socket, listener, HashMap::new(), on_msg))
+        Self::serve(rt, path, socket, listener, HashMap::new(), on_msg)
     }
 
     #[cfg(unix)]
@@ -227,44 +239,76 @@ impl HookServer {
         listener: std::os::unix::net::UnixListener,
         tokens: HashMap<u64, String>,
         on_msg: Arc<dyn Fn(HookMsg) + Send + Sync>,
-    ) -> Self {
-        use std::os::fd::AsRawFd;
-        let fd = listener.as_raw_fd();
+    ) -> io::Result<Self> {
+        let listener = {
+            let _runtime = rt.enter();
+            tokio::net::UnixListener::from_std(listener)?
+        };
         let tokens = Arc::new(Mutex::new(tokens));
         let known = tokens.clone();
         let calls: Calls = Arc::default();
         let answer = calls.clone();
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
         let accept = rt.spawn(async move {
-            let Ok(listener) = tokio::net::UnixListener::from_std(listener) else {
-                return;
-            };
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    // Out of file descriptors, say: wait instead of spinning on the error.
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    continue;
-                };
-                tokio::spawn(serve_connection(stream, known.clone(), on_msg.clone(), answer.clone()));
+                tokio::select! {
+                    biased;
+                    _ = &mut stop_rx => {
+                        let _ = done_tx.send(listener.into_std());
+                        return;
+                    }
+                    res = listener.accept() => {
+                        match res {
+                            Ok((stream, _)) => {
+                                tokio::spawn(serve_connection(stream, known.clone(), on_msg.clone(), answer.clone()));
+                            }
+                            Err(_) => {
+                                // Out of file descriptors, say: wait instead of spinning on the error.
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            }
+                        }
+                    }
+                }
             }
         });
-        Self { path, tokens, calls, socket, listener: (fd, accept.abort_handle()) }
+        Ok(Self {
+            path,
+            tokens,
+            calls,
+            socket,
+            keep_socket: false,
+            accept: Some((stop_tx, done_rx, accept.abort_handle())),
+        })
     }
 
     /// Stops serving and hands the socket over to the app's next run (see [`Handoff`]): a hook
     /// sent from now on waits in the socket for the new run to read it. The socket file stays.
     #[cfg(unix)]
-    pub fn handoff(self) -> io::Result<Handoff> {
-        // A copy that lives through exec (`dup` does not set close-on-exec); the server's own
-        // fd closes with its task.
-        // SAFETY: dup of the fd the accepting task owns, which is open until it ends.
-        let fd = unsafe { libc::dup(self.listener.0) };
+    pub fn handoff(mut self) -> io::Result<Handoff> {
+        use std::os::fd::AsRawFd;
+        let (stop_tx, done_rx, abort) = self
+            .accept
+            .take()
+            .ok_or_else(|| io::Error::other("hook server already stopped"))?;
+        let _ = stop_tx.send(());
+        let std_listener = match done_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(res) => res?,
+            Err(_) => {
+                abort.abort();
+                return Err(io::Error::other("hook accept task did not stop in time"));
+            }
+        };
+        // A copy that lives through exec (`dup` does not set close-on-exec); `std_listener` closes
+        // its own CLOEXEC fd on drop below.
+        // SAFETY: `std_listener` is owned and open for the duration of this call.
+        let fd = unsafe { libc::dup(std_listener.as_raw_fd()) };
         if fd == -1 {
             return Err(io::Error::last_os_error());
         }
-        self.listener.1.abort();
+        drop(std_listener);
+        self.keep_socket = true;
         let tokens = self.tokens.lock().clone();
-        // Not dropped: that removes the socket file.
-        std::mem::forget(self);
         Ok(Handoff { fd, tokens })
     }
 
@@ -297,7 +341,7 @@ impl HookServer {
             return Err(io::Error::from(io::ErrorKind::InvalidInput));
         }
         let socket = (bound.dev(), bound.ino());
-        Ok(Self::serve(rt, path, socket, listener, handoff.tokens, on_msg))
+        Self::serve(rt, path, socket, listener, handoff.tokens, on_msg)
     }
 
     /// Creates the named pipe and serves it on `rt`. `on_msg` runs for every accepted message.
@@ -395,10 +439,15 @@ impl Drop for HookServer {
         // Stop accepting new connections; only remove the path while it is still our socket.
         #[cfg(unix)]
         {
-            self.listener.1.abort();
-            use std::os::unix::fs::MetadataExt;
-            if std::fs::symlink_metadata(&self.path).is_ok_and(|m| (m.dev(), m.ino()) == self.socket) {
-                let _ = std::fs::remove_file(&self.path);
+            if let Some((stop_tx, _, abort)) = self.accept.take() {
+                let _ = stop_tx.send(());
+                abort.abort();
+            }
+            if !self.keep_socket {
+                use std::os::unix::fs::MetadataExt;
+                if std::fs::symlink_metadata(&self.path).is_ok_and(|m| (m.dev(), m.ino()) == self.socket) {
+                    let _ = std::fs::remove_file(&self.path);
+                }
             }
         }
         #[cfg(windows)]
@@ -579,8 +628,7 @@ mod tests {
             let (sock, msg) = crate::client::message(&args, env, || None).unwrap();
             crate::client::send(&sock, &msg).unwrap();
         };
-        // Sent between the two runs: it waits in the socket.
-        std::thread::sleep(Duration::from_millis(50));
+        // Sent immediately after handoff (no sleep needed): the accept task has already stopped.
         send();
         let (tx, rx) = std::sync::mpsc::channel();
         let tx = Mutex::new(tx);
@@ -591,5 +639,15 @@ mod tests {
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().pane, 7);
         send();
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().pane, 7);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_base_ignores_empty_or_relative_xdg_runtime_dir() {
+        use std::ffi::OsStr;
+        assert_eq!(unix_socket_base(None, 1000), PathBuf::from("/tmp/ternarycode-1000"));
+        assert_eq!(unix_socket_base(Some(OsStr::new("")), 1000), PathBuf::from("/tmp/ternarycode-1000"));
+        assert_eq!(unix_socket_base(Some(OsStr::new("relative/dir")), 1000), PathBuf::from("/tmp/ternarycode-1000"));
+        assert_eq!(unix_socket_base(Some(OsStr::new("/run/user/1000")), 1000), PathBuf::from("/run/user/1000"));
     }
 }

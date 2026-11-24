@@ -15,48 +15,60 @@ pub struct FileEdit {
     pub edits: Vec<TextEdit>,
 }
 
-/// A workspace edit as edits per file, in a stable order. File creations, renames and
-/// deletions are listed apart: the app does not apply those.
+/// A workspace edit as ordered per-file edit batches. Under LSP 3.17, `documentChanges` is an
+/// ordered sequence where multiple `TextDocumentEdit` entries for the same file apply
+/// sequentially against the text produced by earlier entries (each with its own `version`),
+/// whereas `changes` is an unordered map grouped into a stable path order. File creations,
+/// renames and deletions are counted in `skipped`: the app does not apply those.
 pub fn files(edit: &WorkspaceEdit) -> (Vec<FileEdit>, usize) {
-    let mut by_path: BTreeMap<PathBuf, FileEdit> = BTreeMap::new();
     let mut skipped = 0;
-    let mut add = |p: PathBuf, version: Option<i32>, edits: Vec<TextEdit>| {
-        let e = by_path.entry(p.clone()).or_insert(FileEdit {
-            path: p,
-            version,
-            edits: Vec::new(),
-        });
-        e.edits.extend(edits);
-    };
     match &edit.document_changes {
         Some(DocumentChanges::Edits(docs)) => {
+            let mut out = Vec::with_capacity(docs.len());
             for d in docs {
                 if let Some(p) = path(&d.text_document.uri) {
-                    add(p, d.text_document.version, plain(&d.edits));
+                    out.push(FileEdit {
+                        path: p,
+                        version: d.text_document.version,
+                        edits: plain(&d.edits),
+                    });
                 }
             }
+            (out, skipped)
         }
         Some(DocumentChanges::Operations(ops)) => {
+            let mut out = Vec::new();
             for op in ops {
                 match op {
                     DocumentChangeOperation::Edit(d) => {
                         if let Some(p) = path(&d.text_document.uri) {
-                            add(p, d.text_document.version, plain(&d.edits));
+                            out.push(FileEdit {
+                                path: p,
+                                version: d.text_document.version,
+                                edits: plain(&d.edits),
+                            });
                         }
                     }
                     DocumentChangeOperation::Op(_) => skipped += 1,
                 }
             }
+            (out, skipped)
         }
         None => {
+            let mut by_path: BTreeMap<PathBuf, FileEdit> = BTreeMap::new();
             for (uri, edits) in edit.changes.iter().flatten() {
                 if let Some(p) = path(uri) {
-                    add(p, None, edits.clone());
+                    let e = by_path.entry(p.clone()).or_insert(FileEdit {
+                        path: p,
+                        version: None,
+                        edits: Vec::new(),
+                    });
+                    e.edits.extend(edits.clone());
                 }
             }
+            (by_path.into_values().collect(), skipped)
         }
     }
-    (by_path.into_values().collect(), skipped)
 }
 
 fn plain(edits: &[OneOf<TextEdit, lsp_types::AnnotatedTextEdit>]) -> Vec<TextEdit> {
@@ -157,5 +169,31 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].path, PathBuf::from("/p/a.rs"));
         assert_eq!(files[0].edits.len(), 2);
+    }
+
+    #[test]
+    fn document_changes_preserves_sequential_edits_and_versions_for_same_file() {
+        let a = crate::pos::uri(std::path::Path::new("/p/a.rs"));
+        let ws = WorkspaceEdit {
+            document_changes: Some(DocumentChanges::Edits(vec![
+                lsp_types::TextDocumentEdit {
+                    text_document: lsp_types::OptionalVersionedTextDocumentIdentifier { uri: a.clone(), version: None },
+                    edits: vec![OneOf::Left(edit(0, 0, 0, 3, "hello"))],
+                },
+                lsp_types::TextDocumentEdit {
+                    text_document: lsp_types::OptionalVersionedTextDocumentIdentifier { uri: a, version: Some(7) },
+                    edits: vec![OneOf::Left(edit(0, 0, 0, 5, "world"))],
+                },
+            ])),
+            ..Default::default()
+        };
+        let (list, skipped) = files(&ws);
+        assert_eq!(skipped, 0);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].version, None);
+        assert_eq!(list[1].version, Some(7));
+        let step1 = apply("abc", &list[0].edits, Encoding::Utf16).unwrap();
+        let step2 = apply(&step1, &list[1].edits, Encoding::Utf16).unwrap();
+        assert_eq!(step2, "world");
     }
 }

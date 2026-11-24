@@ -847,20 +847,30 @@ impl JsonVal {
 
 const JSON_MAX_DEPTH: usize = 128;
 
+fn parse_complete_container(bytes: &[u8], start: usize) -> Option<JsonVal> {
+    let mut p = JsonParser { bytes, pos: start, depth: 0 };
+    let v = p.value()?;
+    if !matches!(v, JsonVal::Obj(_) | JsonVal::Arr(_)) {
+        return None;
+    }
+    p.skip_ws();
+    (p.pos == p.bytes.len()).then_some(v)
+}
+
 fn parse_json(src: &str) -> Option<JsonVal> {
-    let mut p = JsonParser { bytes: src.as_bytes(), pos: 0, depth: 0 };
-    if let Some(v) = p.value() {
+    let bytes = src.as_bytes();
+    if let Some(v) = parse_complete_container(bytes, 0) {
         return Some(v);
     }
-    // Some CLI builds print warning lines (like `[WARNING] ...`) before JSON: scan line starts
-    // that begin with `{` or `[` and return the first valid JSON value.
+    // Some CLI builds print warning lines (like `[WARNING] ...` or Go timestamps `2026/11/24 ...`)
+    // before JSON: scan line starts that begin with `{` or `[` and return the first value that
+    // consumes the remainder of the output.
     let mut offset = 0usize;
     for line in src.split_inclusive('\n') {
         let trimmed = line.trim_start();
         if trimmed.starts_with('{') || trimmed.starts_with('[') {
             let lead = line.len() - trimmed.len();
-            let mut p2 = JsonParser { bytes: src.as_bytes(), pos: offset + lead, depth: 0 };
-            if let Some(v) = p2.value() {
+            if let Some(v) = parse_complete_container(bytes, offset + lead) {
                 return Some(v);
             }
         }
@@ -1386,6 +1396,14 @@ mod tests {
 
         let from_glab = pr_from_url("Creating merge request...\nhttps://gitlab.com/acme/app/-/merge_requests/42\n", PrState::Open).unwrap();
         assert_eq!(from_glab.number, 42);
+
+        // Warning lines starting with Go timestamps or bracketed numbers must not fool `parse_json`.
+        let with_go_log = "2026/11/24 18:30:00 WARN token expires soon\n{\"iid\":17,\"web_url\":\"https://gitlab.com/acme/app/-/merge_requests/17\",\"state\":\"opened\",\"draft\":false}\n";
+        assert_eq!(parse_glab_mr_json(with_go_log).unwrap().number, 17);
+        let with_bracket_num = "[1] deprecation notice\n[{\"iid\":18,\"web_url\":\"https://gitlab.com/acme/app/-/merge_requests/18\",\"title\":\"Fix\",\"source_branch\":\"fix\",\"author\":{\"username\":\"dev\"}}]\n";
+        let list2 = parse_glab_mr_list_json(with_bracket_num);
+        assert_eq!(list2.len(), 1);
+        assert_eq!(list2[0].number, 18);
     }
 
     #[test]

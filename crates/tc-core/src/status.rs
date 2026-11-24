@@ -144,6 +144,9 @@ pub struct Tracker {
     pub agent: Option<AgentKind>,
     /// Hooks arrived from the current agent run.
     pub hooks_active: bool,
+    /// Lifecycle/working hooks (`SessionStart` / `Working`) arrived from the current agent run
+    /// (as opposed to Codex notify-only mode, which only emits `TurnDone` / `NeedsInput`).
+    working_hooks: bool,
     /// Shell integration marks were seen in this pane.
     pub shell_marks: bool,
     command_started: Option<Instant>,
@@ -175,6 +178,8 @@ pub struct TrackerSave {
     fg_ms: u64,
     agent: Option<AgentKind>,
     hooks_active: bool,
+    #[serde(default)]
+    working_hooks: bool,
     shell_marks: bool,
     command_ms: Option<u64>,
     long_command_ms: u64,
@@ -203,6 +208,7 @@ impl Tracker {
             fg_since: now,
             agent: None,
             hooks_active: false,
+            working_hooks: false,
             shell_marks: false,
             command_started: None,
             focused: false,
@@ -224,6 +230,7 @@ impl Tracker {
             fg_ms: ago(now, self.fg_since),
             agent: self.agent,
             hooks_active: self.hooks_active,
+            working_hooks: self.working_hooks,
             shell_marks: self.shell_marks,
             command_ms: self.command_started.map(|t| ago(now, t)),
             long_command_ms: self.long_command.as_millis() as u64,
@@ -247,6 +254,7 @@ impl Tracker {
             fg_since: back(now, save.fg_ms),
             agent: save.agent,
             hooks_active: save.hooks_active,
+            working_hooks: save.working_hooks,
             shell_marks: save.shell_marks,
             command_started: save.command_ms.map(|ms| back(now, ms)),
             focused: false,
@@ -306,9 +314,7 @@ impl Tracker {
         let changed = status != self.status || source != self.source || unseen != self.unseen;
         if status != self.status {
             self.since = now;
-            if !matches!(status, Status::NeedsInput | Status::Done) {
-                self.message = None;
-            }
+            self.message = None;
         }
         self.status = status;
         self.source = source;
@@ -337,6 +343,7 @@ impl Tracker {
         self.unseen = false;
         if matches!(self.status, Status::Done | Status::CommandDone) {
             self.status = Status::Idle;
+            self.message = None;
             self.since = now;
         }
     }
@@ -356,10 +363,6 @@ impl Tracker {
 
     /// Applies one signal. Returns whether anything visible changed.
     pub fn apply(&mut self, event: Event, now: Instant) -> bool {
-        // Anything the agent or the shell says settles a provisional Running.
-        if !matches!(event, Event::Enter | Event::Foreground(_)) {
-            self.provisional = None;
-        }
         match event {
             Event::Foreground(fg) => self.foreground(fg, now),
             Event::Hook {
@@ -367,8 +370,15 @@ impl Tracker {
                 signal,
                 message,
             } => {
+                self.provisional = None;
+                if self.agent != Some(agent) {
+                    self.working_hooks = false;
+                }
                 self.hooks_active = true;
                 self.agent = Some(agent);
+                if matches!(signal, HookSignal::SessionStart | HookSignal::Working) {
+                    self.working_hooks = true;
+                }
                 let source = Source::Hook(agent);
                 let changed = match signal {
                     HookSignal::SessionStart | HookSignal::SessionEnd => {
@@ -386,6 +396,7 @@ impl Tracker {
                 };
                 if signal == HookSignal::SessionEnd {
                     self.hooks_active = false;
+                    self.working_hooks = false;
                 }
                 // A question, or the agent's last words when it finished its turn.
                 if matches!(self.status, Status::NeedsInput | Status::Done) {
@@ -404,6 +415,7 @@ impl Tracker {
                 if self.hooks_active && self.agent != Some(AgentKind::Codex) {
                     return false;
                 }
+                self.provisional = None;
                 let changed = self.set(Status::NeedsInput, Source::Osc, true, now);
                 if message.is_some() {
                     self.message = message;
@@ -412,6 +424,7 @@ impl Tracker {
                 changed
             }
             Event::RateLimited { message } => {
+                self.provisional = None;
                 let source = self.agent.map(Source::Hook).unwrap_or(Source::Osc);
                 let changed = self.set(Status::NeedsInput, source, true, now);
                 if message.is_some() {
@@ -427,6 +440,7 @@ impl Tracker {
                 if !program || self.focused || self.hooks_active {
                     return false;
                 }
+                self.provisional = None;
                 self.set(Status::NeedsInput, Source::Bell, true, now)
             }
             Event::Shell(mark) => {
@@ -440,6 +454,7 @@ impl Tracker {
                         let Some(start) = self.command_started.take() else {
                             return false;
                         };
+                        self.provisional = None;
                         // An agent's exit can emit OSC 133;D before the foreground poll notices
                         // the shell is back; don't turn that into a spurious command notice.
                         if self.agent.is_some()
@@ -465,8 +480,9 @@ impl Tracker {
                     && self.agent.is_some()
                     && matches!(self.status, Status::Idle | Status::Done);
                 if answering || prompting {
-                    // With hooks, the agent says when it works; without, nothing would undo it.
-                    if self.hooks_active {
+                    // Only arm provisional confirmation when the agent's hooks actually emit
+                    // `Working`/`SessionStart`; in Codex notify-only mode nothing emits `Working`.
+                    if self.working_hooks {
                         let back = if answering { Status::Idle } else { self.status };
                         self.provisional = Some((now + ENTER_CONFIRM, back));
                     }
@@ -476,9 +492,11 @@ impl Tracker {
                 }
             }
             Event::Exited(code) => {
+                self.provisional = None;
                 self.fg = Foreground::Gone;
                 self.agent = None;
                 self.hooks_active = false;
+                self.working_hooks = false;
                 match code {
                     Some(c) if c != 0 => self.set(Status::Failed(c), Source::Process, true, now),
                     _ => self.set(Status::Ended, Source::Process, false, now),
@@ -499,6 +517,8 @@ impl Tracker {
                 let was_agent = self.agent.is_some();
                 self.agent = None;
                 self.hooks_active = false;
+                self.working_hooks = false;
+                self.provisional = None;
                 match prev {
                     Foreground::Program { agent: Some(_), .. } => {
                         // The agent was quit: don't let its shell-integration finish mark turn
@@ -530,6 +550,7 @@ impl Tracker {
             } => {
                 if self.agent != Some(agent) {
                     self.hooks_active = false;
+                    self.working_hooks = false;
                 }
                 self.agent = Some(agent);
                 if self.hooks_active {
@@ -850,5 +871,85 @@ mod tests {
         assert_eq!(t.status, Status::Idle);
         assert!(!t.wants_attention());
         assert_eq!(t.message, None);
+    }
+
+    #[test]
+    fn mark_seen_and_status_transitions_do_not_leak_stale_messages() {
+        let t0 = Instant::now();
+        let mut t = Tracker::new(t0);
+        t.apply(prog("claude", Some(AgentKind::Claude)), t0);
+        t.apply(
+            Event::Hook {
+                agent: AgentKind::Claude,
+                signal: HookSignal::TurnDone,
+                message: Some("Finished refactor".into()),
+            },
+            t0,
+        );
+        assert_eq!(t.status, Status::Done);
+        assert_eq!(t.message.as_deref(), Some("Finished refactor"));
+        // Focusing marks Done as seen -> Idle, and clears the stale turn summary.
+        t.set_focused(true, t0 + Duration::from_secs(1));
+        assert_eq!(t.status, Status::Idle);
+        assert_eq!(t.message, None);
+        // Transitioning directly from Done (with message) to NeedsInput (without message) also clears it.
+        t.set_focused(false, t0 + Duration::from_secs(2));
+        t.apply(
+            Event::Hook {
+                agent: AgentKind::Claude,
+                signal: HookSignal::TurnDone,
+                message: Some("Old turn summary".into()),
+            },
+            t0 + Duration::from_secs(2),
+        );
+        t.apply(
+            Event::Hook {
+                agent: AgentKind::Claude,
+                signal: HookSignal::NeedsInput,
+                message: None,
+            },
+            t0 + Duration::from_secs(3),
+        );
+        assert_eq!(t.status, Status::NeedsInput);
+        assert_eq!(t.message, None);
+    }
+
+    #[test]
+    fn ignored_bell_and_notify_do_not_cancel_provisional_running() {
+        let t0 = Instant::now();
+        let mut t = Tracker::new(t0);
+        t.set_focused(true, t0);
+        t.apply(prog("claude", Some(AgentKind::Claude)), t0);
+        t.apply(hook(HookSignal::SessionStart), t0);
+        t.apply(Event::Enter, t0);
+        assert_eq!(t.status, Status::Running);
+        assert_eq!(t.deadline(), Some(t0 + ENTER_CONFIRM));
+        // Ignored Bell (focused/hooks_active) and ignored Notify (hooks_active) must not clear provisional.
+        assert!(!t.apply(Event::Bell, t0 + Duration::from_secs(1)));
+        assert!(!t.apply(Event::Notify { message: Some("ignored".into()) }, t0 + Duration::from_secs(2)));
+        assert_eq!(t.deadline(), Some(t0 + ENTER_CONFIRM));
+        assert!(t.expire(t0 + ENTER_CONFIRM));
+        assert_eq!(t.status, Status::Idle);
+    }
+
+    #[test]
+    fn codex_notify_only_stays_running_after_enter() {
+        let t0 = Instant::now();
+        let mut t = Tracker::new(t0);
+        t.apply(prog("codex", Some(AgentKind::Codex)), t0);
+        t.apply(
+            Event::Hook {
+                agent: AgentKind::Codex,
+                signal: HookSignal::TurnDone,
+                message: None,
+            },
+            t0,
+        );
+        assert!(t.hooks_active);
+        t.apply(Event::Enter, t0 + Duration::from_secs(1));
+        assert_eq!(t.status, Status::Running);
+        assert_eq!(t.deadline(), None);
+        assert!(!t.expire(t0 + Duration::from_secs(30)));
+        assert_eq!(t.status, Status::Running);
     }
 }

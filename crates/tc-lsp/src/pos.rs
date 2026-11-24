@@ -194,20 +194,25 @@ pub fn path(uri: &Uri) -> Option<PathBuf> {
     }
     #[cfg(windows)]
     {
-        // `/C:/dir` → `C:\dir`; a host is a network share (`\\server\share\…`).
-        let text = String::from_utf8_lossy(&out).replace('/', "\\");
-        let b = text.as_bytes();
-        let text = if b.len() >= 3 && b[0] == b'\\' && b[1].is_ascii_alphabetic() && b[2] == b':' {
-            text[1..].to_string()
-        } else if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
-            format!("\\\\{host}{text}")
-        } else {
-            text
-        };
-        Some(PathBuf::from(text))
+        Some(PathBuf::from(normalize_windows_uri_path(&String::from_utf8_lossy(&out), host)))
     }
     #[cfg(not(any(unix, windows)))]
     Some(PathBuf::from(String::from_utf8_lossy(&out).into_owned()))
+}
+
+/// Converts a decoded `file://` URI path on Windows (`/[cC]:/...` -> `C:\...`, uppercase drive
+/// letter to match canonical Windows paths used as map keys in the editor/LSP layer).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn normalize_windows_uri_path(raw: &str, host: &str) -> String {
+    let text = raw.replace('/', "\\");
+    let b = text.as_bytes();
+    if b.len() >= 3 && b[0] == b'\\' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        format!("{}{}", b[1].to_ascii_uppercase() as char, &text[2..])
+    } else if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+        format!("\\\\{host}{text}")
+    } else {
+        text
+    }
 }
 
 #[cfg(test)]
@@ -254,8 +259,15 @@ mod tests {
         let share = uri(Path::new(r"\\server\share\z.rs"));
         assert_eq!(share.as_str(), "file://server/share/z.rs");
         assert_eq!(path(&share).unwrap(), Path::new(r"\\server\share\z.rs"));
-        // As servers send them: the colon encoded, the drive lowercase.
+        // As servers send them: the colon encoded, the drive lowercase (normalized to uppercase).
         let sent: Uri = "file:///c%3A/Users/me/b.rs".parse().unwrap();
-        assert_eq!(path(&sent).unwrap(), Path::new(r"c:\Users\me\b.rs"));
+        assert_eq!(path(&sent).unwrap(), Path::new(r"C:\Users\me\b.rs"));
+    }
+
+    #[test]
+    fn windows_uri_path_normalizes_lowercase_drive_letters() {
+        assert_eq!(normalize_windows_uri_path("/c:/Users/me/b.rs", ""), r"C:\Users\me\b.rs");
+        assert_eq!(normalize_windows_uri_path("/D:/repo/lib.rs", ""), r"D:\repo\lib.rs");
+        assert_eq!(normalize_windows_uri_path("/share/z.rs", "server"), r"\\server\share\z.rs");
     }
 }

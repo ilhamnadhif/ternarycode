@@ -59,10 +59,12 @@ fn next(term: &Term<Listener>, regex: &mut RegexSearch, from: Option<&Match>, ba
         (None, true) => Point::new(term.bottommost_line(), term.last_column()),
         (None, false) => Point::new(term.topmost_line(), Column(0)),
     };
+    // Match `Side` to `Direction` so `Term::search_next`'s `expand_wide(origin, direction)`
+    // never shifts `origin` past the compared endpoint of an adjacent wide-character match.
     let (direction, side) = if backward {
-        (Direction::Left, Side::Right)
+        (Direction::Left, Side::Left)
     } else {
-        (Direction::Right, Side::Left)
+        (Direction::Right, Side::Right)
     };
     term.search_next(regex, origin, direction, side, None)
 }
@@ -156,5 +158,26 @@ mod tests {
         shared.term.lock().grid_mut().clear_history();
         let _ = find(&shared, "needle", Some(&far), true);
         let _ = find(&shared, "needle", Some(&far), false);
+    }
+
+    #[test]
+    fn adjacent_wide_character_matches_are_all_found() {
+        let (shared, rx) = new_terminal(term_config(1000, Default::default(), false), GridSize { cols: 40, rows: 5 }, (&SCHEMES[0]).into());
+        let mut f = Feeder::new(shared.clone(), rx);
+        f.feed("漢漢\r\na漢a漢\r\n".as_bytes());
+
+        // Backward find_all must not skip the left adjacent wide-char match.
+        let all = find_all(&shared, "漢", 10);
+        assert_eq!(all.len(), 4, "{all:?}");
+        let all_a = find_all(&shared, "a漢", 10);
+        assert_eq!(all_a.len(), 2, "{all_a:?}");
+
+        // Forward find starting from None (col 0 on a wide char) and stepping across adjacent wide chars.
+        let m1 = find(&shared, "漢", None, false).unwrap();
+        assert_eq!(m1.start().column, Column(0));
+        let m2 = find(&shared, "漢", Some(&m1), false).unwrap();
+        assert_eq!(m2.start().column, Column(2));
+        let m3 = find(&shared, "漢", Some(&m2), false).unwrap();
+        assert_ne!(m3, m1);
     }
 }

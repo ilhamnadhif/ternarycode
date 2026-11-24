@@ -340,7 +340,9 @@ fn git(dir: &Path) -> Command {
     for var in INHERITED_GIT_VARS {
         cmd.env_remove(var);
     }
-    cmd.args(["-c", "core.quotepath=off"]);
+    // Disable quotepath and signature verification output so user git configs cannot break
+    // machine-parsed log/status output.
+    cmd.args(["-c", "core.quotepath=off", "-c", "log.showSignature=false"]);
     cmd
 }
 

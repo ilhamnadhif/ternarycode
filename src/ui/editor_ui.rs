@@ -1157,13 +1157,13 @@ fn paint_virtual_text(
     let y_sep = ui.cursor().top();
     ui.painter().hline(ui.max_rect().x_range(), y_sep, Stroke::new(1.0, p.border));
 
-    // Cache line byte ranges in egui temp storage so scrolling never re-scans a 2 MB buffer.
-    let cache_id = egui::Id::new(("virtual-lines", project, file.path.clone()));
-    let ranges: std::sync::Arc<Vec<(usize, usize)>> = match ui.data(|d| d.get_temp::<(u64, std::sync::Arc<Vec<(usize, usize)>>)>(cache_id)) {
-        Some((rev, r)) if rev == file.rev => r,
+    // Cache line byte ranges on the OpenFile so scrolling never re-scans a 2 MB buffer and
+    // closing/reopening or freeing editor memory cannot leak or reuse stale byte offsets.
+    let ranges: crate::editor::LineRanges = match &file.virtual_lines {
+        Some((rev, r)) if *rev == file.rev => r.clone(),
         _ => {
             let r = std::sync::Arc::new(compute_line_ranges(&file.text));
-            ui.data_mut(|d| d.insert_temp(cache_id, (file.rev, r.clone())));
+            file.virtual_lines = Some((file.rev, r.clone()));
             r
         }
     };

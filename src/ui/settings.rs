@@ -175,7 +175,7 @@ pub(super) fn card(ui: &mut Ui, search: &str, add: impl FnOnce(&mut Card)) -> eg
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 0.0;
-            let mut c = Card { ui, search: search.to_string(), first: true };
+            let mut c = Card { ui, search: search.to_string(), first: true, row_idx: 0 };
             add(&mut c);
         })
         .response
@@ -203,6 +203,7 @@ pub(super) struct Card<'a> {
     pub ui: &'a mut Ui,
     search: String,
     first: bool,
+    row_idx: usize,
 }
 
 impl Card<'_> {
@@ -252,6 +253,8 @@ impl Card<'_> {
     /// The row: the text at the left (as wide as the control leaves; the control's size is the
     /// one it had last frame), the control at the right, both centred in the row.
     fn row_full(&mut self, icon: Option<(&'static str, Color32)>, label: &str, note: &str, note_color: Option<Color32>, control: impl FnOnce(&mut Ui)) {
+        let row_idx = self.row_idx;
+        self.row_idx += 1;
         if !hit(&self.search, label, note) {
             return;
         }
@@ -259,7 +262,7 @@ impl Card<'_> {
         let ui = &mut *self.ui;
         let p = style::pal(ui);
         let w = ui.available_width();
-        let key = ui.id().with(("settings-row", label));
+        let key = ui.id().with(("settings-row", row_idx, label));
         let ctrl: Vec2 = ui.data(|d| d.get_temp(key)).unwrap_or(Vec2::ZERO);
         let icon_w = if icon.is_some() { 16.0 + 14.0 } else { 0.0 };
         let ctrl_room = if ctrl.x > 0.0 { ctrl.x + 14.0 } else { 0.0 };
@@ -282,7 +285,7 @@ impl Card<'_> {
             ui.painter().galley(pos2(x, ty + label_h + 3.0), g, note_c);
         }
         let cr = Rect::from_min_max(pos2(rect.right() - 16.0 - ctrl.x, rect.top() + 12.0), pos2(rect.right() - 16.0, rect.bottom() - 12.0));
-        let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("settings-ctrl", label)).max_rect(cr).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("settings-ctrl", row_idx, label)).max_rect(cr).layout(egui::Layout::left_to_right(egui::Align::Center)));
         child.spacing_mut().item_spacing = vec2(10.0, 6.0);
         control(&mut child);
         let used = child.min_rect().size();
@@ -770,7 +773,7 @@ impl App {
                         .vertical(|ui| {
                             ui.set_width(full - preview_w);
                             ui.spacing_mut().item_spacing.y = 0.0;
-                            let mut c = Card { ui, search: search.clone(), first: true };
+                            let mut c = Card { ui, search: search.clone(), first: true, row_idx: 0 };
                             c.row(t("Font"), "", |ui| {
                                 let fonts: Vec<&'static str> = tc_term::fonts::PRESETS.iter().filter(|f| tc_term::fonts::is_available(f)).map(|f| f.name).collect();
                                 let current = tc_term::fonts::effective_choice(&tc_term::prefs::FontChoice { name: self.settings.font_name.clone(), path: self.settings.font_path.clone(), index: 0 }).name;

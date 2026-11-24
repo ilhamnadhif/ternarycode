@@ -154,22 +154,40 @@ pub fn tools() -> Value {
 
 /// The answer to one JSON-RPC message (`None` for a notification or a response).
 fn answer(msg: &Value, env: &Option<Pane>, call: &dyn Fn(&Pane, &str, &Value) -> Value) -> Option<Value> {
+    let tools_enabled = std::env::var(crate::integrate::ENV_BROWSER_AGENTS).as_deref() != Ok("0");
+    answer_with(msg, env, tools_enabled, call)
+}
+
+fn answer_with(
+    msg: &Value,
+    env: &Option<Pane>,
+    tools_enabled: bool,
+    call: &dyn Fn(&Pane, &str, &Value) -> Value,
+) -> Option<Value> {
     let id = msg.get("id").cloned()?;
     let method = msg["method"].as_str()?;
+    let available = env.is_some() && tools_enabled;
     let result = match method {
         "initialize" => {
             let asked = msg["params"]["protocolVersion"].as_str().unwrap_or("");
             let version = VERSIONS.iter().find(|v| **v == asked).unwrap_or(&VERSIONS[0]);
-            json!({
-                "protocolVersion": version,
-                "capabilities": {"tools": {"listChanged": false}},
-                "serverInfo": {"name": "ternarycode", "title": "TernaryCode browser", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": INSTRUCTIONS,
-            })
+            let mut obj = serde_json::Map::new();
+            obj.insert("protocolVersion".into(), json!(version));
+            obj.insert("capabilities".into(), json!({"tools": {"listChanged": false}}));
+            obj.insert(
+                "serverInfo".into(),
+                json!({"name": "ternarycode", "title": "TernaryCode browser", "version": env!("CARGO_PKG_VERSION")}),
+            );
+            // Only inject TernaryCode browser instructions when tools are actually available;
+            // outside TernaryCode or when disabled, emitting them tells global agents (e.g.
+            // Antigravity/Gemini CLI) not to use any other browser while exposing zero tools.
+            if available {
+                obj.insert("instructions".into(), json!(INSTRUCTIONS));
+            }
+            Value::Object(obj)
         }
         "ping" => json!({}),
         "tools/list" => {
-            let available = env.is_some() && std::env::var(crate::integrate::ENV_BROWSER_AGENTS).as_deref() != Ok("0");
             json!({"tools": if available { tools() } else { json!([]) }})
         }
         "tools/call" => {
@@ -177,7 +195,7 @@ fn answer(msg: &Value, env: &Option<Pane>, call: &dyn Fn(&Pane, &str, &Value) ->
             let args = msg["params"].get("arguments").cloned().unwrap_or(json!({}));
             let known = tools().as_array().is_some_and(|t| t.iter().any(|x| x["name"] == name));
             match env {
-                Some(pane) if known => tool_result(&call(pane, name, &args)),
+                Some(pane) if available && known => tool_result(&call(pane, name, &args)),
                 _ => return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": format!("Unknown tool: {name}")}})),
             }
         }
@@ -358,5 +376,21 @@ mod tests {
         assert_eq!(r["result"]["isError"], true);
         let unknown = json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "rm_rf"}});
         assert_eq!(answer(&unknown, &pane(), &app).unwrap()["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn initialize_omits_instructions_when_outside_pane_or_disabled() {
+        let none = |_: &Pane, _: &str, _: &Value| json!({});
+        let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}});
+        // Outside TernaryCode (`env == None`): no instructions injected.
+        let outside = answer_with(&init, &None, true, &none).unwrap();
+        assert!(outside["result"].get("instructions").is_none());
+        // Inside TernaryCode with browser tools disabled (`TC_BROWSER_AGENTS=0`): no instructions or tools.
+        let disabled = answer_with(&init, &pane(), false, &none).unwrap();
+        assert!(disabled["result"].get("instructions").is_none());
+        let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+        assert_eq!(answer_with(&list, &pane(), false, &none).unwrap()["result"]["tools"], json!([]));
+        let call = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "browser_navigate", "arguments": {"url": "localhost:3000"}}});
+        assert_eq!(answer_with(&call, &pane(), false, &none).unwrap()["error"]["code"], -32602);
     }
 }

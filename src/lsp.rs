@@ -695,7 +695,7 @@ impl App {
     pub fn lsp_saved(&mut self, path: &Path) {
         self.lsp_sync(true);
         if let Some(key) = self.lsp.key_of(path)
-            && let Some(c) = self.lsp.servers.get(&key).and_then(|s| s.client.as_ref())
+            && let Some(c) = self.lsp.servers.get(&key).and_then(|s| s.client.as_ref().filter(|_| s.state == ServerState::Ready))
         {
             c.notify("textDocument/didSave", json!({"textDocument": {"uri": tc_lsp::pos::uri(path).as_str()}}));
         }
@@ -747,8 +747,8 @@ impl App {
                 } else if let Some(p) = self.lsp.pending.remove(&(key.clone(), id)) {
                     match result {
                         Ok(v) => self.lsp_answer(&key, p, v),
-                        // Cancelled or not supported: nothing to show for typing help.
-                        Err(_) if matches!(p, Pending::Hover { .. } | Pending::Completion { .. } | Pending::Signature { .. }) => {}
+                        // Cancelled or not supported: nothing to show for background/typing help.
+                        Err(_) if matches!(p, Pending::Hover { .. } | Pending::Completion { .. } | Pending::Signature { .. } | Pending::Outline { .. }) => {}
                         Err(e) => {
                             self.toast(tf("{}: {}", &[key.name, &e.message]));
                             // Format on save that failed still saves (unformatted).
@@ -1548,8 +1548,10 @@ impl App {
     /// within the pause before changes are sent), or when the edit names another version.
     pub fn apply_workspace_edit(&mut self, edit: &lt::WorkspaceEdit, enc: Encoding, revs: Option<&Revs>) -> Result<usize, String> {
         let (files, _skipped) = tc_lsp::edit::files(edit);
-        // Check everything first: all or nothing.
-        let mut plan: Vec<(PathBuf, String, String, bool)> = Vec::new(); // path, before, after, open
+        // Check everything first: all or nothing. Multiple `TextDocumentEdit` entries for the
+        // same path (LSP `documentChanges`) apply sequentially against the intermediate text.
+        let mut plan: Vec<(PathBuf, String, String, bool)> = Vec::new(); // path, original_before, latest_after, open
+        let mut plan_index: HashMap<PathBuf, usize> = HashMap::new();
         for fe in &files {
             let open = open_text(&self.editors, &fe.path).map(|(t, r)| (t.to_string(), r));
             let doc = self.lsp.key_of(&fe.path).and_then(|k| self.lsp.servers.get(&k)).and_then(|s| s.docs.get(&fe.path));
@@ -1563,20 +1565,28 @@ impl App {
             if stale {
                 return Err(tf("{} changed while the language server worked; nothing was applied. Try again.", &[&name()]));
             }
-            let open = open.map(|(t, _)| t);
-            let before = match &open {
-                Some(t) => t.clone(),
-                None => std::fs::read_to_string(&fe.path).map_err(|e| format!("{}: {e}", fe.path.display()))?,
-            };
-            let after = tc_lsp::edit::apply(&before, &fe.edits, enc)?;
-            // An open file that can't be saved (too large, cut short, not UTF-8 or not
-            // writable) would keep the edit in memory only.
-            let read_only = || self.editors.values().flat_map(|e| e.files.iter()).any(|f| f.path == fe.path && (f.read_only || f.truncated));
-            if after != before && open.is_some() && read_only() {
-                return Err(tf("{} is open read-only; nothing was applied.", &[&name()]));
+            let is_open = open.is_some();
+            if let Some(&idx) = plan_index.get(&fe.path) {
+                let after = tc_lsp::edit::apply(&plan[idx].2, &fe.edits, enc)?;
+                plan[idx].2 = after;
+            } else {
+                let before = match open {
+                    Some((t, _)) => t,
+                    None => std::fs::read_to_string(&fe.path).map_err(|e| format!("{}: {e}", fe.path.display()))?,
+                };
+                let after = tc_lsp::edit::apply(&before, &fe.edits, enc)?;
+                plan_index.insert(fe.path.clone(), plan.len());
+                plan.push((fe.path.clone(), before, after, is_open));
             }
-            if after != before {
-                plan.push((fe.path.clone(), before, after, open.is_some()));
+        }
+        // Validate read-only open files and drop no-op entries before committing anything.
+        plan.retain(|(_, before, after, _)| before != after);
+        for (path, _, _, open) in &plan {
+            if *open
+                && self.editors.values().flat_map(|e| e.files.iter()).any(|f| f.path == *path && (f.read_only || f.truncated))
+            {
+                let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                return Err(tf("{} is open read-only; nothing was applied.", &[&name]));
             }
         }
         let mut undo = Vec::new();

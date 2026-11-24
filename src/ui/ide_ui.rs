@@ -27,6 +27,8 @@ pub struct Geom {
     pub caret: Option<Rect>,
     /// The word under the pointer on screen.
     pub word: Option<Rect>,
+    /// The first diagnostic span under the pointer on screen (fallback anchor for non-identifier tokens).
+    pub diag_rect: Option<Rect>,
     /// Messages of the diagnostics under the pointer.
     pub diags: Vec<(Color32, String)>,
 }
@@ -113,7 +115,7 @@ pub fn overlay(
         file.index = Some((file.rev, LineIndex::new(&file.text)));
     }
     let Some((_, ix)) = file.index.as_ref() else {
-        return Geom { caret: None, word: None, diags: Vec::new() };
+        return Geom { caret: None, word: None, diag_rect: None, diags: Vec::new() };
     };
     let text = file.text.as_str();
     let first = galley.rows.partition_point(|r| origin.y + r.rect().bottom() < clip.top());
@@ -221,7 +223,7 @@ pub fn overlay(
     }
 
     // ----- the pointer: ⌘-click, hover, diagnostics under it ---------------------------------
-    let mut geom = Geom { caret: caret_rect, word: None, diags: Vec::new() };
+    let mut geom = Geom { caret: caret_rect, word: None, diag_rect: None, diags: Vec::new() };
     let pointer = resp.hover_pos().filter(|p| clip.contains(*p));
     let mut on_word = None;
     if let Some(pos) = pointer {
@@ -247,6 +249,16 @@ pub fn overlay(
                 for d in list.iter().filter(|d| d.range.start.line as usize <= line && d.range.end.line as usize >= line) {
                     let (s, e) = ix.chars(text, &d.range, *enc);
                     if here >= s && here <= e.max(s + 1) {
+                        if geom.diag_rect.is_none() {
+                            let line_start = ix.line_start(line);
+                            let line_chars = row.char_count_excluding_newline().0;
+                            let a = s.saturating_sub(line_start).min(line_chars);
+                            let b = e.max(s + 1).saturating_sub(line_start).min(line_chars);
+                            let x0 = char_x(row, a);
+                            let x1 = char_x(row, b).max(x0 + 6.0);
+                            let y = origin.y + row.pos.y;
+                            geom.diag_rect = Some(Rect::from_min_max(pos2(x0, y), pos2(x1, y + row.rect().height())));
+                        }
                         geom.diags.push((severity_color(d.severity, p), d.message.clone()));
                     }
                 }
@@ -621,7 +633,7 @@ impl App {
             Some(r) => (Some(r.min), ctx.data(|d| d.get_temp::<Vec<(Color32, String)>>(diags_id)).unwrap_or_default()),
             None => {
                 ctx.data_mut(|d| d.insert_temp(diags_id, geom.diags.clone()));
-                (geom.word.map(|w| w.left_bottom() + vec2(0.0, 4.0)), geom.diags.clone())
+                (geom.word.or(geom.diag_rect).map(|w| w.left_bottom() + vec2(0.0, 4.0)), geom.diags.clone())
             }
         };
         ide.hover_rect = None;

@@ -960,6 +960,7 @@ impl Pane {
                 if matches!(mark, PromptMark::PromptStart | PromptMark::CommandFinished(_)) {
                     self.program_title = None;
                     self.servers.clear();
+                    self.servers_probe_at = None;
                 }
                 let mark = match mark {
                     PromptMark::CommandExecuted => ShellMark::CommandStart,
@@ -1088,6 +1089,7 @@ impl Pane {
             self.program_title = None;
             self.progress = None;
             self.servers.clear();
+            self.servers_probe_at = None;
         }
         if fg == Foreground::Shell
             && self.tracker.agent.is_some()

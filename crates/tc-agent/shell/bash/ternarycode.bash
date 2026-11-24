@@ -185,7 +185,7 @@ __tc_unboot() {
 
 # `open https://…` typed here opens in TernaryCode's browser (unless the user has an `open` of
 # their own); anything else goes to macOS's `open`.
-if [[ -n ${TERNARYCODE_HOOK-} && -x /usr/bin/open ]] && ! builtin declare -F open >/dev/null &&
+if [[ -n ${TERNARYCODE_HOOK-} && $OSTYPE == darwin* && -x /usr/bin/open ]] && ! builtin declare -F open >/dev/null &&
     ! builtin alias open >/dev/null 2>&1; then
     open() {
         if [[ $# == 1 && ( $1 == http://* || $1 == https://* ) && -n ${TERNARYCODE_SOCK-} ]]; then
@@ -196,7 +196,7 @@ if [[ -n ${TERNARYCODE_HOOK-} && -x /usr/bin/open ]] && ! builtin declare -F ope
     }
 fi
 # Linux: `xdg-open https://…` likewise.
-if [[ -n ${TERNARYCODE_HOOK-} && ! -x /usr/bin/open ]] && builtin type -P xdg-open >/dev/null &&
+if [[ -n ${TERNARYCODE_HOOK-} && $OSTYPE != darwin* ]] && builtin type -P xdg-open >/dev/null &&
     ! builtin declare -F xdg-open >/dev/null && ! builtin alias xdg-open >/dev/null 2>&1; then
     xdg-open() {
         if [[ $# == 1 && ( $1 == http://* || $1 == https://* ) && -n ${TERNARYCODE_SOCK-} ]]; then

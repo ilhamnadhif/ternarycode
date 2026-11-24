@@ -43,6 +43,20 @@ const FILES_IN_ALL: usize = 5;
 const SCOPES: [PaletteMode; 6] =
     [PaletteMode::All, PaletteMode::Projects, PaletteMode::Sessions, PaletteMode::Files, PaletteMode::Search, PaletteMode::Commands];
 
+fn available_scopes(has_active: bool) -> Vec<PaletteMode> {
+    SCOPES.into_iter().filter(|m| *m != PaletteMode::Files || has_active).collect()
+}
+
+fn step_scope(mode: PaletteMode, has_active: bool, forward: bool) -> PaletteMode {
+    let scopes = available_scopes(has_active);
+    let i = scopes.iter().position(|m| *m == mode).unwrap_or(0);
+    if forward {
+        scopes[(i + 1) % scopes.len()]
+    } else {
+        scopes[(i + scopes.len() - 1) % scopes.len()]
+    }
+}
+
 /// What sits before a row's label.
 #[derive(Clone)]
 enum Lead {
@@ -948,14 +962,15 @@ impl App {
 
                 // The scopes (not for a list of places): chips, then "⇥ next scope".
                 if scopes {
-                    let i = SCOPES.iter().position(|m| *m == mode).unwrap_or(0);
+                    let has_active = self.active.is_some();
+                    let active_scopes = available_scopes(has_active);
                     if tab {
-                        scope = Some(SCOPES[(i + 1) % SCOPES.len()]);
+                        scope = Some(step_scope(mode, has_active, true));
                     } else if back_tab {
-                        scope = Some(SCOPES[(i + SCOPES.len() - 1) % SCOPES.len()]);
+                        scope = Some(step_scope(mode, has_active, false));
                     }
                     let chips = Rect::from_min_size(pos2(whole.left(), y), vec2(width, SCOPES_H));
-                    let meta: Vec<_> = SCOPES
+                    let meta: Vec<_> = active_scopes
                         .into_iter()
                         .map(|m| {
                             let (label, keys) = match m {
@@ -1227,7 +1242,17 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{matched, score};
+    use super::{PaletteMode, available_scopes, matched, score, step_scope};
+
+    #[test]
+    fn scope_cycling_skips_files_when_no_active_project() {
+        assert!(!available_scopes(false).contains(&PaletteMode::Files));
+        assert!(available_scopes(true).contains(&PaletteMode::Files));
+        assert_eq!(step_scope(PaletteMode::Sessions, false, true), PaletteMode::Search);
+        assert_eq!(step_scope(PaletteMode::Search, false, false), PaletteMode::Sessions);
+        assert_eq!(step_scope(PaletteMode::Sessions, true, true), PaletteMode::Files);
+        assert_eq!(step_scope(PaletteMode::Search, true, false), PaletteMode::Files);
+    }
 
     #[test]
     fn fuzzy_scores_prefer_compact_early_matches() {

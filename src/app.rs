@@ -1030,25 +1030,26 @@ impl App {
         }
         // Not shown in the Focus view since the app started: nothing to measure against.
         let Some(full) = self.last_full_body else { return };
-        let (stage, _) = self.panel_split(project, full);
+        let (stage, panel) = self.panel_split(project, full);
         let Some(stage) = stage else { return };
         let line_y = stage.top() + ui::focus::TAB_STRIP_H;
         let body = egui::Rect::from_min_max(egui::pos2(stage.left() + 1.0, line_y + 1.0), egui::pos2(stage.right() - 1.0, stage.bottom() - 1.0));
         let cell = tc_term::widget::cell_size(ctx, self.settings.font_size);
+        let kept_side = self.panel_of(project).is_some_and(|x| x.side_by_side);
         let Some(p) = self.project(project) else { return };
         let mut sizes = Vec::new();
         let tabs: Vec<&crate::project::Tab> = if tab_in_view { p.tab().into_iter().collect() } else { p.tabs.iter().collect() };
         for tab in tabs {
-            // Beside the project's Browser panel as Focus lays them (stacked, or not shown under
-            // a panel filling the window).
-            let place = self.focus_place(project, &tab.layout, body, cell);
-            let (rects, _) = if place.max {
-                continue;
-            } else if place.stacked {
-                tab.layout.stacked().arrange(place.panes)
-            } else {
-                tab.layout.arrange(place.panes)
-            };
+            // Mirror `focus_view` (`src/ui/focus.rs:506-514`): `stage` already subtracted any
+            // right panel, so lay out in `body` without subtracting Browser width a second time.
+            let (mut rects, _) = tab.layout.arrange(body);
+            let too_narrow = rects.len() > 1
+                && panel.is_some()
+                && !kept_side
+                && rects.iter().any(|(_, r)| tc_term::widget::grid_for(ui::focus::term_rect(*r, false), cell).cols < ui::browser_panel::MIN_COLS);
+            if too_narrow {
+                (rects, _) = tab.layout.stacked().arrange(body);
+            }
             let single = rects.len() == 1;
             for (id, r) in rects {
                 sizes.push((id, tc_term::widget::grid_for(ui::focus::term_rect(r, single), cell)));
@@ -2195,6 +2196,7 @@ impl App {
         for f in self.editors.values_mut().flat_map(|e| e.files.iter_mut()) {
             f.highlight = Default::default();
             f.index = None;
+            f.virtual_lines = None;
             if let Some(d) = f.doc.as_mut() {
                 d.release();
             }
@@ -2581,6 +2583,16 @@ impl App {
         let Some(project_id) = self.panes.get(&id).map(|p| p.project).or_else(|| self.browsers.get(&id).map(|b| b.project)) else {
             return;
         };
+        // Only hand keyboard focus to the surviving/replacement terminal when the closed pane was
+        // actively in the user's terminal focus context (avoid stealing keys from the editor,
+        // browser, dialogs, overlays, other views, or background tabs/projects).
+        let active_tab_of_open_project = self.view == View::Focus
+            && self.active == Some(project_id)
+            && self.project(project_id).is_some_and(|p| p.tab_of(id) == Some(p.active_tab));
+        let in_focused_grid_tile = self.view == View::Grid && self.grid_focus == Some(id);
+        let take_focus = self.terminals_take_keys()
+            && !self.text_field_focused(ctx)
+            && (active_tab_of_open_project || in_focused_grid_tile);
         let Some(p) = self.project_mut(project_id) else {
             return;
         };
@@ -2610,12 +2622,27 @@ impl App {
                     title: None,
                 };
             }
-            self.focus_request = Some(new);
+            if take_focus {
+                if in_focused_grid_tile {
+                    self.grid_focus = Some(new);
+                }
+                self.focus_request = Some(new);
+            }
             self.mark_dirty();
             return;
         }
         self.drop_pane(id);
-        self.focus_request = self.current_pane();
+        if take_focus {
+            let next = if in_focused_grid_tile {
+                self.project(project_id).and_then(Project::current_pane)
+            } else {
+                self.current_pane()
+            };
+            if in_focused_grid_tile {
+                self.grid_focus = next;
+            }
+            self.focus_request = next;
+        }
         self.mark_dirty();
         self.fit_to_focus(ctx, project_id, false);
     }

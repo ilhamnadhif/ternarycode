@@ -166,6 +166,7 @@ fn dump(grid: &Grid<Cell>, history: bool, out: &mut String) {
     let top = if history { grid.topmost_line() } else { Line(0) };
     let bottom = grid.bottommost_line();
     let mut cur = DEFAULT;
+    let mut prev_wrapped = false;
     let mut line = top;
     while line <= bottom {
         let row = &grid[line];
@@ -178,10 +179,22 @@ fn dump(grid: &Grid<Cell>, history: bool, out: &mut String) {
                 .rev()
                 .find(|&c| {
                     let cell = &row[Column(c)];
-                    cell.c != ' ' || cell.bg != DEFAULT.bg || cell.flags.intersects(DRAWN) || cell.zerowidth().is_some()
+                    !matches!(cell.c, ' ' | '\t' | '\0')
+                        || cell.bg != DEFAULT.bg
+                        || cell.flags.intersects(DRAWN)
+                        || cell.zerowidth().is_some()
                 })
                 .map_or(0, |c| c + 1)
         };
+        if prev_wrapped && end == 0 {
+            // Trigger deferred auto-wrap onto this blank continuation row so `\r\n` does not
+            // cancel the pending wrap on the previous row and collapse this row away.
+            if cur != DEFAULT {
+                out.push_str("\x1b[0m");
+                cur = DEFAULT;
+            }
+            out.push(' ');
+        }
         for c in 0..end {
             let cell = &row[Column(c)];
             if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
@@ -197,7 +210,9 @@ fn dump(grid: &Grid<Cell>, history: bool, out: &mut String) {
                 sgr(out, &style);
                 cur = style;
             }
-            out.push(if cell.c == '\0' { ' ' } else { cell.c });
+            // `alacritty_terminal` stores `'\t'` in the tab's first cell and `' '` in its padding
+            // cells; emitting `'\t'` verbatim would double-advance past the padding spaces on restore.
+            out.push(if matches!(cell.c, '\0' | '\t') { ' ' } else { cell.c });
             if let Some(extra) = cell.zerowidth() {
                 out.extend(extra.iter());
             }
@@ -211,6 +226,7 @@ fn dump(grid: &Grid<Cell>, history: bool, out: &mut String) {
             }
             out.push_str("\r\n");
         }
+        prev_wrapped = wrapped;
         line += 1;
     }
     if cur != DEFAULT {
@@ -386,5 +402,28 @@ mod tests {
         assert_eq!(text(&b)[0], "~ editing");
         b.feed(b"\x1b[?1049l");
         assert_eq!(text(&b), main_before);
+    }
+
+    #[test]
+    fn tabbed_lines_and_blank_wrapped_continuations_round_trip() {
+        // Tab characters expand to spaces rather than double-advancing past padding cells.
+        let mut a = terminal(30, 5);
+        a.feed(b"a\tb\tc\r\n\tindented\r\nend");
+        let bytes = snapshot(&mut a);
+        let mut b = terminal(30, 5);
+        b.feed(&bytes);
+        let norm = |f: &Feeder| -> Vec<String> {
+            text(f).into_iter().map(|s| s.replace('\t', " ")).collect()
+        };
+        assert_eq!(norm(&a), norm(&b));
+
+        // A wrapped line whose continuation row contains only spaces preserves row count.
+        let mut w1 = terminal(5, 4);
+        w1.feed(b"abcde \r\nhello");
+        let wbytes = snapshot(&mut w1);
+        let mut w2 = terminal(5, 4);
+        w2.feed(&wbytes);
+        assert_eq!(text(&w1), text(&w2));
+        assert_eq!(w1.shared.term.lock().grid().cursor.point, w2.shared.term.lock().grid().cursor.point);
     }
 }

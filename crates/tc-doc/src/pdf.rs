@@ -324,6 +324,28 @@ fn error_text(e: LoadPdfError) -> String {
     }
 }
 
+/// Computes a bounded render scale from the PDF page's raw (unclamped) dimensions so
+/// `hayro::render` can never allocate a pixmap wider or taller than `MAX_SIDE` (avoiding OOM
+/// aborts on malformed or huge `/MediaBox` entries).
+fn safe_render_scale(raw_w: f32, raw_h: f32, asked: f32) -> Option<f32> {
+    if !raw_w.is_finite() || !raw_h.is_finite() || raw_w <= 0.0 || raw_h <= 0.0 || !asked.is_finite() {
+        return None;
+    }
+    // Not `clamp`: a page over 81,920 pt makes the upper bound smaller than the lower one
+    // (a panic); the size limit wins.
+    let scale = asked.max(0.05).min(MAX_SIDE / raw_w.max(raw_h).max(1.0));
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let pw = (raw_w * scale) as u32;
+    let ph = (raw_h * scale) as u32;
+    let limit = MAX_SIDE as u32;
+    if pw == 0 || ph == 0 || pw > limit || ph > limit {
+        return None;
+    }
+    Some(scale)
+}
+
 fn work(path: PathBuf, requests: mpsc::Receiver<Request>, send: impl Fn(Event) -> bool) {
     // The size first: a huge file is not read into memory only to be refused.
     let bytes = match std::fs::metadata(&path) {
@@ -427,31 +449,32 @@ fn work(path: PathBuf, requests: mpsc::Receiver<Request>, send: impl Fn(Event) -
             continue;
         };
         let Some(page) = pdf.pages().get(index) else { continue };
-        let (w, h) = pages[index];
-        // Not `clamp`: a page over 81,920 pt makes the upper bound smaller than the lower one
-        // (a panic); the size limit wins.
-        let scale = asked.max(0.05).min(MAX_SIDE / w.max(h).max(1.0));
-        let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            hayro::render(
-                page,
-                &cache,
-                &interpreter,
-                &settings,
-                &PixmapSettings {
-                    x_scale: scale,
-                    y_scale: scale,
-                    bg_color: WHITE,
+        let (raw_w, raw_h) = page.render_dimensions();
+        let image = if let Some(scale) = safe_render_scale(raw_w, raw_h, asked) {
+            let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                hayro::render(
+                    page,
+                    &cache,
+                    &interpreter,
+                    &settings,
+                    &PixmapSettings {
+                        x_scale: scale,
+                        y_scale: scale,
+                        bg_color: WHITE,
+                    },
+                )
+            }));
+            match rendered {
+                // On white, every pixel is opaque: premultiplied is the same as straight.
+                Ok(pixmap) if pixmap.width() > 0 && pixmap.height() > 0 => Rgba {
+                    width: pixmap.width() as u32,
+                    height: pixmap.height() as u32,
+                    pixels: pixmap.data_as_u8_slice().to_vec(),
                 },
-            )
-        }));
-        let image = match rendered {
-            // On white, every pixel is opaque: premultiplied is the same as straight.
-            Ok(pixmap) if pixmap.width() > 0 && pixmap.height() > 0 => Rgba {
-                width: pixmap.width() as u32,
-                height: pixmap.height() as u32,
-                pixels: pixmap.data_as_u8_slice().to_vec(),
-            },
-            _ => Rgba::default(),
+                _ => Rgba::default(),
+            }
+        } else {
+            Rgba::default()
         };
         if !send(Event::Page { index, scale: asked, image }) {
             return;
@@ -618,5 +641,17 @@ mod tests {
         std::fs::write(&path, b"%PDF-1.4 nothing here").unwrap();
         let r = Renderer::open(path, Arc::new(|| {}));
         assert!(matches!(r.events.recv_timeout(Duration::from_secs(10)).unwrap(), Event::Failed(_)));
+    }
+
+    #[test]
+    fn safe_render_scale_bounds_huge_and_non_finite_pages() {
+        assert_eq!(safe_render_scale(f32::INFINITY, f32::INFINITY, 1.0), None);
+        assert_eq!(safe_render_scale(f32::NAN, 842.0, 1.0), None);
+        assert_eq!(safe_render_scale(0.0, 842.0, 1.0), None);
+        assert_eq!(safe_render_scale(-50.0, 842.0, 1.0), None);
+        let s = safe_render_scale(30_000_000.0, 30_000_000.0, 2.0).unwrap();
+        assert!((30_000_000.0 * s) as u32 <= MAX_SIDE as u32);
+        let s2 = safe_render_scale(4_000_000.0, 4_000_000.0, 1.0).unwrap();
+        assert!((4_000_000.0 * s2) as u32 <= MAX_SIDE as u32);
     }
 }

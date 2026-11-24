@@ -226,11 +226,11 @@ pub fn browse(args: &[String]) -> i32 {
 }
 
 /// Opens `url` in the system's default browser.
-fn open_default(url: &str) -> i32 {
+fn open_default_command(url: &str) -> Option<std::process::Command> {
     let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
     let allowed = lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:") || lower.starts_with("file://");
     if !allowed || url.bytes().any(|b| b < 0x20 || b == 0x7f) {
-        return 1;
+        return None;
     }
     let mut cmd = if cfg!(target_os = "macos") {
         std::process::Command::new("/usr/bin/open")
@@ -241,7 +241,17 @@ fn open_default(url: &str) -> i32 {
     } else {
         std::process::Command::new("xdg-open")
     };
-    match cmd.arg(url).status() {
+    // Avoid infinite recursion on Linux where `xdg-open` falls back to `$BROWSER` (which points
+    // to TernaryCode's `browse.js` wrapper -> `ternarycode-hook browse` -> `open_default`).
+    cmd.env_remove("BROWSER").env_remove(ENV_SOCK).arg(url);
+    Some(cmd)
+}
+
+fn open_default(url: &str) -> i32 {
+    let Some(mut cmd) = open_default_command(url) else {
+        return 1;
+    };
+    match cmd.status() {
         Ok(s) if s.success() => 0,
         _ => 1,
     }
@@ -331,5 +341,14 @@ mod tests {
         assert_eq!(antigravity_hook_output("PostToolUse", true, true, &Value::Null), "{}");
         assert_eq!(antigravity_hook_output("Stop", true, true, &Value::Null), "{}");
         assert_eq!(antigravity_hook_output("SessionStart", false, false, &Value::Null), "{}");
+    }
+
+    #[test]
+    fn open_default_strips_browser_and_socket_env_to_prevent_recursion() {
+        let cmd = open_default_command("https://example.com").expect("valid URL");
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert!(envs.contains(&(std::ffi::OsStr::new("BROWSER"), None)));
+        assert!(envs.contains(&(std::ffi::OsStr::new(ENV_SOCK), None)));
+        assert!(open_default_command("javascript:alert(1)").is_none());
     }
 }

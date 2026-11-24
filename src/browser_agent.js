@@ -468,8 +468,15 @@ if (!window.__tc) window.__tc = (() => {
     return { ok: true, note: covered };
   }
   const setValue = (el, value) => {
-    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    // Look up the prototype from the element's own window realm (handles same-origin iframes).
+    const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+    const tag = (el.tagName || '').toUpperCase();
+    const proto = tag === 'TEXTAREA'
+      ? win.HTMLTextAreaElement && win.HTMLTextAreaElement.prototype
+      : tag === 'SELECT'
+        ? win.HTMLSelectElement && win.HTMLSelectElement.prototype
+        : win.HTMLInputElement && win.HTMLInputElement.prototype;
+    const desc = proto && Object.getOwnPropertyDescriptor(proto, 'value');
     if (desc && desc.set) desc.set.call(el, value); else el.value = value;
   };
   async function type(args) {

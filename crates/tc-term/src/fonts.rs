@@ -279,29 +279,36 @@ fn locate(file: &str) -> Option<PathBuf> {
     #[cfg(not(any(target_os = "macos", windows)))]
     {
         static INDEX: OnceLock<HashMap<String, PathBuf>> = OnceLock::new();
-        let index = INDEX.get_or_init(|| {
-            let mut index = HashMap::new();
-            let mut stack: Vec<(PathBuf, u32)> = font_dirs().into_iter().map(|d| (d, 0)).collect();
-            while let Some((dir, depth)) = stack.pop() {
-                let Ok(entries) = std::fs::read_dir(&dir) else {
-                    continue;
-                };
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    match entry.file_type() {
-                        Ok(t) if t.is_dir() && depth < 4 => stack.push((p, depth + 1)),
-                        Ok(_) => {
-                            let name = entry.file_name().to_string_lossy().into_owned();
-                            index.entry(name).or_insert(p);
-                        }
-                        Err(_) => {}
-                    }
-                }
-            }
-            index
-        });
+        let index = INDEX.get_or_init(|| index_font_dirs(font_dirs()));
         index.get(file).cloned()
     }
+}
+
+/// Recursively indexes font files under `roots` up to depth 4, following symlinked subdirectories
+/// (common on NixOS/Home-Manager, Flatpak, and stow-managed font folders).
+#[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+fn index_font_dirs(roots: Vec<PathBuf>) -> HashMap<String, PathBuf> {
+    let mut index = HashMap::new();
+    let mut stack: Vec<(PathBuf, u32)> = roots.into_iter().map(|d| (d, 0)).collect();
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            match entry.file_type() {
+                Ok(t) if (t.is_dir() || (t.is_symlink() && p.is_dir())) && depth < 4 => {
+                    stack.push((p, depth + 1));
+                }
+                Ok(t) if t.is_file() || (t.is_symlink() && p.is_file()) => {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    index.entry(name).or_insert(p);
+                }
+                _ => {}
+            }
+        }
+    }
+    index
 }
 
 /// Fonts of the system (read-only while the app runs, so they can be memory-mapped).
@@ -597,5 +604,21 @@ mod tests {
             };
             assert!(!is_available(&missing), "{file}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_font_dirs_follows_symlinked_subdirectories() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("store");
+        std::fs::create_dir(&target).unwrap();
+        let font = target.join("CustomMono.ttf");
+        std::fs::write(&font, b"font").unwrap();
+        let root = dir.path().join("fonts");
+        std::fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(&target, root.join("nix-link")).unwrap();
+        let idx = index_font_dirs(vec![root.clone()]);
+        assert_eq!(idx.get("CustomMono.ttf"), Some(&root.join("nix-link").join("CustomMono.ttf")));
+        assert!(!idx.contains_key("nix-link"));
     }
 }

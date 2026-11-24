@@ -106,7 +106,7 @@ _tc_deferred_init() {
     builtin unfunction _tc_deferred_init
     # `open https://…` typed here opens in TernaryCode's browser (unless the user has an `open`
     # of their own); anything else goes to macOS's `open`.
-    if [[ -n ${TERNARYCODE_HOOK-} && -x /usr/bin/open ]] && (( ! ${+functions[open]} && ! ${+aliases[open]} )); then
+    if [[ -n ${TERNARYCODE_HOOK-} && $OSTYPE == darwin* && -x /usr/bin/open ]] && (( ! ${+functions[open]} && ! ${+aliases[open]} )); then
         open() {
             if [[ $# == 1 && ( $1 == http://* || $1 == https://* ) && -n ${TERNARYCODE_SOCK-} ]]; then
                 command "$TERNARYCODE_HOOK" browse "$1"
@@ -116,7 +116,7 @@ _tc_deferred_init() {
         }
     fi
     # Linux: `xdg-open https://…` likewise.
-    if [[ -n ${TERNARYCODE_HOOK-} && ! -x /usr/bin/open ]] && (( $+commands[xdg-open] && ! ${+functions[xdg-open]} && ! ${+aliases[xdg-open]} )); then
+    if [[ -n ${TERNARYCODE_HOOK-} && $OSTYPE != darwin* ]] && (( $+commands[xdg-open] && ! ${+functions[xdg-open]} && ! ${+aliases[xdg-open]} )); then
         xdg-open() {
             if [[ $# == 1 && ( $1 == http://* || $1 == https://* ) && -n ${TERNARYCODE_SOCK-} ]]; then
                 command "$TERNARYCODE_HOOK" browse "$1"

@@ -474,6 +474,7 @@ fn child_signals() -> watch::Receiver<u64> {
     let tx = TX.get_or_init(|| {
         let (tx, _) = watch::channel(0u64);
         let sender = tx.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
         // On a thread of its own with its own runtime: a task on the caller's runtime would end
         // with that runtime (each test builds one), and later sessions would get no SIGCHLD.
         let _ = std::thread::Builder::new().name("sigchld".into()).spawn(move || {
@@ -486,11 +487,13 @@ fn child_signals() -> watch::Receiver<u64> {
                 else {
                     return;
                 };
+                let _ = ready_tx.send(());
                 while sig.recv().await.is_some() {
                     sender.send_modify(|n| *n = n.wrapping_add(1));
                 }
             });
         });
+        let _ = ready_rx.recv_timeout(Duration::from_secs(2));
         tx
     });
     tx.subscribe()
@@ -639,6 +642,22 @@ pub fn start(
                 on_event(SessionEvent::Foreground);
             }
         };
+        // Check once after subscribing to `child_signals()` in case the child exited before
+        // subscription (fast-exiting commands or already-exited adopted children).
+        if let Some(status) = pty.poll_exit() {
+            loop {
+                match reader.get_ref().read(&mut buf) {
+                    Ok(n) if n > 0 => {
+                        let fed = feeder.lock().feed(&buf[..n]);
+                        deliver(fed);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    _ => break,
+                }
+            }
+            on_event(SessionEvent::Exited(status));
+            return;
+        }
         loop {
             let deadline = feeder.lock().sync_deadline();
             let sync = async {

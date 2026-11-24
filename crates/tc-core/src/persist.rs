@@ -68,6 +68,9 @@ pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
         let mut f = opts.open(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
+        // Close the write handle before renaming so Windows filesystems without open-rename
+        // support (FAT32/exFAT, SMB, VM shared folders, minifilters) do not fail with sharing error.
+        drop(f);
         #[cfg(unix)]
         if let Some(mode) = keep_mode {
             fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;

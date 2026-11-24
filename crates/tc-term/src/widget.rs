@@ -73,6 +73,8 @@ impl TermView {
     /// a focus-out report if it asked for them. Returns the bytes to send.
     pub fn blur(&mut self, shared: &TermShared, alive: bool) -> Vec<u8> {
         self.preedit.clear();
+        self.reported_button = None;
+        self.last_report_cell = None;
         if !std::mem::take(&mut self.was_focused) {
             return Vec::new();
         }
@@ -1312,10 +1314,13 @@ fn show_inner(
                     }
                 }
                 Event::Copy | Event::Cut => {
+                    if event == Event::Cut && cfg!(target_os = "macos") {
+                        continue;
+                    }
                     let shift = ui.input(|i| i.modifiers.shift);
                     let selected = term.selection_to_string().filter(|s| !s.is_empty());
-                    let copies =
-                        cfg!(target_os = "macos") || shift || (cfg!(windows) && selected.is_some());
+                    let copies = event == Event::Copy
+                        && (cfg!(target_os = "macos") || shift || (cfg!(windows) && selected.is_some()));
                     if copies {
                         if let Some(text) = selected {
                             ui.ctx().copy_text(text);
@@ -1372,6 +1377,10 @@ fn show_inner(
     }
     if response.secondary_clicked() {
         view.menu_link = pointer_link.clone().filter(|l| l.kind != LinkKind::Path);
+    }
+    if !mouse_mode || !input_enabled {
+        view.reported_button = None;
+        view.last_report_cell = None;
     }
     if mouse_mode && !shift_held && input_enabled {
         let events = ui.input(|i| i.events.clone());

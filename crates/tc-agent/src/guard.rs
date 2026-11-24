@@ -108,7 +108,7 @@ fn code_browser(code: &str) -> Option<Other> {
 
 /// An MCP tool (`mcp__<server>__<tool>`) of a browser other than TernaryCode's.
 fn mcp_browser(server: &str, tool: &str) -> Option<Other> {
-    if server == "ternarycode" {
+    if server.to_ascii_lowercase().contains("ternarycode") {
         return None;
     }
     let s = format!("{server} {tool}").to_lowercase();
@@ -333,11 +333,33 @@ fn command_browser(command: &str, cwd: Option<&Path>) -> Option<Other> {
     None
 }
 
+/// Extracts `(ServerName, ToolName)` from an Antigravity `call_mcp_tool` args object.
+fn call_mcp_server_tool(args: &Value) -> (&str, &str) {
+    let server = args["ServerName"]
+        .as_str()
+        .or_else(|| args["serverName"].as_str())
+        .or_else(|| args["server_name"].as_str())
+        .unwrap_or("");
+    let tool = args["ToolName"]
+        .as_str()
+        .or_else(|| args["toolName"].as_str())
+        .or_else(|| args["tool_name"].as_str())
+        .unwrap_or("");
+    (server, tool)
+}
+
 /// Whether an Antigravity CLI `PreToolUse` payload calls one of TernaryCode's own MCP browser tools.
 pub fn is_antigravity_ternarycode_tool(payload: &Value) -> bool {
     let Some(name) = payload["toolCall"]["name"].as_str() else { return false };
     let lower = name.to_ascii_lowercase();
-    lower.contains("ternarycode")
+    if lower.contains("ternarycode") {
+        return true;
+    }
+    if lower == "call_mcp_tool" {
+        let (server, _) = call_mcp_server_tool(&payload["toolCall"]["args"]);
+        return server.to_ascii_lowercase().contains("ternarycode");
+    }
+    false
 }
 
 /// The other browser a tool call (a `PreToolUse` payload) would use.
@@ -350,6 +372,10 @@ pub fn other_browser(payload: &Value) -> Option<Other> {
         }
         let args = tool_call.get("args").unwrap_or(&Value::Null);
         let lower = name.to_ascii_lowercase();
+        if lower == "call_mcp_tool" {
+            let (server, tool) = call_mcp_server_tool(args);
+            return mcp_browser(server, tool);
+        }
         if lower == "run_command" {
             let cmd = args["CommandLine"].as_str().or_else(|| args["command"].as_str())?;
             let cwd = payload["cwd"].as_str().map(Path::new);
@@ -681,5 +707,21 @@ mod tests {
         // Non-browser commands pass through untouched (`None`).
         let cargo = json!({"toolCall": {"name": "run_command", "args": {"CommandLine": "cargo test"}}});
         assert!(decision(AgentKind::Antigravity, "PreToolUse", &cargo, true, || Some("run tests".into())).is_none());
+
+        // Lazy `call_mcp_tool` to TernaryCode's own namespaced server is allowed; third-party browser MCP servers are blocked.
+        let own_lazy = json!({"toolCall": {"name": "call_mcp_tool", "args": {"ServerName": "ternarycode_ternarycode", "ToolName": "browser_navigate"}}});
+        assert!(is_antigravity_ternarycode_tool(&own_lazy));
+        assert_eq!(other_browser(&own_lazy), None);
+        let allow_lazy: Value = serde_json::from_str(&decision(AgentKind::Antigravity, "PreToolUse", &own_lazy, true, || None).unwrap()).unwrap();
+        assert_eq!(allow_lazy["decision"], "allow");
+
+        let pw_lazy = json!({"toolCall": {"name": "call_mcp_tool", "args": {"ServerName": "playwright", "ToolName": "browser_navigate"}}});
+        assert_eq!(other_browser(&pw_lazy), Some(PLAYWRIGHT));
+        let deny_pw: Value = serde_json::from_str(&decision(AgentKind::Antigravity, "PreToolUse", &pw_lazy, true, || Some("open localhost".into())).unwrap()).unwrap();
+        assert_eq!(deny_pw["decision"], "deny");
+        assert!(decision(AgentKind::Antigravity, "PreToolUse", &pw_lazy, true, || Some("use playwright".into())).is_none());
+
+        let cdp_lazy = json!({"toolCall": {"name": "call_mcp_tool", "args": {"ServerName": "chrome-devtools", "ToolName": "navigate_page"}}});
+        assert_eq!(other_browser(&cdp_lazy), Some(CHROME));
     }
 }

@@ -20,6 +20,10 @@ use tc_core::agent::AgentKind;
 use tc_core::model::Integration;
 
 pub const ENV_CLAUDE_SETTINGS: &str = "TC_CLAUDE_SETTINGS";
+/// The file passed with `claude --settings` in Installed mode: allows TernaryCode's browser tools
+/// without duplicating hooks already installed in `~/.claude/settings.json`, and terminates the
+/// variadic `--mcp-config` flag so trailing positional prompts are never swallowed.
+pub const ENV_CLAUDE_INSTALLED_SETTINGS: &str = "TC_CLAUDE_INSTALLED_SETTINGS";
 /// The file passed with `claude --mcp-config`: TernaryCode's browser tools (`crate::mcp`).
 pub const ENV_CLAUDE_MCP: &str = "TC_CLAUDE_MCP";
 pub const ENV_CODEX_HOOKS: &str = "TC_CODEX_HOOKS";
@@ -244,16 +248,147 @@ fn with_env_and_unset_for(
     }
 }
 
+/// End byte index of the first shell word in `s`, respecting single/double quotes and stopping
+/// at unquoted whitespace or shell operators (`;| &<>()`).
+fn first_shell_word_end(s: &str) -> usize {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (idx, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
+                }
+            }
+            Some('"') => {
+                if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    quote = None;
+                }
+            }
+            Some(_) => {}
+            None => match c {
+                '\'' | '"' => quote = Some(c),
+                _ if c.is_whitespace() || ";|&<>()".contains(c) => return idx,
+                _ => {}
+            },
+        }
+    }
+    s.len()
+}
+
+/// Strips matching outer single or double quotes from a shell word (for basename comparisons).
+fn unquote_shell_word(w: &str) -> &str {
+    w.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| w.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(w)
+}
+
+/// Returns whether `command` already contains `flag` as a standalone shell word.
+fn has_shell_flag(command: &str, flag: &str) -> bool {
+    let mut rest = command.trim_start();
+    while !rest.is_empty() {
+        let end = first_shell_word_end(rest);
+        if end == 0 {
+            let step = rest.chars().next().map_or(1, char::len_utf8);
+            rest = rest[step..].trim_start();
+            continue;
+        }
+        if &rest[..end] == flag {
+            return true;
+        }
+        rest = rest[end..].trim_start();
+    }
+    false
+}
+
 /// Inserts `flag` right after the program binary name in `command` (unless already present).
+/// Respects quoted paths with spaces, stops before shell operators (`;| &<>()`), and skips
+/// leading `VAR=val` assignments and common launcher wrappers (`npx`, `bunx`, `pnpx`, `env`,
+/// `exec`, `nohup`, `sudo`, `command`, `time`).
 pub fn insert_flag(command: &str, flag: &str) -> String {
     let trimmed = command.trim();
-    if trimmed.is_empty() || trimmed.split_whitespace().any(|w| w == flag) {
+    if trimmed.is_empty() || has_shell_flag(trimmed, flag) {
         return trimmed.to_string();
     }
-    match trimmed.split_once(char::is_whitespace) {
-        Some((prog, rest)) => format!("{prog} {flag} {}", rest.trim_start()),
-        None => format!("{trimmed} {flag}"),
+    const WRAPPERS: &[&str] = &["npx", "bunx", "pnpx", "env", "exec", "nohup", "sudo", "command", "time"];
+    let mut pos = 0usize;
+    let mut insert_at = None;
+    while pos < trimmed.len() {
+        // Advance past whitespace, stopping before any shell operator.
+        let ws = trimmed[pos..].find(|c: char| !c.is_whitespace()).unwrap_or(trimmed.len() - pos);
+        pos += ws;
+        if pos >= trimmed.len() {
+            break;
+        }
+        let end = first_shell_word_end(&trimmed[pos..]);
+        if end == 0 {
+            // Reached a shell operator before finding a wrapped command.
+            break;
+        }
+        let word = &trimmed[pos..pos + end];
+        let unquoted = unquote_shell_word(word);
+        let base = unquoted.rsplit(['/', '\\']).next().unwrap_or(unquoted);
+        pos += end;
+        insert_at = Some(pos);
+        // Leading `KEY=value` assignment before the real command.
+        if !word.starts_with(['\'', '"', '-']) && unquoted.contains('=') && !unquoted.contains('/') && !unquoted.contains('\\') {
+            continue;
+        }
+        if WRAPPERS.iter().any(|w| base.eq_ignore_ascii_case(w)) {
+            // Skip any wrapper flags (e.g. `npx -y claude`, `env -u FOO claude`) before the target binary.
+            let mut probe = pos;
+            let mut found_wrapped = false;
+            while probe < trimmed.len() {
+                let ws2 = trimmed[probe..].find(|c: char| !c.is_whitespace()).unwrap_or(trimmed.len() - probe);
+                probe += ws2;
+                if probe >= trimmed.len() {
+                    break;
+                }
+                let e2 = first_shell_word_end(&trimmed[probe..]);
+                if e2 == 0 {
+                    break;
+                }
+                let w2 = &trimmed[probe..probe + e2];
+                probe += e2;
+                if w2.starts_with('-') {
+                    if w2 == "--" {
+                        continue;
+                    }
+                    // Flags like `env -u VAR` take a value word.
+                    if matches!(w2, "-u" | "-C" | "--unset" | "--chdir" | "-p" | "--package") {
+                        let ws3 = trimmed[probe..].find(|c: char| !c.is_whitespace()).unwrap_or(trimmed.len() - probe);
+                        probe += ws3;
+                        let e3 = first_shell_word_end(&trimmed[probe..]);
+                        if e3 > 0 {
+                            probe += e3;
+                        }
+                    }
+                    continue;
+                }
+                let u2 = unquote_shell_word(w2);
+                if !w2.starts_with(['\'', '"']) && u2.contains('=') && !u2.contains('/') && !u2.contains('\\') {
+                    continue;
+                }
+                insert_at = Some(probe);
+                found_wrapped = true;
+                break;
+            }
+            if found_wrapped {
+                break;
+            }
+        }
+        break;
     }
+    let at = insert_at.unwrap_or(trimmed.len());
+    let (head, tail) = trimmed.split_at(at);
+    format!("{head} {flag}{tail}")
 }
 
 /// The hook program and the commands that run it.
@@ -302,6 +437,17 @@ impl Hooks {
     pub fn claude_settings(&self) -> String {
         serde_json::to_string_pretty(&json!({
             "hooks": self.claude_hooks(),
+            "permissions": { "allow": ["mcp__ternarycode"] },
+        }))
+        .unwrap_or_default()
+    }
+
+    /// Permissions-only `--settings` file for Claude Code in `Integration::Installed` mode (where
+    /// hooks already live in `~/.claude/settings.json`). Passing `--settings` after `--mcp-config`
+    /// also terminates Claude's variadic `--mcp-config <configs...>` flag so positional prompts
+    /// (such as failover handoff prompts) are never consumed as MCP config paths.
+    pub fn claude_installed_settings(&self) -> String {
+        serde_json::to_string_pretty(&json!({
             "permissions": { "allow": ["mcp__ternarycode"] },
         }))
         .unwrap_or_default()
@@ -496,8 +642,13 @@ impl Hooks {
 
     fn agent_env(&self, integrations_dir: &Path, tools: bool, codex_config: Option<&str>) -> io::Result<Vec<(String, String)>> {
         let file = integrations_dir.join("claude-settings.json");
+        let installed_file = integrations_dir.join("claude-installed-settings.json");
         let mcp = integrations_dir.join("claude-mcp.json");
-        for (path, text) in [(&file, self.claude_settings()), (&mcp, self.claude_mcp(tools))] {
+        for (path, text) in [
+            (&file, self.claude_settings()),
+            (&installed_file, self.claude_installed_settings()),
+            (&mcp, self.claude_mcp(tools)),
+        ] {
             // Unchanged since the last launch (the usual case): not written again (each write
             // syncs to disk).
             if std::fs::read(path).ok().as_deref() != Some(text.as_bytes()) {
@@ -508,6 +659,10 @@ impl Hooks {
             (
                 ENV_CLAUDE_SETTINGS.into(),
                 file.to_string_lossy().into_owned(),
+            ),
+            (
+                ENV_CLAUDE_INSTALLED_SETTINGS.into(),
+                installed_file.to_string_lossy().into_owned(),
             ),
             (ENV_CLAUDE_MCP.into(), mcp.to_string_lossy().into_owned()),
             (ENV_CODEX_HOOKS.into(), self.codex_hooks_override()),
@@ -611,18 +766,93 @@ fn toml_key(s: &str, key: &str, next: &[char]) -> bool {
         .is_some_and(|rest| rest.trim_start().starts_with(next))
 }
 
+/// Tracks whether a line scan is currently inside a TOML multiline string (`"""` or `'''`) so
+/// lines starting with `[` inside multiline values are never mistaken for table headers.
+fn advance_toml_multiline(line: &str, delim: &mut Option<&'static str>) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match *delim {
+            Some("\"\"\"") => {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i..].starts_with(b"\"\"\"") {
+                    *delim = None;
+                    i += 3;
+                    continue;
+                }
+                i += 1;
+            }
+            Some("'''") => {
+                if bytes[i..].starts_with(b"'''") {
+                    *delim = None;
+                    i += 3;
+                    continue;
+                }
+                i += 1;
+            }
+            Some(_) => {
+                i += 1;
+            }
+            None => match bytes[i] {
+                b'#' => break,
+                b'"' if bytes[i..].starts_with(b"\"\"\"") => {
+                    *delim = Some("\"\"\"");
+                    i += 3;
+                }
+                b'\'' if bytes[i..].starts_with(b"'''") => {
+                    *delim = Some("'''");
+                    i += 3;
+                }
+                b'"' => {
+                    i += 1;
+                    while i < bytes.len() {
+                        if bytes[i] == b'\\' {
+                            i += 2;
+                        } else if bytes[i] == b'"' {
+                            i += 1;
+                            break;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+                b'\'' => {
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != b'\'' {
+                        i += 1;
+                    }
+                    if i < bytes.len() {
+                        i += 1;
+                    }
+                }
+                _ => i += 1,
+            },
+        }
+    }
+}
+
 /// Whether the user's Codex configuration has a `notify` of its own (at the top, before any
 /// table; the one in TernaryCode's block is not the user's).
 pub fn codex_has_own_notify(config_toml: &str) -> bool {
-    let mut ours = false;
-    for l in config_toml.lines() {
-        match l {
-            MARK_BEGIN => ours = true,
-            MARK_END => ours = false,
-            _ if ours => {}
-            _ if l.trim_start().starts_with('[') => return false,
-            _ if toml_key(l, "notify", &['=']) => return true,
-            _ => {}
+    let unmarked = without_marked(config_toml);
+    if let Ok(table) = toml::from_str::<toml::Table>(&unmarked) {
+        return table.contains_key("notify");
+    }
+    let mut multiline = None;
+    for l in unmarked.lines() {
+        let in_ml = multiline.is_some();
+        advance_toml_multiline(l, &mut multiline);
+        if in_ml {
+            continue;
+        }
+        if l.trim_start().starts_with('[') {
+            return false;
+        }
+        if toml_key(l, "notify", &['=']) {
+            return true;
         }
     }
     false
@@ -632,33 +862,31 @@ pub fn codex_has_own_notify(config_toml: &str) -> bool {
 /// hide them for that run, so then only `notify` is added. The hooks in TernaryCode's own block
 /// are not the user's.
 pub fn codex_has_own_hooks(config_toml: &str) -> bool {
-    let mut ours = false;
+    let unmarked = without_marked(config_toml);
+    if let Ok(table) = toml::from_str::<toml::Table>(&unmarked) {
+        return table.contains_key("hooks");
+    }
     let mut in_table = false;
-    config_toml.lines().any(|l| {
-        match l {
-            MARK_BEGIN => {
-                ours = true;
-                return false;
-            }
-            MARK_END => {
-                ours = false;
-                return false;
-            }
-            _ => {}
+    let mut multiline = None;
+    for l in unmarked.lines() {
+        let in_ml = multiline.is_some();
+        advance_toml_multiline(l, &mut multiline);
+        if in_ml {
+            continue;
         }
         let table = toml_table(l);
         if table.is_some() {
             in_table = true;
         }
-        if ours {
-            return false;
-        }
         if let Some(name) = table {
-            name == "hooks" || name.starts_with("hooks.")
-        } else {
-            !in_table && toml_key(l, "hooks", &['=', '.'])
+            if name == "hooks" || name.starts_with("hooks.") {
+                return true;
+            }
+        } else if !in_table && toml_key(l, "hooks", &['=', '.']) {
+            return true;
         }
-    })
+    }
+    false
 }
 
 /// Claude Code's flags for one launch: the browser tools and the hooks. `--mcp-config` takes several files, so it goes first: the word after
@@ -671,6 +899,14 @@ fn codex_mcp_flag() -> String {
 fn claude_flags() -> String {
     let settings = format!("--settings {}", env_ref(ENV_CLAUDE_SETTINGS));
     format!("--mcp-config {} {settings}", env_ref(ENV_CLAUDE_MCP))
+}
+
+fn claude_installed_flags() -> String {
+    format!(
+        "--mcp-config {} --settings {}",
+        env_ref(ENV_CLAUDE_MCP),
+        env_ref(ENV_CLAUDE_INSTALLED_SETTINGS)
+    )
 }
 
 /// The command a preset types for this launch: the user's command with the hook flags added
@@ -696,9 +932,10 @@ pub fn launch_command_with(
 ) -> String {
     let flags = match (agent, integration) {
         (Some(AgentKind::Claude), Integration::PerLaunch) => claude_flags(),
-        // Installed: hooks live in ~/.claude/settings.json; browser tools still go per launch so
-        // TernaryCode's built-in browser remains the primary browser in both modes.
-        (Some(AgentKind::Claude), Integration::Installed) => format!("--mcp-config {}", env_ref(ENV_CLAUDE_MCP)),
+        // Installed: hooks live in ~/.claude/settings.json; browser tools and permissions still
+        // go per launch (`--settings` follows variadic `--mcp-config` so trailing prompts are
+        // never consumed as MCP config paths).
+        (Some(AgentKind::Claude), Integration::Installed) => claude_installed_flags(),
         (Some(AgentKind::Codex), Integration::PerLaunch) if codex_hooks && codex_own_notify => {
             format!("-c {}{}", env_ref(ENV_CODEX_HOOKS), codex_mcp_flag())
         }
@@ -716,13 +953,12 @@ pub fn launch_command_with(
     };
     let program = agent.map(AgentKind::slug).unwrap_or_default();
     let trimmed = command.trim();
-    // The first word ends at a space or a shell operator (`claude; …`, `claude&&…`); its file
-    // name may follow a Windows path (`C:\…\claude.exe`).
-    let end = trimmed
-        .find(|c: char| c.is_whitespace() || ";|&<>()".contains(c))
-        .unwrap_or(trimmed.len());
+    // The first word ends at a space or a shell operator (`claude; …`, `claude&&…`), respecting
+    // quotes; its file name may follow a Windows path (`C:\…\claude.exe`).
+    let end = first_shell_word_end(trimmed);
     let (first, rest) = trimmed.split_at(end);
-    let name = first.rsplit(['/', '\\']).next().unwrap_or(first);
+    let unquoted = unquote_shell_word(first);
+    let name = unquoted.rsplit(['/', '\\']).next().unwrap_or(unquoted);
     if name.eq_ignore_ascii_case(program) || name.eq_ignore_ascii_case(&format!("{program}.exe")) {
         format!("{first} {flags}{rest}")
     } else {
@@ -807,14 +1043,22 @@ pub fn plan_claude(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .ok_or_else(|| format!("\"hooks.{event}\" is not a list"))?;
-        let present = groups.iter().any(|g| {
-            g["hooks"].as_array().is_some_and(|hs| {
-                hs.iter()
-                    .any(|h| h["command"].as_str().is_some_and(|c| is_ours(c, hooks)))
-            })
-        });
+        let desired = hooks.command(AgentKind::Claude, event);
+        let mut present = false;
+        for g in groups.iter_mut() {
+            if let Some(hs) = g.get_mut("hooks").and_then(Value::as_array_mut) {
+                for h in hs.iter_mut() {
+                    if h["command"].as_str().is_some_and(|c| is_ours(c, hooks)) {
+                        present = true;
+                        if let Some(obj) = h.as_object_mut() {
+                            obj.insert("command".into(), Value::String(desired.clone()));
+                        }
+                    }
+                }
+            }
+        }
         if !present {
-            groups.push(json!({"hooks": [{"type": "command", "command": hooks.command(AgentKind::Claude, event)}]}));
+            groups.push(json!({"hooks": [{"type": "command", "command": desired}]}));
         }
     }
     let mut after = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
@@ -851,10 +1095,7 @@ pub fn plan_codex(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
             path.display()
         ));
     }
-    let has_notify = text
-        .lines()
-        .take_while(|l| !l.trim_start().starts_with('['))
-        .any(|l| toml_key(l, "notify", &['=']));
+    let has_notify = codex_has_own_notify(&text);
     let mut head = String::new();
     if !has_notify {
         head = format!(
@@ -870,7 +1111,15 @@ pub fn plan_codex(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
         ));
     }
     // The browser tools, unless the user has a server of that name.
-    if !text.contains("[mcp_servers.ternarycode]") && !text.contains("mcp_servers.ternarycode") {
+    let has_mcp_server = toml::from_str::<toml::Table>(&text)
+        .ok()
+        .map(|t| {
+            t.get("mcp_servers")
+                .and_then(toml::Value::as_table)
+                .is_some_and(|m| m.contains_key("ternarycode"))
+        })
+        .unwrap_or_else(|| text.contains("[mcp_servers.ternarycode]") || text.contains("mcp_servers.ternarycode"));
+    if !has_mcp_server {
         let env: Vec<String> = MCP_ENV.iter().map(|v| Hooks::toml_str(v)).collect();
         tail.push_str(&format!(
             "[mcp_servers.ternarycode]\ncommand = {}\nargs = [\"mcp\", \"codex\"]\nenv_vars = [{}]\ntool_timeout_sec = {MCP_TOOL_SECS}\ndefault_tools_approval_mode = \"approve\"\n",
@@ -930,19 +1179,30 @@ pub fn plan_gemini(hooks: &Hooks, path: &Path) -> Result<InstallPlan, String> {
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .ok_or_else(|| format!("\"hooks.{event}\" is not a list"))?;
-        let present = groups.iter().any(|g| {
-            g["hooks"].as_array().is_some_and(|hs| {
-                hs.iter()
-                    .any(|h| h["command"].as_str().is_some_and(|c| is_ours(c, hooks)))
-            })
-        });
+        let desired = hooks.command(AgentKind::Gemini, event);
+        let mut present = false;
+        for g in groups.iter_mut() {
+            if let Some(hs) = g.get_mut("hooks").and_then(Value::as_array_mut) {
+                for h in hs.iter_mut() {
+                    if h["command"].as_str().is_some_and(|c| is_ours(c, hooks)) {
+                        present = true;
+                        if let Some(obj) = h.as_object_mut() {
+                            obj.insert("name".into(), json!("ternarycode"));
+                            obj.insert("type".into(), json!("command"));
+                            obj.insert("command".into(), Value::String(desired.clone()));
+                            obj.insert("timeout".into(), json!(2000));
+                        }
+                    }
+                }
+            }
+        }
         if !present {
             groups.push(json!({
                 "matcher": "*",
                 "hooks": [{
                     "name": "ternarycode",
                     "type": "command",
-                    "command": hooks.command(AgentKind::Gemini, event),
+                    "command": desired,
                     "timeout": 2000
                 }]
             }));
@@ -1241,20 +1501,26 @@ pub fn uninstall(record: &InstallRecord, hooks: &Hooks) -> Result<Uninstalled, S
     if current.as_deref().map(fnv) == Some(record.written_hash) {
         match &record.backup {
             Some(b) => {
-                let original = std::fs::read(b).map_err(|e| e.to_string())?;
-                let text = String::from_utf8_lossy(&original);
-                // Installed again after the record was lost, the backup has our hooks too:
-                // written back as it is, it would bring them back.
-                if has_ours(record.agent, &text, hooks) {
-                    remove_ours(record, &text, hooks)?;
-                    return Ok(Uninstalled::Removed);
+                // If the backup file was deleted or is unreadable, fall through to `remove_ours`
+                // so the user can still cleanly strip TernaryCode's hooks from `current`.
+                if let Ok(original) = std::fs::read(b) {
+                    let text = String::from_utf8_lossy(&original);
+                    // Installed again after the record was lost, the backup has our hooks too:
+                    // written back as it is, it would bring them back.
+                    if has_ours(record.agent, &text, hooks) {
+                        remove_ours(record, &text, hooks)?;
+                        return Ok(Uninstalled::Removed);
+                    }
+                    tc_core::persist::write_private(&record.path, &original)
+                        .map_err(|e| e.to_string())?;
+                    return Ok(Uninstalled::Restored);
                 }
-                tc_core::persist::write_private(&record.path, &original)
-                    .map_err(|e| e.to_string())?;
             }
-            None => std::fs::remove_file(&record.path).map_err(|e| e.to_string())?,
+            None => {
+                std::fs::remove_file(&record.path).map_err(|e| e.to_string())?;
+                return Ok(Uninstalled::Restored);
+            }
         }
-        return Ok(Uninstalled::Restored);
     }
     let Some(current) = current else {
         return Ok(Uninstalled::Removed);
@@ -1287,20 +1553,24 @@ fn without_marked(text: &str) -> String {
     let mut out = String::new();
     // In a marked block; a table started yet (in the file); the table the line is in is ours.
     let (mut marked, mut in_table, mut ours) = (false, false, false);
+    let mut multiline = None;
     for line in text.lines() {
-        if line == MARK_BEGIN {
+        let in_ml = multiline.is_some();
+        if !in_ml && line == MARK_BEGIN {
             marked = true;
             continue;
         }
-        if line == MARK_END {
+        if !in_ml && line == MARK_END {
             marked = false;
             continue;
         }
-        if let Some(name) = toml_table(line) {
+        advance_toml_multiline(line, &mut multiline);
+        if !in_ml && let Some(name) = toml_table(line) {
             in_table = true;
             ours = marked && (name == "hooks" || name.starts_with("hooks.") || name == "mcp_servers.ternarycode" || name.starts_with("mcp_servers.ternarycode."));
         }
         let drop = marked
+            && !in_ml
             && if in_table { ours || line.trim().is_empty() } else { toml_key(line, "notify", &['=']) || line.trim().is_empty() };
         if !drop {
             out.push_str(line);
@@ -1444,7 +1714,15 @@ mod tests {
         );
         assert_eq!(
             launch_command("claude", Some(AgentKind::Claude), Integration::Installed, true),
-            format!("claude --mcp-config {}", env_ref("TC_CLAUDE_MCP"))
+            format!("claude --mcp-config {} --settings {}", env_ref("TC_CLAUDE_MCP"), env_ref("TC_CLAUDE_INSTALLED_SETTINGS"))
+        );
+        assert_eq!(
+            launch_command("claude 'fix the bug'", Some(AgentKind::Claude), Integration::Installed, true),
+            format!(
+                "claude --mcp-config {} --settings {} 'fix the bug'",
+                env_ref("TC_CLAUDE_MCP"),
+                env_ref("TC_CLAUDE_INSTALLED_SETTINGS")
+            )
         );
         // Codex installed (hooks and browser tools in its config.toml): only that its browser is
         // TernaryCode's; nothing when off.
@@ -2023,5 +2301,67 @@ mod tests {
         assert!(hooks_path.exists());
         assert_eq!(uninstall(&rec2, &hooks()), Ok(Uninstalled::Restored));
         assert!(!plugin.exists());
+    }
+
+    #[test]
+    fn insert_flag_handles_quotes_operators_and_wrappers() {
+        let f = "--dangerously-skip-permissions";
+        assert_eq!(insert_flag(r#""/opt/my tools/claude" --continue"#, f), format!(r#""/opt/my tools/claude" {f} --continue"#));
+        assert_eq!(insert_flag("claude; echo done", f), format!("claude {f}; echo done"));
+        assert_eq!(insert_flag("codex&&say done", f), format!("codex {f}&&say done"));
+        assert_eq!(insert_flag("npx claude --continue", f), format!("npx claude {f} --continue"));
+        assert_eq!(insert_flag("npx -y claude", f), format!("npx -y claude {f}"));
+        assert_eq!(insert_flag("FOO=1 claude", f), format!("FOO=1 claude {f}"));
+        assert_eq!(insert_flag(&format!("claude {f}"), f), format!("claude {f}"));
+    }
+
+    #[test]
+    fn plan_claude_and_gemini_update_stale_hook_paths_and_uninstall_survives_missing_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let backups = dir.path().join("backups");
+        let old = Hooks { bin: PathBuf::from("/old/location/ternarycode-hook") };
+        let new = Hooks { bin: PathBuf::from("/Applications/TernaryCode.app/Contents/MacOS/ternarycode-hook") };
+
+        let claude_path = dir.path().join("claude-settings.json");
+        std::fs::write(&claude_path, "{\"theme\":\"dark\"}\n").unwrap();
+        apply(&plan_claude(&old, &claude_path).unwrap(), &backups).unwrap();
+        let updated_plan = plan_claude(&new, &claude_path).unwrap();
+        assert!(!updated_plan.after.contains("/old/location/ternarycode-hook"));
+        assert!(updated_plan.after.contains("/Applications/TernaryCode.app/Contents/MacOS/ternarycode-hook"));
+        let record = apply(&updated_plan, &backups).unwrap();
+        // Delete backup file: uninstall should fall back to `remove_ours` instead of failing.
+        if let Some(b) = &record.backup {
+            std::fs::remove_file(b).unwrap();
+        }
+        assert_eq!(uninstall(&record, &new), Ok(Uninstalled::Removed));
+        let remaining = std::fs::read_to_string(&claude_path).unwrap();
+        assert!(!remaining.contains("ternarycode-hook"));
+        assert!(remaining.contains("\"theme\": \"dark\""));
+
+        let gemini_path = dir.path().join("gemini-settings.json");
+        apply(&plan_gemini(&old, &gemini_path).unwrap(), &backups).unwrap();
+        let g_updated = plan_gemini(&new, &gemini_path).unwrap();
+        assert!(!g_updated.after.contains("/old/location/ternarycode-hook"));
+        assert!(g_updated.after.contains("/Applications/TernaryCode.app/Contents/MacOS/ternarycode-hook"));
+    }
+
+    #[test]
+    fn codex_toml_detection_handles_brackets_inside_multiline_strings() {
+        let cfg = concat!(
+            "developer_instructions = \"\"\"\n",
+            "[Rules]\n",
+            "See [docs](https://example.com)\n",
+            "\"\"\"\n",
+            "notify = [\"my-notify\"]\n",
+        );
+        assert!(codex_has_own_notify(cfg));
+        assert!(!codex_has_own_hooks(cfg));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, cfg).unwrap();
+        let plan = plan_codex(&hooks(), &path).unwrap();
+        // Must not prepend a duplicate top-level `notify`.
+        let parsed: toml::Table = toml::from_str(&plan.after).expect("valid TOML without duplicate notify");
+        assert_eq!(parsed["notify"], toml::Value::from(vec!["my-notify"]));
     }
 }

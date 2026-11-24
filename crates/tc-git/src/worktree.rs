@@ -210,8 +210,12 @@ pub fn ignored_top(repo: &Path) -> Vec<String> {
     let mut names = Vec::new();
     for rec in out.split(|b| *b == 0).filter(|r| !r.is_empty()) {
         let path = String::from_utf8_lossy(rec);
+        // `git ls-files --directory` collapses fully-ignored directories to `dir/`; a path with
+        // a non-empty suffix after `/` is a nested ignored file inside a tracked directory and
+        // must NOT be reported as a top-level ignored folder.
         let top = match path.split_once('/') {
-            Some((first, _)) => format!("{first}/"),
+            Some((first, "")) => format!("{first}/"),
+            Some(_) => continue,
             None => path.into_owned(),
         };
         if seen.insert(top.clone()) {
@@ -323,6 +327,29 @@ mod tests {
         let short = commit_all(&tmp, "Update readme 2").expect("commit_all succeeds");
         assert!(!short.is_empty());
         assert!(dirty_files(&tmp).is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ignored_top_excludes_tracked_dirs_with_nested_ignored_files() {
+        let tmp = std::env::temp_dir().join(format!("tc-wt-ignored-top-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("docs")).unwrap();
+        std::fs::create_dir_all(tmp.join("build")).unwrap();
+        let _ = run(git(&tmp).args(["init", "-q", "-b", "main"])).unwrap();
+        let _ = run(git(&tmp).args(["config", "user.name", "Tester"])).unwrap();
+        let _ = run(git(&tmp).args(["config", "user.email", "t@example.com"])).unwrap();
+        std::fs::write(tmp.join(".gitignore"), ".env\nbuild/\ndocs/*.tmp\n").unwrap();
+        std::fs::write(tmp.join("docs/guide.md"), "tracked\n").unwrap();
+        let _ = run(git(&tmp).args(["add", "-A"])).unwrap();
+        let _ = run(git(&tmp).args(["commit", "-qm", "init"])).unwrap();
+
+        std::fs::write(tmp.join(".env"), "SECRET=1\n").unwrap();
+        std::fs::write(tmp.join("build/out.o"), "bin\n").unwrap();
+        std::fs::write(tmp.join("docs/draft.tmp"), "ignored nested\n").unwrap();
+
+        let top = ignored_top(&tmp);
+        assert_eq!(top, vec![".env".to_string(), "build/".to_string()]);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

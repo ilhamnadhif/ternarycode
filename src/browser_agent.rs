@@ -341,6 +341,7 @@ impl App {
                     let Some(id) = self.new_agent_page(agent_pane, project) else { return fail(reply, "The project is gone.") };
                     let url = crate::browser::normalize(&s("url"));
                     if url.is_empty() {
+                        self.agent_pages.insert(agent_pane, id);
                         let n = self.panel_of(project).and_then(|p| p.pages.iter().position(|x| *x == id)).map_or(0, |i| i + 1);
                         let _ = reply.send(json!({ "text": format!("Opened a new page of yours (tab {n}); your tools act on it now. browser_navigate opens an address in it.") }));
                         self.mark_dirty();

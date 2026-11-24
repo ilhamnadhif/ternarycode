@@ -1358,6 +1358,13 @@ impl App {
                 let _ = v.focus_parent();
                 self.dialog_focus = Some(id);
             }
+            if self.browser_focus == Some(id) {
+                self.browser_focus = None;
+                self.dialog_focus = Some(id);
+            }
+            if focused == Some(id) {
+                focused = None;
+            }
         }
         // Dialogs of pages that went away are answered (WebKit wants each answered).
         #[cfg(target_os = "macos")]

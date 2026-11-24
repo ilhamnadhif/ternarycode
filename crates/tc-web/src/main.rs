@@ -35,7 +35,12 @@ mod linux {
     use gtk::glib;
     use gtk::prelude::*;
     use serde_json::{Value, json};
-    use webkit2gtk::{FileChooserRequestExt, ScriptDialog, ScriptDialogType, SnapshotOptions, SnapshotRegion, WebViewExt, WindowPropertiesExt};
+    use webkit2gtk::{
+        FileChooserRequestExt, ScriptDialog, ScriptDialogType, SnapshotOptions, SnapshotRegion,
+        UserContentInjectedFrames, UserContentManager, UserContentManagerExt, UserScript,
+        UserScriptInjectionTime, WebContextExt, WebViewExt, WebsiteDataManagerExtManual,
+        WebsiteDataTypes, WindowPropertiesExt,
+    };
     use wry::{WebViewBuilder, WebViewExtUnix};
 
     /// The app's window, as wry takes a parent.
@@ -62,6 +67,8 @@ mod linux {
         view: webkit2gtk::WebView,
         window: gtk::Window,
         opener: u64,
+        /// Files an agent gave the next file chooser in this pop-up.
+        upload: Option<Vec<String>>,
     }
 
     /// An agent acting in a page now: the sites it may open (a pop-up its step opens elsewhere is
@@ -191,7 +198,9 @@ mod linux {
                 with(id, |p| p.web.reload());
             }
             "back" => {
-                with(id, |p| p.web.go_back());
+                if let Some(v) = view_of(id) {
+                    v.go_back();
+                }
             }
             "forward" => {
                 with(id, |p| p.web.go_forward());
@@ -243,13 +252,40 @@ mod linux {
             "clear" => {
                 let done = PAGES.with_borrow(|p| p.values().next().map(|p| p.web.clear_all_browsing_data().is_ok()));
                 if done != Some(true) {
-                    let _ = std::fs::remove_dir_all(s("data"));
+                    let cleared_popup = POPUPS.with_borrow(|p| {
+                        p.values()
+                            .next()
+                            .and_then(|pop| pop.view.context())
+                            .and_then(|ctx| ctx.website_data_manager())
+                            .map(|wdm| {
+                                wdm.clear(
+                                    WebsiteDataTypes::ALL,
+                                    glib::TimeSpan::from_seconds(0),
+                                    None::<&gtk::gio::Cancellable>,
+                                    |_| {},
+                                );
+                                true
+                            })
+                    });
+                    if cleared_popup != Some(true) {
+                        // Drop the cached WebContext before deleting the data directory so no
+                        // live WebKitNetworkProcess retains stale in-memory cookies or unlinked fds.
+                        CONTEXT.with_borrow_mut(|c| *c = None);
+                        let _ = std::fs::remove_dir_all(s("data"));
+                    }
                 }
             }
             "dialog" => answer(c["did"].as_u64().unwrap_or(0), c["accept"].as_bool().unwrap_or(false), &s("text")),
             "upload" => {
                 let files: Vec<String> = c["files"].as_array().map(|a| a.iter().filter_map(|f| f.as_str().map(str::to_string)).collect()).unwrap_or_default();
-                with(id, |p| p.upload = (!files.is_empty()).then_some(files));
+                let next = (!files.is_empty()).then_some(files);
+                if with(id, |p| p.upload = next.clone()).is_none() {
+                    POPUPS.with_borrow_mut(|p| {
+                        if let Some(pop) = p.get_mut(&id) {
+                            pop.upload = next;
+                        }
+                    });
+                }
             }
             "mouse" => {
                 if let Some(wv) = view_of(id) {
@@ -581,7 +617,36 @@ mod linux {
         }
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 32);
         let pid = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let popup = webkit2gtk::WebView::builder().related_view(opener).build();
+        // Wire the same `window.ipc` bridge wry sets up for regular pages so agent JS calls in
+        // pop-ups (`run_js_in` -> `window.ipc.postMessage(...)`) return instead of hanging.
+        let ucm = UserContentManager::new();
+        ucm.connect_script_message_received(Some("ipc"), move |_, msg| {
+            if let Some(js) = msg.js_value() {
+                ev(pid, "ipc", json!({ "v": js.to_string() }));
+            }
+        });
+        ucm.register_script_message_handler("ipc");
+        let ipc_script = UserScript::new(
+            "Object.defineProperty(window, 'ipc', { value: Object.freeze({ postMessage: function(x) { window.webkit.messageHandlers['ipc'].postMessage(x) } }) })",
+            UserContentInjectedFrames::TopFrame,
+            UserScriptInjectionTime::Start,
+            &[],
+            &[],
+        );
+        ucm.add_script(&ipc_script);
+        let popup = webkit2gtk::WebView::builder()
+            .user_content_manager(&ucm)
+            .related_view(opener)
+            .build();
+        popup.connect_run_file_chooser(move |_, req| {
+            let files = POPUPS.with_borrow_mut(|p| p.get_mut(&pid).and_then(|pop| pop.upload.take()));
+            let Some(files) = files else { return false };
+            let take = if req.selects_multiple() { files.len() } else { 1 };
+            let names: Vec<&str> = files.iter().take(take).map(String::as_str).collect();
+            req.select_files(&names);
+            ev(pid, "chooser", json!({}));
+            true
+        });
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         window.set_title(&url);
         window.add(&popup);
@@ -599,26 +664,36 @@ mod linux {
                     w.set_focus_on_map(agent.is_none());
                     w.show_all();
                     s.set(true);
-                    POPUPS.with_borrow_mut(|p| p.insert(pid, Popup { view: pv.clone(), window: w.clone(), opener: id }));
+                    POPUPS.with_borrow_mut(|p| p.insert(pid, Popup { view: pv.clone(), window: w.clone(), opener: id, upload: None }));
                     ev(id, "popup", json!({ "pid": pid, "url": u }));
                 }
                 None if !u.is_empty() && u != "about:blank" => {
-                    // Not a pop-up: the app opens it as a new page.
+                    // Not a pop-up: the app opens it as a new page. Stop loading and destroy the
+                    // unrealized window (GTK3's `w.close()` is a no-op before realize).
                     ev(id, "open_here", json!({ "url": u }));
-                    w.close();
+                    pv.stop_loading();
+                    // SAFETY: destroying our own unrealized top-level GTK window on the main thread.
+                    unsafe { w.destroy() };
                 }
                 None => {
                     w.set_default_size(600, 700);
                     w.set_focus_on_map(agent.is_none());
                     w.show_all();
                     s.set(true);
-                    POPUPS.with_borrow_mut(|p| p.insert(pid, Popup { view: pv.clone(), window: w.clone(), opener: id }));
+                    POPUPS.with_borrow_mut(|p| p.insert(pid, Popup { view: pv.clone(), window: w.clone(), opener: id, upload: None }));
                     ev(id, "popup", json!({ "pid": pid, "url": u }));
                 }
             }
         });
-        let w = window.clone();
-        popup.connect_close(move |_| w.close());
+        let (w, s) = (window.clone(), shown);
+        popup.connect_close(move |_| {
+            if s.get() {
+                w.close();
+            } else {
+                // SAFETY: destroying our own unrealized top-level GTK window on the main thread.
+                unsafe { w.destroy() };
+            }
+        });
         window.connect_destroy(move |_| {
             if POPUPS.with_borrow_mut(|p| p.remove(&pid)).is_some() {
                 ev(id, "popup_closed", json!({ "pid": pid }));

@@ -205,6 +205,69 @@ fn typed_prompt(s: &str) -> bool {
 
 // ----- Claude Code ----------------------------------------------------------------------------
 
+/// Strips the Windows `\\?\` / `\\?\UNC\` verbatim prefix from canonicalized paths so
+/// `claude_dir_name` matches Claude Code's folder naming (`C--Users-...`, not `----C--...`).
+fn strip_verbatim_str(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn strip_verbatim(path: &Path) -> PathBuf {
+    PathBuf::from(strip_verbatim_str(&path.to_string_lossy()))
+}
+
+/// Decodes a `file://` URI (including percent-encoding and Windows `/C:/...` leading slash)
+/// or returns plain filesystem paths unchanged.
+fn decode_workspace_uri(ws_raw: &str) -> PathBuf {
+    let Some(rest) = ws_raw.strip_prefix("file://") else {
+        return PathBuf::from(ws_raw);
+    };
+    let path_part = rest.strip_prefix("localhost").unwrap_or(rest);
+    let bytes = path_part.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    let hex = |b: u8| match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    };
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    let decoded = String::from_utf8_lossy(&out);
+    let b = decoded.as_bytes();
+    // Windows `file:///C:/Users/...` -> `C:/Users/...` (or `C:\Users\...` on Windows).
+    let normalized = if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        let drive = b[1].to_ascii_uppercase() as char;
+        let tail = &decoded[2..];
+        if cfg!(windows) {
+            format!("{drive}{}", tail.replace('/', "\\"))
+        } else {
+            format!("{drive}{tail}")
+        }
+    } else if cfg!(windows) {
+        decoded.replace('/', "\\")
+    } else {
+        decoded.into_owned()
+    };
+    PathBuf::from(normalized)
+}
+
 /// The folder name Claude Code keeps a project's sessions under.
 pub fn claude_dir_name(project: &Path) -> String {
     project.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
@@ -215,6 +278,7 @@ fn claude(project: &Path, root: &Path, limit: usize) -> Vec<Session> {
     // project added through a link has both).
     let mut dirs = vec![root.join("projects").join(claude_dir_name(project))];
     if let Ok(real) = fs::canonicalize(project) {
+        let real = strip_verbatim(&real);
         let dir = root.join("projects").join(claude_dir_name(&real));
         if !dirs.contains(&dir) {
             dirs.push(dir);
@@ -239,17 +303,22 @@ fn claude_session(path: &Path, updated: SystemTime) -> Option<Session> {
     let (head, tail) = edges(path, 64 * 1024, 512 * 1024);
     let (mut custom, mut ai, mut first, mut last_prompt, mut branch) = (None, None, None, None, None);
     for (from_tail, line) in head.iter().map(|l| (false, l)).chain(tail.iter().map(|l| (true, l))) {
-        // Only the kinds of lines that matter are parsed (others can be very long).
-        let kind = ["\"type\":\"custom-title\"", "\"type\":\"ai-title\"", "\"type\":\"last-prompt\"", "\"type\":\"user\""]
-            .iter()
-            .position(|k| line.contains(k));
-        let Some(kind) = kind else { continue };
+        // Quick pre-filter: only parse lines that might be one of the relevant entry types.
+        const NEEDLES: &[&str] = &[
+            "\"type\":\"custom-title\"",
+            "\"type\":\"ai-title\"",
+            "\"type\":\"last-prompt\"",
+            "\"type\":\"user\"",
+        ];
+        if !NEEDLES.iter().any(|k| line.contains(k)) {
+            continue;
+        }
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        match kind {
-            0 => custom = text(&v["customTitle"]).or(custom),
-            1 => ai = text(&v["aiTitle"]).or(ai),
-            2 => last_prompt = text(&v["lastPrompt"]).or(last_prompt),
-            _ => {
+        match v["type"].as_str() {
+            Some("custom-title") => custom = text(&v["customTitle"]).or(custom),
+            Some("ai-title") => ai = text(&v["aiTitle"]).or(ai),
+            Some("last-prompt") => last_prompt = text(&v["lastPrompt"]).or(last_prompt),
+            Some("user") => {
                 if v["isSidechain"].as_bool() == Some(true) {
                     continue;
                 }
@@ -260,6 +329,7 @@ fn claude_session(path: &Path, updated: SystemTime) -> Option<Session> {
                     first = content_text(&v["message"]["content"]).filter(|s| typed_prompt(s));
                 }
             }
+            _ => continue,
         }
     }
     let title = custom.or(ai).or(first).or(last_prompt)?;
@@ -433,6 +503,8 @@ fn antigravity(project: &Path, root: &Path, limit: usize) -> Vec<Session> {
         return Vec::new();
     };
     let (head, tail) = edges(&hist, 256 * 1024, 2 * 1024 * 1024);
+    let project_canon = fs::canonicalize(project).ok();
+    let mut ws_cache: HashMap<String, bool> = HashMap::new();
     let mut by_id: HashMap<String, (SystemTime, String, bool)> = HashMap::new();
     for line in head.iter().chain(tail.iter()) {
         if !line.contains("conversationId") {
@@ -440,8 +512,11 @@ fn antigravity(project: &Path, root: &Path, limit: usize) -> Vec<Session> {
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         let Some(ws_raw) = v["workspace"].as_str() else { continue };
-        let ws = ws_raw.strip_prefix("file://").unwrap_or(ws_raw);
-        if !same_folder(Path::new(ws), project) {
+        let matched = *ws_cache.entry(ws_raw.to_string()).or_insert_with(|| {
+            let ws = decode_workspace_uri(ws_raw);
+            same_folder_canon(&ws, project, project_canon.as_deref())
+        });
+        if !matched {
             continue;
         }
         let Some(id) = text(&v["conversationId"]).filter(|s| valid_session_id(s)) else { continue };
@@ -580,6 +655,7 @@ pub fn copy_session_between_roots(agent: AgentKind, project: &Path, from_root: &
             let slug = claude_dir_name(project);
             let mut candidates = vec![from_root.join("projects").join(&slug).join(format!("{id}.jsonl"))];
             if let Ok(real) = fs::canonicalize(project) {
+                let real = strip_verbatim(&real);
                 let p = from_root.join("projects").join(claude_dir_name(&real)).join(format!("{id}.jsonl"));
                 if !candidates.contains(&p) {
                     candidates.push(p);
@@ -2021,5 +2097,36 @@ mod tests {
         // Does not fabricate a rolling reset clock that differs from Google's server quota window.
         assert_eq!(agy_rep.window_5h.resets_at_unix, None);
         assert_eq!(agy_rep.window_weekly.resets_at_unix, None);
+    }
+
+    #[test]
+    fn strip_verbatim_decode_uri_and_claude_session_type_dispatch() {
+        assert_eq!(strip_verbatim_str(r"\\?\C:\Users\me\repo"), r"C:\Users\me\repo");
+        assert_eq!(strip_verbatim_str(r"\\?\UNC\srv\share\repo"), r"\\srv\share\repo");
+        assert_eq!(
+            claude_dir_name(Path::new(&strip_verbatim_str(r"\\?\C:\Users\me\repo"))),
+            "C--Users-me-repo"
+        );
+
+        assert_eq!(decode_workspace_uri("file:///Users/me/My%20App"), PathBuf::from("/Users/me/My App"));
+        assert_eq!(
+            decode_workspace_uri("file:///c:/Users/me/My%20App"),
+            PathBuf::from(if cfg!(windows) { r"C:\Users\me\My App" } else { "C:/Users/me/My App" })
+        );
+
+        // Assistant line containing nested `"type":"user"` must not be mistaken for a user prompt,
+        // and user line containing nested `"type":"custom-title"` must still extract `first` and `gitBranch`.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("12345678-1234-1234-1234-1234567890ab.jsonl");
+        let lines = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"type":"user"}},{"type":"text","text":"Assistant reply"}]}}"#,
+            "\n",
+            r#"{"type":"user","gitBranch":"feat/fix","message":{"content":"Investigate {\"type\":\"custom-title\"} parsing"}}"#,
+            "\n"
+        );
+        fs::write(&file, lines).unwrap();
+        let sess = claude_session(&file, SystemTime::UNIX_EPOCH).expect("session parsed");
+        assert_eq!(sess.branch.as_deref(), Some("feat/fix"));
+        assert!(sess.title.starts_with("Investigate"));
     }
 }

@@ -53,7 +53,7 @@ impl ServerScanner {
                 let missed = if at < from_tail {
                     parse(&j[..from_tail], at).is_none()
                 } else {
-                    at < from_tail + "https".len() && parse(bytes, at - from_tail).is_none()
+                    parse(bytes, at - from_tail).is_none()
                 };
                 if missed && let Some(f) = parse(&j, at) {
                     out.push(f);
@@ -142,6 +142,10 @@ fn parse(b: &[u8], at: usize) -> Option<Found> {
                 path.push(c as char);
                 i += 1;
             }
+            // Path cut at the chunk's end could continue in the next read: wait for a delimiter.
+            if i >= b.len() {
+                return None;
+            }
             while path.ends_with(['.', ',', ';', ':', '!', '?', ')', ']', '\'']) {
                 path.pop();
             }
@@ -223,10 +227,14 @@ mod tests {
         assert_eq!(found(&[b"Local: http://local", b"host:5173/\r\n"]), vec![("http://localhost:5173/".into(), 5173)]);
         assert_eq!(found(&[b"Local: http://localhost:51", b"73/\r\n"]), vec![("http://localhost:5173/".into(), 5173)]);
         assert_eq!(found(&[b"Local: http:/", b"/localhost:5173\r\n"]), vec![("http://localhost:5173/".into(), 5173)]);
-        // Cut anywhere, in the scheme too: found once.
-        let line = b"  Local:   https://localhost:5173/\r\n";
+        // Cut anywhere, in the scheme, SGR prefix, or path: found once, never truncated.
+        let line = b"  Local:   \x1b[36mhttps://localhost:5173/app/dashboard\x1b[39m\r\n";
         for cut in 1..line.len() {
-            assert_eq!(found(&[&line[..cut], &line[cut..]]), vec![("https://localhost:5173/".into(), 5173)], "cut at {cut}");
+            assert_eq!(
+                found(&[&line[..cut], &line[cut..]]),
+                vec![("https://localhost:5173/app/dashboard".into(), 5173)],
+                "cut at {cut}"
+            );
         }
     }
 
