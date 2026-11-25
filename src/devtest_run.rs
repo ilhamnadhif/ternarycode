@@ -211,6 +211,20 @@ impl App {
             "wait-queue" => {
                 Some(self.attention_queue().len().to_string() == arg.trim()).filter(|ok| *ok)
             }
+            "wait-relay" => {
+                let status = self
+                    .companion
+                    .as_ref()
+                    .map(crate::companion::CompanionHandle::relay_status)
+                    .unwrap_or_default();
+                let ok = match arg.trim() {
+                    "connected" => matches!(status, crate::companion::RelayStatus::Connected),
+                    "connecting" => matches!(status, crate::companion::RelayStatus::Connecting),
+                    "off" => matches!(status, crate::companion::RelayStatus::Off),
+                    _ => false,
+                };
+                Some(ok).filter(|ok| *ok)
+            }
             "wait-toast" => {
                 Some(self.toasts.iter().any(|t| arg.trim().split('|').any(|w| t.text.contains(w) || t.body.as_deref().is_some_and(|b| b.contains(w))))).filter(|ok| *ok)
             }
@@ -668,6 +682,11 @@ impl App {
                     "monitor" => Some(Action::OpenMonitor),
                     "pairing" => Some(Action::OpenPhonePairing),
                     "toggle-companion" => Some(Action::ToggleCompanionServer),
+                    "toggle-relay" => Some(Action::ToggleCompanionRelay),
+                    "dismiss-rate-limit" => self.current_pane().map(Action::DismissRateLimit),
+                    "open-companion-web" => self.companion.as_ref().map(|srv| {
+                        Action::OpenWeb(format!("http://127.0.0.1:{}/?pair={}", srv.port, srv.pair_token()))
+                    }),
                     "sidebar" => Some(Action::ToggleSidebar),
                     "compact-sidebar" => Some(Action::ToggleCompactSidebar),
                     "attention" => Some(Action::ToggleAttention),
@@ -748,7 +767,7 @@ impl App {
                 let want = devtest::unescape(content);
                 self.devtest.check(!disk.contains(&want), &format!("expect-not-file {path} lacks {want:?}"));
             }
-            "wait-screen" | "wait-status" | "wait-agent" | "wait-queue" | "wait-editor" | "wait-conflict" | "wait-browser"
+            "wait-screen" | "wait-status" | "wait-agent" | "wait-queue" | "wait-relay" | "wait-editor" | "wait-conflict" | "wait-browser"
             | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-page" | "wait-page-count" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-dialog" | "wait-download" | "wait-page-find" | "wait-inspector" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
             | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" | "wait-web" => {
@@ -1025,6 +1044,7 @@ impl App {
                         "port": srv.port,
                         "token": srv.pair_token(),
                         "url": srv.pairing_url(&self.settings.companion.tunnel_url),
+                        "relay_endpoint": srv.relay_endpoint(),
                     });
                     std::fs::write(arg.trim(), payload.to_string()).is_ok()
                 } else {

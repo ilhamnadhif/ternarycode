@@ -631,7 +631,10 @@ run ade-sidebar-scroll 90 "$SCROLL_SCRIPT"
 # 3. Multi-account Profiles view, Rate-Limit Manual & Auto Failover, and All-Agent Usage Monitor.
 run ade-profiles-monitor 60 "sleep 1000;; action add-project $P1;; sleep 1200;; set-failover manual;; trigger-limit claude1;; sleep 500;; expect-shown rate-limit-banner:2;; shot e2e-ade-failover;; set-failover auto;; trigger-limit claude1;; sleep 500;; wait-toast auto-resumed|otomatis dilanjutkan;; action profiles;; sleep 600;; expect-dialog open;; expect-shown settings-body;; shot e2e-ade-profiles;; key esc;; sleep 500;; expect-dialog closed;; action monitor;; sleep 600;; expect-dialog open;; key esc;; sleep 500;; expect-dialog closed;; wait-shown usage-meter;; click usage-meter;; sleep 400;; expect-shown monitor-popover;; shot e2e-ade-popover;; click usage-meter;; sleep 300;; expect-hidden monitor-popover;; quit"
 
-# 4. Phone Pairing view, QR code rendering, and real Mobile Companion HTTP API handshake.
+# 4. Phone Pairing view, QR code rendering, and real Mobile Companion HTTP/SSE/Input API handshake.
+PAIRPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+mkdir -p "$WORK/data-ade-pairing"
+printf '{"companion":{"port":%s}}\n' "$PAIRPORT" > "$WORK/data-ade-pairing/settings.json"
 PAIR_INFO="$WORK/pair-info.json"
 PAIR_CHECK="$WORK/pair-check.py"
 cat > "$PAIR_CHECK" <<'PY'
@@ -655,6 +658,17 @@ try:
     sys.exit("expected 401")
 except urllib.error.HTTPError as e:
     assert e.code == 401, f"got {e.code}"
+# Bad pairing token must fail with 403.
+try:
+    bad_req = urllib.request.Request(
+        base + "/api/pair",
+        data=json.dumps({"token": "XXXX-YYYY-ZZZZ", "device_name": "Bad Phone"}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    urllib.request.urlopen(bad_req)
+    sys.exit("expected 403 for bad token")
+except urllib.error.HTTPError as e:
+    assert e.code == 403, f"expected 403, got {e.code}"
 # Pair with real pairing token.
 req = urllib.request.Request(
     base + "/api/pair",
@@ -669,9 +683,132 @@ req = urllib.request.Request(base + "/api/state", headers={"Authorization": f"Be
 state = json.loads(urllib.request.urlopen(req).read().decode())
 assert len(state["profiles"]) >= 2, f"expected profiles, got {state}"
 assert any(p["name"] == "alpha" for p in state["projects"]), f"expected alpha project, got {state}"
+# SSE /api/events streams initial JSON snapshot.
+sse_req = urllib.request.Request(base + f"/api/events?token={bearer}")
+with urllib.request.urlopen(sse_req, timeout=5) as resp:
+    line = resp.readline().decode()
+    assert line.startswith("data: "), f"unexpected SSE line: {line!r}"
+    snap = json.loads(line[6:])
+    assert any(p["name"] == "alpha" for p in snap["projects"])
+# Remote /api/pane/2/input sends real text into pane 2 (and bad action returns 400).
+try:
+    bad_inp = urllib.request.Request(
+        base + "/api/pane/2/input",
+        data=json.dumps({"action": "invalid_action"}).encode(),
+        headers={"Authorization": f"Bearer {bearer}", "Content-Type": "application/json"},
+    )
+    urllib.request.urlopen(bad_inp)
+    sys.exit("expected 400 for invalid action")
+except urllib.error.HTTPError as e:
+    assert e.code == 400, f"expected 400, got {e.code}"
+inp = urllib.request.Request(
+    base + "/api/pane/2/input",
+    data=json.dumps({"text": "echo companion-lan-ok", "enter": True}).encode(),
+    headers={"Authorization": f"Bearer {bearer}", "Content-Type": "application/json"},
+)
+res = json.loads(urllib.request.urlopen(inp).read().decode())
+assert res.get("ok") is True, f"input failed: {res}"
 open(info_path + ".ok", "w").write("PASS\n")
 PY
-run ade-pairing 60 "sleep 1000;; action add-project $P1;; sleep 1000;; action pairing;; sleep 600;; expect-dialog open;; action toggle-companion;; sleep 1000;; expect-shown pairing-qr;; expect-companion-url $PAIR_INFO;; spawn python3 $PAIR_CHECK $PAIR_INFO;; sleep 2500;; expect-file $PAIR_INFO.ok PASS;; shot e2e-ade-pairing;; action toggle-companion;; sleep 500;; quit"
+run ade-pairing 60 "sleep 1000;; action add-project $P1;; sleep 1000;; action pairing;; sleep 600;; expect-dialog open;; action toggle-companion;; sleep 1000;; expect-shown pairing-qr;; expect-shown pairing-endpoint;; expect-companion-url $PAIR_INFO;; spawn python3 $PAIR_CHECK $PAIR_INFO;; sleep 2500;; expect-file $PAIR_INFO.ok PASS;; shot e2e-ade-pairing;; key esc;; sleep 400;; wait-screen companion-lan-ok;; action pairing;; sleep 400;; action toggle-companion;; sleep 500;; quit"
+
+# 5. Live Cloudflare Relay Remote Access E2E: enables Remote access, verifies wss:// Connected,
+#    verifies QR URL switches to Cloudflare Relay, pairs & reads state & sends terminal input
+#    through the live Cloudflare Worker + Durable Object relay, and checks Phone settings bounds.
+RELAYPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+mkdir -p "$WORK/data-ade-relay-remote"
+printf '{"companion":{"port":%s}}\n' "$RELAYPORT" > "$WORK/data-ade-relay-remote/settings.json"
+RELAY_INFO="$WORK/relay-info.json"
+RELAY_CHECK="$WORK/relay-check.py"
+cat > "$RELAY_CHECK" <<'PY'
+import json, sys, time, urllib.request, urllib.error
+info_path = sys.argv[1]
+for _ in range(40):
+    try:
+        with open(info_path) as f:
+            info = json.load(f)
+        break
+    except Exception:
+        time.sleep(0.25)
+else:
+    sys.exit("relay info missing")
+relay = info.get("relay_endpoint") or ""
+assert relay.startswith("https://ternarycode-relay."), f"unexpected relay_endpoint: {relay!r}"
+assert info["url"].startswith(relay), f"pairing URL should use relay: {info['url']!r}"
+UA = {"User-Agent": "TernaryCode-E2E/1.0"}
+def mkreq(url, data=None, headers=None):
+    h = dict(UA)
+    if headers:
+        h.update(headers)
+    return urllib.request.Request(url, data=data, headers=h)
+# Fetch Companion Web UI through live Cloudflare Relay.
+html = urllib.request.urlopen(mkreq(relay + "/"), timeout=15).read().decode()
+assert "TernaryCode Companion" in html, "relay HTML missing"
+# Unauthorized state request through relay must fail with 401.
+try:
+    urllib.request.urlopen(mkreq(relay + "/api/state"), timeout=15)
+    sys.exit("expected 401 via relay")
+except urllib.error.HTTPError as e:
+    assert e.code == 401, f"relay expected 401, got {e.code}"
+# Pair through live Cloudflare Relay.
+req = mkreq(
+    relay + "/api/pair",
+    data=json.dumps({"token": info["token"], "device_name": "E2E Relay Phone"}).encode(),
+    headers={"Content-Type": "application/json"},
+)
+paired = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+bearer = paired["device_token"]
+assert bearer and paired["device_id"], "missing relay device_token"
+# Authorized state through live Cloudflare Relay.
+req = mkreq(relay + "/api/state", headers={"Authorization": f"Bearer {bearer}"})
+state = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+assert any(p["name"] == "alpha" for p in state["projects"]), f"relay state missing alpha: {state}"
+# Remote input through live Cloudflare Relay into pane 2.
+inp = mkreq(
+    relay + "/api/pane/2/input",
+    data=json.dumps({"text": "echo relay-remote-ok", "enter": True}).encode(),
+    headers={"Authorization": f"Bearer {bearer}", "Content-Type": "application/json"},
+)
+res = json.loads(urllib.request.urlopen(inp, timeout=15).read().decode())
+assert res.get("ok") is True, f"relay input failed: {res}"
+open(info_path + ".ok", "w").write("PASS\n")
+PY
+run ade-relay-remote 75 "sleep 1000;; action add-project $P1;; sleep 1000;; action pairing;; sleep 600;; expect-dialog open;; action toggle-relay;; wait-relay connected;; sleep 600;; expect-shown pairing-qr;; expect-shown pairing-endpoint;; expect-width pairing-endpoint 80 480;; expect-companion-url $RELAY_INFO;; shot e2e-ade-relay;; spawn python3 $RELAY_CHECK $RELAY_INFO;; sleep 5000;; expect-file $RELAY_INFO.ok PASS;; key esc;; sleep 400;; wait-screen relay-remote-ok;; action pairing;; sleep 400;; action toggle-companion;; sleep 400;; quit"
+
+# 6. Companion Web UI rendered in real WebKit browser: auto-pairs via ?pair=, renders all 4 tabs
+#    (Live, Inbox, Projects, Accounts), opens Settings & switches Dark/Light theme, sends input
+#    to the real terminal pane beside it, and verifies zero broken DOM/layout state.
+if [ "$(uname)" = Darwin ]; then
+    WEBCOMPPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+    mkdir -p "$WORK/data-companion-web-ui"
+    printf '{"companion":{"port":%s}}\n' "$WEBCOMPPORT" > "$WORK/data-companion-web-ui/settings.json"
+    run companion-web-ui 75 "sleep 1000;; action add-project $P1;; sleep 1200;; hook 2 claude SessionStart;; sleep 300;; action toggle-companion;; sleep 800;; action open-companion-web;; wait-browser TernaryCode Companion;; sleep 1500;; wait-web document.querySelectorAll('.bnav button[data-act=\"tab\"]').length === 4 => true;; wait-web document.getElementById('p-code') === null => true;; wait-web !!document.getElementById('term-body') => true;; web-shot e2e-companion-web-live;; web-click document.querySelector('.bnav [data-tab=\"inbox\"]');; sleep 400;; wait-web document.querySelector('.bnav [data-tab=\"inbox\"]').classList.contains('on') => true;; web-click document.querySelector('.bnav [data-tab=\"projects\"]');; sleep 400;; wait-web document.querySelector('.bnav [data-tab=\"projects\"]').classList.contains('on') => true;; web-click document.querySelector('.bnav [data-tab=\"accounts\"]');; sleep 400;; wait-web document.querySelector('.bnav [data-tab=\"accounts\"]').classList.contains('on') => true;; web-click document.querySelector('[data-act=\"open-settings\"]');; sleep 400;; web-click document.querySelector('[data-act=\"toggle-theme\"]');; sleep 300;; wait-web document.documentElement.getAttribute('data-theme') => \"light\";; web-shot e2e-companion-web-light;; web-click document.querySelector('[data-act=\"toggle-theme\"]');; sleep 300;; wait-web document.documentElement.getAttribute('data-theme') => \"dark\";; web-click document.querySelector('[data-act=\"close-settings\"]');; sleep 300;; web-click document.querySelector('.bnav [data-tab=\"live\"]');; sleep 400;; wait-web !!document.getElementById('prompt-input') => true;; web-log (() => { const inp = document.getElementById('prompt-input'); if (!inp) return 'no-input'; inp.value = 'echo web-ui-sent-ok'; inp.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('[data-act=\"send-prompt\"]')?.click(); return 'sent'; })();; wait-screen web-ui-sent-ok;; action toggle-companion;; sleep 400;; quit"
+fi
+
+# 7. Resumed Antigravity session rate-limit suppression + live divider drag zero-flicker check:
+#    - Runs a real foreground mock `agy --conversation conv-e2e-1` process so `check_foreground`
+#      recognizes `AgentKind::Antigravity` and `is_resume_argv`!
+#    - Replayed historical quota error must NOT trigger usage-limit banner,
+#    - Dragging split divider back and forth keeps banner hidden,
+#    - PreInvocation + normal output keeps historical error suppressed,
+#    - Genuinely new rate-limit error on the new turn DOES show banner,
+#    - Dismissing banner + dragging divider wider/narrower never flickers banner back.
+cat > "$WORK/bin/agy" <<'SH'
+#!/bin/sh
+printf 'Individual quota reached. Resets in 3h23m50s.\n> '
+while [ ! -f "$AGY_SIG_WORK" ]; do sleep 0.1; done
+printf 'Working on fresh account...\n'
+while [ ! -f "$AGY_SIG_LIMIT" ]; do sleep 0.1; done
+printf 'Individual quota reached. Resets in 4h59m00s.\n> '
+sleep 30
+SH
+chmod +x "$WORK/bin/agy"
+D_DRAG_R='mouse down divider:0@0.5,0.5;; sleep 100;; mouse drag divider:0@'
+D_UP_R=',0.5;; sleep 150;; mouse up divider:0@0.5,0.5;; sleep 600'
+run ade-resumed-limit-and-resize 80 "sleep 1000;; action add-project $P1;; sleep 1200;; keys AGY_SIG_WORK=$WORK/agy-work AGY_SIG_LIMIT=$WORK/agy-limit $WORK/bin/agy --conversation conv-e2e-1\\r;; wait-screen Individual quota reached;; wait-agent antigravity;; hook 2 antigravity SessionStart;; sleep 2200;; expect-hidden rate-limit-banner:2;; action split-right;; sleep 800;; wait-tabs 0:2,3;; ${D_DRAG_R}-15${D_UP_R};; ${D_DRAG_R}15${D_UP_R};; sleep 1800;; expect-hidden rate-limit-banner:2;; focus-pane 0;; sleep 300;; hook 2 antigravity PreInvocation;; write-file $WORK/agy-work go;; wait-screen Working on fresh account;; sleep 2000;; expect-hidden rate-limit-banner:2;; write-file $WORK/agy-limit go;; wait-screen 4h59m00s;; wait-shown rate-limit-banner:2;; shot e2e-ade-limit-new-turn;; action dismiss-rate-limit;; sleep 500;; expect-hidden rate-limit-banner:2;; ${D_DRAG_R}-18${D_UP_R};; ${D_DRAG_R}18${D_UP_R};; sleep 2000;; expect-hidden rate-limit-banner:2;; key ctrl+c;; quit"
+
+# 8. All Settings pages smoke check: every single tab renders cleanly with zero panics.
+run settings-all-pages 60 "sleep 1000;; action add-project $P1;; sleep 1000;; action settings;; sleep 400;; expect-dialog open;; click settings:General;; sleep 200;; click settings:Appearance;; sleep 200;; click settings:Terminal;; sleep 200;; click settings:Agents;; sleep 200;; click settings:Accounts;; sleep 300;; click settings:Browser;; sleep 200;; click settings:Editor;; sleep 200;; click settings:Notifications;; sleep 200;; click settings:Phone;; sleep 200;; click settings:Updates;; sleep 200;; click settings:About;; sleep 200;; shot e2e-settings-about;; key esc;; sleep 300;; expect-dialog closed;; quit"
 
 echo "---- $PASS passed, $FAIL failed (logs: $WORK)"
 [ "$FAIL" -eq 0 ]

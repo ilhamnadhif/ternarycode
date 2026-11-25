@@ -228,11 +228,35 @@ pub fn recognize(argv: &[String], exe: Option<&str>) -> Option<AgentKind> {
         return Some(a);
     }
     // Interpreters: the script is the first argument that is not an option.
-    if first.is_some_and(|f| matches!(f.to_ascii_lowercase().as_str(), "node" | "bun" | "deno" | "nodejs")) {
-        for arg in argv.iter().skip(1).filter(|a| !a.starts_with('-')).take(2) {
-            if let Some(a) = by_name(basename(arg)).or_else(|| by_path(arg)) {
-                return Some(a);
+    if let Some(f) = first {
+        match f.to_ascii_lowercase().as_str() {
+            "node" | "bun" | "deno" | "nodejs" => {
+                for arg in argv.iter().skip(1).filter(|a| !a.starts_with('-')).take(2) {
+                    if let Some(a) = by_name(basename(arg)).or_else(|| by_path(arg)) {
+                        return Some(a);
+                    }
+                }
             }
+            // POSIX shell wrapper scripts (`#!/bin/sh`, Homebrew/mise/asdf shims): inspect ONLY the
+            // script path argument, never `-c` inline command strings or arguments passed to a
+            // non-agent script.
+            "sh" | "bash" | "zsh" | "dash" => {
+                let mut expect_script = false;
+                for arg in argv.iter().skip(1) {
+                    if !expect_script && arg == "--" {
+                        expect_script = true;
+                        continue;
+                    }
+                    if !expect_script && arg.starts_with('-') {
+                        if arg == "-s" || arg.contains('c') {
+                            break;
+                        }
+                        continue;
+                    }
+                    return by_name(basename(arg)).or_else(|| by_path(arg));
+                }
+            }
+            _ => {}
         }
     }
     None
@@ -340,5 +364,26 @@ mod tests {
         assert_eq!(recognize(&["codex-aarch64-unknown-linux-musl".into()], None), Some(AgentKind::Codex));
         assert_eq!(recognize(&["node".into(), "/projects/opencode/server.js".into()], None), None);
         assert_eq!(recognize(&["node".into(), "/usr/lib/node_modules/opencode/bin/opencode".into()], None), Some(AgentKind::OpenCode));
+    }
+
+    #[test]
+    fn recognizes_shell_wrapper_scripts_without_false_positives() {
+        assert_eq!(
+            recognize(&v(&["/bin/sh", "/usr/local/bin/agy", "--conversation", "conv-1"]), Some("/bin/sh")),
+            Some(AgentKind::Antigravity)
+        );
+        assert_eq!(
+            recognize(&v(&["bash", "-e", "/opt/shims/claude", "--continue"]), None),
+            Some(AgentKind::Claude)
+        );
+        assert_eq!(
+            recognize(&v(&["/bin/sh", "--", "/tmp/bin/codex"]), None),
+            Some(AgentKind::Codex)
+        );
+        // Never misclassify `-c` command strings or arguments to unrelated shell scripts.
+        assert_eq!(recognize(&v(&["/bin/sh", "-c", "ls /tmp/claude"]), None), None);
+        assert_eq!(recognize(&v(&["/bin/zsh", "-lc", "echo /opt/bin/agy"]), None), None);
+        assert_eq!(recognize(&v(&["/bin/sh", "/tmp/deploy.sh", "claude"]), None), None);
+        assert_eq!(recognize(&v(&["/bin/sh", "-s", "agy"]), None), None);
     }
 }

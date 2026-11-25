@@ -68,6 +68,8 @@ impl App {
                 }
                 let mut rel = app.settings.companion.relay_enabled;
                 let s = kit::switch(ui, &mut rel);
+                #[cfg(debug_assertions)]
+                crate::devtest::record("companion-relay-switch", s.rect);
                 toggle_relay = s.changed();
             };
             if let Some(err) = relay_err {
@@ -184,6 +186,8 @@ impl App {
                                 job.wrap = egui::text::TextWrapping::truncate_at_width(col_w);
                                 let g = ui.painter().layout_job(job);
                                 let (r, resp) = ui.allocate_exact_size(vec2(g.size().x.min(col_w), g.size().y), Sense::click());
+                                #[cfg(debug_assertions)]
+                                crate::devtest::record("pairing-endpoint", r);
                                 let c = if resp.hovered() { p.accent_text } else { p.text_faint };
                                 ui.painter().galley(r.min, g, c);
                                 let tip = format!("{}\n{endpoint}", t("Open the phone's app here"));
