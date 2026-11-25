@@ -726,9 +726,9 @@ fn ternary_theme(dark: bool) -> Theme {
     use syntect::highlighting::{Color as C, FontStyle, ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings};
     let rgb = |v: u32| C { r: (v >> 16) as u8, g: (v >> 8) as u8, b: v as u8, a: 255 };
     let (text, kw, func, ty, string, num, com, mac) = if dark {
-        (0xe6e6e6, 0xc58ad8, 0x6aa6e8, 0xe0be7a, 0x98c379, 0xe8a36a, 0x767676, 0x5fb8c2)
+        (0xdcdee4, 0xc49bff, 0x7aa7ff, 0xebc06a, 0x7fd19a, 0xf0894a, 0x72737c, 0x62ccd8)
     } else {
-        (0x1d1d1d, 0x8e44ad, 0x2563c9, 0x8a6100, 0x2f7d32, 0xb4561b, 0x8e8e8e, 0x16808a)
+        (0x1c1c20, 0x763fd0, 0x1f58c4, 0x9c5c00, 0x167942, 0xa84705, 0x80808a, 0x0d7588)
     };
     let item = |scope: &str, color: u32, style: Option<FontStyle>| ThemeItem {
         scope: ScopeSelectors::from_str(scope).unwrap_or_default(),

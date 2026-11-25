@@ -198,9 +198,6 @@ fn hook_program() -> Hooks {
     beside
 }
 
-/// Set when the language changes (the native menu bar is then built again).
-static MENU_STALE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 /// What a toast says and how: its kind's icon, its title, maybe a line under it and one action.
 #[derive(Clone)]
 pub struct Toast {
@@ -585,7 +582,6 @@ impl App {
         if settings.migrate() {
             let _ = tc_core::persist::save_json(&paths::settings_file(), &settings);
         }
-        crate::i18n::set_language(settings.language);
         tc_term::set_translator(crate::i18n::t);
         apply_fonts(ctx, &settings);
         ui::style::apply(ctx, settings.theme);
@@ -719,7 +715,6 @@ impl App {
 
         #[cfg(target_os = "macos")]
         let menu = Some((ui::menu::AppMenu::install(), ui::menu::event_channel(ctx)));
-        crate::i18n::on_language_change(|| MENU_STALE.store(true, std::sync::atomic::Ordering::Relaxed));
 
         let mut app = Self {
             rt,
@@ -4584,11 +4579,6 @@ impl App {
     // ----- input ------------------------------------------------------------------------------
 
     fn handle_menu(&mut self) {
-        // The language changed: the menu bar is built again in it.
-        #[cfg(target_os = "macos")]
-        if MENU_STALE.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            self.menu = Some((ui::menu::AppMenu::install(), ui::menu::event_channel(&self.ctx)));
-        }
         #[cfg(target_os = "macos")]
         if let Some((menu, rx)) = &self.menu {
             while let Ok(event) = rx.try_recv() {

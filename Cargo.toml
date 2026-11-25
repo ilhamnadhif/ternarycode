@@ -25,7 +25,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 # The checksum of a downloaded update (src/update.rs).
 sha2 = "0.11.1"
-sys-locale = "0.3.2"
 # Syntax colours in the editor, pure Rust (fancy-regex instead of Oniguruma; PRD section 16).
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 tc-agent = { path = "crates/tc-agent" }

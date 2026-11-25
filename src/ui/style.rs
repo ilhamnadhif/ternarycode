@@ -97,76 +97,76 @@ const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
     Color32::from_rgba_premultiplied(m(r, a), m(g, a), m(b, a), a)
 }
 
-// Slate (v3): neutral greys, hairlines, one accent (the blue of the app icon). Values are the
-// `Theme` variables of design/TernaryCode Redesign.figcraft, Dark and Light modes.
+// Unified Ternary v4 ("Obsidian" dark & "Paper" light): calibrated micro-zinc neutrals,
+// translucent hairlines, WCAG 2.0 AA verified text/status, and TernaryCode's Cobalt Blue accent.
 const LIGHT: Palette = Palette {
     // The sheet is the "TernaryCode Light" terminal's background, so the terminal blends in.
-    canvas: Color32::from_rgb(0xfb, 0xfb, 0xfc),
-    chrome: Color32::from_rgb(0xed, 0xed, 0xef),
+    canvas: Color32::from_rgb(0xff, 0xff, 0xff),
+    chrome: Color32::from_rgb(0xec, 0xec, 0xef),
     surface: Color32::from_rgb(0xff, 0xff, 0xff),
     overlay: Color32::from_rgb(0xff, 0xff, 0xff),
     menu: Color32::from_rgb(0xff, 0xff, 0xff),
-    inset: Color32::from_rgb(0xe9, 0xe9, 0xec),
-    hover: black(10),
-    subtle: black(18),
-    border: black(15),
-    border_strong: black(26),
-    border_heavy: black(43),
+    inset: Color32::from_rgb(0xe6, 0xe6, 0xeb),
+    hover: black(11),
+    subtle: black(20),
+    border: black(23),
+    border_strong: black(41),
+    border_heavy: black(61),
     highlight: white(0),
     text: Color32::from_rgb(0x17, 0x17, 0x1a),
-    text_muted: Color32::from_rgb(0x56, 0x56, 0x60),
-    text_faint: Color32::from_rgb(0x80, 0x80, 0x8a),
-    text_ghost: Color32::from_rgb(0xab, 0xab, 0xb3),
+    text_muted: Color32::from_rgb(0x55, 0x55, 0x5f),
+    text_faint: Color32::from_rgb(0x76, 0x76, 0x80),
+    text_ghost: Color32::from_rgb(0xab, 0xab, 0xb4),
     accent: Color32::from_rgb(0x1f, 0x5f, 0xbf),
     accent_hover: Color32::from_rgb(0x1a, 0x52, 0xa8),
     on_accent: Color32::WHITE,
-    accent_soft: black(13),
+    accent_soft: black(17),
     accent_tint: rgba(0x1f, 0x5f, 0xbf, 26),
     accent_text: Color32::from_rgb(0x1a, 0x56, 0xb3),
-    ring: rgba(0x1f, 0x5f, 0xbf, 102),
-    ok: Color32::from_rgb(0x15, 0x80, 0x4e),
-    warn: Color32::from_rgb(0xb2, 0x6a, 0x00),
-    err: Color32::from_rgb(0xc7, 0x35, 0x2d),
-    info: Color32::from_rgb(0x25, 0x63, 0xc9),
-    rate_limited: Color32::from_rgb(0xc2, 0x56, 0x0a),
-    cooldown: Color32::from_rgb(0x2d, 0x6c, 0x9e),
-    idle: Color32::from_rgb(0x8e, 0x8e, 0x98),
+    ring: rgba(0x1f, 0x5f, 0xbf, 115),
+    ok: Color32::from_rgb(0x11, 0x70, 0x40),
+    warn: Color32::from_rgb(0x8f, 0x53, 0x00),
+    err: Color32::from_rgb(0xbe, 0x27, 0x22),
+    info: Color32::from_rgb(0x1f, 0x5f, 0xbf),
+    rate_limited: Color32::from_rgb(0xa8, 0x47, 0x05),
+    cooldown: Color32::from_rgb(0x0d, 0x75, 0x88),
+    idle: Color32::from_rgb(0x76, 0x76, 0x80),
     folder: Color32::from_rgb(0x66, 0x73, 0x8a),
 };
 
 const DARK: Palette = Palette {
-    // The sheet is the "TernaryCode Dark" terminal's background (#111113).
-    canvas: Color32::from_rgb(0x11, 0x11, 0x13),
-    chrome: Color32::from_rgb(0x09, 0x09, 0x0b),
-    surface: Color32::from_rgb(0x1a, 0x1a, 0x1d),
-    overlay: Color32::from_rgb(0x14, 0x14, 0x16),
-    menu: Color32::from_rgb(0x1c, 0x1c, 0x20),
-    inset: Color32::from_rgb(0x0c, 0x0c, 0x0e),
-    hover: white(10),
+    // The sheet is the "TernaryCode Dark" terminal's background (#151517).
+    canvas: Color32::from_rgb(0x15, 0x15, 0x17),
+    chrome: Color32::from_rgb(0x0d, 0x0d, 0x0f),
+    surface: Color32::from_rgb(0x1d, 0x1d, 0x20),
+    overlay: Color32::from_rgb(0x19, 0x19, 0x1c),
+    menu: Color32::from_rgb(0x23, 0x23, 0x27),
+    inset: Color32::from_rgb(0x10, 0x10, 0x12),
+    hover: white(11),
     subtle: white(20),
-    border: white(15),
-    border_strong: white(26),
-    border_heavy: white(43),
+    border: white(20),
+    border_strong: white(36),
+    border_heavy: white(56),
     highlight: white(0),
     text: Color32::from_rgb(0xed, 0xed, 0xf0),
     text_muted: Color32::from_rgb(0xa1, 0xa1, 0xaa),
-    text_faint: Color32::from_rgb(0x6c, 0x6c, 0x75),
-    text_ghost: Color32::from_rgb(0x48, 0x48, 0x4f),
+    text_faint: Color32::from_rgb(0x75, 0x75, 0x7e),
+    text_ghost: Color32::from_rgb(0x4b, 0x4b, 0x53),
     accent: Color32::from_rgb(0x2e, 0x6b, 0xe6),
     accent_hover: Color32::from_rgb(0x3a, 0x78, 0xf0),
     on_accent: Color32::WHITE,
-    accent_soft: white(15),
+    accent_soft: white(19),
     accent_tint: rgba(0x2e, 0x6b, 0xe6, 41),
-    accent_text: Color32::from_rgb(0x8b, 0xb2, 0xff),
-    ring: rgba(0x4f, 0x8c, 0xff, 153),
+    accent_text: Color32::from_rgb(0x85, 0xaf, 0xff),
+    ring: rgba(0x85, 0xaf, 0xff, 115),
     ok: Color32::from_rgb(0x4d, 0xc4, 0x8c),
-    warn: Color32::from_rgb(0xf2, 0xb1, 0x4b),
-    err: Color32::from_rgb(0xf0, 0x6a, 0x64),
+    warn: Color32::from_rgb(0xf0, 0xad, 0x42),
+    err: Color32::from_rgb(0xf0, 0x65, 0x60),
     info: Color32::from_rgb(0x6a, 0xa5, 0xff),
-    rate_limited: Color32::from_rgb(0xf2, 0x94, 0x41),
-    cooldown: Color32::from_rgb(0x5d, 0xb6, 0xdc),
-    idle: Color32::from_rgb(0x6c, 0x6c, 0x75),
-    folder: Color32::from_rgb(0x8c, 0x96, 0xa5),
+    rate_limited: Color32::from_rgb(0xf0, 0x89, 0x4a),
+    cooldown: Color32::from_rgb(0x62, 0xcc, 0xd8),
+    idle: Color32::from_rgb(0x75, 0x75, 0x7e),
+    folder: Color32::from_rgb(0x8f, 0x99, 0xa8),
 };
 
 impl Palette {
@@ -347,6 +347,7 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
             style.interaction.selectable_labels = false;
 
             let v = &mut style.visuals;
+            v.text_options.subpixel_binning = false;
             v.text_cursor.blink = false; // a blinking caret would repaint twice a second
             v.text_cursor.stroke = Stroke::new(1.5, p.accent_text);
             v.panel_fill = p.canvas;
@@ -426,7 +427,7 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
                 *font = match ts {
                     egui::TextStyle::Heading => semibold(TITLE),
                     egui::TextStyle::Small => FontId::proportional(SMALL),
-                    egui::TextStyle::Monospace => FontId::monospace(12.5),
+                    egui::TextStyle::Monospace => FontId::monospace(MONO),
                     _ => FontId::proportional(BODY),
                 };
             }

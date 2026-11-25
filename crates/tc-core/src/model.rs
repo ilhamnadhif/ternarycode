@@ -432,15 +432,6 @@ pub enum ThemeMode {
 /// The revision of the UI defaults a settings file was written with (see [`Settings::migrate`]).
 pub const UI_REV: u32 = 4;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Language {
-    #[default]
-    System,
-    English,
-    Indonesian,
-}
-
 /// How hooks reach TernaryCode for one agent (PRD section 8).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -479,7 +470,6 @@ impl Default for Notifications {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    pub language: Language,
     pub theme: ThemeMode,
     pub scheme_dark: String,
     pub scheme_light: String,
@@ -653,7 +643,7 @@ fn yes() -> bool {
 }
 
 fn default_sidebar_font_size() -> f32 {
-    14.0
+    13.0
 }
 
 fn default_files_width() -> f32 {
@@ -663,7 +653,6 @@ fn default_files_width() -> f32 {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            language: Language::System,
             theme: ThemeMode::Dark,
             scheme_dark: String::new(),
             scheme_light: String::new(),

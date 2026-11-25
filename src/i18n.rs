@@ -1,52 +1,8 @@
-//! English / Indonesian UI strings.
-//!
-//! UI code writes English through `t("…")`; in Indonesian the string is looked up in `ID` and
-//! falls back to English when missing. Unit tests check that every literal passed to `t(` or
-//! `tf(` in the source has a translation, and that every translation is still used.
+//! English UI strings and formatting helpers.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-pub use tc_core::model::Language;
-
-static INDONESIAN: AtomicBool = AtomicBool::new(false);
-
-static ON_CHANGE: std::sync::Mutex<Option<fn()>> = std::sync::Mutex::new(None);
-
-/// Called after the language changes (the native menu bar is built again).
-pub fn on_language_change(f: fn()) {
-    if let Ok(mut g) = ON_CHANGE.lock() {
-        *g = Some(f);
-    }
-}
-
-pub fn set_language(lang: Language) {
-    let id = match lang {
-        Language::English => false,
-        Language::Indonesian => true,
-        Language::System => sys_locale::get_locales()
-            .next()
-            .is_some_and(|l| l.starts_with("id") || l.starts_with("in")),
-    };
-    let was = INDONESIAN.swap(id, Ordering::Relaxed);
-    if was != id
-        && let Ok(g) = ON_CHANGE.lock()
-        && let Some(f) = *g
-    {
-        f();
-    }
-}
-
-pub fn is_indonesian() -> bool {
-    INDONESIAN.load(Ordering::Relaxed)
-}
-
+#[inline]
 pub fn t(en: &'static str) -> &'static str {
-    if !is_indonesian() {
-        return en;
-    }
-    table().get(en).copied().unwrap_or(en)
+    en
 }
 
 /// `t` and then each `{}` replaced by the next argument.
@@ -68,15 +24,7 @@ fn fill(text: &str, args: &[&str]) -> String {
     out
 }
 
-fn table() -> &'static HashMap<&'static str, &'static str> {
-    static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    TABLE.get_or_init(|| ID.iter().copied().collect())
-}
-
-include!("i18n_table.rs");
-
-/// "1 project" or "3 projects", from forms already translated (`many` with `{}`): callers
-/// write `t("1 project")`, where the tests' scan of the sources finds the strings.
+/// "1 project" or "3 projects".
 pub fn count(n: usize, one: &str, many: &str) -> String {
     if n == 1 { one.to_string() } else { fill(many, &[&n.to_string()]) }
 }
@@ -85,109 +33,11 @@ pub fn count(n: usize, one: &str, many: &str) -> String {
 mod tests {
     use super::*;
 
-    use std::path::{Path, PathBuf};
-
-    /// The Rust files under `dir` and their text, the table and this file left out.
-    fn sources(dir: &Path) -> Vec<(PathBuf, String)> {
-        let mut out = Vec::new();
-        let mut stack = vec![dir.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if path.extension().is_none_or(|e| e != "rs")
-                    || path
-                        .file_name()
-                        .is_some_and(|n| n == "i18n_table.rs" || n == "i18n.rs")
-                {
-                    continue;
-                }
-                let text = std::fs::read_to_string(&path).unwrap();
-                out.push((path, text));
-            }
-        }
-        out
-    }
-
     #[test]
-    fn every_ui_string_is_translated() {
-        let mut missing = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for (path, text) in sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
-            for lit in extract_literals(&text) {
-                if seen.insert(lit.clone()) && !table().contains_key(lit.as_str()) {
-                    missing.push(format!("{}: {lit:?}", path.display()));
-                }
-            }
-        }
-        missing.sort();
-        assert!(missing.is_empty(), "untranslated strings:\n{}", missing.join("\n"));
-    }
-
-    #[test]
-    fn every_translation_is_used() {
-        // Most strings reach `t` as the literal of the call, but some through a variable or
-        // from a crate (tc-doc's kind labels, tc-term's context menu by `set_translator`): an
-        // entry is used while its English is still a string literal somewhere in the sources.
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut texts: Vec<String> =
-            sources(&root.join("src")).into_iter().map(|(_, text)| text).collect();
-        for krate in std::fs::read_dir(root.join("crates")).unwrap() {
-            let src = krate.unwrap().path().join("src");
-            if src.is_dir() {
-                texts.extend(sources(&src).into_iter().map(|(_, text)| text));
-            }
-        }
-        // As the literal is written (`\"` for a quote).
-        let unused: Vec<&str> = ID
-            .iter()
-            .map(|(en, _)| *en)
-            .filter(|en| !texts.iter().any(|text| text.contains(&format!("{en:?}"))))
-            .collect();
-        assert!(unused.is_empty(), "translations nothing uses:\n{}", unused.join("\n"));
-    }
-
-    #[test]
-    fn placeholders_match() {
-        for (en, id) in ID {
-            assert_eq!(en.matches("{}").count(), id.matches("{}").count(), "{en}");
-        }
-    }
-
-    fn extract_literals(text: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        for pat in ["t(", "tf("] {
-            let mut rest = text;
-            while let Some(pos) = rest.find(pat) {
-                let prev = rest[..pos].chars().last();
-                rest = &rest[pos + pat.len()..];
-                if prev.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') {
-                    continue;
-                }
-                let trimmed = rest.trim_start();
-                let Some(after) = trimmed.strip_prefix('"') else {
-                    continue;
-                };
-                rest = after;
-                let mut lit = String::new();
-                let mut chars = rest.chars();
-                while let Some(c) = chars.next() {
-                    match c {
-                        '\\' => match chars.next() {
-                            Some('n') => lit.push('\n'),
-                            Some(other) => lit.push(other),
-                            None => break,
-                        },
-                        '"' => break,
-                        c => lit.push(c),
-                    }
-                }
-                out.push(lit);
-            }
-        }
-        out
+    fn format_and_count() {
+        assert_eq!(t("Run Agent"), "Run Agent");
+        assert_eq!(tf("{} of {}", &["1", "2"]), "1 of 2");
+        assert_eq!(count(1, "1 project", "{} projects"), "1 project");
+        assert_eq!(count(3, "1 project", "{} projects"), "3 projects");
     }
 }

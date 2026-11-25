@@ -9,7 +9,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Galley, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use tc_agent::integrate::InstallRecord;
 use tc_core::agent::{AgentKind, Preset};
-use tc_core::model::{CursorShape, Integration, Language, ThemeMode};
+use tc_core::model::{CursorShape, Integration, ThemeMode};
 use tc_core::status::Status;
 
 use super::{icons, kit, style};
@@ -71,7 +71,7 @@ const NAV: [Option<(SettingsPage, &str, &str)>; 12] = [
 fn page_rows(page: SettingsPage) -> &'static [&'static str] {
     match page {
         SettingsPage::General => &["Command line", "Data folder", "Worktrees", "Where new worktrees go", "Branch names start with", "When a branch is merged"],
-        SettingsPage::Appearance => &["Theme", "Language", "Terminal colours", "Dark theme", "Light theme", "Terminal text", "Font", "Size", "Cursor", "Blinking cursor", "Sidebar", "Text size", "Width"],
+        SettingsPage::Appearance => &["Theme", "Terminal colours", "Dark theme", "Light theme", "Terminal text", "Font", "Size", "Cursor", "Blinking cursor", "Sidebar", "Text size", "Width"],
         SettingsPage::Terminal => {
             if cfg!(target_os = "macos") {
                 &["Scrollback per pane", "Scrollback memory for all panes", "Option key as Meta", "Copy on select", "Programs may copy to the clipboard", "Shell integration"]
@@ -594,9 +594,6 @@ impl App {
 
         ui.allocate_rect(full, Sense::hover());
         if self.settings != before {
-            if self.settings.language != before.language {
-                crate::i18n::set_language(self.settings.language);
-            }
             if self.settings.theme != before.theme {
                 style::apply(ui.ctx(), self.settings.theme);
             }
@@ -718,7 +715,7 @@ impl App {
     // -----------------------------------------------------------------------------------------
 
     fn appearance_page(&mut self, ui: &mut Ui, search: &str) {
-        let labels = [(t("Theme"), ""), (t("Language"), t("System follows the language of your computer."))];
+        let labels = [(t("Theme"), "")];
         section(ui, search, Some(t("Theme")), None, &labels, |c| {
             c.block(&[(t("Theme"), "")], egui::Margin::same(16), |ui| {
                 ui.horizontal(|ui| {
@@ -732,23 +729,6 @@ impl App {
                         }
                     }
                 });
-            });
-            c.row(t("Language"), t("System follows the language of your computer."), |ui| {
-                let system = if sys_locale::get_locales().next().is_some_and(|l| l.starts_with("id") || l.starts_with("in")) {
-                    "Bahasa Indonesia"
-                } else {
-                    "English"
-                };
-                let options = [tf("System ({})", &[system]), "English".to_string(), "Bahasa Indonesia".to_string()];
-                let current = match self.settings.language {
-                    Language::System => 0,
-                    Language::English => 1,
-                    Language::Indonesian => 2,
-                };
-                let opts: Vec<&str> = options.iter().map(String::as_str).collect();
-                if let Some(i) = kit::select(ui, "language", &options[current], &opts, 200.0) {
-                    self.settings.language = [Language::System, Language::English, Language::Indonesian][i];
-                }
             });
         });
 

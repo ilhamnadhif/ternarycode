@@ -51,7 +51,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
-    <key>CFBundleLocalizations</key><array><string>en</string><string>id</string></array>
+    <key>CFBundleLocalizations</key><array><string>en</string></array>
     <key>CFBundleDisplayName</key><string>$APP_NAME</string>
     <key>CFBundleExecutable</key><string>ternarycode</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
