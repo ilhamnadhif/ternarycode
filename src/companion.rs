@@ -165,26 +165,58 @@ pub struct CompanionAlert {
     pub message: String,
 }
 
-#[derive(Default)]
-struct AuthState {
-    pair_token: String,
-    /// `token_hash` -> `device_id`.
-    devices: HashMap<String, String>,
+/// Configuration for the outbound Cloudflare Workers + Durable Objects Relay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelayConfig {
+    pub relay_url: String,
+    pub host_id: String,
+    pub secret: String,
 }
 
-struct ServerState {
-    auth: RwLock<AuthState>,
+impl RelayConfig {
+    pub fn public_endpoint(&self) -> String {
+        let base = self.relay_url.trim().trim_end_matches('/');
+        format!("{base}/r/{}", self.host_id)
+    }
+}
+
+/// Live connection state of the outbound Cloudflare Relay WebSocket.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RelayStatus {
+    #[default]
+    Off,
+    Connecting,
+    Connected,
+    Error(String),
+}
+
+pub(crate) struct DispatchResponse {
+    pub status: u16,
+    pub content_type: &'static str,
+    pub body: String,
+}
+
+#[derive(Default)]
+pub(crate) struct AuthState {
+    pub(crate) pair_token: String,
+    /// `token_hash` -> `device_id`.
+    pub(crate) devices: HashMap<String, String>,
+}
+
+pub(crate) struct ServerState {
+    pub(crate) auth: RwLock<AuthState>,
     pair_failures: RwLock<HashMap<IpAddr, Vec<Instant>>>,
-    snapshot: RwLock<String>,
+    pub(crate) snapshot: RwLock<String>,
     snapshot_dirty: AtomicBool,
     snapshot_seq: watch::Sender<u64>,
-    sse_clients: AtomicUsize,
+    pub(crate) sse_clients: AtomicUsize,
     last_client_poll: RwLock<Option<Instant>>,
-    events: broadcast::Sender<String>,
-    shutdown: watch::Sender<bool>,
-    auth_ver: watch::Sender<u64>,
-    tx: Sender<AppMsg>,
-    ctx: egui::Context,
+    pub(crate) events: broadcast::Sender<String>,
+    pub(crate) shutdown: watch::Sender<bool>,
+    pub(crate) auth_ver: watch::Sender<u64>,
+    pub(crate) relay_status: RwLock<RelayStatus>,
+    pub(crate) tx: Sender<AppMsg>,
+    pub(crate) ctx: egui::Context,
 }
 
 impl ServerState {
@@ -193,7 +225,7 @@ impl ServerState {
         let _ = self.auth_ver.send(next);
     }
 
-    fn touch_client(&self) {
+    pub(crate) fn touch_client(&self) {
         *self.last_client_poll.write() = Some(Instant::now());
     }
 
@@ -209,7 +241,7 @@ impl ServerState {
     /// Requests an immediate fresh snapshot from the UI thread when idle suppression marked the
     /// cached snapshot dirty (or before the first publish), waiting briefly so the connecting
     /// client receives up-to-date state on its very first response.
-    async fn ensure_fresh_snapshot(&self) {
+    pub(crate) async fn ensure_fresh_snapshot(&self) {
         let needs_sync = self.snapshot_dirty.load(Ordering::Acquire) || *self.snapshot.read() == "{}";
         if !needs_sync {
             return;
@@ -240,6 +272,7 @@ impl Drop for SseClientGuard<'_> {
 pub struct CompanionHandle {
     pub port: u16,
     pub local_ip: String,
+    relay: Option<RelayConfig>,
     shared: Arc<ServerState>,
 }
 
@@ -248,6 +281,7 @@ impl CompanionHandle {
         rt: &tokio::runtime::Handle,
         port: u16,
         devices: &[PairedDevice],
+        relay: Option<RelayConfig>,
         tx: Sender<AppMsg>,
         ctx: egui::Context,
     ) -> Result<Self, String> {
@@ -260,6 +294,7 @@ impl CompanionHandle {
         let (shutdown, mut sd_rx) = watch::channel(false);
         let (auth_ver, _) = watch::channel(0u64);
         let (snapshot_seq, _) = watch::channel(0u64);
+        let initial_relay_status = if relay.is_some() { RelayStatus::Connecting } else { RelayStatus::Off };
         let shared = Arc::new(ServerState {
             auth: RwLock::new(AuthState { pair_token, devices: dev_map }),
             pair_failures: RwLock::new(HashMap::new()),
@@ -271,6 +306,7 @@ impl CompanionHandle {
             events,
             shutdown,
             auth_ver,
+            relay_status: RwLock::new(initial_relay_status),
             tx,
             ctx,
         });
@@ -315,11 +351,30 @@ impl CompanionHandle {
                 }
             }
         });
+        if let Some(cfg) = relay.clone() {
+            let relay_state = shared.clone();
+            rt.spawn(async move {
+                crate::companion_relay::run_relay_loop(relay_state, cfg).await;
+            });
+        }
         Ok(Self {
             port: bound_port,
             local_ip: detect_lan_ip(),
+            relay,
             shared,
         })
+    }
+
+    pub fn relay_config(&self) -> Option<&RelayConfig> {
+        self.relay.as_ref()
+    }
+
+    pub fn relay_status(&self) -> RelayStatus {
+        self.shared.relay_status.read().clone()
+    }
+
+    pub fn relay_endpoint(&self) -> Option<String> {
+        self.relay.as_ref().map(RelayConfig::public_endpoint)
     }
 
     pub fn pair_token(&self) -> String {
@@ -353,15 +408,32 @@ impl CompanionHandle {
         self.shared.bump_auth();
     }
 
+    /// Active public endpoint shown beneath the QR code (custom tunnel override > Cloudflare relay > Wi-Fi LAN).
+    pub fn active_endpoint(&self, tunnel_url: &str) -> String {
+        let custom = tunnel_url.trim().trim_end_matches('/');
+        if !custom.is_empty() {
+            return custom.to_string();
+        }
+        if let Some(relay_ep) = self.relay_endpoint() {
+            return relay_ep;
+        }
+        format!("http://{}:{}", self.local_ip, self.port)
+    }
+
     pub fn pairing_url(&self, tunnel_url: &str) -> String {
-        let base = tunnel_url.trim().trim_end_matches('/');
-        let base = if base.is_empty() {
-            format!("http://{}:{}", self.local_ip, self.port)
-        } else {
-            base.to_string()
-        };
-        let sep = if base.contains('?') { "&pair=" } else { "/?pair=" };
-        format!("{base}{sep}{}", self.pair_token())
+        let custom = tunnel_url.trim().trim_end_matches('/');
+        if !custom.is_empty() {
+            let sep = if custom.contains('?') { "&pair=" } else { "/?pair=" };
+            return format!("{custom}{sep}{}", self.pair_token());
+        }
+        if let Some(relay_ep) = self.relay_endpoint() {
+            let mut url = format!("{relay_ep}/?pair={}", self.pair_token());
+            if self.local_ip != "127.0.0.1" {
+                url.push_str(&format!("&lan={}:{}", self.local_ip, self.port));
+            }
+            return url;
+        }
+        format!("http://{}:{}/?pair={}", self.local_ip, self.port, self.pair_token())
     }
 
     /// True when at least one mobile companion has an open SSE stream or polled recently.
@@ -432,6 +504,29 @@ pub fn random_token(bytes: usize) -> String {
         if i > 0 && i % 4 == 0 {
             out.push('-');
         }
+        out.push(ALPHABET[(b as usize) % ALPHABET.len()] as char);
+    }
+    out
+}
+
+/// Random 16-char lowercase alphanumeric relay host slug (`tc...`) matching relay validation.
+pub fn random_relay_id() -> String {
+    const ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    let raw = random_bytes(14);
+    let mut out = String::with_capacity(16);
+    out.push_str("tc");
+    for b in raw {
+        out.push(ALPHABET[(b as usize) % ALPHABET.len()] as char);
+    }
+    out
+}
+
+/// Random 32-char lowercase alphanumeric secret used to claim and reconnect a relay host room.
+pub fn random_relay_secret() -> String {
+    const ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    let raw = random_bytes(32);
+    let mut out = String::with_capacity(32);
+    for b in raw {
         out.push(ALPHABET[(b as usize) % ALPHABET.len()] as char);
     }
     out
@@ -800,32 +895,138 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
         Vec::new()
     };
 
+    // Long-lived local SSE stream stays directly on the TCP socket.
+    if method == "GET" && path == "/api/events" {
+        let header_bearer = auth_header.as_deref().and_then(extract_bearer);
+        let bearer = header_bearer.or_else(|| query_param(query, "token").filter(|t| !t.is_empty()));
+        let token_hash = bearer.as_deref().map(hash_token);
+        let dev_id = token_hash.as_deref().and_then(|h| state.auth.read().devices.get(h).cloned());
+        let (Some(dev_id), Some(token_hash)) = (dev_id, token_hash) else {
+            return write_response(&mut stream, 401, "application/json", r#"{"error":"unauthorized"}"#).await;
+        };
+        state.touch_client();
+        let _ = state.tx.send(AppMsg::Companion(CompanionCmd::DeviceSeen {
+            id: dev_id,
+            ip: addr.ip().to_string(),
+            at: chrono::Utc::now().timestamp(),
+        }));
+        let _sse_guard = SseClientGuard::new(&state.sse_clients);
+        let mut rx = state.events.subscribe();
+        let mut sd_rx = state.shutdown.subscribe();
+        let mut auth_rx = state.auth_ver.subscribe();
+        state.ensure_fresh_snapshot().await;
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+        let initial = state.snapshot.read().clone();
+        let first_payload = format!("{headers}data: {initial}\n\n");
+        if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(first_payload.as_bytes())).await.is_err() {
+            return Ok(());
+        }
+        let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
+        loop {
+            if *sd_rx.borrow() || !state.auth.read().devices.contains_key(&token_hash) {
+                break;
+            }
+            tokio::select! {
+                _ = sd_rx.changed() => {
+                    if *sd_rx.borrow() {
+                        break;
+                    }
+                }
+                _ = auth_rx.changed() => {
+                    if !state.auth.read().devices.contains_key(&token_hash) {
+                        break;
+                    }
+                }
+                msg = rx.recv() => {
+                    if !state.auth.read().devices.contains_key(&token_hash) {
+                        break;
+                    }
+                    match msg {
+                        Ok(payload) => {
+                            if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(format!("data: {payload}\n\n").as_bytes())).await.is_err() {
+                                break;
+                            }
+                            let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            let latest = state.snapshot.read().clone();
+                            if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(format!("data: {latest}\n\n").as_bytes())).await.is_err() {
+                                break;
+                            }
+                            let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                _ = tokio::time::sleep(SSE_KEEPALIVE_INTERVAL) => {
+                    if !state.auth.read().devices.contains_key(&token_hash) {
+                        break;
+                    }
+                    if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(b": keepalive\n\n")).await.is_err() {
+                        break;
+                    }
+                    if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    let resp = dispatch_http_request(&state, method, path, query, auth_header.as_deref(), addr.ip(), &body).await;
+    write_response(&mut stream, resp.status, resp.content_type, &resp.body).await
+}
+
+fn extract_bearer(header: &str) -> Option<String> {
+    let (scheme, tok) = header.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| tok.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// Shared Companion HTTP request router executed identically for local LAN TCP requests and
+/// Cloudflare Relay RPC requests.
+pub(crate) async fn dispatch_http_request(
+    state: &Arc<ServerState>,
+    method: &str,
+    path: &str,
+    _query: &str,
+    auth_header: Option<&str>,
+    client_ip: IpAddr,
+    body: &[u8],
+) -> DispatchResponse {
+    let json = |status: u16, body: String| DispatchResponse {
+        status,
+        content_type: "application/json",
+        body,
+    };
+
     // Public routes: Web UI shell + Pairing token exchange.
     if method == "GET" && (path == "/" || path == "/index.html") {
-        return write_response(&mut stream, 200, "text/html; charset=utf-8", WEB_HTML).await;
+        return DispatchResponse {
+            status: 200,
+            content_type: "text/html; charset=utf-8",
+            body: WEB_HTML.to_string(),
+        };
     }
     if method == "POST" && path == "/api/pair" {
-        if !check_pair_rate_limit(&state, addr.ip()) {
-            return write_response(
-                &mut stream,
-                429,
-                "application/json",
-                r#"{"error":"Too many pairing attempts. Wait a minute and try again."}"#,
-            )
-            .await;
+        if !check_pair_rate_limit(state, client_ip) {
+            return json(429, r#"{"error":"Too many pairing attempts. Wait a minute and try again."}"#.into());
         }
-        let Ok(req) = serde_json::from_slice::<PairReq>(&body) else {
-            return write_response(&mut stream, 400, "application/json", r#"{"error":"invalid JSON"}"#).await;
+        let Ok(req) = serde_json::from_slice::<PairReq>(body) else {
+            return json(400, r#"{"error":"invalid JSON"}"#.into());
         };
         let expected = state.auth.read().pair_token.clone();
         let norm = |s: &str| s.trim().to_ascii_uppercase().replace('-', "");
         let got_hash = Sha256::digest(norm(&req.token).as_bytes());
         let exp_hash = Sha256::digest(norm(&expected).as_bytes());
         if expected.is_empty() || !ct_eq(&got_hash, &exp_hash) {
-            record_pair_failure(&state, addr.ip());
-            return write_response(&mut stream, 403, "application/json", r#"{"error":"Invalid or expired pairing code"}"#).await;
+            record_pair_failure(state, client_ip);
+            return json(403, r#"{"error":"Invalid or expired pairing code"}"#.into());
         }
-        clear_pair_failures(&state, addr.ip());
+        clear_pair_failures(state, client_ip);
         let raw_device_token = random_token(24);
         let token_hash = hash_token(&raw_device_token);
         let now = chrono::Utc::now().timestamp();
@@ -839,7 +1040,7 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
             id: dev_id.clone(),
             name,
             token_hash: token_hash.clone(),
-            ip: addr.ip().to_string(),
+            ip: client_ip.to_string(),
             paired_at: now,
             last_seen: now,
         };
@@ -848,30 +1049,20 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
         let _ = state.tx.send(AppMsg::Companion(CompanionCmd::DevicePaired(device)));
         state.ctx.request_repaint();
         let resp = serde_json::json!({ "device_id": dev_id, "device_token": raw_device_token }).to_string();
-        return write_response(&mut stream, 200, "application/json", &resp).await;
+        return json(200, resp);
     }
 
-    // Authenticated routes require Bearer token; `?token=` query auth is restricted exclusively to SSE EventSource.
-    let header_bearer = auth_header.as_deref().and_then(|h| {
-        let (scheme, tok) = h.split_once(' ')?;
-        scheme.eq_ignore_ascii_case("bearer").then(|| tok.trim().to_string()).filter(|t| !t.is_empty())
-    });
-    let bearer = header_bearer.or_else(|| {
-        if method == "GET" && path == "/api/events" {
-            query_param(query, "token").filter(|t| !t.is_empty())
-        } else {
-            None
-        }
-    });
+    // Authenticated routes require Bearer token header.
+    let bearer = auth_header.and_then(extract_bearer);
     let token_hash = bearer.as_deref().map(hash_token);
     let dev_id = token_hash.as_deref().and_then(|h| state.auth.read().devices.get(h).cloned());
-    let (Some(dev_id), Some(token_hash)) = (dev_id, token_hash) else {
-        return write_response(&mut stream, 401, "application/json", r#"{"error":"unauthorized"}"#).await;
+    let Some(dev_id) = dev_id else {
+        return json(401, r#"{"error":"unauthorized"}"#.into());
     };
     state.touch_client();
     let _ = state.tx.send(AppMsg::Companion(CompanionCmd::DeviceSeen {
         id: dev_id,
-        ip: addr.ip().to_string(),
+        ip: client_ip.to_string(),
         at: chrono::Utc::now().timestamp(),
     }));
 
@@ -879,82 +1070,18 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
         ("GET", "/api/state") => {
             state.ensure_fresh_snapshot().await;
             let snap = state.snapshot.read().clone();
-            write_response(&mut stream, 200, "application/json", &snap).await
-        }
-        ("GET", "/api/events") => {
-            let _sse_guard = SseClientGuard::new(&state.sse_clients);
-            let mut rx = state.events.subscribe();
-            let mut sd_rx = state.shutdown.subscribe();
-            let mut auth_rx = state.auth_ver.subscribe();
-            state.ensure_fresh_snapshot().await;
-            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-            let initial = state.snapshot.read().clone();
-            let first_payload = format!("{headers}data: {initial}\n\n");
-            if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(first_payload.as_bytes())).await.is_err() {
-                return Ok(());
-            }
-            let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
-            loop {
-                if *sd_rx.borrow() || !state.auth.read().devices.contains_key(&token_hash) {
-                    break;
-                }
-                tokio::select! {
-                    _ = sd_rx.changed() => {
-                        if *sd_rx.borrow() {
-                            break;
-                        }
-                    }
-                    _ = auth_rx.changed() => {
-                        if !state.auth.read().devices.contains_key(&token_hash) {
-                            break;
-                        }
-                    }
-                    msg = rx.recv() => {
-                        if !state.auth.read().devices.contains_key(&token_hash) {
-                            break;
-                        }
-                        match msg {
-                            Ok(payload) => {
-                                if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(format!("data: {payload}\n\n").as_bytes())).await.is_err() {
-                                    break;
-                                }
-                                let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
-                            }
-                            Err(broadcast::error::RecvError::Lagged(_)) => {
-                                let latest = state.snapshot.read().clone();
-                                if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(format!("data: {latest}\n\n").as_bytes())).await.is_err() {
-                                    break;
-                                }
-                                let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    _ = tokio::time::sleep(SSE_KEEPALIVE_INTERVAL) => {
-                        if !state.auth.read().devices.contains_key(&token_hash) {
-                            break;
-                        }
-                        if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(b": keepalive\n\n")).await.is_err() {
-                            break;
-                        }
-                        if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-            Ok(())
+            json(200, snap)
         }
         ("POST", "/api/pane/spawn") => {
-            let Ok(req) = serde_json::from_slice::<SpawnReq>(&body) else {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"invalid JSON"}"#).await;
+            let Ok(req) = serde_json::from_slice::<SpawnReq>(body) else {
+                return json(400, r#"{"error":"invalid JSON"}"#.into());
             };
             let slug = req.agent.trim().to_ascii_lowercase();
             let agent = if slug.is_empty() || slug == "shell" || slug == "terminal" {
                 None
             } else {
                 let Some(kind) = AgentKind::from_slug(&slug) else {
-                    return write_response(&mut stream, 400, "application/json", r#"{"error":"unknown agent"}"#).await;
+                    return json(400, r#"{"error":"unknown agent"}"#.into());
                 };
                 Some(kind)
             };
@@ -965,17 +1092,17 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
                 profile_id,
             }));
             state.ctx.request_repaint();
-            write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
+            json(200, r#"{"ok":true}"#.into())
         }
         ("POST", "/api/session/resume") => {
-            let Ok(req) = serde_json::from_slice::<ResumeReq>(&body) else {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"invalid JSON"}"#).await;
+            let Ok(req) = serde_json::from_slice::<ResumeReq>(body) else {
+                return json(400, r#"{"error":"invalid JSON"}"#.into());
             };
             let Some(agent) = AgentKind::from_slug(&req.agent) else {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"unknown agent"}"#).await;
+                return json(400, r#"{"error":"unknown agent"}"#.into());
             };
             if !tc_agent::sessions::valid_session_id(&req.session_id) || req.session_id.starts_with("pane-") {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"invalid session id"}"#).await;
+                return json(400, r#"{"error":"invalid session id"}"#.into());
             }
             let _ = state.tx.send(AppMsg::Companion(CompanionCmd::ResumeSession {
                 project: req.project_id,
@@ -984,15 +1111,15 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
                 profile_id: req.profile_id,
             }));
             state.ctx.request_repaint();
-            write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
+            json(200, r#"{"ok":true}"#.into())
         }
         ("POST", p) if p.strip_prefix("/api/pane/").and_then(|s| s.strip_suffix("/input")).is_some() => {
             let id_str = p.strip_prefix("/api/pane/").and_then(|s| s.strip_suffix("/input")).unwrap_or("");
             let Ok(pane) = id_str.parse::<PaneId>() else {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"bad pane id"}"#).await;
+                return json(400, r#"{"error":"bad pane id"}"#.into());
             };
-            let Ok(req) = serde_json::from_slice::<InputReq>(&body) else {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"invalid JSON"}"#).await;
+            let Ok(req) = serde_json::from_slice::<InputReq>(body) else {
+                return json(400, r#"{"error":"invalid JSON"}"#.into());
             };
             let cmd = match req.action.as_str() {
                 "approve" => CompanionCmd::QuickAction { pane, kind: QuickRemoteAction::Approve },
@@ -1000,49 +1127,49 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
                 "interrupt" => CompanionCmd::QuickAction { pane, kind: QuickRemoteAction::Interrupt },
                 "dismiss_limit" => CompanionCmd::QuickAction { pane, kind: QuickRemoteAction::DismissLimit },
                 "" => CompanionCmd::SendInput { pane, text: req.text, enter: req.enter },
-                _ => return write_response(&mut stream, 400, "application/json", r#"{"error":"unknown action"}"#).await,
+                _ => return json(400, r#"{"error":"unknown action"}"#.into()),
             };
             let _ = state.tx.send(AppMsg::Companion(cmd));
             state.ctx.request_repaint();
-            write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
+            json(200, r#"{"ok":true}"#.into())
         }
         ("POST", p) if p.strip_prefix("/api/pane/").and_then(|s| s.strip_suffix("/switch-profile")).is_some() => {
             let id_str = p.strip_prefix("/api/pane/").and_then(|s| s.strip_suffix("/switch-profile")).unwrap_or("");
             let Ok(pane) = id_str.parse::<PaneId>() else {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"bad pane id"}"#).await;
+                return json(400, r#"{"error":"bad pane id"}"#.into());
             };
-            let Ok(req) = serde_json::from_slice::<SwitchProfileReq>(&body) else {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"invalid JSON"}"#).await;
+            let Ok(req) = serde_json::from_slice::<SwitchProfileReq>(body) else {
+                return json(400, r#"{"error":"invalid JSON"}"#.into());
             };
             if req.profile_id.trim().is_empty() {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"empty profile id"}"#).await;
+                return json(400, r#"{"error":"empty profile id"}"#.into());
             }
             let _ = state.tx.send(AppMsg::Companion(CompanionCmd::SwitchProfile {
                 pane,
                 profile_id: req.profile_id,
             }));
             state.ctx.request_repaint();
-            write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
+            json(200, r#"{"ok":true}"#.into())
         }
         ("POST", p) if p.strip_prefix("/api/pane/").and_then(|s| s.strip_suffix("/close")).is_some() => {
             let id_str = p.strip_prefix("/api/pane/").and_then(|s| s.strip_suffix("/close")).unwrap_or("");
             let Ok(pane) = id_str.parse::<PaneId>() else {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"bad pane id"}"#).await;
+                return json(400, r#"{"error":"bad pane id"}"#.into());
             };
             let _ = state.tx.send(AppMsg::Companion(CompanionCmd::ClosePane { pane }));
             state.ctx.request_repaint();
-            write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
+            json(200, r#"{"ok":true}"#.into())
         }
         ("POST", p) if p.strip_prefix("/api/project/").and_then(|s| s.strip_suffix("/sessions/refresh")).is_some() => {
             let id_str = p.strip_prefix("/api/project/").and_then(|s| s.strip_suffix("/sessions/refresh")).unwrap_or("");
             let Ok(project) = id_str.parse::<ProjectId>() else {
-                return write_response(&mut stream, 400, "application/json", r#"{"error":"bad project id"}"#).await;
+                return json(400, r#"{"error":"bad project id"}"#.into());
             };
             let _ = state.tx.send(AppMsg::Companion(CompanionCmd::RefreshSessions { project }));
             state.ctx.request_repaint();
-            write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
+            json(200, r#"{"ok":true}"#.into())
         }
-        _ => write_response(&mut stream, 404, "application/json", r#"{"error":"not found"}"#).await,
+        _ => json(404, r#"{"error":"not found"}"#.into()),
     }
 }
 
@@ -1129,7 +1256,7 @@ mod tests {
     fn pairing_auth_and_revoke_flow() {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        let handle = CompanionHandle::start(rt.handle(), 0, &[], tx, egui::Context::default()).unwrap();
+        let handle = CompanionHandle::start(rt.handle(), 0, &[], None, tx, egui::Context::default()).unwrap();
         let port = handle.port;
         handle.publish(&CompanionSnapshot { failover_mode: "auto".into(), ..Default::default() });
 
@@ -1307,7 +1434,7 @@ mod tests {
     fn pair_rate_limit_blocks_brute_force() {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
         let (tx, _rx) = std::sync::mpsc::channel();
-        let handle = CompanionHandle::start(rt.handle(), 0, &[], tx, egui::Context::default()).unwrap();
+        let handle = CompanionHandle::start(rt.handle(), 0, &[], None, tx, egui::Context::default()).unwrap();
         let port = handle.port;
         let bad = r#"{"token":"WRONG-CODE","device_name":"Bot"}"#;
         for _ in 0..PAIR_MAX_FAILURES {
@@ -1354,7 +1481,7 @@ mod tests {
     fn idle_client_tracking_and_sync_on_connect() {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        let handle = CompanionHandle::start(rt.handle(), 0, &[], tx, egui::Context::default()).unwrap();
+        let handle = CompanionHandle::start(rt.handle(), 0, &[], None, tx, egui::Context::default()).unwrap();
         let port = handle.port;
 
         // With no paired client connected, idle overhead guard reports inactive.
@@ -1400,5 +1527,36 @@ mod tests {
         assert!(saw_sync, "connecting while dirty must trigger SyncSnapshot");
         let first_frame = sse_thread.join().unwrap();
         assert!(first_frame.contains("fresh-on-connect"), "{first_frame}");
+    }
+
+    #[test]
+    fn pairing_url_prefers_custom_then_relay_with_lan_hint() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut handle = CompanionHandle::start(rt.handle(), 0, &[], None, tx, egui::Context::default()).unwrap();
+        handle.local_ip = "192.168.1.50".into();
+        let tok = handle.pair_token();
+
+        // Plain LAN mode.
+        assert_eq!(handle.pairing_url(""), format!("http://192.168.1.50:{}/?pair={tok}", handle.port));
+
+        // Built-in Cloudflare Relay emits hybrid URL with LAN hint for zero-quota home Wi-Fi use.
+        handle.relay = Some(RelayConfig {
+            relay_url: "https://ternarycode-relay.m-ilhamnadhif121.workers.dev".into(),
+            host_id: "tcabcdef12345678".into(),
+            secret: "secret-1234567890abcdef".into(),
+        });
+        assert_eq!(
+            handle.pairing_url(""),
+            format!(
+                "https://ternarycode-relay.m-ilhamnadhif121.workers.dev/r/tcabcdef12345678/?pair={tok}&lan=192.168.1.50:{}",
+                handle.port
+            )
+        );
+        // Custom tunnel override still takes precedence over built-in relay.
+        assert_eq!(
+            handle.pairing_url("https://custom.tailnet.ts.net"),
+            format!("https://custom.tailnet.ts.net/?pair={tok}")
+        );
     }
 }

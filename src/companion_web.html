@@ -1,63 +1,76 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
-<meta name="theme-color" content="#09090B" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#EDEDEF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#09090B" id="meta-theme-color">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>TernaryCode Companion</title>
 <style>
-/* Slate tokens (design/figcraft/tokens.py): dark first, light under prefers-color-scheme. */
-:root{
+/* Exact Slate design tokens matching TernaryCode Mobile (lib/theme/slate_tokens.dart) */
+:root, html[data-theme="dark"]{
   color-scheme:dark;
-  --window:#09090B;--sheet:#111113;--raised:#1A1A1D;--inset:#0C0C0E;
-  --hover:rgba(255,255,255,.04);--active:rgba(255,255,255,.08);
-  --line-subtle:rgba(255,255,255,.06);--line:rgba(255,255,255,.10);--line-strong:rgba(255,255,255,.17);
-  --text:#EDEDF0;--text-2:#A1A1AA;--text-3:#6C6C75;
-  --accent:#2E6BE6;--accent-hover:#3A78F0;--accent-text:#8BB2FF;--accent-tint:rgba(46,107,230,.16);--on-accent:#FFFFFF;
-  --focus-glow:rgba(79,140,255,.25);
+  --window:#09090B;--sheet:#111113;--raised:#1A1A1D;--overlay:#18181B;--menu:#202024;--inset:#0C0C0E;
+  --scrim:rgba(0,0,0,.62);
+  --hover:rgba(255,255,255,.05);--active:rgba(255,255,255,.08);--selected:rgba(255,255,255,.07);
+  --line-subtle:rgba(255,255,255,.06);--line:rgba(255,255,255,.10);--line-strong:rgba(255,255,255,.18);
+  --text:#EDEDF0;--text-2:#A0A0A9;--text-3:#6C6C75;--text-4:#4A4A52;
+  --accent:#2E6BE6;--accent-hover:#3A76F0;--accent-text:#8BB2FF;--accent-tint:rgba(46,107,230,.14);--on-accent:#FFFFFF;
+  --focus-glow:rgba(46,107,230,.28);
   --running:#6AA5FF;--input:#F2B14B;--done:#4DC48C;--failed:#F06A64;--idle:#6C6C75;--limited:#F29441;--cooldown:#5DB6DC;
-  --running-tint:rgba(106,165,255,.12);--input-tint:rgba(242,177,75,.12);--done-tint:rgba(77,196,140,.12);
-  --failed-tint:rgba(240,106,100,.12);--limited-tint:rgba(242,148,65,.12);--cooldown-tint:rgba(93,182,220,.12);
+  --running-tint:rgba(106,165,255,.14);--input-tint:rgba(242,177,75,.15);--done-tint:rgba(77,196,140,.14);
+  --failed-tint:rgba(240,106,100,.15);--limited-tint:rgba(242,148,65,.15);--cooldown-tint:rgba(93,182,220,.14);
   --idle-tint:rgba(255,255,255,.06);
-  --term-fg:#D9D9DE;
+  --diff-add:rgba(77,196,140,.13);--diff-del:rgba(240,106,100,.14);
+  --term-bg:#0C0C0E;--term-fg:#D6D6DC;--term-dim:#64646E;--term-blue:#7CB2FF;--term-green:#5DD196;
+  --term-yellow:#F2C15A;--term-red:#F0716A;--term-mag:#C09CFF;--term-cyan:#68D2E8;--claude:#D97757;
+  --h0:#7AAEFF;--h0t:rgba(122,174,255,.14);--h1:#B392FF;--h1t:rgba(179,146,255,.14);
+  --h2:#6FD3A0;--h2t:rgba(111,211,160,.14);--h3:#EFC15E;--h3t:rgba(239,193,94,.14);
+  --h4:#F58BA6;--h4t:rgba(245,139,166,.14);--h5:#63CFE3;--h5t:rgba(99,207,227,.14);
   --sans:"Inter",-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,Roboto,sans-serif;
   --mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --term-size:11.5px;
 }
-@media (prefers-color-scheme: light){
-  :root{
-    color-scheme:light;
-    --window:#EDEDEF;--sheet:#FBFBFC;--raised:#FFFFFF;--inset:#E9E9EC;
-    --hover:rgba(0,0,0,.04);--active:rgba(0,0,0,.07);
-    --line-subtle:rgba(0,0,0,.06);--line:rgba(0,0,0,.10);--line-strong:rgba(0,0,0,.17);
-    --text:#17171A;--text-2:#565660;--text-3:#80808A;
-    --accent:#1F5FBF;--accent-hover:#1A52A8;--accent-text:#1A56B3;--accent-tint:rgba(31,95,191,.10);
-    --focus-glow:rgba(31,95,191,.22);
-    --running:#2563C9;--input:#B26A00;--done:#15804E;--failed:#C7352D;--idle:#8E8E98;--limited:#C2560A;--cooldown:#2D6C9E;
-    --running-tint:rgba(37,99,201,.08);--input-tint:rgba(178,106,0,.09);--done-tint:rgba(21,128,78,.08);
-    --failed-tint:rgba(199,53,45,.08);--limited-tint:rgba(194,86,10,.08);--cooldown-tint:rgba(45,108,158,.08);
-    --idle-tint:rgba(0,0,0,.05);
-    --term-fg:#2A2A30;
-  }
+html[data-theme="light"]{
+  color-scheme:light;
+  --window:#EDEDEF;--sheet:#FBFBFC;--raised:#FFFFFF;--overlay:#FFFFFF;--menu:#FFFFFF;--inset:#E9E9EC;
+  --scrim:rgba(0,0,0,.34);
+  --hover:rgba(0,0,0,.04);--active:rgba(0,0,0,.07);--selected:rgba(0,0,0,.05);
+  --line-subtle:rgba(0,0,0,.06);--line:rgba(0,0,0,.10);--line-strong:rgba(0,0,0,.17);
+  --text:#17171A;--text-2:#565660;--text-3:#80808A;--text-4:#ABABB3;
+  --accent:#1F5FBF;--accent-hover:#1A52A8;--accent-text:#1A56B3;--accent-tint:rgba(31,95,191,.10);--on-accent:#FFFFFF;
+  --focus-glow:rgba(31,95,191,.22);
+  --running:#2563C9;--input:#B26A00;--done:#15804E;--failed:#C7352D;--idle:#8E8E98;--limited:#C2560A;--cooldown:#2D6C9E;
+  --running-tint:rgba(37,99,201,.08);--input-tint:rgba(178,106,0,.09);--done-tint:rgba(21,128,78,.08);
+  --failed-tint:rgba(199,53,45,.08);--limited-tint:rgba(194,86,10,.09);--cooldown-tint:rgba(45,108,158,.08);
+  --idle-tint:rgba(0,0,0,.05);
+  --diff-add:rgba(21,128,78,.08);--diff-del:rgba(199,53,45,.08);
+  --term-bg:#FBFBFC;--term-fg:#2A2A30;--term-dim:#8A8A94;--term-blue:#1F5FBF;--term-green:#1C7A4A;
+  --term-yellow:#946200;--term-red:#C7352D;--term-mag:#7C3AED;--term-cyan:#0E7490;--claude:#C86445;
+  --h0:#2563C9;--h0t:rgba(37,99,201,.10);--h1:#6D28D9;--h1t:rgba(109,40,217,.10);
+  --h2:#15804E;--h2t:rgba(21,128,78,.10);--h3:#B26A00;--h3t:rgba(178,106,0,.10);
+  --h4:#BE185D;--h4t:rgba(190,24,93,.10);--h5:#0E7490;--h5t:rgba(14,116,144,.10);
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0;height:100%;overflow:hidden;background:var(--window);color:var(--text);font-family:var(--sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%;text-size-adjust:100%}
-button,input{font:inherit;color:inherit;margin:0}
-button{cursor:pointer}
-:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.field input:focus-visible{outline:none}
-.sprite{position:absolute;width:0;height:0;overflow:hidden}
-.mono{font-family:var(--mono)}
+button,input,textarea{font:inherit;color:inherit;margin:0}
+button{cursor:pointer;background:none;border:0;padding:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+input:focus-visible,textarea:focus-visible{outline:none}
+.sprite{position:absolute;width:0;height:0;overflow:hidden;pointer-events:none}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
 
-/* Icons (Phosphor glyphs; fill only for status) and status colours. */
+/* Icons & semantic colors */
 .ic{display:block;flex-shrink:0;width:16px;height:16px;fill:currentColor;pointer-events:none}
-.ic.g12{width:12px;height:12px}.ic.g14{width:14px;height:14px}
-.spin{animation:spin 1.2s linear infinite;animation-delay:var(--spin-delay,0ms)}
+.ic.s10{width:10px;height:10px}.ic.s11{width:11px;height:11px}.ic.s12{width:12px;height:12px}
+.ic.s13{width:13px;height:13px}.ic.s14{width:14px;height:14px}.ic.s18{width:18px;height:18px}
+.ic.s20{width:20px;height:20px}.ic.s22{width:22px;height:22px}
+.spin{animation:spin 1s linear infinite;animation-delay:var(--spin-delay,0ms)}
 @keyframes spin{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion: reduce){.spin{animation:none}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
 .c-running{color:var(--running)}.c-input{color:var(--input)}.c-done{color:var(--done)}.c-failed{color:var(--failed)}
 .c-idle{color:var(--idle)}.c-limited{color:var(--limited)}.c-cooldown{color:var(--cooldown)}.c-accent{color:var(--accent-text)}
 .t-running{background:var(--running-tint);color:var(--running)}.t-input{background:var(--input-tint);color:var(--input)}
@@ -65,718 +78,2108 @@ button{cursor:pointer}
 .t-limited{background:var(--limited-tint);color:var(--limited)}.t-cooldown{background:var(--cooldown-tint);color:var(--cooldown)}
 .t-idle{background:var(--idle-tint);color:var(--text-2)}.t-accent{background:var(--accent-tint);color:var(--accent-text)}
 
-/* App shell: one scrolling screen above a bottom tab bar. */
-.app{display:flex;flex-direction:column;height:100vh;height:100dvh;max-width:720px;margin:0 auto}
-main{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;display:flex;flex-direction:column;gap:12px;padding:calc(env(safe-area-inset-top) + 12px) 16px 20px}
-main>*{flex-shrink:0}
-.head{display:flex;align-items:center;justify-content:space-between;gap:12px}
-h1{margin:0;font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.4px}
-.conn{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:12px;background:var(--hover);font-family:var(--mono);font-size:11px;line-height:14px;color:var(--text-2);white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--idle);flex-shrink:0}
-.dot.ok{background:var(--done)}.dot.warn{background:var(--input)}
-nav{display:grid;grid-template-columns:repeat(4,1fr);flex-shrink:0;background:var(--sheet);padding:8px 8px max(18px,env(safe-area-inset-bottom))}
-nav button{display:flex;flex-direction:column;align-items:center;gap:4px;padding:4px 0;border:0;background:none;color:var(--text-3);font-size:11px;line-height:14px}
-nav button.active{color:var(--text)}
-nav .ic{width:20px;height:20px}
-.tab-ic{position:relative;display:block}
-.count{position:absolute;top:-6px;left:12px;min-width:16px;height:16px;padding:0 5px;border-radius:8px;font-family:var(--mono);font-size:11px;line-height:16px;font-weight:600;text-align:center}
-.count.t-input{background:linear-gradient(var(--input-tint),var(--input-tint)),var(--sheet)}
-.count.t-failed{background:linear-gradient(var(--failed-tint),var(--failed-tint)),var(--sheet)}
+/* App shell matching Flutter Mobile Scaffold + BottomNav */
+#root{height:100%;width:100%}
+.shell{display:flex;flex-direction:column;height:100vh;height:100dvh;max-width:560px;margin:0 auto;background:var(--window);position:relative}
+@media (min-width:600px){.shell{border-left:1px solid var(--line-subtle);border-right:1px solid var(--line-subtle)}}
+.screen{flex:1;min-height:0;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top)}
+.screen.padded{padding:calc(env(safe-area-inset-top) + 8px) 16px 0}
+.scroll-body{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-bottom:24px}
 
-/* Text roles. */
-.grow{flex:1;min-width:0}
-.t1{font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.t1.wrap{white-space:normal;word-break:break-word;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
-.t2{margin-top:2px;font-size:12px;line-height:16px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.data{margin-top:2px;font-family:var(--mono);font-size:11px;line-height:14px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.muted{font-size:12px;line-height:16px;color:var(--text-3)}
-.label{font-size:11px;line-height:14px;font-weight:500;letter-spacing:.1px;text-transform:uppercase;color:var(--text-3)}
+/* Top header (Inbox / Projects / Accounts / Offline Live) */
+.top-hdr{display:flex;align-items:center;gap:8px;min-height:40px;flex-shrink:0}
+.top-title{margin:0;font-size:22px;line-height:26px;font-weight:600;letter-spacing:-.35px;flex-shrink:0}
+.host-pill{margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:30px;max-width:55%;padding:0 10px;border-radius:15px;background:var(--raised);border:1px solid var(--line-subtle);color:var(--text-2);font-family:var(--mono);font-size:11px;line-height:14px;min-width:0}
+.host-pill:active{background:var(--hover)}
+.host-pill span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--idle);flex-shrink:0}
+.dot.ok{background:var(--done)}.dot.warn{background:var(--input)}.dot.err{background:var(--failed)}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:9px;background:var(--raised);border:1px solid var(--line-subtle);color:var(--text-2);flex-shrink:0}
+.icon-btn.sm{width:30px;height:28px;border-radius:7px}
+.icon-btn.active{background:var(--accent-tint);border-color:rgba(46,107,230,.38);color:var(--accent-text)}
+.icon-btn:active{opacity:.8}
 
-/* Buttons and fields. */
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:0;height:44px;padding:0 14px;border:0;border-radius:10px;font-size:13px;line-height:18px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Unified 1-Row Live Top Bar (matches live_screen.dart) */
+.live-top{display:flex;align-items:center;gap:7px;padding:6px 14px 8px;flex-shrink:0}
+.live-pill{flex:1;min-width:0;height:40px;padding:0 8px 0 9px;border-radius:10px;background:var(--raised);border:1px solid var(--line-subtle);display:flex;align-items:center;gap:8px}
+.live-pill-meta{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;text-align:left}
+.live-proj-name{font-size:13.5px;line-height:15.5px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.live-host-row{display:inline-flex;align-items:center;gap:4px;margin-top:1px;font-family:var(--mono);font-size:10px;line-height:12px;color:var(--text-3);min-width:0;max-width:100%}
+.live-host-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.active-chip{display:inline-flex;align-items:center;gap:2px;padding:3px 7px;border-radius:6px;background:var(--hover);font-family:var(--mono);font-size:10.5px;color:var(--text-2);flex-shrink:0;white-space:nowrap}
+.active-chip:active{background:var(--active)}
+
+/* Avatars & Brand Tiles */
+.p-av{display:inline-flex;align-items:center;justify-content:center;border-radius:6px;font-family:var(--mono);font-weight:600;flex-shrink:0}
+.p-av.s22{width:22px;height:22px;font-size:11px}.p-av.s24{width:24px;height:24px;font-size:11px}
+.ag-tile{display:inline-flex;align-items:center;justify-content:center;border-radius:5px;background:var(--hover);border:1px solid var(--line-subtle);flex-shrink:0}
+.ag-tile.s20{width:20px;height:20px}.ag-tile.s22{width:22px;height:22px}
+.ag-tile svg,.ag-tile img{width:62%;height:62%;display:block;object-fit:contain}
+
+/* Status Pill */
+.pill{display:inline-flex;align-items:center;gap:5px;height:21px;padding:0 8px 0 6px;border-radius:10px;font-size:11.5px;line-height:14px;font-weight:500;white-space:nowrap;flex-shrink:0}
+
+/* Reconnecting Soft Banner */
+.recon-bar{margin:0 14px 7px;padding:6px 10px;border-radius:8px;background:var(--input-tint);border:1px solid rgba(242,177,75,.28);display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--text-2);flex-shrink:0}
+.recon-bar .retry-lnk{margin-left:auto;color:var(--input);font-weight:600}
+
+/* Live Sub-Bar (Wrap, Copy, Fullscreen) */
+.term-bar{height:38px;padding:0 12px;background:var(--sheet);border-top:1px solid var(--line-subtle);border-bottom:1px solid var(--line-subtle);display:flex;align-items:center;gap:6px;flex-shrink:0}
+.term-bar.warn{border-bottom-color:rgba(242,177,75,.34)}
+.term-bar.limited{border-bottom-color:rgba(242,148,65,.34)}
+.term-meta{flex:1;min-width:0;font-family:var(--mono);font-size:10.5px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Edge-to-Edge Raw Terminal Canvas (stable DOM, zero scroll-jump) */
+.term-stage{flex:1;min-height:0;position:relative;background:var(--term-bg);display:flex;flex-direction:column}
+.term-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:8px 0 18px}
+.term-scroll.nowrap{overflow-x:auto}
+.term-body{font-family:var(--mono);font-size:var(--term-size);line-height:1.52;letter-spacing:-.1px;color:var(--term-fg);font-variant-numeric:tabular-nums}
+.t-line{padding:0 12px;min-height:1.52em;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+.term-scroll.nowrap .t-line{white-space:pre;overflow-wrap:normal;word-break:normal}
+.t-line.bg-add{background:var(--diff-add)}.t-line.bg-del{background:var(--diff-del)}
+.t-line.bg-sel{background:var(--accent-tint)}.t-line.bg-prompt{background:rgba(26,26,29,.72);padding-top:2px;padding-bottom:2px}
+html[data-theme="light"] .t-line.bg-prompt{background:rgba(0,0,0,.035)}
+.t-hr{margin:7px 12px;height:1px;background:var(--line-strong);opacity:.55}
+.t-table-wrap{margin:4px 12px;border-radius:7px;background:var(--sheet);border:1px solid var(--line-subtle);overflow-x:auto;-webkit-overflow-scrolling:touch}
+.t-table{padding:6px 9px;width:max-content;min-width:100%}
+.t-table .t-tline{white-space:pre;line-height:1.45}
+.term-working{display:flex;align-items:center;gap:8px;padding:10px 14px 4px;font-family:var(--mono);font-size:11px;color:var(--running)}
+.term-working .pdot{width:6px;height:6px;border-radius:50%;background:var(--running);animation:pulse 1.3s ease-in-out infinite}
+.latest-pill{position:absolute;right:12px;bottom:10px;height:30px;padding:0 11px;border-radius:15px;background:var(--overlay);border:1px solid var(--line-strong);color:var(--text);font-family:var(--mono);font-size:11px;font-weight:500;display:inline-flex;align-items:center;gap:5px;box-shadow:0 4px 14px rgba(0,0,0,.38);z-index:5}
+.latest-pill.hidden{display:none}
+.latest-pill:active{transform:scale(.97)}
+
+/* Bottom Dock & Composer */
+.dock{background:var(--window);border-top:1px solid var(--line-subtle);padding:8px 14px 10px;display:flex;flex-direction:column;gap:8px;flex-shrink:0}
+.notice{display:flex;align-items:flex-start;gap:9px;padding:9px 11px;border-radius:10px;border:1px solid transparent}
+.notice.t-input{border-color:rgba(242,177,75,.28)}.notice.t-limited{border-color:rgba(242,148,65,.30)}.notice.t-failed{border-color:rgba(240,106,100,.28)}
+.notice-body{flex:1;min-width:0}
+.notice-title{font-size:12px;line-height:16px;font-weight:600;color:var(--text);word-break:break-word}
+.notice-text{margin-top:2px;font-family:var(--mono);font-size:11px;line-height:14px;color:var(--text-2);white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.notice-x{color:var(--text-2);padding:3px;border-radius:6px;flex-shrink:0}
+
+/* Interactive TUI Prompt Dock */
+.ip-dock{padding:9px 10px;border-radius:10px;background:var(--raised);border:1px solid rgba(242,177,75,.34);display:flex;flex-direction:column;gap:7px}
+.ip-head{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--text)}
+.ip-hint{font-family:var(--mono);font-size:10.5px;color:var(--text-3)}
+.ip-opts{display:flex;flex-direction:column;gap:5px}
+.ip-opt{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 10px;border-radius:8px;background:var(--sheet);border:1px solid var(--line-subtle);font-size:12px;color:var(--text)}
+.ip-opt.sel{background:var(--accent-tint);border-color:rgba(46,107,230,.45);font-weight:600}
+.ip-opt.danger{color:var(--failed)}
+.ip-num{font-family:var(--mono);font-size:10.5px;padding:1px 5px;border-radius:4px;background:var(--hover);color:var(--text-2);flex-shrink:0}
+
+/* Quick Keys Strip */
+.qkeys{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.qkeys::-webkit-scrollbar{display:none}
+.qk{flex-shrink:0;height:30px;padding:0 10px;border-radius:7px;background:var(--raised);border:1px solid var(--line-subtle);font-family:var(--mono);font-size:11px;font-weight:500;color:var(--text-2);display:inline-flex;align-items:center;gap:4px}
+.qk.danger{background:var(--failed-tint);border-color:rgba(240,106,100,.28);color:var(--failed)}
+.qk:active{opacity:.8}
+
+/* Switch Account Strip */
+.swap-strip{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.swap-strip::-webkit-scrollbar{display:none}
+.swap-chip{flex-shrink:0;height:28px;padding:0 9px;border-radius:7px;background:var(--raised);border:1px solid var(--line-subtle);display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;color:var(--text)}
+.swap-chip .pct{color:var(--text-3);font-size:10.5px}
+
+/* Composer Row */
+.composer-row{display:flex;align-items:flex-end;gap:7px}
+.kb-btn{width:36px;height:38px;border-radius:8px;background:var(--raised);border:1px solid var(--line-subtle);color:var(--text-2);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.kb-btn.on{background:var(--accent-tint);border-color:rgba(46,107,230,.38);color:var(--accent-text)}
+.stop-mini{height:38px;padding:0 9px;border-radius:8px;background:var(--failed-tint);border:1px solid rgba(240,106,100,.28);color:var(--failed);font-family:var(--mono);font-size:11.5px;font-weight:600;flex-shrink:0}
+.prompt-wrap{flex:1;min-width:0;display:flex;align-items:center;gap:7px}
+.prompt-in{flex:1;min-width:0;height:38px;padding:0 11px;border-radius:9px;background:var(--inset);border:1px solid var(--line);color:var(--text);font-size:13px}
+.prompt-in:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--focus-glow)}
+.prompt-in::placeholder{color:var(--text-3)}
+@supports (-webkit-touch-callout:none){.prompt-in,.search-in,.pair-in{font-size:16px}}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:38px;padding:0 14px;border-radius:9px;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0}
 .btn.primary{background:var(--accent);color:var(--on-accent)}
-.btn.raised{background:var(--raised);color:var(--text)}
-.btn.secondary{background:var(--raised);color:var(--text);border:1px solid var(--line)}
-.btn.danger{background:var(--failed-tint);color:var(--failed)}
-.btn.sm{height:36px;padding:0 14px;border-radius:8px}
+.btn.raised{background:var(--raised);border:1px solid var(--line-subtle);color:var(--text)}
+.btn.secondary{background:var(--raised);border:1px solid var(--line);color:var(--text)}
+.btn.danger{background:var(--failed-tint);border:1px solid rgba(240,106,100,.25);color:var(--failed)}
+.btn.sm{height:32px;padding:0 11px;border-radius:8px;font-size:12px}
 .btn.block{width:100%}
-.btn:active{opacity:.8}
-@media (hover:hover){.btn.primary:hover{background:var(--accent-hover)}.btn.raised:hover,.btn.secondary:hover{background:linear-gradient(var(--hover),var(--hover)),var(--raised)}}
-.trio{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.duo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}
-.btns{display:flex;flex-wrap:wrap;gap:8px}
-.btns .btn{flex:1 1 140px}
-.field{display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;border-radius:7px;background:var(--inset);border:1px solid var(--line);transition:border-color .12s,box-shadow .12s}
-.field:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--focus-glow)}
-.field.err{border-color:var(--failed)}
-.field .ic{width:14px;height:14px;color:var(--text-3)}
-.field input{flex:1;min-width:0;height:100%;padding:0;border:0;outline:0;background:transparent;font-size:13px;color:var(--text)}
-.field input.mono{font-family:var(--mono);font-size:12px;letter-spacing:.02em}
-.field input::placeholder{color:var(--text-3);opacity:1}
-/* iOS zooms into inputs under 16px; keep the page still. */
-@supports (-webkit-touch-callout:none){.field input,.field input.mono{font-size:16px}}
-.composer{display:flex;gap:8px}
-.composer .field{flex:1}
+.btn:active{opacity:.82}
+.btn-row{display:flex;gap:8px}.btn-row>.btn{flex:1;min-width:0}
 
-/* Live: pane chips, the output sheet, the Notice. */
-.chips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
-.chips::-webkit-scrollbar{display:none}
-.chip{flex-shrink:0;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border:0;border-radius:15px;background:var(--hover);color:var(--text);font-size:12px;line-height:16px;white-space:nowrap}
-.chip.active{background:var(--raised);font-weight:500}
-.chip .lbl{color:var(--text-3);font-weight:400}
-.sheet{display:flex;flex-direction:column;overflow:hidden;background:var(--sheet);border:1px solid var(--line-subtle);border-radius:12px}
-.pane-head{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;flex-shrink:0}
-.where{margin-left:auto;min-width:0;font-family:var(--mono);font-size:11px;line-height:14px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* The output sheet takes the height the rest of the screen leaves, never less than ~12 lines. */
-main>.sheet{flex:1 0 auto}
-.term{flex:1 1 0;min-height:172px;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:0 12px 12px;font-family:var(--mono);font-size:11px;line-height:14px;color:var(--term-fg);white-space:pre-wrap;word-break:break-word}
-.pill{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px 0 6px;border-radius:10px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;flex-shrink:0}
-.notice{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:9px;border:1px solid transparent}
-.notice.t-input{border-color:var(--input-tint)}.notice.t-limited{border-color:var(--limited-tint)}.notice.t-failed{border-color:var(--failed-tint)}
-.n-title{font-size:12px;line-height:16px;font-weight:500;color:var(--text);word-break:break-word}
-.n-body{margin-top:2px;font-family:var(--mono);font-size:11px;line-height:14px;color:var(--text-2);white-space:pre-wrap;word-break:break-word}
-.sect{display:flex;flex-direction:column;gap:8px}
-.swaps{display:flex;flex-wrap:wrap;gap:6px}
-.swap{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:8px;border:1px solid var(--line-subtle);background:var(--raised);font-family:var(--mono);font-size:11px;line-height:14px;color:var(--text)}
-.swap .ic{color:var(--text-3)}
-.swap .pct{color:var(--text-3)}
+/* Cards, Sections, Segmented, Tags */
+.sec-lbl{font-size:11px;line-height:14px;font-weight:600;letter-spacing:.35px;text-transform:uppercase;color:var(--text-3)}
+.card{background:var(--raised);border:1px solid var(--line-subtle);border-radius:12px;overflow:hidden}
+.tag{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:5px;font-family:var(--mono);font-size:10.5px;font-weight:600;background:var(--accent-tint);color:var(--accent-text);flex-shrink:0}
+.tag.done{background:var(--done-tint);color:var(--done)}
+.tag.muted{background:var(--hover);color:var(--text-3);font-weight:500}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);padding:3px;border-radius:10px;background:var(--sheet);border:1px solid var(--line-subtle);gap:3px;flex-shrink:0}
+.seg button{height:30px;border-radius:7px;font-size:12px;font-weight:500;color:var(--text-2);display:inline-flex;align-items:center;justify-content:center;gap:5px}
+.seg button.on{background:var(--raised);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.22)}
+.seg .scnt{font-family:var(--mono);font-size:10.5px;color:var(--text-3)}
+.seg button.on .scnt{color:var(--text-2)}
 
-/* Cards, rows, Inbox items, meters. */
-.card{overflow:hidden;background:var(--raised);border:1px solid var(--line-subtle);border-radius:12px}
-.row{display:flex;align-items:center;gap:12px;min-height:52px;padding:10px 14px}
-.row+.row{border-top:1px solid var(--line-subtle)}
-.row.click{cursor:pointer}
-.row.click:active{background:var(--hover)}
-@media (hover:hover){.row.click:hover,.chip:not(.active):hover{background:var(--hover)}}
-.group{display:flex;flex-direction:column;gap:8px}
-.group+.group{margin-top:8px}
-.group-head{display:flex;align-items:center;gap:10px;min-width:0;padding:0 2px}
-.group-head .name{font-size:14px;line-height:20px;font-weight:600;letter-spacing:-.1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.branch{display:inline-flex;align-items:center;gap:4px;min-width:0;font-family:var(--mono);font-size:11px;line-height:14px;color:var(--text-3)}
-.branch span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tag{display:inline-flex;align-items:center;flex-shrink:0;height:18px;padding:0 6px;border-radius:5px;font-family:var(--mono);font-size:11px;line-height:14px;font-weight:600}
-.go{display:inline-flex;align-items:center;gap:5px;flex-shrink:0;height:28px;padding:0 10px;border-radius:7px;border:1px solid var(--line);font-size:12px;line-height:16px;font-weight:500;color:var(--text)}
-.val{flex-shrink:0;font-size:12px;line-height:16px;font-weight:500;color:var(--text-2)}
-.list{display:flex;flex-direction:column;gap:12px}
-.item{display:flex;align-items:flex-start;gap:12px;padding:14px;border-radius:12px;background:var(--raised)}
-.item>.ic{margin-top:2px}
-.age{flex-shrink:0;margin-top:2px;font-family:var(--mono);font-size:11px;line-height:14px;color:var(--text-3)}
-.acct{display:flex;flex-direction:column;gap:12px;padding:14px}
+/* Search Input */
+.search-box{display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;border-radius:9px;background:var(--inset);border:1px solid var(--line);flex-shrink:0}
+.search-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--focus-glow)}
+.search-in{flex:1;min-width:0;height:100%;border:0;background:transparent;color:var(--text);font-size:13px}
+.search-in::placeholder{color:var(--text-3)}
+
+/* Projects Tree (matches Desktop & Mobile v0.3.7 1:1) */
+.grp-hdr{display:flex;align-items:center;gap:6px;padding:4px 0 8px;width:100%;text-align:left}
+.grp-hdr .trail{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--text-3)}
+.fin-pill{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:10px;background:var(--done-tint);color:var(--done);font-family:var(--mono);font-size:10.5px;font-weight:500}
+.fin-pill i{width:5px;height:5px;border-radius:50%;background:var(--done);display:block}
+.ptree-blk{padding:9px 10px 8px 12px}
+.ptree-blk+.ptree-blk{border-top:1px solid var(--line-subtle)}
+.ptree-row{display:flex;align-items:center;gap:9px;min-height:28px}
+.folder-ic{position:relative;width:18px;height:18px;color:var(--text-2);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.folder-dot{position:absolute;right:-2px;bottom:-1px;width:6px;height:6px;border-radius:50%;border:1.5px solid var(--raised)}
+.ptree-name{flex:1;min-width:0;font-size:13.5px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+.ptree-name.idle{font-weight:500}
+.meta-chip{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:5px;background:var(--hover);font-family:var(--mono);font-size:10.5px;color:var(--text-3);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0}
+.plus-mini{width:26px;height:26px;border-radius:6px;color:var(--text-3);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.plus-mini:hover,.plus-mini:active{background:var(--hover);color:var(--text)}
+.tree-branch{margin-left:9px;padding-left:12px;border-left:1px solid var(--line);margin-top:4px;display:flex;flex-direction:column;gap:3px}
+.tree-branch.wt{margin-left:11px}
+.wt-row{display:flex;align-items:center;gap:7px;padding:5px 6px;border-radius:7px;text-align:left;width:100%}
+.wt-row:hover,.wt-row:active{background:var(--hover)}
+.wt-name{flex:1;min-width:0;font-size:12.5px;font-weight:500;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-leaf{display:flex;align-items:center;gap:8px;padding:6px 6px 6px 8px;border-radius:8px;position:relative;cursor:pointer}
+.agent-leaf:hover,.agent-leaf:active{background:var(--hover)}
+.agent-leaf.sel{background:var(--selected)}
+.agent-leaf.sel::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2.5px;border-radius:2px;background:var(--accent)}
+.agent-leaf-info{flex:1;min-width:0}
+.agent-leaf-t1{font-size:12.5px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-leaf-t2{font-family:var(--mono);font-size:10.5px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.close-x{width:24px;height:24px;border-radius:6px;color:var(--text-3);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.close-x:hover,.close-x:active{background:var(--failed-tint);color:var(--failed)}
+.idle-row{display:flex;align-items:center;gap:9px;padding:10px 10px 10px 12px;width:100%;text-align:left}
+.idle-row:hover,.idle-row:active{background:var(--hover)}
+.idle-blk+.idle-blk{border-top:1px solid var(--line-subtle)}
+
+/* Inbox Cards */
+.inb-card{background:var(--raised);border:1px solid var(--line-subtle);border-radius:12px;padding:12px 13px;display:flex;flex-direction:column;gap:10px;cursor:pointer}
+.inb-card.ask{border-color:rgba(242,177,75,.28)}
+.inb-top{display:flex;align-items:flex-start;gap:10px}
+.inb-head{display:flex;align-items:center;gap:6px;min-width:0}
+.inb-proj{font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inb-sub{margin-top:3px;font-size:12px;line-height:16px;color:var(--text-2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.inb-acts{display:flex;gap:8px;padding-left:34px}
+.inb-acts .btn{flex:1;height:32px;font-size:12px}
+
+/* Accounts Summary & Quota Cards */
+.stats-strip{display:grid;grid-template-columns:repeat(3,1fr)}
+.stat-cell{padding:10px 12px}
+.stat-cell+.stat-cell{border-left:1px solid var(--line-subtle)}
+.stat-lbl{font-size:11px;color:var(--text-3)}
+.stat-val{margin-top:2px;font-family:var(--mono);font-size:15px;font-weight:600;color:var(--text)}
+.acct-card{padding:13px;display:flex;flex-direction:column;gap:10px}
 .acct-top{display:flex;align-items:flex-start;gap:10px}
-.acct-line{display:flex;align-items:center;gap:8px;min-width:0}
-.acct-id{font-family:var(--mono);font-size:12px;line-height:16px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.acct.dim{opacity:.55}
-.meter{display:flex;flex-direction:column;gap:6px}
-.meter-top{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:11px;line-height:14px}
-.meter-lbl{color:var(--text-3)}
-.meter-val{margin-left:auto;color:var(--text-2)}
-.meter-rst{color:var(--text-3)}
+.acct-head{display:flex;align-items:center;gap:6px;min-width:0}
+.acct-id{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct-hint{margin-top:2px;font-size:12px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meter{display:flex;flex-direction:column;gap:5px}
+.meter-top{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:11px}
+.meter-lbl{color:var(--text-3)}.meter-val{margin-left:auto;color:var(--text-2)}.meter-rst{color:var(--text-3)}
 .bar{height:5px;border-radius:3px;background:var(--active);overflow:hidden}
 .bar>i{display:block;height:100%;border-radius:3px}
 .b-accent{background:var(--accent)}.b-input{background:var(--input)}.b-limited{background:var(--limited)}.b-idle{background:var(--idle)}
 
-/* Empty states: icon tile, title, one sentence. */
-.empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:48px 24px;text-align:center}
-main>.empty{flex:1 0 auto;justify-content:center;padding-bottom:96px}
-.empty-tile{display:flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:12px;background:var(--hover);border:1px solid var(--line-subtle);color:var(--text-2)}
-.empty-tile .ic{width:22px;height:22px}
-.empty-title{font-size:14px;line-height:20px;font-weight:600;letter-spacing:-.1px}
-.empty-body{max-width:300px;font-size:12px;line-height:16px;color:var(--text-2)}
-.empty .duo{max-width:300px;margin-top:6px}
+/* Bottom Navigation Bar */
+.bnav{display:grid;grid-template-columns:repeat(4,1fr);background:var(--sheet);border-top:1px solid var(--line-subtle);padding:6px 8px max(10px,env(safe-area-inset-bottom));flex-shrink:0}
+.bnav button{display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px 0;color:var(--text-3);font-size:11px;line-height:13px;font-weight:500}
+.bnav button.on{color:var(--text)}
+.nav-ic{position:relative;display:inline-flex}
+.nav-badge{position:absolute;top:-5px;right:-10px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;font-family:var(--mono);font-size:10px;line-height:16px;font-weight:600;text-align:center}
 
-/* Pair and Connecting: one column, no tab bar. */
-.solo{height:100vh;height:100dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:calc(env(safe-area-inset-top) + 88px) 16px calc(env(safe-area-inset-bottom) + 24px)}
-.solo.center{display:flex;align-items:center;justify-content:center;padding-top:calc(env(safe-area-inset-top) + 24px)}
-.pair{display:flex;flex-direction:column;gap:12px;max-width:400px;margin:0 auto}
-.logo{display:block;width:56px;height:56px}
-.lead{margin:0;max-width:330px;color:var(--text-2)}
-.note{margin:0;max-width:330px;font-size:12px;line-height:16px;color:var(--text-3)}
-.err-text{display:flex;align-items:center;gap:6px;font-size:12px;line-height:16px;color:var(--failed)}
+/* Bottom Sheets & Modals */
+.sheet-backdrop{position:fixed;inset:0;background:var(--scrim);z-index:40;display:flex;align-items:flex-end;justify-content:center}
+.sheet-panel{width:100%;max-width:560px;max-height:85vh;background:var(--overlay);border-radius:20px 20px 0 0;border-top:1px solid var(--line-strong);padding:10px 16px max(18px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:12px;overflow:hidden}
+.sheet-handle{width:36px;height:4px;border-radius:2px;background:var(--line-strong);margin:0 auto}
+.sheet-hdr{display:flex;align-items:center;gap:9px}
+.sheet-title{font-size:16px;font-weight:600;color:var(--text)}
+.sheet-sub{font-family:var(--mono);font-size:11px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sheet-scroll{overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:12px;padding-bottom:4px}
+.ag-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.ag-opt{display:flex;align-items:center;gap:8px;height:42px;padding:0 10px;border-radius:10px;background:var(--raised);border:1px solid var(--line-subtle);text-align:left;min-width:0}
+.ag-opt.on{background:var(--accent-tint);border-color:var(--accent)}
+.ag-opt .lbl{flex:1;min-width:0;font-size:12.5px;font-weight:500;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ag-opt.on .lbl{color:var(--text);font-weight:600}
+.ag-opt .cnt{font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 5px;border-radius:5px;background:var(--hover);color:var(--text-3)}
+.ag-opt.on .cnt{background:rgba(46,107,230,.18);color:var(--accent-text)}
+.hchips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.hchips::-webkit-scrollbar{display:none}
+.hchip{flex-shrink:0;display:inline-flex;align-items:center;gap:5px;height:32px;padding:0 10px;border-radius:8px;background:var(--raised);border:1px solid var(--line-subtle);font-size:12px;color:var(--text-2)}
+.hchip.on{background:var(--accent-tint);border-color:var(--accent);color:var(--text);font-weight:500}
+.hchip .det{font-family:var(--mono);font-size:10.5px;color:var(--text-3)}
+.hchip.warn .det{color:var(--limited)}
+.sess-row{display:flex;align-items:center;gap:9px;padding:10px 12px;width:100%;text-align:left}
+.sess-row+.sess-row{border-top:1px solid var(--line-subtle)}
+.sess-row:hover,.sess-row:active{background:var(--hover)}
+.sess-t1{font-size:12.5px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sess-t2{margin-top:2px;font-family:var(--mono);font-size:10.5px;color:var(--text-3)}
+
+/* Settings Rows */
+.set-row{display:flex;align-items:center;gap:12px;padding:12px 14px}
+.set-row+.set-row{border-top:1px solid var(--line-subtle)}
+.set-row .grow{flex:1;min-width:0}
+.set-t1{font-weight:500;color:var(--text)}
+.set-t2{font-size:12px;color:var(--text-2);margin-top:2px}
+.switch{width:40px;height:22px;border-radius:11px;background:var(--active);border:1px solid var(--line);position:relative;flex-shrink:0;transition:background .15s}
+.switch.on{background:var(--accent);border-color:var(--accent)}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s}
+.switch.on::after{transform:translateX(18px)}
+
+/* Fullscreen Terminal Overlay */
+.fs-overlay{position:fixed;inset:0;z-index:50;background:var(--window);display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+
+/* Empty, Pair & Toast */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:44px 24px;text-align:center;flex:1}
+.empty-tile{width:48px;height:48px;border-radius:12px;background:var(--hover);border:1px solid var(--line-subtle);display:flex;align-items:center;justify-content:center;color:var(--text-2)}
+.empty-title{font-size:14px;font-weight:600;color:var(--text)}
+.empty-body{max-width:300px;font-size:12px;line-height:17px;color:var(--text-2)}
+.solo{height:100vh;height:100dvh;overflow-y:auto;padding:calc(env(safe-area-inset-top) + 64px) 20px 32px;display:flex;justify-content:center}
+.solo.center{align-items:center;padding-top:24px}
+.pair-box{width:100%;max-width:380px;display:flex;flex-direction:column;gap:12px}
+.pair-in{width:100%;height:42px;padding:0 12px;border-radius:9px;background:var(--inset);border:1px solid var(--line);color:var(--text);font-size:13px}
+.pair-in:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--focus-glow)}
+.pair-in.mono{font-family:var(--mono);letter-spacing:.05em}
+.toast{position:fixed;left:50%;bottom:calc(70px + env(safe-area-inset-bottom));transform:translateX(-50%);padding:8px 14px;border-radius:20px;background:var(--menu);border:1px solid var(--line-strong);color:var(--text);font-size:12px;font-weight:500;box-shadow:0 8px 24px rgba(0,0,0,.45);z-index:80;pointer-events:none;max-width:90vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.confirm-modal{position:fixed;inset:0;background:var(--scrim);z-index:70;display:flex;align-items:center;justify-content:center;padding:24px}
+.confirm-card{width:100%;max-width:340px;background:var(--overlay);border:1px solid var(--line-strong);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:12px}
 </style>
 </head>
 <body>
-<!-- Phosphor icons (MIT), regular and fill, drawn from design/fonts. -->
 <svg class="sprite" aria-hidden="true" focusable="false"><defs>
-<symbol id="i-term" viewBox="0 0 256 256"><path d="M128 128Q128 128 128 128Q128 128 128 128Q128 130 127 132Q126 133 125 134L85 166Q84 167 83 168Q82 168 80 168Q77 168 74 166Q72 163 72 160Q72 158 73 156Q74 155 75 154L107 128L75 102Q74 101 73 100Q72 98 72 96Q72 93 74 90Q77 88 80 88Q82 88 83 88Q84 89 85 90L125 122Q126 123 127 124Q128 126 128 128Q128 128 128 128Q128 128 128 128ZM176 152H136Q133 152 130 154Q128 157 128 160Q128 163 130 166Q133 168 136 168H176Q179 168 182 166Q184 163 184 160Q184 157 182 154Q179 152 176 152ZM232 56V200Q232 207 227 211Q223 216 216 216H40Q33 216 29 211Q24 207 24 200V56Q24 49 29 45Q33 40 40 40H216Q223 40 227 45Q232 49 232 56ZM216 200V56H40V200Z"/></symbol>
-<symbol id="i-tray" viewBox="0 0 256 256"><path d="M208 32H48Q41 32 37 37Q32 41 32 48V208Q32 215 37 219Q41 224 48 224H208Q215 224 219 219Q224 215 224 208V48Q224 41 219 37Q215 32 208 32ZM208 48V152H179Q179 152 179 152Q179 152 179 152Q176 152 173 153Q170 154 168 157L149 176H107L88 157Q86 154 83 153Q80 152 77 152Q77 152 77 152Q77 152 77 152H48V48ZM208 208H48V168H77L96 187Q98 190 101 191Q104 192 107 192Q107 192 107 192Q107 192 107 192H149Q149 192 149 192Q149 192 149 192Q152 192 155 191Q158 190 160 187L179 168H208Z"/></symbol>
-<symbol id="i-squares" viewBox="0 0 256 256"><path d="M104 40H56Q49 40 45 45Q40 49 40 56V104Q40 111 45 115Q49 120 56 120H104Q111 120 115 115Q120 111 120 104V56Q120 49 115 45Q111 40 104 40ZM104 104H56V56H104ZM200 40H152Q145 40 141 45Q136 49 136 56V104Q136 111 141 115Q145 120 152 120H200Q207 120 211 115Q216 111 216 104V56Q216 49 211 45Q207 40 200 40ZM200 104H152V56H200ZM104 136H56Q49 136 45 141Q40 145 40 152V200Q40 207 45 211Q49 216 56 216H104Q111 216 115 211Q120 207 120 200V152Q120 145 115 141Q111 136 104 136ZM104 200H56V152H104ZM200 136H152Q145 136 141 141Q136 145 136 152V200Q136 207 141 211Q145 216 152 216H200Q207 216 211 211Q216 207 216 200V152Q216 145 211 141Q207 136 200 136ZM200 200H152V152H200Z"/></symbol>
-<symbol id="i-user" viewBox="0 0 256 256"><path d="M128 24Q106 24 88 32Q68 40 54 54Q40 68 32 88Q24 106 24 128Q24 150 32 168Q40 188 54 202Q68 216 88 224Q106 232 128 232Q150 232 168 224Q188 216 202 202Q216 188 224 168Q232 150 232 128Q232 106 224 88Q216 68 202 54Q188 40 168 32Q150 24 128 24ZM74 198Q83 184 97 176Q111 168 128 168Q145 168 159 176Q173 184 182 197L182 198Q171 206 157 211Q143 216 128 216Q113 216 99 211Q85 206 74 197V198ZM96 120Q96 107 105 97Q115 88 128 88Q141 88 151 97Q160 107 160 120Q160 133 151 143Q141 152 128 152Q115 152 105 143Q96 133 96 120ZM194 186Q187 177 178 170Q169 162 158 158H158Q166 151 171 141Q176 132 176 120Q176 100 162 86Q148 72 128 72Q108 72 94 86Q80 100 80 120Q80 132 85 141Q90 151 98 158V158Q87 162 78 170Q69 177 62 186L62 186Q52 175 46 160Q40 145 40 128Q40 110 47 94Q54 78 66 66Q78 54 94 47Q110 40 128 40Q146 40 162 47Q178 54 190 66Q202 78 209 94Q216 110 216 128Q216 145 210 160Q204 175 194 186Z"/></symbol>
-<symbol id="i-notch" viewBox="0 0 256 256"><path d="M232 128Q232 150 224 168Q216 188 202 202Q188 216 168 224Q150 232 128 232Q106 232 88 224Q68 216 54 202Q40 188 32 168Q24 150 24 128Q24 113 28 98Q32 84 40 71Q48 59 60 49Q71 39 85 33Q86 32 86 32Q87 32 88 32Q91 32 94 34Q96 37 96 40Q96 42 95 44Q94 46 92 47H91Q80 53 70 61Q61 70 54 80Q47 90 44 103Q40 115 40 128Q40 146 47 162Q54 178 66 190Q78 202 94 209Q110 216 128 216Q146 216 162 209Q178 202 190 190Q202 178 209 162Q216 146 216 128Q216 115 212 103Q209 90 202 80Q195 70 186 61Q176 53 165 47Q162 46 161 44Q160 42 160 40Q160 37 162 34Q165 32 168 32Q169 32 170 32Q170 32 172 33H171Q185 39 196 49Q208 59 216 71Q224 84 228 98Q232 112 232 128Z"/></symbol>
-<symbol id="i-circle" viewBox="0 0 256 256"><path d="M128 24Q106 24 88 32Q68 40 54 54Q40 68 32 88Q24 106 24 128Q24 150 32 168Q40 188 54 202Q68 216 88 224Q106 232 128 232Q150 232 168 224Q188 216 202 202Q216 188 224 168Q232 150 232 128Q232 106 224 88Q216 68 202 54Q188 40 168 32Q150 24 128 24ZM128 216Q110 216 94 209Q78 202 66 190Q54 178 47 162Q40 146 40 128Q40 110 47 94Q54 78 66 66Q78 54 94 47Q110 40 128 40Q146 40 162 47Q178 54 190 66Q202 78 209 94Q216 110 216 128Q216 146 209 162Q202 178 190 190Q178 202 162 209Q146 216 128 216Z"/></symbol>
-<symbol id="i-clock" viewBox="0 0 256 256"><path d="M128 24Q106 24 88 32Q68 40 54 54Q40 68 32 88Q24 106 24 128Q24 150 32 168Q40 188 54 202Q68 216 88 224Q106 232 128 232Q150 232 168 224Q188 216 202 202Q216 188 224 168Q232 150 232 128Q232 106 224 88Q216 68 202 54Q188 40 168 32Q150 24 128 24ZM128 216Q110 216 94 209Q78 202 66 190Q54 178 47 162Q40 146 40 128Q40 110 47 94Q54 78 66 66Q78 54 94 47Q110 40 128 40Q146 40 162 47Q178 54 190 66Q202 78 209 94Q216 110 216 128Q216 146 209 162Q202 178 190 190Q178 202 162 209Q146 216 128 216ZM192 128Q192 131 190 134Q187 136 184 136H128Q125 136 122 134Q120 131 120 128V72Q120 69 122 66Q125 64 128 64Q131 64 134 66Q136 69 136 72V120H184Q187 120 190 122Q192 125 192 128Z"/></symbol>
-<symbol id="i-folder" viewBox="0 0 256 256"><path d="M216 72H131L103 51Q101 50 98 49Q96 48 93 48H40Q33 48 29 53Q24 57 24 64V200Q24 207 29 211Q33 216 40 216H217Q223 216 228 212Q232 207 232 201V88Q232 81 227 77Q223 72 216 72ZM216 200H40V64H93L123 86Q124 87 126 88Q127 88 128 88H216Z"/></symbol>
-<symbol id="i-branch" viewBox="0 0 256 256"><path d="M232 64Q232 51 223 41Q213 32 200 32Q187 32 177 41Q168 51 168 64Q168 75 175 84Q182 92 192 95H192V112Q192 115 190 118Q187 120 184 120H96Q96 120 96 120Q96 120 96 120Q94 120 92 120Q90 121 88 122H88V95Q98 92 105 84Q112 75 112 64Q112 51 103 41Q93 32 80 32Q67 32 57 41Q48 51 48 64Q48 75 55 84Q62 92 72 95H72V161Q62 164 55 172Q48 181 48 192Q48 205 57 215Q67 224 80 224Q93 224 103 215Q112 205 112 192Q112 181 105 172Q98 164 88 161H88V144Q88 141 90 138Q93 136 96 136H184Q194 136 201 129Q208 122 208 112V95Q218 92 225 84Q232 75 232 64ZM64 64Q64 57 69 53Q73 48 80 48Q87 48 91 53Q96 57 96 64Q96 71 91 75Q87 80 80 80Q73 80 69 75Q64 71 64 64ZM96 192Q96 199 91 203Q87 208 80 208Q73 208 69 203Q64 199 64 192Q64 185 69 181Q73 176 80 176Q87 176 91 181Q96 185 96 192ZM200 80Q193 80 189 75Q184 71 184 64Q184 57 189 53Q193 48 200 48Q207 48 211 53Q216 57 216 64Q216 71 211 75Q207 80 200 80Z"/></symbol>
-<symbol id="i-swap" viewBox="0 0 256 256"><path d="M214 182 182 214Q180 215 179 215Q178 216 176 216Q173 216 170 214Q168 211 168 208Q168 206 169 205Q169 204 170 202L189 184H48Q45 184 42 182Q40 179 40 176Q40 173 42 170Q45 168 48 168H189L170 150Q169 148 169 147Q168 146 168 144Q168 141 170 138Q173 136 176 136Q178 136 179 137Q180 137 182 138L214 170Q215 172 215 173Q216 174 216 176Q216 178 215 179Q215 180 214 182ZM74 118Q76 119 77 119Q78 120 80 120Q83 120 86 118Q88 115 88 112Q88 110 87 109Q87 108 86 106L67 88H208Q211 88 214 86Q216 83 216 80Q216 77 214 74Q211 72 208 72H67L86 54Q87 52 87 51Q88 50 88 48Q88 45 86 42Q83 40 80 40Q78 40 77 41Q76 41 74 42L42 74Q41 76 41 77Q40 78 40 80Q40 82 41 83Q41 84 42 86Z"/></symbol>
-<symbol id="i-phone" viewBox="0 0 256 256"><path d="M176 16H80Q70 16 63 23Q56 30 56 40V216Q56 226 63 233Q70 240 80 240H176Q186 240 193 233Q200 226 200 216V40Q200 30 193 23Q186 16 176 16ZM72 64H184V192H72ZM80 32H176Q179 32 182 34Q184 37 184 40V48H72V40Q72 37 74 34Q77 32 80 32ZM176 224H80Q77 224 74 222Q72 219 72 216V208H184V216Q184 219 182 222Q179 224 176 224Z"/></symbol>
-<symbol id="i-offline" viewBox="0 0 256 256"><path d="M214 210Q215 212 216 213Q216 214 216 216Q216 220 214 222Q212 224 208 224Q206 224 205 223Q203 222 202 222L150 164Q145 162 140 161Q134 160 128 160Q118 160 109 163Q100 166 92 172H93Q92 172 90 173Q89 173 88 173Q84 173 82 171Q80 168 80 165Q80 163 81 161Q82 160 83 158Q92 152 104 148Q115 144 128 144Q128 144 128 144Q128 144 128 144Q129 144 130 144Q131 144 132 144L105 114Q92 117 81 123Q70 128 61 136L61 135Q60 136 59 136Q58 137 56 137Q54 137 52 136Q51 136 50 134Q49 133 48 132Q48 130 48 129Q48 127 49 126Q50 124 51 123Q60 116 70 110Q80 105 92 101L93 101L69 76Q58 80 48 86Q38 92 29 100H29Q28 100 27 101Q26 101 24 101Q21 101 18 99Q16 96 16 93Q16 91 17 90Q18 88 19 87Q28 80 37 74Q46 68 57 63L58 63L42 46Q41 44 40 43Q40 42 40 40Q40 36 42 34Q44 32 48 32Q50 32 51 33Q53 34 54 34ZM128 192Q123 192 120 196Q116 199 116 204Q116 209 120 212Q123 216 128 216Q133 216 136 212Q140 209 140 204Q140 199 136 196Q133 192 128 192ZM237 87Q226 78 214 71Q201 64 187 58Q173 53 158 51Q144 48 128 48Q122 48 116 48Q111 49 105 50H106Q103 50 101 52Q99 54 99 57Q99 61 101 63Q104 65 107 65Q107 65 108 65Q108 65 108 65Q112 65 118 64Q123 64 128 64Q142 64 156 66Q169 69 182 74Q194 78 206 85Q217 91 227 100L227 99Q228 100 229 101Q230 101 232 101Q235 101 238 99Q240 96 240 93Q240 91 239 90Q238 88 237 87ZM195 135Q196 136 197 136Q198 137 200 137Q202 137 204 136Q205 136 206 134Q207 133 208 132Q208 130 208 129Q208 127 207 126Q206 124 205 123Q194 114 181 108Q168 102 154 99L153 98Q153 98 152 98Q152 98 152 98Q148 98 146 101Q144 103 144 106Q144 109 145 112Q147 114 150 114Q163 117 174 122Q186 128 195 136L195 135Z"/></symbol>
-<symbol id="i-resume" viewBox="0 0 256 256"><path d="M240 56V104Q240 107 238 110Q235 112 232 112H184Q181 112 178 110Q176 107 176 104Q176 101 178 98Q181 96 184 96H212L184 72Q174 60 159 54Q144 48 128 48Q112 48 97 54Q82 60 71 71Q60 82 54 97Q48 112 48 128Q48 144 54 159Q60 174 71 185Q82 196 97 202Q112 208 128 208Q144 208 158 202Q172 196 183 186Q184 185 185 185Q187 184 188 184Q192 184 194 186Q196 189 196 192Q196 194 196 195Q195 197 194 198Q181 210 164 217Q147 224 128 224Q128 224 128 224Q128 224 128 224H127Q107 224 90 216Q72 208 60 196Q47 182 40 165Q32 148 32 128Q32 108 40 91Q47 73 60 60Q73 47 91 40Q108 32 128 32Q148 32 165 40Q183 47 196 60L224 86V56Q224 53 226 50Q229 48 232 48Q235 48 238 50Q240 53 240 56Z"/></symbol>
-<symbol id="i-signout" viewBox="0 0 256 256"><path d="M120 216Q120 219 118 222Q115 224 112 224H48Q45 224 42 222Q40 219 40 216V40Q40 37 42 34Q45 32 48 32H112Q115 32 118 34Q120 37 120 40Q120 43 118 46Q115 48 112 48H56V208H112Q115 208 118 210Q120 213 120 216ZM230 122 190 82Q188 81 187 81Q186 80 184 80Q181 80 178 82Q176 85 176 88Q176 90 177 91Q177 92 178 94L205 120H112Q109 120 106 122Q104 125 104 128Q104 131 106 134Q109 136 112 136H205L178 162Q177 164 177 165Q176 166 176 168Q176 171 178 174Q181 176 184 176Q186 176 187 175Q188 175 190 174L230 134Q231 132 231 131Q232 130 232 128Q232 126 231 125Q231 124 230 122Z"/></symbol>
-<symbol id="i-chat" viewBox="0 0 256 256"><path d="M128 24Q128 24 128 24Q128 24 128 24Q106 24 88 32Q68 40 54 54Q40 68 32 88Q24 106 24 128Q24 142 27 154Q30 166 36 178L36 177L25 211Q24 212 24 213Q24 215 24 216Q24 222 29 227Q34 232 40 232Q41 232 43 232Q44 232 45 231H45L79 220Q90 226 102 229Q114 232 128 232Q150 232 168 224Q188 216 202 202Q216 188 224 168Q232 150 232 128Q232 106 224 88Q216 68 202 54Q188 40 168 32Q150 24 128 24ZM84 140Q79 140 76 136Q72 133 72 128Q72 123 76 120Q79 116 84 116Q89 116 92 120Q96 123 96 128Q96 133 92 136Q89 140 84 140ZM128 140Q123 140 120 136Q116 133 116 128Q116 123 120 120Q123 116 128 116Q133 116 136 120Q140 123 140 128Q140 133 136 136Q133 140 128 140ZM172 140Q167 140 164 136Q160 133 160 128Q160 123 164 120Q167 116 172 116Q177 116 180 120Q184 123 184 128Q184 133 180 136Q177 140 172 140Z"/></symbol>
-<symbol id="i-check" viewBox="0 0 256 256"><path d="M128 24Q106 24 88 32Q68 40 54 54Q40 68 32 88Q24 106 24 128Q24 150 32 168Q40 188 54 202Q68 216 88 224Q106 232 128 232Q150 232 168 224Q188 216 202 202Q216 188 224 168Q232 150 232 128Q232 106 224 88Q216 68 202 54Q188 40 168 32Q150 24 128 24ZM174 110 118 166Q116 167 115 167Q114 168 112 168Q110 168 109 167Q108 167 106 166L82 142Q81 140 81 139Q80 138 80 136Q80 133 82 130Q85 128 88 128Q90 128 91 129Q92 129 94 130L112 149L162 98Q164 97 165 97Q166 96 168 96Q171 96 174 98Q176 101 176 104Q176 106 175 107Q175 108 174 110Z"/></symbol>
-<symbol id="i-x" viewBox="0 0 256 256"><path d="M128 24Q106 24 88 32Q68 40 54 54Q40 68 32 88Q24 106 24 128Q24 150 32 168Q40 188 54 202Q68 216 88 224Q106 232 128 232Q150 232 168 224Q188 216 202 202Q216 188 224 168Q232 150 232 128Q232 106 224 88Q216 68 202 54Q188 40 168 32Q150 24 128 24ZM166 154Q167 156 167 157Q168 158 168 160Q168 163 166 166Q163 168 160 168Q158 168 157 167Q156 167 154 166L128 139L102 166Q100 167 99 167Q98 168 96 168Q93 168 90 166Q88 163 88 160Q88 158 89 157Q89 156 90 154L117 128L90 102Q89 100 89 99Q88 98 88 96Q88 93 90 90Q93 88 96 88Q98 88 99 89Q100 89 102 90L128 117L154 90Q156 89 157 89Q158 88 160 88Q163 88 166 90Q168 93 168 96Q168 98 167 99Q167 100 166 102L139 128Z"/></symbol>
-<symbol id="i-hourglass" viewBox="0 0 256 256"><path d="M200 76V40Q200 33 195 29Q191 24 184 24H72Q65 24 61 29Q56 33 56 40V76Q56 80 58 83Q60 86 62 89H62L115 128L62 167Q60 170 58 173Q56 176 56 180V216Q56 223 61 227Q65 232 72 232H184Q191 232 195 227Q200 223 200 216V180Q200 176 198 173Q196 170 194 168L141 128L194 88Q196 86 198 83Q200 80 200 76ZM184 180V216H72V180L120 144V168Q120 171 122 174Q125 176 128 176Q131 176 134 174Q136 171 136 168V144ZM184 76 178 80H77L72 76V40H184Z"/></symbol>
+  <symbol id="i-term" viewBox="0 0 256 256"><path d="M128 128Q128 130 127 132Q126 133 125 134L85 166Q83 168 80 168Q77 168 74 166Q72 163 72 160Q72 156 75 154L107 128L75 102Q72 100 72 96Q72 93 74 90Q77 88 80 88Q83 88 85 90L125 122Q128 124 128 128ZM176 152H136Q128 152 128 160Q128 168 136 168H176Q184 168 184 160Q184 152 176 152ZM232 56V200Q232 216 216 216H40Q24 216 24 200V56Q24 40 40 40H216Q232 40 232 56ZM216 200V56H40V200Z"/></symbol>
+  <symbol id="i-tray" viewBox="0 0 256 256"><path d="M208 32H48Q32 32 32 48V208Q32 224 48 224H208Q224 224 224 208V48Q224 32 208 32ZM208 48V152H179Q172 152 168 157L149 176H107L88 157Q84 152 77 152H48V48ZM208 208H48V168H77L96 187Q100 192 107 192H149Q156 192 160 187L179 168H208Z"/></symbol>
+  <symbol id="i-squares" viewBox="0 0 256 256"><path d="M104 40H56Q40 40 40 56V104Q40 120 56 120H104Q120 120 120 104V56Q120 40 104 40ZM104 104H56V56H104ZM200 40H152Q136 40 136 56V104Q136 120 152 120H200Q216 120 216 104V56Q216 40 200 40ZM200 104H152V56H200ZM104 136H56Q40 136 40 152V200Q40 216 56 216H104Q120 216 120 200V152Q120 136 104 136ZM104 200H56V152H104ZM200 136H152Q136 136 136 152V200Q136 216 152 216H200Q216 216 216 200V152Q216 136 200 136ZM200 200H152V152H200Z"/></symbol>
+  <symbol id="i-user" viewBox="0 0 256 256"><path d="M128 24A104 104 0 1 0 232 128A104 104 0 0 0 128 24ZM74 198A64 64 0 0 1 182 198A88 88 0 0 1 74 198ZM96 120A32 32 0 1 1 160 120A32 32 0 0 1 96 120ZM194 186A80 80 0 0 0 158 158A48 48 0 1 0 98 158A80 80 0 0 0 62 186A88 88 0 1 1 194 186Z"/></symbol>
+  <symbol id="i-notch" viewBox="0 0 256 256"><path d="M232 128A104 104 0 1 1 85 33A8 8 0 0 1 92 47A88 88 0 1 0 165 47A8 8 0 0 1 172 33A104 104 0 0 1 232 128Z"/></symbol>
+  <symbol id="i-circle" viewBox="0 0 256 256"><path d="M128 24A104 104 0 1 0 232 128A104 104 0 0 0 128 24ZM128 216A88 88 0 1 1 216 128A88 88 0 0 1 128 216Z"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 256 256"><path d="M128 24A104 104 0 0 0 36 177L25 211A16 16 0 0 0 45 231L79 220A104 104 0 1 0 128 24ZM84 140A12 12 0 1 1 96 128A12 12 0 0 1 84 140ZM128 140A12 12 0 1 1 140 128A12 12 0 0 1 128 140ZM172 140A12 12 0 1 1 184 128A12 12 0 0 1 172 140Z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 256 256"><path d="M128 24A104 104 0 1 0 232 128A104 104 0 0 0 128 24ZM174 110L118 166A8 8 0 0 1 106 166L82 142A8 8 0 0 1 94 130L112 149L162 98A8 8 0 0 1 174 110Z"/></symbol>
+  <symbol id="i-xfill" viewBox="0 0 256 256"><path d="M128 24A104 104 0 1 0 232 128A104 104 0 0 0 128 24ZM166 154A8 8 0 0 1 154 166L128 139L102 166A8 8 0 0 1 90 154L117 128L90 102A8 8 0 0 1 102 90L128 117L154 90A8 8 0 0 1 166 102L139 128Z"/></symbol>
+  <symbol id="i-hourglass" viewBox="0 0 256 256"><path d="M200 76V40Q200 24 184 24H72Q56 24 56 40V76Q56 84 62 89L115 128L62 167Q56 172 56 180V216Q56 232 72 232H184Q200 232 200 216V180Q200 172 194 168L141 128L194 88Q200 84 200 76ZM184 180V216H72V180L120 144V168A8 8 0 0 0 136 168V144ZM184 76L178 80H77L72 76V40H184Z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 256 256"><path d="M128 24A104 104 0 1 0 232 128A104 104 0 0 0 128 24ZM128 216A88 88 0 1 1 216 128A88 88 0 0 1 128 216ZM192 128A8 8 0 0 1 184 136H128A8 8 0 0 1 120 128V72A8 8 0 0 1 136 72V120H184A8 8 0 0 1 192 128Z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 256 256"><path d="M224 128A8 8 0 0 1 216 136H136V216A8 8 0 0 1 120 216V136H40A8 8 0 0 1 40 120H120V40A8 8 0 0 1 136 40V120H216A8 8 0 0 1 224 128Z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 256 256"><path d="M205.66 194.34A8 8 0 0 1 194.34 205.66L128 139.31L61.66 205.66A8 8 0 0 1 50.34 194.34L116.69 128L50.34 61.66A8 8 0 0 1 61.66 50.34L128 116.69L194.34 50.34A8 8 0 0 1 205.66 61.66L139.31 128Z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 256 256"><path d="M128 80A48 48 0 1 0 176 128A48.05 48.05 0 0 0 128 80ZM128 160A32 32 0 1 1 160 128A32 32 0 0 1 128 160ZM216 128A87.6 87.6 0 0 0 214.2 110.4L231.5 96.8A8 8 0 0 0 233.3 86.2L211.9 49.1A8 8 0 0 0 201.8 45.6L181.2 53.6A88.5 88.5 0 0 0 151.3 36.4L148.2 14.7A8 8 0 0 0 140.3 8H97.5A8 8 0 0 0 89.6 14.7L86.5 36.4A88.5 88.5 0 0 0 56.6 53.6L36 45.6A8 8 0 0 0 25.9 49.1L4.5 86.2A8 8 0 0 0 6.3 96.8L23.6 110.4A87.6 87.6 0 0 0 21.8 128A87.6 87.6 0 0 0 23.6 145.6L6.3 159.2A8 8 0 0 0 4.5 169.8L25.9 206.9A8 8 0 0 0 36 210.4L56.6 202.4A88.5 88.5 0 0 0 86.5 219.6L89.6 241.3A8 8 0 0 0 97.5 248H140.3A8 8 0 0 0 148.2 241.3L151.3 219.6A88.5 88.5 0 0 0 181.2 202.4L201.8 210.4A8 8 0 0 0 211.9 206.9L233.3 169.8A8 8 0 0 0 231.5 159.2L214.2 145.6A87.6 87.6 0 0 0 216 128Z" transform="translate(8,0) scale(0.94)"/></symbol>
+  <symbol id="i-wrap" viewBox="0 0 256 256"><path d="M224 112A56.06 56.06 0 0 1 168 168H59.31L85.66 194.34A8 8 0 0 1 74.34 205.66L34.34 165.66A8 8 0 0 1 34.34 154.34L74.34 114.34A8 8 0 0 1 85.66 125.66L59.31 152H168A40 40 0 0 0 168 72H48A8 8 0 0 1 48 56H168A56.06 56.06 0 0 1 224 112Z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 256 256"><path d="M216 32H88A8 8 0 0 0 80 40V80H40A8 8 0 0 0 32 88V216A8 8 0 0 0 40 224H168A8 8 0 0 0 176 216V176H216A8 8 0 0 0 224 168V40A8 8 0 0 0 216 32ZM160 208H48V96H160ZM208 160H176V88A8 8 0 0 0 168 80H96V48H208Z"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 256 256"><path d="M216 48V96A8 8 0 0 1 200 96V67.31L157.66 109.66A8 8 0 0 1 146.34 98.34L188.69 56H160A8 8 0 0 1 160 40H208A8 8 0 0 1 216 48ZM98.34 146.34L56 188.69V160A8 8 0 0 0 40 160V208A8 8 0 0 0 48 216H96A8 8 0 0 0 96 200H67.31L109.66 157.66A8 8 0 0 0 98.34 146.34Z"/></symbol>
+  <symbol id="i-kb" viewBox="0 0 256 256"><path d="M224 48H32A16 16 0 0 0 16 64V192A16 16 0 0 0 32 208H224A16 16 0 0 0 240 192V64A16 16 0 0 0 224 48ZM224 192H32V64H224ZM72 104A8 8 0 0 1 64 112H56A8 8 0 0 1 56 96H64A8 8 0 0 1 72 104ZM112 104A8 8 0 0 1 104 112H96A8 8 0 0 1 96 96H104A8 8 0 0 1 112 104ZM152 104A8 8 0 0 1 144 112H136A8 8 0 0 1 136 96H144A8 8 0 0 1 152 104ZM192 104A8 8 0 0 1 184 112H176A8 8 0 0 1 176 96H184A8 8 0 0 1 192 104ZM184 152A8 8 0 0 1 176 160H80A8 8 0 0 1 80 144H176A8 8 0 0 1 184 152Z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 256 256"><path d="M229.66 218.34L179.6 168.28A88.11 88.11 0 1 0 168.28 179.6L218.34 229.66A8 8 0 0 0 229.66 218.34ZM40 112A72 72 0 1 1 112 184A72.08 72.08 0 0 1 40 112Z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 256 256"><path d="M216 72H131L103 51Q98 48 93 48H40Q24 48 24 64V200Q24 216 40 216H216Q232 216 232 200V88Q232 72 216 72ZM216 200H40V64H93L123 86Q126 88 128 88H216Z"/></symbol>
+  <symbol id="i-fork" viewBox="0 0 256 256"><path d="M224 64A32 32 0 1 0 184 95V112A16 16 0 0 1 168 128H88A16 16 0 0 1 72 112V95A32 32 0 1 0 56 95V112A32 32 0 0 0 88 144H120V161A32 32 0 1 0 136 161V144H168A32 32 0 0 0 200 112V95A32 32 0 0 0 224 64ZM64 48A16 16 0 1 1 48 64A16 16 0 0 1 64 48ZM128 208A16 16 0 1 1 144 192A16 16 0 0 1 128 208ZM192 80A16 16 0 1 1 208 64A16 16 0 0 1 192 80Z"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 256 256"><path d="M214 182L182 214A8 8 0 0 1 170 202L189 184H48A8 8 0 0 1 48 168H189L170 150A8 8 0 0 1 182 138L214 170A8 8 0 0 1 214 182ZM74 118A8 8 0 0 0 86 106L67 88H208A8 8 0 0 0 208 72H67L86 54A8 8 0 0 0 74 42L42 74A8 8 0 0 0 42 86Z"/></symbol>
+  <symbol id="i-down" viewBox="0 0 256 256"><path d="M213.66 101.66L133.66 181.66A8 8 0 0 1 122.34 181.66L42.34 101.66A8 8 0 0 1 53.66 90.34L128 164.69L202.34 90.34A8 8 0 0 1 213.66 101.66Z"/></symbol>
+  <symbol id="i-right" viewBox="0 0 256 256"><path d="M181.66 133.66L101.66 213.66A8 8 0 0 1 90.34 202.34L164.69 128L90.34 53.66A8 8 0 0 1 101.66 42.34L181.66 122.34A8 8 0 0 1 181.66 133.66Z"/></symbol>
+  <symbol id="i-sparkle" viewBox="0 0 256 256"><path d="M208 144A16 16 0 0 1 197.4 159L150.2 175.8L133.4 223A16 16 0 0 1 102.6 223L85.8 175.8L38.6 159A16 16 0 0 1 38.6 129L85.8 112.2L102.6 65A16 16 0 0 1 133.4 65L150.2 112.2L197.4 129A16 16 0 0 1 208 144Z"/></symbol>
+  <symbol id="i-offline" viewBox="0 0 256 256"><path d="M214 210A8 8 0 0 1 202 222L150 164A64 64 0 0 0 92 172A8 8 0 0 1 83 158A80 80 0 0 1 132 144L105 114A96 96 0 0 0 61 136A8 8 0 0 1 51 123A112 112 0 0 1 92 101L69 76A128 128 0 0 0 29 100A8 8 0 0 1 19 87A144 144 0 0 1 57 63L42 46A8 8 0 0 1 54 34ZM128 192A12 12 0 1 0 140 204A12 12 0 0 0 128 192ZM237 87A144 144 0 0 0 105 50A8 8 0 0 0 108 65A128 128 0 0 1 227 100A8 8 0 0 0 237 87ZM195 135A112 112 0 0 0 153 98A8 8 0 0 0 150 114A96 96 0 0 1 195 136Z"/></symbol>
 </defs></svg>
 <div id="root"></div>
 <script>
-const KEY = "tc_companion_token_v1";
-let token = localStorage.getItem(KEY) || "";
+// ── Base Path & Persistent Preferences (works on LAN `/` and Cloudflare Relay `/r/<hostId>/`) ──
+const BASE = location.pathname.replace(/\/(?:index\.html)?$/, "");
+const IS_RELAY = BASE.startsWith("/r/");
+const TOKEN_KEY = "tc_companion_token_v2:" + location.origin + BASE;
+const LEGACY_TOKEN_KEY = "tc_companion_token_v1";
+const PREF_KEY = "tc_companion_prefs_v2";
+
+function loadPrefs() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PREF_KEY) || "{}");
+    return {
+      theme: raw.theme === "light" ? "light" : "dark",
+      wrap: raw.wrap !== false,
+      fontSize: typeof raw.fontSize === "number" && raw.fontSize >= 9 && raw.fontSize <= 16 ? raw.fontSize : 11.5,
+    };
+  } catch {
+    return { theme: "dark", wrap: true, fontSize: 11.5 };
+  }
+}
+const prefs = loadPrefs();
+function savePrefs() {
+  try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch {}
+  applyPrefs();
+}
+function applyPrefs() {
+  document.documentElement.setAttribute("data-theme", prefs.theme);
+  document.documentElement.style.setProperty("--term-size", prefs.fontSize + "px");
+  const meta = document.getElementById("meta-theme-color");
+  if (meta) meta.setAttribute("content", prefs.theme === "light" ? "#EDEDEF" : "#09090B");
+}
+applyPrefs();
+
+let token = localStorage.getItem(TOKEN_KEY) || (!IS_RELAY ? (localStorage.getItem(LEGACY_TOKEN_KEY) || "") : "");
+const urlParams = new URLSearchParams(location.search);
+const urlPair = urlParams.get("pair") || "";
+let draftCode = urlPair;
+let draftName = /iPhone|iPad/.test(navigator.userAgent) ? "iPhone" : /Android/.test(navigator.userAgent) ? "Android Browser" : "Web Companion";
+
+// ── Reactive Application State ──
 let state = null;
-let tab = "live";
-let selectedPane = null;
-let lastRenderedPane = null;
-let lastRenderedTab = null;
-let lastRenderedPaneKey = null;
-let es = null;
-let retryTimer = null;
-let retryMs = 1000;
+let tab = "live"; // "live" | "inbox" | "projects" | "accounts"
+let inboxFilter = "all"; // "all" | "needs" | "finished"
+let projectQuery = "";
+let activeCollapsed = false;
+let idleCollapsed = false;
+let selectedPaneId = null;
+let showQuickKeys = false;
+let fullscreenOpen = false;
+let settingsOpen = false;
+let spawnSheet = null; // { projectId, worktreeId, agent, profileId, starting }
+let confirmClosePane = null; // pane object
 let connected = false;
-let pairError = "";
+let reconnecting = false;
+let revoked = false;
 let pairing = false;
+let pairError = "";
 let toastMsg = "";
 let toastTimer = null;
 
-const params = new URLSearchParams(location.search);
-const urlPair = params.get("pair") || "";
-let draftCode = urlPair;
-let draftName = /iPhone/.test(navigator.userAgent)?"iPhone":/Android/.test(navigator.userAgent)?"Android Phone":"Mobile Browser";
+// Stream handles (WebSocket Hibernation on Cloudflare Relay, SSE on local LAN)
+let ws = null;
+let wsPingTimer = null;
+let es = null;
+let retryTimer = null;
+let retryMs = 1000;
+
+// Stable Live Terminal Scroll Tracking (ZERO bounce-to-top)
+let termScrolledUp = false;
+let lastTermPaneId = null;
+let lastTermRaw = null;
+let lastTermWrap = null;
+let lastTermTheme = null;
+let lastTermFont = null;
+
 const root = document.getElementById("root");
-function hostName(){ return (state && state.host_os) || "computer"; }
 
-function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-function fmtTok(n){n=Number(n||0);if(n>=1e6)return(n/1e6).toFixed(1)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
-function fmtSec(s){if(!s||s<=0)return"";const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),r=s%60;return h?`${h}h ${String(m).padStart(2,"0")}m`:m?`${m}m ${String(r).padStart(2,"0")}s`:`${r}s`}
+// ── Authentic Agent Brand Marks (1:1 parity with Mobile agent_icons.dart) ──
+const AG_CLAUDE_SVG = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#D97757" d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></svg>`;
+const AG_CODEX_SVG = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>`;
+const AG_OPENCODE_SVG = `<svg viewBox="0 0 240 300" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z"/><path fill="currentColor" fill-opacity=".28" d="M180 240H60V120H180V240Z"/></svg>`;
+const AG_ANTIGRAVITY_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAASNklEQVR42u2aeVQUVpaHscdZ0t2nz0y6z+n+Y/p0z6STTpSt2DfZRRBZBEEoZRWUVVBBdtlrLwoQURAVEAEREEVBkEUR0bhiFKNRIhGURTYRRFnqN7cKUEy6pyeJAmbyzvkdk2is833v3vveK5WR+Xn9vH5ec7V6D/33v/bv+2j94K6Pa4YEf+0eil8y8SxcbnJ4q0L/iI/ShREP1YARZ7V//8mBdxz7eNGj0o+juwo+Hnxy4BP07v4UfUlLMJAgi4FIBTzdxsBTXxUMeahh2El9dMRBM2PEXutffhLwX1Uv/XPrySUVbUc/xcPCz9CRvRSP9siiUySPbpYieqKU0Busgn5/NQxs1MBTF008Y2pj2E772ojtMqX3Gr65lvHnW6cVLn1ZIYe7ZfL4qlAerdkK+DqDgbZkJbSzVdERrY7HIRroDtDCEy9t9LvpYHC9Dobsl2HYZtmNYWtdlfcSvqlB48NL9arVl0+r4GqFCq6XqeJGoSpuZauhJUMdd1I08RVXG60xOmgLXYb2Lbp47KOHng166HPWw6CDHobW6OGZtd7tYSu9v7x3AuobdDLO1GvjbJU2zp3URuNRHTQV6uDzHF1cztTDtRR93OAZoCXOCHcjjNC6zQjf+BnhkacRulyN0Ms0xICdAZ7aGOCZlf7p9wr+RKOBZkWDwXhlnQEqqwxw6oQRqkuNUVNojLqc5TibuQLnU1fgc54priaY4UaUGW4Hm+GrzaZ44LUCHe4m6Fy/HE/WGqPf1hiD1oYYsjD0e28ElDSuuFV81hTFNZRKMxSXm6O0xALHCi1Rnm2JikxrVO+0Rp3AGucSV+PzHda4FmKFm4GWuOtjgVYPczx0McNjpil67EzQZ7Mcg5bGfU8tjH+54OEPNlk65J2zQG69JbJPWyOnwgY5x9cgt9gOeflrUZC9FkWZjihNc0S50BGnWI6oj3FAY9hafL7VDs1+tri9aTXuu1nhm/UWeORgju41ZuizXoFBCxP+gobf22S7eN/51fczG2yxp9YO6VVrkX7SEell67G72Bl78l2Rle2GA5nuOJjmjkKhO0o57jgR64bTES44G7weFwOYuObtgJYNdrjnbIMHTGt02Fug28YcfVZmz/oszX67YAWkX7A33tW4FilnmBDWOEFwygW8cnfwjnqCX7QJgnwfiLJ9kZrph91p/shK8kcu1w9Fcb4oi/RG5faNqNvigSZfV1zZ6ISbbo64u94eXzvYon2NNbpWW+CJlbn3goQXnXeirKsWNDiBXeuK+GoPxFZ4Iea4H6JLNyP68BbE5gUh/sB2sDJDwE8LRbIoBOm8UOxL2I68HdtQHBqIE9v8UbPZB+e8PHF5gxtuuDjjy3VMfG1vj3ZbW3RaW/V3Wlv/24ITwGtyYbAbXRFX74GoGi+En/JDyIlABJcFIag4FEGFkdh+cAdC9sciIiMe0WnxSBDFg8eLR0pCLPZERyM7PBKHg0NxLDAIVT4BaNjoi8/dNuG6kztuOzrhvp0jvrGxQ4e1re2CE5DQuCEspmEjwut8EFwdgC0ng7D5eBh8S6PgUxQDn/xE+OZy4L+Pj8AMIYLSkhAmSkI0LwmsRAGSYnjYFcnC/pB4FGzdgTL/MJzyCsIZjwBccPXB9XWeaFnrivtr1uGBjcPeBQUffc77N1EN3o0h9f7Ycnor/CpD4FUeCc+jsXA/woJbIR+ueSK4Ze+E+950eO7eA++dmdictBfb+JmIYO1BXGw6eFGp2BkmQlYQD4cCElDqG42KjeGo2xCEJucAXGV649ZaD9xd49Jxz9b5rwtGQFiD/4qQMwGjgTVB8DkVBs+T0XA9lginEh6Yh5PhmL8LDjkZcNy/D8zMHKxPPwiX1EPwSMqHN+8QAll5CI3LRfSO/eCEZyJl+y5kbhEhz5+HYu8EnPTcgVq3UJx33oorTD/cXLsJt+08Fs4w3HZmqyCgbju8qiLgfjIOTsc5cCwVwf5IGmwLMrE6LxvWB/JgnVWI1XuKYZtWCvuUMqxLOg4X3jFsZJfBP74EQdFFiIrMBys0B6Jte5ERkI5cv2QUefFQ7hmPGrconHMKwWXmFjQ7+JUuGAH+taHXNlVHwbUiHuuO82BfmgKbI7thVbAPq/LyYJ59GCv3lcIssxwr0yuwamcVrJJPw0ZYi7W8WjixT8Mjvgq+MSexNeo4IsJLkLC9AElbc7A7IAvZfuk47CXCcU8Oqt1i0eAcgYvrggcurQv+p3mH966J/GhjdfSka2UCHMv5WHN0J6yPZMC8IBumeQUwySnB8v3lMM6qgvGeWhinncHy1HMwTW6CufACrHgXsIZzHsyERrjFnYV3dC22RFYhPKycJJRAsLUAuwJysN8vEwVeaSjzFOKUOwv1LjFUDZHu8y5gQ3Ucz6WSDccTQtgeTYPVkb0wL8yFSV4RjHPLYLi/EvpZNdDLaIBuehP0dl6CfsoVGCZdx3JBM8x4zbBkX4dt4lU4xl2Ga8xFeEWdw5aIOoSHViEuuBy8rSVIC8jHPr9sHPLeg9KNqajYwKeWYJXNuwDnSk6Tw4kk2JalwbI4CysLD8Lk0BEY5h6H/oFT0M2qh05mI7TTL0E77Rq0U76AjqgFusLb0OffgTHvDkzZX8IysQW28TfhGNsMt+ir8I66iC3h5xAWUovY4EqScAw7A4uQ5X8Qh3yyULwpHSc8kzvLPVPnrw0cKoT/QfBjNmXpsCjZB7PDh7A8v4TgT0DvwGnoZJ2FVsYFaKZfgUbaDWiktkAj+S40klqhLfwaOrwH0OO2wZD9ACsSW2GRcA82cXdJQgtcd9ygSriCwPALCA1tQOz2GnC3VSB1y1Hs3VyIXN9cFHnvRanXnpXzJsCuPHWzzTEJ/H6YFk3BGxC87oEaaGc1QDPjIjTSr0Et7SbUUu9ALaUVaqI2qAnboSHogCbvEXS4j6HL7oARqwOmiQ9hEd8G27hWMGPuwm1HC0loRmDEZYSGNZGEenCDqpCytZxOiBLk+OejwDdn/i5FVmUZ5atKDhB8Poyl8CcJvpbgz0Ej4xLU05sJvgWqqV9BJfkBVJLaoSJ8DBVBF9T43VDn9UCT2wtt9hPosXpglNhNEjpJQgdJ+IYqoRWu0XexacctBEReR2j4JcSENoKzvRaioFPYTW2xP7C4ZV7gV5Vky6wsyekzKSqAYf5R6B2swDIpfCPBX4Za+g2opt2GSup9KCd/A+WkR1ASdkFZ8ATK/D6o8PqhyhmEOkWTPQgd1gD0Wf0wTuyFaUIPSegkCR1gxn5Dg/E+vKLvICDqC4REXEV0+EW6KzQgidpiV1CleHfwyQ/nXIBJUd5nxocLp+BzK6BzoA5aWecJ/grt/BcEf4fgvyb4h1BKekzwPVAicCXeIJS4T6HMHYIK5xlJGIY6exharGckYQj6iU9JwgDMEvpgGd9Dg7GTTocOktCGTTH3sHnHbWyPukEXpitIpPkgCGuAKLTOcc4FGBYWRegTvK4EPpvg952X7rz67lnwKe0E3wUl2nUGvx8M3lMwuM8ow1DiPIcyRYX9HGrsUWhQtFgj0KUYkIzlJMKMRFgm9GJNfDeYcY/pnvAQXtQWATQftkffQtSO64iPvAxu5IWKORege6jsS53cSmjRzmsSvHrmFSp7Cfxdgn9AO98xBS/spZ0fIPghKTiDoBmcURLwAkrslyRgKmoUDdZLkvCCJIyShBEsJxErSYRVYj/WUGswE7rgRvPBi+bDZhqUwbF3EBFzC7HRzcOxMTcWzxm81sGTH2rlnhJrHKiHelYT1Kjs1XZPw+9sk8IrJ3VPw1PJ8yS7PiIFZ0yDM9hj9OM4lCmqFDWKOkWT/rsO/bwu+wUdj6MwYY9gJYmwZA2ShD4wE3vgRoNyY0IH/BPasC3+PsLi7iAq9vbc/QGKenaVqfr+OqhRz6tmXoaqBH6XBP7BLPi+WfDPpeAMDoFzxgh+nDIBBmuCJEyQhAmqggmSMEGtMAEt+nkdEqFPIoykEp7DnGaFNfsp7GhYrmP1wo3VjY2sx/Cjo3Nb4gOEJLT6zJkA1f31QhWCV6GeVyF4Fdp55dTvwjPegJ8FLs0klFhTUWaLSYCYKmGSJExCgzNJEiawjDMOffr/jEjcCqqeVdQ+q0mEHZ0cTE4/XDlP6CXZDV/2YwSy26/MCTxj77lfKu0936dEZa+cfhPKBK9E8Eopkp6fgadhx6N+545+G76HwZrMo2xTYk+uVmKL9ZVYYj1lltiC4kcSMlXZ4gfqJECTI4Y2/ajLmYA+dxzG9HuYcl9gFf2eq6md7GiYMrmDcOX2w5NE+HC64Mvp+uidC1DMvKjFoJ1n0M4zaNozaNozktvBEE0NPIZgcBr+jZ1/QaW+i8AVaOcX/a/VxRb/lxpHHKfBEQ9qkQQdiQTuBAwoxlySwHsJC94LrOY9hz19DpOGqwtvAB7cPmzi9a5/5wIU9lwNVdh9A4oEr0jwihJ4mvYMCbyk7PnfKftHBG/0vecMBx+ThBapBO4kvRkmScIklvPG6QU5NiWBPwo7/nMw+cNwpiPWjTeQ+U7hZdObF8ulf1Eln/YlFFJboUDwikmdUJTCD/ytnr9NZf+D/8YHCfgtpVqLK6YqEEslGPImYcKfgBl/HBb8MZLwAnaCUTgIRuAkGL7nLHj2n+9MwNK0WzqyabdH5Oh6K083PHm64SkIn0BRMABFglckeMU34T/5sZ9JAn6nyRWf1uYCujwx9EmAEZ8qYVrCKsE4rAUvsUbwgiSMgil87vzOBCzZeSd2aeo9yNLdXo7g5QlegS+BHyL4EcoLEkDwnPEXBK/7tj5Xk4NPNLl4pCORwJVIEE9LmCQJE9MSxmArfAl74YuD705Ayr2GpcltkBU9ghzd7eUF/VCg3lOkG54iTWdF6TkvnfbRNOze6meTBFstEqDzqhKmJJhQVgokEiZgRSJshGPtNkljb/9W+GlK658+S34wulTUAVl61ckJ+iBPQ0+B+7r0FenyosieaKP85m1/Ph2Li6kK6iQSllH0SICBVIIYJgKqhBkJQqoG4bj1WxdA8KlLRO1YKuwk+F7IEbw89b3CDDxHAj8uJniNd1WBGhz8nirhuWQeLONNS+BPS5C0A4kwF07AQjjxdh9Hn4naFn0meti+hCb+UnrZyVHfy1Hfy1PfK0jhX0rgJbtf/q6PYZIgoEqANk8iQfwdCaYCSUtMjpkLJn79FgU81FuS9IjgeyBLz1o56nt56nsFup4qvIbvU2RN/H4OBCymtEglSNtBPGsmiKWDcYW0JSZD3s7gE3XIEPylJcJuyFLfy/EGpfDydC9XeF36EgGxc/YY48CF8nJGgs4sCYYU46nh2EP54McLSHqssFTYJV463feS0leYKX32q92/RvnjHAr4FeUoVQK9GWZJ4L4pgbLyR+5+p8wSYWejpO9lqe/lpX3/ZulLXnYEv3auv5AhAaoUMQVa0koQSyVIWkKfO3NCTDZTW/zzDxcg7JKV/Vbfvyr9qSNPkkZF9uQv5uOLWTUORBRIJEjaQWuWBL3pW6MBb9Lqh117hT2LaOhVyfL73jjyXsNLS3+MLjwfyczTIvhfUzokEmbaQfJ40p6WMPV+EHeRjF99fwGCJ/az4aVHHl11FV73veRLjfUy87xUOVBTIXA19lQlTImQfJcwVQ3TsyH0+736BL1/IfgvpBN/Bp4zOn3evyr9csr8//E0LRU2OKokYKYdpkSIpS0hFcERd1GW/d8F8Pv3Te380Ct4hVfw0t1/RH3/B5kFskjAB5TmNySwpyRIqkFrqiJqKf/4jSDH73efgVd4BT/rvGdNjCiyJpfLLLClzMafSEIXBTMi1KYrYUYEZdc/gB9QobIff7Ps37jsjNPO+8os0EUSzChDkpmgOiNCMhvYYmk02FIJLn8HflBFnvf0uTz3W/Cvy54yuZl2f5HMAl7KLJiTBKhM57UIsTQkYpLy5t8zpNvdEir5Xnne8Kuy/zY8Tfyo+Trvf0Al2KmwgNkiJP+uOi2BMkYxlP5igv6QLjjVU/DPZ73uxmZues9JQACDNbFI5j1aVAmrKb1/S8J0rlP+KEM7zqRMzAw76Tn/uucfU6wVEydk3sdFAoyUWLglkUD//EqCCks8FbZ4AwkYDfv2rk9/sXGG8juZ93wpsbGY4PNJxJgSa0rEq7DhJ0O9/gd61R0neLrWjo9QyZ+n6NNx9wuZn9BisLCUBJRQOiQh+ETKBzI/r5/X/+/1PymuBXMmJbmyAAAAAElFTkSuQmCC";
+const APP_LOGO = `<svg width="52" height="52" viewBox="0 0 1024 1024" aria-label="TernaryCode"><rect x="72" y="72" width="880" height="880" rx="196" fill="#1f5fbf"/><path d="M 512 312 L 312 512 L 512 712" fill="none" stroke="#fff6ea" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/><path d="M 712 312 L 512 712" fill="none" stroke="#fff6ea" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/><g fill="#fff6ea"><circle cx="512" cy="312" r="52"/><circle cx="712" cy="312" r="52"/><circle cx="312" cy="512" r="52"/><circle cx="512" cy="712" r="52"/></g><g fill="#fff6ea" fill-opacity=".32"><circle cx="312" cy="312" r="30"/><circle cx="512" cy="512" r="30"/><circle cx="712" cy="512" r="30"/><circle cx="312" cy="712" r="30"/><circle cx="712" cy="712" r="30"/></g></svg>`;
 
-// Status glyphs: [icon, colour token]. Unknown values fall back to idle.
-const STATUS = {
-  running:["notch","running"], needs_input:["chat","input"], done:["check","done"], failed:["x","failed"],
-  idle:["circle","idle"], active:["circle","idle"], rate_limited:["hourglass","limited"], cooldown:["clock","cooldown"]
+// ── Helpers ──
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function ic(name, cls) {
+  return `<svg class="ic${cls ? " " + cls : ""}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+}
+function normalizeAgent(raw) {
+  const v = String(raw || "").toLowerCase();
+  if (v.includes("claude")) return "claude";
+  if (v.includes("codex") || v.includes("chatgpt") || v.includes("openai")) return "codex";
+  if (v.includes("opencode")) return "opencode";
+  if (v.includes("antigravity") || v.includes("agy")) return "antigravity";
+  if (v.includes("gemini")) return "gemini";
+  return "shell";
+}
+function paneAgentKey(p) {
+  return normalizeAgent(p.provider || p.label || "");
+}
+function agentTile(agent, size) {
+  const k = normalizeAgent(agent);
+  const sz = size === 20 ? "s20" : "s22";
+  let inner = ic("term", "s12");
+  if (k === "claude") inner = AG_CLAUDE_SVG;
+  else if (k === "codex") inner = AG_CODEX_SVG;
+  else if (k === "opencode") inner = AG_OPENCODE_SVG;
+  else if (k === "antigravity") inner = `<img src="${AG_ANTIGRAVITY_URI}" alt="">`;
+  else if (k === "gemini") inner = `<span class="c-accent">${ic("sparkle", "s12")}</span>`;
+  return `<span class="ag-tile ${sz}">${inner}</span>`;
+}
+function projectAvatar(name, size) {
+  const s = String(name || "").trim();
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  const idx = h % 6;
+  const letter = s ? s[0].toUpperCase() : "?";
+  return `<span class="p-av ${size === 22 ? "s22" : "s24"}" style="color:var(--h${idx});background:var(--h${idx}t)">${esc(letter)}</span>`;
+}
+
+const STATUS_MAP = {
+  running: ["notch", "running"],
+  needs_input: ["chat", "input"],
+  done: ["check", "done"],
+  failed: ["xfill", "failed"],
+  error: ["xfill", "failed"],
+  idle: ["circle", "idle"],
+  active: ["circle", "idle"],
+  rate_limited: ["hourglass", "limited"],
+  cooldown: ["clock", "cooldown"],
 };
-// Account states: [status glyph, label].
-const ACCOUNT = {
-  idle:["done","Ready"], running:["running","In use"], rate_limited:["rate_limited","Limited"],
-  cooldown:["cooldown","Cooldown"], error:["failed","Error"], disabled:["idle","Off"]
+const ACCOUNT_MAP = {
+  idle: ["done", "Ready"],
+  running: ["running", "In use"],
+  rate_limited: ["rate_limited", "Limited"],
+  cooldown: ["cooldown", "Cooldown"],
+  error: ["failed", "Error"],
+  disabled: ["idle", "Off"],
 };
-function own(map, key){ return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null; }
-function st(status){ return own(STATUS, status) || STATUS.idle; }
-function ic(name, cls){ return `<svg class="ic${cls?" "+cls:""}" aria-hidden="true"><use href="#i-${name}"/></svg>`; }
-function glyph(status, size, spin){
-  const s = st(status);
-  return ic(s[0], `g${size||12} c-${s[1]}${s[0]==="notch" && spin!==false ? " spin" : ""}`);
+function stInfo(st) { return Object.prototype.hasOwnProperty.call(STATUS_MAP, st) ? STATUS_MAP[st] : STATUS_MAP.idle; }
+function statusGlyph(st, sizeCls, spin) {
+  const s = stInfo(st);
+  const sp = s[0] === "notch" && spin !== false ? " spin" : "";
+  return ic(s[0], `${sizeCls || "s12"} c-${s[1]}${sp}`);
 }
-function pill(status, label){
-  const s = st(status);
-  return `<span class="pill t-${s[1]}">${glyph(status, 12)}${esc(label)}</span>`;
+function statusPill(st, label, spin) {
+  const s = stInfo(st);
+  return `<span class="pill t-${s[1]}">${statusGlyph(st, "s12", spin)}${esc(label)}</span>`;
 }
-function notice(status, titleHtml, body){
-  const s = st(status);
-  return `<div class="notice t-${s[1]}">${glyph(status, 16, false)}<div class="grow">
-    <div class="n-title">${titleHtml}</div>${body?`<div class="n-body">${esc(body)}</div>`:""}</div></div>`;
+function effectivePaneStatus(p) { return p.rate_limit ? "rate_limited" : (p.status || "idle"); }
+function effectivePaneLabel(p) { return p.rate_limit ? "Rate limited" : (p.status_label || p.status || "Idle"); }
+function isUrgentPane(p) { return Boolean(p.rate_limit || p.status === "needs_input" || p.status === "failed"); }
+function fmtTokens(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(n);
 }
-function emptyState(icon, title, body, actions){
-  return `<div class="empty"><div class="empty-tile">${ic(icon)}</div><div class="empty-title">${title}</div><div class="empty-body">${body}</div>${actions||""}</div>`;
+function secsUntil(unixTs) {
+  if (!unixTs) return 0;
+  return Math.max(0, Math.round(unixTs - Date.now() / 1000));
 }
-const LOGO = `<svg class="logo" viewBox="0 0 1024 1024" aria-label="TernaryCode" role="img">
-  <rect x="72" y="72" width="880" height="880" rx="196" fill="#1f5fbf"/>
-  <path d="M 512 312 L 312 512 L 512 712" fill="none" stroke="#fff6ea" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M 712 312 L 512 712" fill="none" stroke="#fff6ea" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
-  <g fill="#fff6ea"><circle cx="512" cy="312" r="52"/><circle cx="712" cy="312" r="52"/><circle cx="312" cy="512" r="52"/><circle cx="512" cy="712" r="52"/></g>
-  <g fill="#fff6ea" fill-opacity="0.32"><circle cx="312" cy="312" r="30"/><circle cx="512" cy="512" r="30"/><circle cx="712" cy="512" r="30"/><circle cx="312" cy="712" r="30"/><circle cx="712" cy="712" r="30"/></g>
-</svg>`;
+function fmtReset(unixTs) {
+  const s = secsUntil(unixTs);
+  if (!s) return "";
+  if (s >= 86400) return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m` : `${r}s`;
+}
+function hostTitle() {
+  const os = (state && state.host_os) || "Mac";
+  return IS_RELAY ? `${os} · Cloudflare` : `${os} · ${location.host}`;
+}
+function showToast(msg) {
+  toastMsg = String(msg || "");
+  clearTimeout(toastTimer);
+  const el = document.getElementById("tc-toast");
+  if (el) { el.textContent = toastMsg; el.style.display = toastMsg ? "block" : "none"; }
+  else render();
+  toastTimer = setTimeout(() => {
+    toastMsg = "";
+    const cur = document.getElementById("tc-toast");
+    if (cur) cur.style.display = "none";
+  }, 2600);
+}
 
-function showError(msg){
-  toastMsg = msg || "Request failed";
-  if(toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=>{ toastMsg = ""; render(); }, 4000);
-  render();
+// ── ANSI + Semantic Terminal Parser (1:1 port of Mobile ansi_parser.dart v0.3.7) ──
+const RE_SGR = /\x1B\[([0-9;]*)m/g;
+const RE_OTHER_ESC = /\x1B(?:\][^\x07\x1B]*(?:\x07|\x1B\\)|\[[0-9;?]*[A-LN-Za-ln-z]|\([A-Za-z0-9])/g;
+const RE_PURE_HR = /^[\s─━═┄┈╌╍╭╮╰╯\-_=·]+$/;
+const RE_LONG_HR = /[─━═┄┈╌╍\-_=]{6,}/;
+const RE_RULE_ANY = /^[\s─━═┄┈╌╍╭╮╰╯┌┐└┘┬┴┼├┤]+$/;
+const RE_TBL_JUNC = /[┌┐└┘┬┴┼├┤]/;
+const RE_DIFF_ADD = /^(\s*\d+)(\s+)(\+\s?.*)$/;
+const RE_DIFF_DEL = /^(\s*\d+)(\s+)(-\s?.*)$/;
+const RE_TUI_HINT = /(?:\?\s*for\s+shortcuts|esc\s+to\s+(?:interrupt|cancel)|ctrl\+c\s+to|shift\+tab|alt\+enter|enter\s+to\s+(?:confirm|select|send)|bypass\s+permissions|accept\s+edits|←\s*for\s+agents)/i;
+const RE_SEL_OPT = /^(\s*[│┃]?\s*)([❯›▸→◉])(\s+(?:\d+[.)]\s+|\S).*)$/;
+const RE_NUM_CHOICE = /^\s*\d+[.)]\s+/;
+const RE_WORD_CHOICE = /^\s*(?:Yes|No|Allow|Deny|Cancel|Trust|Skip|Approve)/i;
+const RE_LEAD_PROMPT = /^(\s*)([❯›>])(\s+\S.*)$/;
+const RE_TOOL_VERB = /^(\s*)([●•◦✓✔✗✘▸▹]\s*)?((?:Ran|Running|Executed|Explored|Read|Reading|Edited|Editing|Updated|Updating|Created|Wrote|Deleted|Searched|Searching|Checked|Applied|Patched|Built|Tested|Fetched)\s+\S.{0,120}|(?:Bash|Read|Edit|Write|Update|MultiEdit|Grep|Glob|Search|Task|WebFetch|WebSearch|NotebookEdit|Tool)\s*\(.+\))$/i;
+const RE_CLAUDE_BULLET = /^(\s*)(●)(\s+)(.*)$/;
+const RE_CYAN_BULLET = /^(\s*)(•)(\s+)(.*)$/;
+const RE_HEADING = /^(\s*#{1,3}\s+)(.+)$/;
+const RE_INLINE = /(https?:\/\/[^\s)\]>]+|`[^`]+`|\*\*[^*]+\*\*)/g;
+
+function ansiBasicColor(code) {
+  switch (code) {
+    case 30: case 90: return "var(--term-dim)";
+    case 31: case 91: return "var(--term-red)";
+    case 32: case 92: return "var(--term-green)";
+    case 33: case 93: return "var(--term-yellow)";
+    case 34: case 94: return "var(--term-blue)";
+    case 35: case 95: return "var(--term-mag)";
+    case 36: case 96: return "var(--term-cyan)";
+    case 37: case 97: return "var(--text)";
+    default: return null;
+  }
+}
+function ansi256Color(idx) {
+  if (idx < 8) return ansiBasicColor(30 + idx);
+  if (idx < 16) return ansiBasicColor(90 + (idx - 8));
+  if (idx >= 232) {
+    const v = 8 + (idx - 232) * 10;
+    return `rgb(${v},${v},${v})`;
+  }
+  const n = idx - 16;
+  const r = Math.floor(n / 36) * 51;
+  const g = (Math.floor(n / 6) % 6) * 51;
+  const b = (n % 6) * 51;
+  return `rgb(${r},${g},${b})`;
+}
+function isPureHorizontalRule(trimmed) {
+  return trimmed.length >= 6 && !RE_TBL_JUNC.test(trimmed) && RE_PURE_HR.test(trimmed) && RE_LONG_HR.test(trimmed);
+}
+function isBoxTableLine(rawLine, trimmed) {
+  if (!trimmed) return false;
+  if (RE_TBL_JUNC.test(trimmed) && (trimmed.includes("─") || trimmed.includes("━") || trimmed.includes("═"))) return true;
+  let boxPipes = 0, asciiPipes = 0;
+  for (let i = 0; i < rawLine.length; i++) {
+    const ch = rawLine.charCodeAt(i);
+    if (ch === 0x2502 || ch === 0x2503) boxPipes++;
+    else if (ch === 0x7C) asciiPipes++;
+  }
+  if (boxPipes >= 3) return true;
+  if (boxPipes === 2 && trimmed.length >= 44) return true;
+  if (asciiPipes >= 3 && trimmed.startsWith("|") && trimmed.endsWith("|")) return true;
+  return false;
+}
+function styleInlineText(text) {
+  let out = "", last = 0;
+  RE_INLINE.lastIndex = 0;
+  let m;
+  while ((m = RE_INLINE.exec(text)) !== null) {
+    if (m.index > last) out += esc(text.slice(last, m.index));
+    const tok = m[0];
+    if (tok.startsWith("http")) out += `<span style="color:var(--term-blue);text-decoration:underline">${esc(tok)}</span>`;
+    else if (tok.startsWith("`")) out += `<span style="color:var(--term-cyan)">${esc(tok)}</span>`;
+    else out += `<span style="color:var(--text);font-weight:600">${esc(tok.slice(2, -2))}</span>`;
+    last = m.index + tok.length;
+  }
+  if (last < text.length) out += esc(text.slice(last));
+  return out;
+}
+function renderTerminalHtml(raw, wrap) {
+  const norm = String(raw || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/⏺/g, "●").replace(/⎿/g, "└");
+  const lines = norm.split("\n");
+  const parsed = [];
+  let fg = null, bg = null, bold = false, dim = false, italic = false, ul = false;
+
+  for (const rawLine of lines) {
+    if (rawLine.includes("\x1B")) {
+      const cleaned = rawLine.replace(RE_OTHER_ESC, "");
+      let html = "", plain = "", cursor = 0;
+      RE_SGR.lastIndex = 0;
+      let m;
+      const emit = (seg) => {
+        if (!seg) return;
+        plain += seg;
+        const st = [];
+        if (dim) st.push("color:var(--term-dim)");
+        else if (fg) st.push("color:" + fg);
+        if (bg) st.push("background:" + bg);
+        if (bold) st.push("font-weight:600");
+        if (italic) st.push("font-style:italic");
+        if (ul) st.push("text-decoration:underline");
+        html += st.length ? `<span style="${st.join(";")}">${esc(seg)}</span>` : esc(seg);
+      };
+      while ((m = RE_SGR.exec(cleaned)) !== null) {
+        emit(cleaned.slice(cursor, m.index));
+        const codes = (m[1] || "0").split(";").map((x) => parseInt(x, 10) || 0);
+        for (let i = 0; i < codes.length; i++) {
+          const c = codes[i];
+          if (c === 0) { fg = bg = null; bold = dim = italic = ul = false; }
+          else if (c === 1) bold = true;
+          else if (c === 2) dim = true;
+          else if (c === 3) italic = true;
+          else if (c === 4) ul = true;
+          else if (c === 22) { bold = false; dim = false; }
+          else if (c === 23) italic = false;
+          else if (c === 24) ul = false;
+          else if (c === 39) fg = null;
+          else if (c === 49) bg = null;
+          else if (c === 38 && codes[i + 1] === 5 && i + 2 < codes.length) { fg = ansi256Color(codes[i + 2]); i += 2; }
+          else if (c === 38 && codes[i + 1] === 2 && i + 4 < codes.length) { fg = `rgb(${codes[i + 2]},${codes[i + 3]},${codes[i + 4]})`; i += 4; }
+          else if (c === 48 && codes[i + 1] === 5 && i + 2 < codes.length) { bg = ansi256Color(codes[i + 2]); i += 2; }
+          else if (c === 48 && codes[i + 1] === 2 && i + 4 < codes.length) { bg = `rgba(${codes[i + 2]},${codes[i + 3]},${codes[i + 4]},.22)`; i += 4; }
+          else { const bcol = ansiBasicColor(c); if (bcol) { fg = bcol; dim = false; } }
+        }
+        cursor = m.index + m[0].length;
+      }
+      emit(cleaned.slice(cursor));
+      const tr = plain.trim();
+      parsed.push({ html: html || " ", cls: "", hr: isPureHorizontalRule(tr), tbl: isBoxTableLine(plain, tr), raw: plain });
+      continue;
+    }
+
+    if (!rawLine) { parsed.push({ html: " ", cls: "", hr: false, tbl: false, raw: "" }); continue; }
+    const tr = rawLine.trim();
+    if (tr.length >= 4 && RE_RULE_ANY.test(tr)) {
+      const tbl = isBoxTableLine(rawLine, tr);
+      const hr = !tbl && isPureHorizontalRule(tr);
+      parsed.push({ html: `<span style="color:var(--text-3);opacity:.5">${esc(rawLine)}</span>`, cls: "", hr, tbl, raw: rawLine });
+      continue;
+    }
+    if (isPureHorizontalRule(tr)) {
+      parsed.push({ html: `<span style="color:var(--text-3);opacity:.5">${esc(rawLine)}</span>`, cls: "", hr: true, tbl: false, raw: rawLine });
+      continue;
+    }
+    const tbl = isBoxTableLine(rawLine, tr);
+    let m;
+    if ((m = RE_DIFF_DEL.exec(rawLine))) {
+      parsed.push({ html: `<span style="color:var(--term-dim)">${esc(m[1])}</span>${esc(m[2])}<span style="color:var(--term-red)">${esc(m[3])}</span>`, cls: "bg-del", hr: false, tbl, raw: rawLine });
+    } else if (rawLine.startsWith("-") && !rawLine.startsWith("---") && !rawLine.startsWith("- ")) {
+      parsed.push({ html: `<span style="color:var(--term-red)">${esc(rawLine)}</span>`, cls: "bg-del", hr: false, tbl, raw: rawLine });
+    } else if ((m = RE_DIFF_ADD.exec(rawLine))) {
+      parsed.push({ html: `<span style="color:var(--term-dim)">${esc(m[1])}</span>${esc(m[2])}<span style="color:var(--term-green)">${esc(m[3])}</span>`, cls: "bg-add", hr: false, tbl, raw: rawLine });
+    } else if (rawLine.startsWith("+") && !rawLine.startsWith("+++")) {
+      parsed.push({ html: `<span style="color:var(--term-green)">${esc(rawLine)}</span>`, cls: "bg-add", hr: false, tbl, raw: rawLine });
+    } else if (tr.startsWith("@@ ") || tr.startsWith("diff --git ") || tr.startsWith("--- ") || tr.startsWith("+++ ")) {
+      parsed.push({ html: `<span style="color:var(--term-cyan);font-weight:500">${esc(rawLine)}</span>`, cls: "", hr: false, tbl, raw: rawLine });
+    } else if (RE_TUI_HINT.test(tr)) {
+      parsed.push({ html: `<span style="color:var(--term-dim)">${esc(rawLine)}</span>`, cls: "", hr: false, tbl, raw: rawLine });
+    } else if ((m = RE_SEL_OPT.exec(rawLine)) && (RE_NUM_CHOICE.test(m[3]) || RE_WORD_CHOICE.test(m[3]))) {
+      parsed.push({ html: `<span style="color:var(--text-3)">${esc(m[1])}</span><span style="color:var(--accent-text);font-weight:700">${esc(m[2])}</span><span style="color:var(--text);font-weight:600">${esc(m[3])}</span>`, cls: "bg-sel", hr: false, tbl, raw: rawLine });
+    } else if (tr === "❯" || tr === "›") {
+      parsed.push({ html: `<span style="color:var(--accent-text);font-weight:700">${esc(rawLine)}</span>`, cls: "", hr: false, tbl: false, raw: rawLine });
+    } else if ((m = RE_LEAD_PROMPT.exec(rawLine)) && !tr.startsWith(">>")) {
+      parsed.push({ html: `${esc(m[1])}<span style="color:var(--accent-text);font-weight:700">${esc(m[2])}</span><span style="color:var(--text);font-weight:500">${esc(m[3])}</span>`, cls: "bg-prompt", hr: false, tbl, raw: rawLine });
+    } else if ((m = RE_TOOL_VERB.exec(rawLine))) {
+      const b = m[2] || "", body = m[3] || "", par = body.indexOf("(");
+      const isErr = b.includes("✗") || b.includes("✘") || /failed/i.test(body);
+      const bcol = isErr ? "var(--term-red)" : (b.includes("✓") || b.includes("✔")) ? "var(--term-green)" : b.includes("◦") ? "var(--term-blue)" : "var(--claude)";
+      const bodyHtml = par > 0
+        ? `<span style="color:var(--text);font-weight:600">${esc(body.slice(0, par))}</span><span style="color:var(--term-dim)">${esc(body.slice(par))}</span>`
+        : `<span style="color:${isErr ? "var(--term-red)" : "var(--term-cyan)"};font-weight:500">${esc(body)}</span>`;
+      parsed.push({ html: `${esc(m[1])}${b ? `<span style="color:${bcol}">${esc(b)}</span>` : ""}${bodyHtml}`, cls: "", hr: false, tbl, raw: rawLine });
+    } else if ((m = RE_CLAUDE_BULLET.exec(rawLine))) {
+      parsed.push({ html: `${esc(m[1])}<span style="color:var(--claude)">${esc(m[2])}</span>${esc(m[3])}${styleInlineText(m[4])}`, cls: "", hr: false, tbl, raw: rawLine });
+    } else if ((m = RE_CYAN_BULLET.exec(rawLine))) {
+      parsed.push({ html: `${esc(m[1])}<span style="color:var(--term-cyan)">${esc(m[2])}</span>${esc(m[3])}${styleInlineText(m[4])}`, cls: "", hr: false, tbl, raw: rawLine });
+    } else if ((m = RE_HEADING.exec(rawLine))) {
+      parsed.push({ html: `<span style="color:var(--text-3)">${esc(m[1])}</span><span style="color:var(--text);font-weight:600">${esc(m[2])}</span>`, cls: "", hr: false, tbl, raw: rawLine });
+    } else {
+      parsed.push({ html: styleInlineText(rawLine), cls: "", hr: false, tbl, raw: rawLine });
+    }
+  }
+
+  // Promote 2-column borderless table rows adjacent to table borders (`Key │ Value` next to `───┼───`).
+  const hasSinglePipe = (s) => (s.includes("│") || s.includes("┃")) && !isPureHorizontalRule(s.trim());
+  for (let i = 0; i < parsed.length; i++) {
+    if (!parsed[i].tbl && hasSinglePipe(parsed[i].raw)) {
+      const prevT = i > 0 && parsed[i - 1].tbl;
+      const nextT = i + 1 < parsed.length && parsed[i + 1].tbl;
+      if (prevT || nextT) parsed[i].tbl = true;
+    }
+  }
+
+  let out = "";
+  for (let i = 0; i < parsed.length; i++) {
+    const ln = parsed[i];
+    if (wrap && ln.hr) {
+      out += `<div class="t-hr"></div>`;
+      continue;
+    }
+    if (wrap && ln.tbl) {
+      let j = i;
+      let inner = "";
+      while (j < parsed.length && parsed[j].tbl) {
+        inner += `<div class="t-tline">${parsed[j].html}</div>`;
+        j++;
+      }
+      out += `<div class="t-table-wrap"><div class="t-table">${inner}</div></div>`;
+      i = j - 1;
+      continue;
+    }
+    out += `<div class="t-line${ln.cls ? " " + ln.cls : ""}">${ln.html}</div>`;
+  }
+  return out;
 }
 
-function clearAuth(){
-  localStorage.removeItem(KEY);
+// ── Interactive TUI Prompt Parser (1:1 port of Mobile interactive_prompt_parser.dart) ──
+const RE_IP_ANSI = /\x1B(?:\][^\x07\x1B]*(?:\x07|\x1B\\)|\[[0-9;?]*[ -/]*[@-~]|\([A-Za-z0-9])/g;
+const RE_IP_EMPTY = /^[│┃\s]*[>›❯]\s*(?:(?:Ask|Send|Type|Message|Write|Enter|Follow-up|Reply)[^\n]{0,40}?)?[│┃\s]*$/i;
+const RE_IP_FOOTER = /(?:enter\s+to\s+(?:confirm|select|continue|submit)|esc\s+to\s+(?:cancel|exit|dismiss)|arrow\s+keys|↑\s*\/?\s*↓|to\s+navigate|press\s+enter\s+to\s+continue)/i;
+const RE_IP_MODEL = /(?:gemini|claude|opus|sonnet|haiku|gpt-|o[134]-|codex|antigravity|context\s+left|\bxh?igh\b|\bmedium\b|\blow\b)/i;
+const RE_IP_NUM = /^\s*([❯›>▸→●◉*])?\s*(?:(\d)[.)]|\[(\d)\])\s+(.+)$/;
+const RE_IP_YN = /(?:\[(y)\/(n)\]|\[(n)\/(y)\]|\((y)\/(n)\)|\((n)\/(y)\))\s*:?\s*$/i;
+
+function parseInteractivePrompt(raw) {
+  if (!raw || !raw.trim()) return null;
+  const cleaned = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(RE_IP_ANSI, "").replace(/⏺/g, "●").replace(/⎿/g, "└");
+  const rawLines = cleaned.split("\n").map((l) => {
+    const bm = /^\s*[│┃]\s?(.*?)\s*[│┃]?\s*$/.exec(l);
+    return bm && !bm[1].includes("│") && !bm[1].includes("┃") ? bm[1].trimEnd() : l.trimEnd();
+  });
+  let end = rawLines.length, scanned = 0;
+  while (end > 0 && scanned < 14) {
+    const t = rawLines[end - 1].trim();
+    scanned++;
+    if (!t || RE_RULE_ANY.test(t) || isPureHorizontalRule(t) || RE_IP_EMPTY.test(t) || RE_TUI_HINT.test(t) || (t.length <= 84 && RE_IP_MODEL.test(t) && (t.includes("·") || t.includes("•") || /context left/i.test(t)))) {
+      end--;
+      continue;
+    }
+    break;
+  }
+  const lines = [];
+  for (let i = 0; i < end; i++) {
+    const t = rawLines[i].trim();
+    if (t && (RE_RULE_ANY.test(t) || isPureHorizontalRule(t) || RE_TUI_HINT.test(t))) {
+      if (lines.length && lines[lines.length - 1]) lines.push("");
+      continue;
+    }
+    lines.push(rawLines[i]);
+  }
+  let scanEnd = lines.length;
+  while (scanEnd > 0 && !lines[scanEnd - 1].trim()) scanEnd--;
+  if (!scanEnd) return null;
+
+  let menuHint = null, allowsEsc = false;
+  for (let k = 0; k < 2 && scanEnd > 0; k++) {
+    const t = lines[scanEnd - 1].trim();
+    if (!t) { scanEnd--; continue; }
+    if (RE_IP_FOOTER.test(t)) {
+      menuHint = menuHint ? `${t} · ${menuHint}` : t;
+      if (/esc|cancel/i.test(t)) allowsEsc = true;
+      scanEnd--;
+    } else break;
+  }
+  while (scanEnd > 0 && !lines[scanEnd - 1].trim()) scanEnd--;
+  if (!scanEnd) return null;
+
+  // Numbered TUI choice menu (`❯ 1. Yes / 2. No`).
+  const items = [];
+  let idx = scanEnd - 1, blanks = 0;
+  while (idx >= 0 && items.length < 6) {
+    const t = lines[idx].trim();
+    if (!t) { blanks++; if (blanks > 1 || !items.length) break; idx--; continue; }
+    blanks = 0;
+    const m = RE_IP_NUM.exec(lines[idx]);
+    if (m) {
+      items.push({ num: parseInt(m[2] || m[3], 10), cur: Boolean(m[1]), label: m[4].trim(), line: idx });
+      idx--;
+      continue;
+    }
+    break;
+  }
+  if (items.length >= 2) {
+    const ord = items.reverse();
+    if (ord.every((o, i) => o.num === i + 1)) {
+      const curs = ord.map((o, i) => o.cur ? i : -1).filter((i) => i >= 0);
+      if (curs.length <= 1 && (curs.length === 1 || menuHint)) {
+        const selIdx = curs.length ? curs[0] : 0;
+        let title = "Choose an option";
+        for (let k = ord[0].line - 1; k >= Math.max(0, ord[0].line - 6); k--) {
+          const lt = lines[k].trim();
+          if (lt && !RE_RULE_ANY.test(lt)) { title = lt; break; }
+        }
+        return {
+          kind: "tui",
+          title,
+          selectedIndex: selIdx,
+          allowsEsc: allowsEsc || ord.some((o) => /\(esc\)/i.test(o.label)),
+          hint: menuHint,
+          options: ord.map((o, i) => ({
+            index: i,
+            label: o.label,
+            isSelected: i === selIdx,
+            isDanger: /\b(?:no|deny|reject|cancel|exit|don't trust)\b/i.test(o.label),
+          })),
+        };
+      }
+    }
+  }
+
+  // Classic [Y/n] prompt.
+  const lastLine = lines[scanEnd - 1].trim();
+  const ynm = RE_IP_YN.exec(lastLine);
+  if (ynm) {
+    const defNo = ynm[0].includes("N") && !ynm[0].includes("Y");
+    return {
+      kind: "yn",
+      title: lastLine.slice(0, ynm.index).trim() || "Confirm action",
+      selectedIndex: defNo ? 1 : 0,
+      allowsEsc,
+      hint: menuHint,
+      options: [
+        { index: 0, label: "Yes", isSelected: !defNo, key: "y", isDanger: false },
+        { index: 1, label: "No", isSelected: defNo, key: "n", isDanger: true },
+      ],
+    };
+  }
+  return null;
+}
+
+// ── Network / API / Real-Time Stream (Cloudflare WS Hibernation + LAN SSE) ──
+function closeStreams() {
+  if (wsPingTimer) { clearInterval(wsPingTimer); wsPingTimer = null; }
+  if (ws) { try { ws.onclose = null; ws.onerror = null; ws.close(); } catch {} ws = null; }
+  if (es) { try { es.close(); } catch {} es = null; }
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+}
+function clearAuth(isRevoked) {
+  localStorage.removeItem(TOKEN_KEY);
+  if (!IS_RELAY) localStorage.removeItem(LEGACY_TOKEN_KEY);
   token = "";
   state = null;
   connected = false;
-  if(es){ es.close(); es = null; }
-  if(retryTimer){ clearTimeout(retryTimer); retryTimer = null; }
+  reconnecting = false;
+  revoked = Boolean(isRevoked);
+  closeStreams();
   render();
 }
-
-async function api(path, opts={}){
-  const headers = Object.assign({"Content-Type":"application/json"}, opts.headers||{});
-  if(token) headers["Authorization"] = "Bearer " + token;
-  const res = await fetch(path, Object.assign({}, opts, {headers}));
-  if(res.status === 401){
-    clearAuth();
-    throw new Error("Unauthorized");
+async function api(subPath, opts = {}) {
+  const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+  if (token) headers["Authorization"] = "Bearer " + token;
+  const res = await fetch(BASE + subPath, Object.assign({}, opts, { headers }));
+  if (res.status === 401) {
+    clearAuth(true);
+    throw new Error("Device token revoked");
   }
-  const data = await res.json().catch(()=>({}));
-  if(!res.ok){
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
     const err = data.error || `HTTP ${res.status}`;
-    showError(err);
+    showToast(err);
     throw new Error(err);
   }
   return data;
 }
-
-async function doPair(code, deviceName){
-  if(pairing) return;
+async function doPair(code, deviceName) {
+  if (pairing) return;
   draftCode = code;
   draftName = deviceName;
   pairing = true;
   pairError = "";
+  revoked = false;
   render();
-  try{
-    const res = await fetch("/api/pair", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({token:code.trim(), device_name:deviceName.trim()||navigator.platform||"Mobile"})
+  try {
+    const res = await fetch(BASE + "/api/pair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: code.trim(), device_name: deviceName.trim() || "Web Companion" }),
     });
-    const data = await res.json().catch(()=>({}));
-    if(!res.ok || !data.device_token){
-      pairError = data.error || "Invalid pairing code";
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.device_token) {
+      pairError = data.error || "Invalid or expired pairing code";
       return;
     }
     token = data.device_token;
-    localStorage.setItem(KEY, token);
+    localStorage.setItem(TOKEN_KEY, token);
     draftCode = "";
-    if(urlPair){ history.replaceState({}, "", "/"); }
+    if (urlPair) {
+      try { history.replaceState({}, "", (BASE || "") + "/"); } catch {}
+    }
     startLive();
-  }catch(_){
-    pairError = "Connection failed";
-  }finally{
+  } catch {
+    pairError = "Could not reach TernaryCode — check connection";
+  } finally {
     pairing = false;
     render();
   }
 }
-
-async function startLive(){
-  try{
+async function startLive() {
+  if (!token) return;
+  reconnecting = Boolean(state);
+  try {
     state = await api("/api/state");
     connected = true;
+    reconnecting = false;
     retryMs = 1000;
     ensureSelection();
     render();
-    connectSse();
-  }catch(_){
+    connectStream();
+  } catch (e) {
+    if (!token) return;
     connected = false;
-    renderHeaderOnly();
-    if(token) scheduleReconnect();
+    reconnecting = true;
+    render();
+    scheduleReconnect();
   }
 }
-
-function scheduleReconnect(){
-  if(retryTimer || !token) return;
-  retryTimer = setTimeout(async ()=>{
+function scheduleReconnect() {
+  if (retryTimer || !token) return;
+  retryTimer = setTimeout(() => {
     retryTimer = null;
-    if(!token) return;
-    await startLive();
+    if (token) startLive();
   }, retryMs);
   retryMs = Math.min(retryMs * 2, 8000);
 }
-
-function connectSse(){
-  if(es){ es.close(); es = null; }
-  if(!token) return;
-  es = new EventSource("/api/events?token=" + encodeURIComponent(token));
-  es.onopen = ()=>{ connected = true; retryMs = 1000; renderHeaderOnly(); };
-  es.onerror = ()=>{
+function applySnapshot(nextSnap) {
+  if (!nextSnap || typeof nextSnap !== "object") return;
+  state = nextSnap;
+  connected = true;
+  reconnecting = false;
+  retryMs = 1000;
+  ensureSelection();
+  updateUI();
+}
+function connectStream() {
+  closeStreams();
+  if (!token) return;
+  if (IS_RELAY && typeof WebSocket !== "undefined") {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const sock = new WebSocket(`${proto}//${location.host}${BASE}/api/ws?token=${encodeURIComponent(token)}`);
+    ws = sock;
+    sock.onopen = () => {
+      connected = true;
+      reconnecting = false;
+      retryMs = 1000;
+      wsPingTimer = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send("ping"); } catch {}
+        }
+      }, 25000);
+      patchHeaderDots();
+    };
+    sock.onmessage = (ev) => {
+      if (ev.data === "pong") return;
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.t === "state" && msg.d) {
+          applySnapshot(typeof msg.d === "string" ? JSON.parse(msg.d) : msg.d);
+        } else if (msg.t === "offline") {
+          connected = false;
+          reconnecting = true;
+          patchHeaderDots();
+        }
+      } catch {}
+    };
+    sock.onclose = (ev) => {
+      if (wsPingTimer) { clearInterval(wsPingTimer); wsPingTimer = null; }
+      ws = null;
+      if (ev.code === 4401) { clearAuth(true); return; }
+      connected = false;
+      reconnecting = true;
+      patchHeaderDots();
+      scheduleReconnect();
+    };
+    sock.onerror = () => { try { sock.close(); } catch {} };
+    return;
+  }
+  es = new EventSource(`${BASE}/api/events?token=${encodeURIComponent(token)}`);
+  es.onopen = () => { connected = true; reconnecting = false; retryMs = 1000; patchHeaderDots(); };
+  es.onerror = () => {
     connected = false;
-    renderHeaderOnly();
-    if(es && es.readyState === EventSource.CLOSED){
-      es.close();
-      es = null;
+    reconnecting = true;
+    patchHeaderDots();
+    if (es && es.readyState === EventSource.CLOSED) {
+      closeStreams();
       scheduleReconnect();
     }
   };
-  es.onmessage = (ev)=>{
-    try{
-      state = JSON.parse(ev.data);
-      connected = true;
-      retryMs = 1000;
-      ensureSelection();
-      render();
-    }catch(_){}
+  es.onmessage = (ev) => {
+    try { applySnapshot(JSON.parse(ev.data)); } catch {}
   };
 }
-
-function ensureSelection(){
-  if(!state || !state.panes || !state.panes.length) return;
-  if(!selectedPane || !state.panes.some(p=>p.id===selectedPane)){
-    const urgent = state.panes.find(p=>p.rate_limit || p.status==="needs_input") || state.panes[0];
-    selectedPane = urgent ? urgent.id : null;
-  }
-}
-
-async function sendAction(paneId, action){
-  try{ await api(`/api/pane/${paneId}/input`, {method:"POST", body:JSON.stringify({action})}); }catch(_){}
-}
-
-async function sendPrompt(paneId){
-  const el = document.getElementById("prompt-input");
-  if(!el || !el.value.trim()) return;
-  const text = el.value;
-  try{
-    await api(`/api/pane/${paneId}/input`, {method:"POST", body:JSON.stringify({text, enter:true})});
-    const cur = document.getElementById("prompt-input");
-    if(cur && cur.value === text) cur.value = "";
-  }catch(_){}
-}
-
-async function switchProfile(paneId, profileId){
-  try{ await api(`/api/pane/${paneId}/switch-profile`, {method:"POST", body:JSON.stringify({profile_id:profileId})}); }catch(_){}
-}
-
-async function resumeSession(projectId, agent, sessionId, profileId){
-  try{
-    await api("/api/session/resume", {
-      method:"POST",
-      body:JSON.stringify({project_id:Number(projectId), agent, session_id:sessionId, profile_id:profileId || null})
-    });
-    tab = "live";
-    render();
-  }catch(_){}
-}
-
-function renderHeaderOnly(){
-  const dot = document.getElementById("conn-dot");
-  if(dot) dot.className = "dot " + (connected ? "ok" : "warn");
-}
-
-function renderPair(){
-  root.innerHTML = `<div class="solo"><div class="pair">
-    ${LOGO}
-    <h1>Pair with TernaryCode</h1>
-    <p class="lead">Scan the code in Settings → Phone on your computer, or paste it here.</p>
-    <label class="field${pairError?" err":""}"><input id="p-code" class="mono" value="${esc(draftCode)}" placeholder="Pairing code" aria-label="Pairing code" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"></label>
-    <label class="field">${ic("phone")}<input id="p-name" value="${esc(draftName)}" placeholder="Device name" aria-label="Device name"></label>
-    ${pairError?`<div class="err-text" role="alert">${glyph("failed", 14)}${esc(pairError)}</div>`:""}
-    <button class="btn primary block" data-act="pair">Connect</button>
-    <p class="note">Each phone gets its own key. You can revoke it from TernaryCode at any time.</p>
-  </div></div>`;
-}
-
-function healthyProfilesFor(pane){
-  return (state.profiles||[])
-    .filter(p=>p.enabled && p.signed_in !== false && p.state!=="rate_limited" && p.state!=="cooldown" && p.state!=="error" && p.id!==pane.profile)
-    .sort((a,b)=>{
-      const am = pane.provider && a.provider === pane.provider ? 0 : 1;
-      const bm = pane.provider && b.provider === pane.provider ? 0 : 1;
-      return am - bm;
-    });
-}
-
-function renderChipsHtml(panes, activeId){
-  return panes.map(p=>{
-    const cls = p.id===activeId ? "chip active" : "chip";
-    return `<button class="${cls}" data-act="select-pane" data-pane="${p.id}">${glyph(p.rate_limit?"rate_limited":p.status, 12)}<span>${esc(p.project_name)}</span><span class="lbl">${esc(p.label)}</span></button>`;
-  }).join("");
-}
-
-function renderLive(){
-  const panes = state.panes || [];
-  if(!panes.length) return emptyState("term", "No panes open", `Terminals and agents open on your ${esc(hostName())} show up here.`);
-  const pane = panes.find(p=>p.id===selectedPane) || panes[0];
-  const healthy = healthyProfilesFor(pane);
-  let html = `<div class="chips" id="pane-chips">${renderChipsHtml(panes, pane.id)}</div>`;
-
-  const where = `${pane.profile||(pane.supports_profiles?"default":pane.label)}${pane.branch?` · ${pane.branch}`:""}`;
-  html += `<div class="sheet">
-    <div class="pane-head">${pill(pane.rate_limit?"rate_limited":pane.status, pane.rate_limit?"Rate limited":pane.status_label)}<span class="where">${esc(where)}</span></div>
-    <div class="term" id="term-box">${esc(pane.output || "(no output yet)")}</div>
-  </div>`;
-
-  if(pane.rate_limit){
-    const rlSecs = secsUntil(pane.rate_limit.resets_at_unix);
-    html += notice("rate_limited", `${esc(pane.rate_limit.from_profile)} hit its limit${rlSecs?` · resets in ${esc(fmtReset(rlSecs))}`:""}`, pane.rate_limit.reason);
-    html += healthy.length
-      ? `<div class="btns">` + healthy.map((pr,i)=>`<button class="btn ${i?"raised":"primary"}" data-act="switch" data-pane="${pane.id}" data-profile="${esc(pr.id)}">Resume on ${esc(pr.id)}</button>`).join("") + `</div>`
-      : `<div class="muted">No other account is free to take over.</div>`;
-  } else if(pane.status === "needs_input"){
-    html += notice("needs_input", `${esc(pane.label)} needs your input`, pane.message || "Waiting for your confirmation");
-    html += `<div class="trio">
-      <button class="btn primary" data-act="quick" data-pane="${pane.id}" data-kind="approve">Approve</button>
-      <button class="btn raised" data-act="quick" data-pane="${pane.id}" data-kind="reject">Reject</button>
-      <button class="btn danger" data-act="quick" data-pane="${pane.id}" data-kind="interrupt">Stop</button>
-    </div>`;
-  }
-
-  html += `<div class="composer">
-    <label class="field"><input id="prompt-input" data-pane="${pane.id}" placeholder="Send an instruction to ${esc(pane.label)}…" aria-label="Instruction" enterkeyhint="send"></label>
-    <button class="btn secondary sm" data-act="send-prompt" data-pane="${pane.id}">Send</button>
-  </div>`;
-
-  if(pane.supports_profiles && healthy.length && !pane.rate_limit){
-    html += `<div class="sect"><div class="label">Switch account</div><div class="swaps">` +
-      healthy.slice(0,4).map(pr=>{
-        const u5 = pr.window_5h && pr.window_5h.used_pct != null ? `${Math.round(pr.window_5h.used_pct)}%` : "";
-        return `<button class="swap" data-act="switch" data-pane="${pane.id}" data-profile="${esc(pr.id)}">${ic("swap", "g12")}${esc(pr.id)}${u5?`<span class="pct">${u5}</span>`:""}</button>`;
-      }).join("")
-      + `</div></div>`;
-  }
-  return html;
-}
-
-function renderProjects(){
-  const projects = state.projects || [];
-  if(!projects.length) return emptyState("folder", "No projects open", `Projects open on your ${esc(hostName())} show up here.`);
-  return projects.map(pr=>{
-    const sessions = pr.sessions || [];
-    return `<section class="group">
-      <div class="group-head"><span class="name">${esc(pr.name)}</span>${pr.branch?`<span class="branch">${ic("branch", "g12")}<span>${esc(pr.branch)}</span></span>`:""}</div>
-      <div class="card">` + (sessions.length ? sessions.map(s=>`
-        <div class="row click" data-act="${s.live_pane?"focus-live":"resume-session"}" data-pane="${s.live_pane||""}" data-project="${pr.id}" data-agent="${esc(s.agent)}" data-session="${esc(s.id)}" data-profile="${esc(s.profile||"")}">
-          ${glyph(s.status, 14)}
-          <div class="grow">
-            <div class="t1">${esc(s.title)}</div>
-            <div class="data">${esc(s.profile||s.agent)} · ${esc(s.age)}</div>
-          </div>
-          ${s.live_pane?`<span class="tag t-accent">Live</span>`:`<span class="go">${ic("resume", "g12")}Resume</span>`}
-        </div>`).join("") : `<div class="row"><span class="muted">No sessions yet</span></div>`) + `</div>
-    </section>`;
-  }).join("");
-}
-
-function secsUntil(unixTs){
-  if(!unixTs) return 0;
-  return Math.max(0, Math.round(unixTs - Date.now() / 1000));
-}
-
-function fmtReset(s){
-  if(!s) return "";
-  if(s >= 86400) return `${Math.floor(s/86400)}d ${Math.floor((s%86400)/3600)}h`;
-  return fmtSec(s);
-}
-
-function renderWinBar(w){
-  if(!w) return "";
-  const pct = w.used_pct != null ? Math.round(w.used_pct) : null;
-  const tone = pct==null ? "idle" : pct>=90 ? "limited" : pct>=70 ? "input" : "accent";
-  const val = pct!=null ? `${pct}%${w.tokens?` · ${fmtTok(w.tokens)}`:""}` : `${fmtTok(w.tokens||0)} tok`;
-  const rem = secsUntil(w.resets_at_unix);
-  return `<div class="meter">
-    <div class="meter-top">
-      <span class="meter-lbl">${esc(w.label)}</span>
-      <span class="meter-val${pct!=null&&pct>=70?` c-${tone}`:""}">${esc(val)}</span>
-      ${rem?`<span class="meter-rst">↺ ${esc(fmtReset(rem))}</span>`:""}
-    </div>
-    <div class="bar"><i class="b-${tone}" style="width:${pct!=null?Math.min(100,Math.max(0,pct)):0}%"></i></div>
-  </div>`;
-}
-
-function renderProfiles(){
-  const profiles = state.profiles || [];
-  const mode = String(state.failover_mode||"auto");
-  let html = `<div class="card"><div class="row">
-    <div class="grow"><div class="t1">Failover</div><div class="t2">When an account hits its limit</div></div>
-    <span class="val">${mode==="auto"?"Automatic":mode==="manual"?"Manual":esc(mode)}</span>
-  </div></div>`;
-  html += profiles.length ? profiles.map(p=>{
-    const acc = own(ACCOUNT, p.enabled ? p.state : "disabled") || ["idle", String(p.state||"").replace("_"," ")];
-    const hint = `${esc(p.provider)}${p.account_hint?` · ${esc(p.account_hint)}`:""}`;
-    return `<div class="card acct${p.enabled?"":" dim"}">
-      <div class="acct-top">
-        <div class="grow">
-          <div class="acct-line"><span class="acct-id">${esc(p.id)}</span>${p.plan_type?`<span class="tag t-accent">${esc(p.plan_type.toUpperCase())}</span>`:""}</div>
-          <div class="t2">${hint}${p.signed_in === false?` · <span class="c-input">Not signed in</span>`:""}</div>
-        </div>
-        ${pill(acc[0], acc[1])}
-      </div>
-      ${renderWinBar(p.window_5h)}
-      ${renderWinBar(p.window_weekly)}
-    </div>`;
-  }).join("") : emptyState("user", "No accounts", `Add one in Settings → Accounts on your ${esc(hostName())}.`);
-  html += `<button class="btn danger block" data-act="unpair">${ic("signout")}Unpair this device</button>`;
-  return html;
-}
-
-// Log level → [status glyph, kind]. The log carries no project, so the message leads.
-function alertKind(a){
-  const m = String(a.message||"");
-  if(a.level === "error") return ["failed", "Failed"];
-  if(a.level === "failover") return ["rate_limited", "Switched account"];
-  if(a.level === "warn") return /limit/i.test(m) ? ["rate_limited", "Rate limited"] : ["needs_input", "Needs input"];
-  if(a.level === "tool") return ["running", "Tool"];
-  return /finish|done|complete/i.test(m) ? ["done", "Finished"] : ["idle", "Info"];
-}
-
-function renderAlerts(){
-  const alerts = state.alerts || [];
-  if(!alerts.length) return emptyState("tray", "Nothing here yet", "Questions, rate limits, failures and finished turns show up here.");
-  return `<div class="list">` + alerts.slice().reverse().map(a=>{
-    const k = alertKind(a);
-    return `<div class="item">${glyph(k[0], 14, false)}
-      <div class="grow">
-        <div class="t1 wrap">${esc(a.message)}</div>
-        <div class="t2">${esc(k[1])}${a.profile?` · <span class="mono">${esc(a.profile)}</span>`:""}</div>
-      </div>
-      <span class="age">${esc(a.time)}</span>
-    </div>`;
-  }).join("") + `</div>`;
-}
-
-function tabButton(id, label, icon, count, tone){
-  return `<button class="${tab===id?"active":""}" data-act="tab" data-tab="${id}"><span class="tab-ic">${ic(icon)}${count?`<span class="count t-${tone}">${count}</span>`:""}</span>${label}</button>`;
-}
-
-function renderNavHtml(urgentCount, alertLogCount, hasErr){
-  return tabButton("live", "Live", "term", urgentCount, "input") +
-    tabButton("alerts", "Inbox", "tray", alertLogCount, hasErr?"failed":"input") +
-    tabButton("projects", "Projects", "squares", 0, "") +
-    tabButton("profiles", "Accounts", "user", 0, "");
-}
-
-function render(){
-  // Running glyphs spin in phase with the clock, so a re-render never restarts them.
-  root.style.setProperty("--spin-delay", `-${Date.now() % 1200}ms`);
-  if(pairing){
-    root.innerHTML = `<div class="solo center">` + emptyState("phone", "Pairing…", "Exchanging pairing code with TernaryCode.") + `</div>`;
-    return;
-  }
-  if(!token || (pairError && !state)){ renderPair(); return; }
-  if(!state){
-    root.innerHTML = `<div class="solo center">` + emptyState("offline", "Connecting to TernaryCode…", "Waiting for TernaryCode to answer.",
-      `<div class="duo">
-        <button class="btn secondary" data-act="retry">Retry</button>
-        <button class="btn danger" data-act="unpair">Pair again</button>
-      </div>`) + `</div>`;
-    return;
-  }
-
-  const activeCount = (state.panes||[]).filter(p=>p.status==="running").length;
-  const urgentCount = (state.panes||[]).filter(p=>p.rate_limit||p.status==="needs_input").length;
-  const loud = (state.alerts||[]).filter(a=>a.level==="warn"||a.level==="error"||a.level==="failover");
-  const alertLogCount = loud.length;
-  const hasErr = loud.some(a=>a.level==="error");
-
-  // While user is actively typing in `#prompt-input` on the same pane, patch live terminal output,
-  // header counts, pane chips, and tab badges in place so virtual keyboard / IME composition is
-  // never disrupted by DOM replacement.
-  const prevInput = document.getElementById("prompt-input");
-  const samePane = prevInput && Number(prevInput.dataset.pane) === selectedPane;
-  const livePane = (state.panes||[]).find(p=>p.id===selectedPane);
-  const healthyKey = livePane ? healthyProfilesFor(livePane).slice(0,4).map(p=>p.id).join(",") : "";
-  const paneKey = livePane ? `${livePane.id}:${livePane.status}:${livePane.message||""}:${livePane.profile||""}:${livePane.rate_limit?livePane.rate_limit.reason:""}:${healthyKey}` : "";
-  if(tab === "live" && samePane && !toastMsg && paneKey === lastRenderedPaneKey && document.activeElement === prevInput){
-    const pane = livePane;
-    const termBox = document.getElementById("term-box");
-    if(pane && termBox){
-      const nearBot = (termBox.scrollHeight - termBox.scrollTop - termBox.clientHeight) < 36;
-      termBox.textContent = pane.output || "(no output yet)";
-      if(nearBot) termBox.scrollTop = termBox.scrollHeight;
-      const headConn = document.getElementById("head-conn");
-      if(headConn) headConn.innerHTML = `<span id="conn-dot" class="dot ${connected?"ok":"warn"}"></span>${activeCount} active${urgentCount?` · ${urgentCount} waiting`:""}`;
-      const chips = document.getElementById("pane-chips");
-      if(chips) chips.innerHTML = renderChipsHtml(state.panes||[], pane.id);
-      const nav = document.getElementById("tab-bar");
-      if(nav) nav.innerHTML = renderNavHtml(urgentCount, alertLogCount, hasErr);
-      return;
-    }
-  }
-  const savedInput = samePane ? {
-    val: prevInput.value,
-    focused: document.activeElement === prevInput,
-    start: prevInput.selectionStart,
-    end: prevInput.selectionEnd
-  } : null;
-  const prevMain = root.querySelector("main");
-  const savedMainScroll = (prevMain && lastRenderedTab === tab) ? prevMain.scrollTop : 0;
-  const prevTerm = document.getElementById("term-box");
-  const paneChanged = lastRenderedPane !== selectedPane;
-  const termNearBottom = !prevTerm || paneChanged || (prevTerm.scrollHeight - prevTerm.scrollTop - prevTerm.clientHeight) < 36;
-  const savedTermScroll = prevTerm ? prevTerm.scrollTop : 0;
-
-  const title = tab==="live"?"Live":tab==="projects"?"Projects":tab==="profiles"?"Accounts":"Inbox";
-  const body = (toastMsg?notice("failed", esc(toastMsg)):"") +
-    (tab==="live"?renderLive():tab==="projects"?renderProjects():tab==="profiles"?renderProfiles():renderAlerts());
-
-  root.innerHTML = `<div class="app">
-    <main>
-      <div class="head">
-        <h1>${title}</h1>
-        <span class="conn" id="head-conn"><span id="conn-dot" class="dot ${connected?"ok":"warn"}"></span>${activeCount} active${urgentCount?` · ${urgentCount} waiting`:""}</span>
-      </div>
-      ${body}
-    </main>
-    <nav id="tab-bar">
-      ${renderNavHtml(urgentCount, alertLogCount, hasErr)}
-    </nav>
-  </div>`;
-
-  lastRenderedPane = selectedPane;
-  lastRenderedTab = tab;
-  lastRenderedPaneKey = paneKey;
-  const newMain = root.querySelector("main");
-  if(newMain) newMain.scrollTop = savedMainScroll;
-  const newTerm = document.getElementById("term-box");
-  if(newTerm) newTerm.scrollTop = termNearBottom ? newTerm.scrollHeight : savedTermScroll;
-  if(savedInput){
-    const cur = document.getElementById("prompt-input");
-    if(cur){
-      cur.value = savedInput.val;
-      if(savedInput.focused){
-        cur.focus({preventScroll:true});
-        try{ cur.setSelectionRange(savedInput.start, savedInput.end); }catch(_){}
-      }
-    }
-  }
-}
-
-// Single delegated click & key handler (zero inline JS string interpolation / zero XSS).
-root.addEventListener("click", (ev)=>{
-  const el = ev.target.closest("[data-act]");
-  if(!el) return;
-  const act = el.dataset.act;
-  if(act === "pair"){
-    const code = document.getElementById("p-code")?.value || "";
-    const name = document.getElementById("p-name")?.value || "";
-    doPair(code, name);
-  } else if(act === "tab"){
-    tab = el.dataset.tab || "live";
-    render();
-  } else if(act === "select-pane"){
-    selectedPane = Number(el.dataset.pane);
-    render();
-  } else if(act === "focus-live"){
-    selectedPane = Number(el.dataset.pane);
-    tab = "live";
-    render();
-  } else if(act === "switch"){
-    switchProfile(Number(el.dataset.pane), el.dataset.profile);
-  } else if(act === "quick"){
-    sendAction(Number(el.dataset.pane), el.dataset.kind);
-  } else if(act === "send-prompt"){
-    sendPrompt(Number(el.dataset.pane));
-  } else if(act === "resume-session"){
-    resumeSession(el.dataset.project, el.dataset.agent, el.dataset.session, el.dataset.profile);
-  } else if(act === "unpair"){
-    clearAuth();
-  } else if(act === "retry"){
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && token && (!connected || (!ws && !es))) {
+    retryMs = 1000;
     startLive();
   }
 });
 
-root.addEventListener("input", (ev)=>{
-  if(ev.target && ev.target.id === "p-code") draftCode = ev.target.value;
-  else if(ev.target && ev.target.id === "p-name") draftName = ev.target.value;
-});
+// ── State Helpers & Remote Actions ──
+function ensureSelection() {
+  const panes = (state && state.panes) || [];
+  if (!panes.length) { selectedPaneId = null; return; }
+  if (!selectedPaneId || !panes.some((p) => p.id === selectedPaneId)) {
+    const urgent = panes.find((p) => p.rate_limit || p.status === "needs_input") || panes[0];
+    selectedPaneId = urgent ? urgent.id : null;
+  }
+}
+function currentPane() {
+  const panes = (state && state.panes) || [];
+  return panes.find((p) => p.id === selectedPaneId) || panes[0] || null;
+}
+function healthyProfilesFor(pane) {
+  return ((state && state.profiles) || [])
+    .filter((p) => p.enabled && p.signed_in !== false && p.state !== "rate_limited" && p.state !== "cooldown" && p.state !== "error" && p.id !== pane.profile)
+    .sort((a, b) => ((pane.provider && a.provider === pane.provider) ? 0 : 1) - ((pane.provider && b.provider === pane.provider) ? 0 : 1));
+}
+function projectTargetForPane(pane) {
+  const projects = (state && state.projects) || [];
+  const rootId = pane.parent_project_id || pane.project_id;
+  for (const pr of projects) {
+    if (pr.id === rootId) {
+      let wt = null;
+      if (pane.parent_project_id) {
+        wt = (pr.worktrees || []).find((w) => w.id === pane.project_id) || null;
+      }
+      return { project: pr, worktree: wt };
+    }
+    const wt = (pr.worktrees || []).find((w) => w.id > 0 && w.id === pane.project_id);
+    if (wt) return { project: pr, worktree: wt };
+  }
+  return projects.length ? { project: projects[0], worktree: null } : null;
+}
+async function sendInput(paneId, text, enter, toast) {
+  try {
+    await api(`/api/pane/${paneId}/input`, { method: "POST", body: JSON.stringify({ text, enter: Boolean(enter) }) });
+    if (toast) showToast(toast);
+  } catch {}
+}
+async function sendAction(paneId, action, toast) {
+  try {
+    await api(`/api/pane/${paneId}/input`, { method: "POST", body: JSON.stringify({ action }) });
+    if (toast) showToast(toast);
+  } catch {}
+}
+async function selectPromptOption(paneId, prompt, optIdx) {
+  const opt = prompt.options[optIdx];
+  if (!opt) return;
+  if (prompt.kind === "yn") {
+    await sendInput(paneId, opt.key || (optIdx === 0 ? "y" : "n"), true, `Sent ${opt.label}`);
+    return;
+  }
+  const delta = opt.index - prompt.selectedIndex;
+  const seq = delta > 0 ? "\x1B[B" : "\x1B[A";
+  for (let i = 0; i < Math.abs(delta); i++) {
+    await sendInput(paneId, seq, false);
+    await new Promise((r) => setTimeout(r, 75));
+  }
+  await sendInput(paneId, "", true, `Selected ${opt.label}`);
+}
+async function sendComposer(paneId, inputId) {
+  const el = document.getElementById(inputId);
+  if (!el || !el.value.trim()) return;
+  const txt = el.value;
+  el.value = "";
+  await sendInput(paneId, txt, true, "Instruction sent");
+}
+async function switchProfile(paneId, profileId) {
+  try {
+    await api(`/api/pane/${paneId}/switch-profile`, { method: "POST", body: JSON.stringify({ profile_id: profileId }) });
+    showToast(`Switched to ${profileId}`);
+  } catch {}
+}
+async function closePane(pane) {
+  try {
+    await api(`/api/pane/${pane.id}/close`, { method: "POST", body: "{}" });
+    showToast(`Closed ${pane.label}`);
+  } catch {}
+}
+function openSpawnSheet(projectId, worktreeId) {
+  spawnSheet = { projectId: Number(projectId), worktreeId: worktreeId ? Number(worktreeId) : null, agent: "claude", profileId: null, starting: false };
+  api(`/api/project/${projectId}/sessions/refresh`, { method: "POST", body: "{}" }).catch(() => {});
+  render();
+}
+async function startNewAgent() {
+  if (!spawnSheet || spawnSheet.starting) return;
+  const targetId = spawnSheet.worktreeId || spawnSheet.projectId;
+  const agent = spawnSheet.agent;
+  const profileId = spawnSheet.profileId;
+  spawnSheet = null;
+  tab = "live";
+  render();
+  try {
+    await api("/api/pane/spawn", { method: "POST", body: JSON.stringify({ project_id: targetId, agent, profile_id: profileId }) });
+    showToast(`Started ${agent === "shell" ? "Terminal" : agent}`);
+  } catch {}
+}
+async function resumeSessionFromSheet(projectId, agent, sessionId, profileId, livePane) {
+  spawnSheet = null;
+  if (livePane && ((state && state.panes) || []).some((p) => p.id === Number(livePane))) {
+    selectedPaneId = Number(livePane);
+    tab = "live";
+    render();
+    return;
+  }
+  tab = "live";
+  render();
+  try {
+    await api("/api/session/resume", { method: "POST", body: JSON.stringify({ project_id: Number(projectId), agent, session_id: sessionId, profile_id: profileId || null }) });
+    showToast("Resuming session…");
+  } catch {}
+}
+function copyText(text, label) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => showToast(label || "Copied")).catch(() => showToast("Copy failed"));
+  } else {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); showToast(label || "Copied"); } catch { showToast("Copy failed"); }
+    ta.remove();
+  }
+}
 
-root.addEventListener("keydown", (ev)=>{
-  if(ev.key !== "Enter" || ev.isComposing) return;
-  if(ev.target && ev.target.id === "prompt-input"){
-    sendPrompt(Number(ev.target.dataset.pane));
-  } else if(ev.target && (ev.target.id === "p-code" || ev.target.id === "p-name")){
-    const code = document.getElementById("p-code")?.value || "";
-    const name = document.getElementById("p-name")?.value || "";
-    doPair(code, name);
+// ── Projects Tree Builder (1:1 port of Mobile projects_screen.dart) ──
+function buildProjectTree(query) {
+  const q = String(query || "").trim().toLowerCase();
+  const projects = (state && state.projects) || [];
+  const panes = (state && state.panes) || [];
+  const byId = new Map(projects.map((p) => [p.id, p]));
+  const byName = new Map(projects.map((p) => [p.name.toLowerCase(), p]));
+  const wtById = new Map();
+  for (const pr of projects) {
+    for (const w of pr.worktrees || []) {
+      if (w.id > 0) wtById.set(w.id, { project: pr, wt: w });
+    }
+  }
+  const direct = new Map();
+  const wtPanes = new Map();
+  const orphans = new Map();
+
+  for (const pane of panes) {
+    let parent = null, wt = null;
+    if (pane.parent_project_id && byId.has(pane.parent_project_id)) {
+      parent = byId.get(pane.parent_project_id);
+      wt = (parent.worktrees || []).find((w) => w.id === pane.project_id) || null;
+      if (!wt && pane.project_name.includes(" › ")) {
+        const suf = pane.project_name.split(" › ").pop().trim();
+        wt = (parent.worktrees || []).find((w) => w.name === suf) || null;
+      }
+    }
+    if (!parent && wtById.has(pane.project_id)) {
+      const pair = wtById.get(pane.project_id);
+      parent = pair.project;
+      wt = pair.wt;
+    }
+    if (!parent) parent = byId.get(pane.project_id) || null;
+    if (!parent && pane.project_name.includes(" › ")) {
+      const [pn, wn] = pane.project_name.split(" › ");
+      const found = byName.get(pn.trim().toLowerCase());
+      if (found) {
+        parent = found;
+        wt = (found.worktrees || []).find((w) => w.name === wn.trim()) || { id: pane.project_id, name: wn.trim(), branch: pane.branch || "", status: effectivePaneStatus(pane), sessions: [] };
+      }
+    }
+    if (parent) {
+      if (wt) {
+        if (!wtPanes.has(parent.id)) wtPanes.set(parent.id, new Map());
+        const m = wtPanes.get(parent.id);
+        if (!m.has(wt.name)) m.set(wt.name, []);
+        m.get(wt.name).push(pane);
+      } else {
+        if (!direct.has(parent.id)) direct.set(parent.id, []);
+        direct.get(parent.id).push(pane);
+      }
+    } else {
+      if (!orphans.has(pane.project_id)) {
+        orphans.set(pane.project_id, { project: { id: pane.project_id, name: pane.project_name, branch: pane.branch, worktrees: [], sessions: [] }, directPanes: [], worktrees: [] });
+      }
+      orphans.get(pane.project_id).directPanes.push(pane);
+    }
+  }
+
+  const pMatch = (p) => !q || p.project_name.toLowerCase().includes(q) || p.label.toLowerCase().includes(q) || (p.task || "").toLowerCase().includes(q) || (p.profile || "").toLowerCase().includes(q) || (p.branch || "").toLowerCase().includes(q);
+  const wMatch = (w, ps) => !q || w.name.toLowerCase().includes(q) || (w.branch || "").toLowerCase().includes(q) || ps.some(pMatch) || (w.sessions || []).some((s) => s.title.toLowerCase().includes(q));
+  const prMatch = (pr) => !q || pr.name.toLowerCase().includes(q) || (pr.branch || "").toLowerCase().includes(q) || (pr.sessions || []).some((s) => s.title.toLowerCase().includes(q)) || (pr.worktrees || []).some((w) => w.name.toLowerCase().includes(q) || (w.branch || "").toLowerCase().includes(q));
+
+  const activeNodes = [], idleProjects = [];
+  for (const pr of projects) {
+    const rPanes = direct.get(pr.id) || [];
+    const wMap = wtPanes.get(pr.id) || new Map();
+    const hasLive = rPanes.length > 0 || Array.from(wMap.values()).some((l) => l.length > 0);
+    if (hasLive) {
+      const sm = prMatch(pr);
+      const filtDirect = sm ? rPanes : rPanes.filter(pMatch);
+      const seen = new Set(), wNodes = [];
+      for (const w of pr.worktrees || []) {
+        seen.add(w.name);
+        const ps = wMap.get(w.name) || [];
+        if (!q || sm || wMatch(w, ps)) wNodes.push({ worktree: w, panes: sm ? ps : ps.filter(pMatch) });
+      }
+      for (const [wn, ps] of wMap.entries()) {
+        if (seen.has(wn)) continue;
+        const syn = { id: ps[0].project_id, name: wn, branch: ps[0].branch || "", status: effectivePaneStatus(ps[0]), sessions: [] };
+        if (!q || sm || wMatch(syn, ps)) wNodes.push({ worktree: syn, panes: sm ? ps : ps.filter(pMatch) });
+      }
+      wNodes.sort((a, b) => (b.panes.length ? 1 : 0) - (a.panes.length ? 1 : 0));
+      if (sm || filtDirect.length || wNodes.some((w) => w.panes.length)) {
+        activeNodes.push({ project: pr, directPanes: filtDirect, worktrees: wNodes });
+      }
+    } else if (prMatch(pr)) {
+      idleProjects.push(pr);
+    }
+  }
+  for (const o of orphans.values()) {
+    if (!q || o.project.name.toLowerCase().includes(q) || o.directPanes.some(pMatch)) activeNodes.push(o);
+  }
+  const rank = (p) => p.rate_limit ? 0 : p.status === "needs_input" ? 1 : p.status === "failed" ? 2 : p.status === "running" ? 3 : p.status === "done" ? 4 : p.status === "active" ? 5 : 6;
+  const allOf = (n) => [...n.directPanes, ...n.worktrees.flatMap((w) => w.panes)];
+  activeNodes.sort((a, b) => {
+    const ar = Math.min(9, ...allOf(a).map(rank));
+    const br = Math.min(9, ...allOf(b).map(rank));
+    return ar !== br ? ar - br : a.project.name.toLowerCase().localeCompare(b.project.name.toLowerCase());
+  });
+  let totalLive = 0, finished = 0;
+  for (const n of activeNodes) {
+    for (const p of allOf(n)) { totalLive++; if (p.status === "done") finished++; }
+  }
+  return { activeNodes, idleProjects, totalLive, finished };
+}
+
+// ── Screen Renderers ──
+function topHeaderHtml(title) {
+  const dotCls = connected ? "ok" : (reconnecting ? "warn" : "err");
+  return `<div class="top-hdr">
+    <h1 class="top-title">${esc(title)}</h1>
+    <button class="host-pill" data-act="open-settings"><span class="dot ${dotCls}" data-conn-dot></span><span>${esc(hostTitle())}</span></button>
+    <button class="icon-btn" data-act="open-settings" aria-label="Settings">${ic("gear", "s18")}</button>
+  </div>`;
+}
+
+function renderLiveScreen() {
+  const panes = (state && state.panes) || [];
+  const pane = currentPane();
+  const dotCls = connected ? "ok" : (reconnecting ? "warn" : "err");
+  if (!pane) {
+    return `<div class="screen padded">
+      ${topHeaderHtml("Live")}
+      <div class="empty">
+        <div class="empty-tile">${ic("term", "s22")}</div>
+        <div class="empty-title">No active agents running</div>
+        <div class="empty-body">Pick a project or spawn a new agent in Projects.</div>
+        <button class="btn secondary" data-act="tab" data-tab="projects">${ic("squares", "s14")}Open Projects</button>
+      </div>
+    </div>`;
+  }
+  const target = projectTargetForPane(pane);
+  const effSt = effectivePaneStatus(pane);
+  const effLbl = effectivePaneLabel(pane);
+  const metaParts = [pane.profile || pane.label];
+  if (pane.branch) metaParts.push(pane.branch);
+  const prompt = pane.rate_limit ? null : parseInteractivePrompt(pane.output || "");
+  const barCls = pane.rate_limit ? "limited" : (pane.status === "needs_input" || prompt ? "warn" : "");
+  const healthy = healthyProfilesFor(pane);
+
+  let actionBlock = "";
+  if (pane.rate_limit) {
+    const rst = fmtReset(pane.rate_limit.resets_at_unix);
+    actionBlock += `<div class="notice t-limited">
+      ${statusGlyph("rate_limited", "s14", false)}
+      <div class="notice-body">
+        <div class="notice-title">${esc(pane.rate_limit.from_profile)} hit its usage limit${rst ? ` · resets in ${esc(rst)}` : ""}</div>
+        ${pane.rate_limit.reason ? `<div class="notice-text">${esc(pane.rate_limit.reason)}</div>` : ""}
+      </div>
+      <button class="notice-x" data-act="dismiss-limit" data-pane="${pane.id}" aria-label="Dismiss">${ic("x", "s14")}</button>
+    </div>`;
+    if (healthy.length) {
+      actionBlock += `<div class="btn-row">` + healthy.slice(0, 2).map((pr, i) =>
+        `<button class="btn ${i === 0 ? "primary" : "raised"}" data-act="switch-prof" data-pane="${pane.id}" data-profile="${esc(pr.id)}">${ic("swap", "s13")}Resume ${esc(pr.id)}</button>`
+      ).join("") + `</div>`;
+    }
+  } else if (prompt) {
+    window.__activePrompt = prompt;
+    actionBlock += `<div class="ip-dock">
+      <div class="ip-head">${statusGlyph("needs_input", "s13", false)}<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(prompt.title)}</span>${prompt.allowsEsc ? `<button class="qk" style="height:24px;padding:0 7px" data-act="send-esc" data-pane="${pane.id}">Esc</button>` : ""}</div>
+      <div class="ip-opts">` + prompt.options.map((o, idx) =>
+        `<button class="ip-opt${o.isSelected ? " sel" : ""}${o.isDanger ? " danger" : ""}" data-act="ip-opt" data-pane="${pane.id}" data-idx="${idx}">
+          <span class="ip-num">${o.key ? esc(o.key.toUpperCase()) : idx + 1}</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.label)}</span>
+        </button>`
+      ).join("") + `</div>
+      ${prompt.hint ? `<div class="ip-hint">${esc(prompt.hint)}</div>` : ""}
+    </div>`;
+  } else if (pane.status === "needs_input") {
+    actionBlock += `<div class="notice t-input">
+      ${statusGlyph("needs_input", "s14", false)}
+      <div class="notice-body">
+        <div class="notice-title">${esc(pane.label)} wants your input</div>
+        <div class="notice-text">${esc(pane.message || "Waiting for approval")}</div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" data-act="quick" data-pane="${pane.id}" data-kind="approve">Approve</button>
+      <button class="btn raised" data-act="quick" data-pane="${pane.id}" data-kind="reject">Reject</button>
+      <button class="btn danger" data-act="quick" data-pane="${pane.id}" data-kind="interrupt">Stop</button>
+    </div>`;
+  } else if (pane.status === "failed") {
+    actionBlock += `<div class="notice t-failed">
+      ${statusGlyph("failed", "s14", false)}
+      <div class="notice-body">
+        <div class="notice-title">${esc(pane.status_label || "Failed")}</div>
+        <div class="notice-text">${esc(pane.message || "Command exited with a non-zero status")}</div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" data-act="rerun" data-pane="${pane.id}">Run again</button>
+      <button class="btn raised" data-act="copy-output" data-pane="${pane.id}">Copy output</button>
+    </div>`;
+  }
+
+  let switchStrip = "";
+  if (pane.supports_profiles && !pane.rate_limit && pane.status === "running" && healthy.length) {
+    switchStrip = `<div><div class="sec-lbl" style="margin-bottom:5px">Switch account</div><div class="swap-strip">` +
+      healthy.slice(0, 4).map((pr) => {
+        const pct = pr.window_5h && pr.window_5h.used_pct != null ? `${Math.round(pr.window_5h.used_pct)}%` : "";
+        return `<button class="swap-chip" data-act="switch-prof" data-pane="${pane.id}" data-profile="${esc(pr.id)}">${ic("swap", "s11")}<span>${esc(pr.id)}</span>${pct ? `<span class="pct">${pct}</span>` : ""}</button>`;
+      }).join("") + `</div></div>`;
+  }
+
+  const quickStrip = !pane.rate_limit && showQuickKeys ? `<div class="qkeys">
+    <button class="qk" data-act="qkey" data-pane="${pane.id}" data-key="enter">↵ Enter</button>
+    <button class="qk" data-act="qkey" data-pane="${pane.id}" data-key="esc">Esc</button>
+    <button class="qk danger" data-act="quick" data-pane="${pane.id}" data-kind="interrupt">^C Stop</button>
+    <button class="qk" data-act="qkey" data-pane="${pane.id}" data-key="tab">Tab</button>
+    <button class="qk" data-act="qkey" data-pane="${pane.id}" data-key="up">↑</button>
+    <button class="qk" data-act="qkey" data-pane="${pane.id}" data-key="down">↓</button>
+    <button class="qk" data-act="copy-output" data-pane="${pane.id}">Copy</button>
+  </div>` : "";
+
+  const isPrimarySend = pane.status !== "running" && pane.status !== "needs_input" && !pane.rate_limit;
+  return `<div class="screen">
+    <div class="live-top">
+      <div class="live-pill">
+        <button data-act="tab" data-tab="projects">${projectAvatar(pane.project_name, 22)}</button>
+        <div class="live-pill-meta">
+          <button class="live-proj-name" data-act="tab" data-tab="projects" style="text-align:left">${esc(pane.project_name)}</button>
+          <button class="live-host-row" data-act="open-settings"><span class="dot ${dotCls}" data-conn-dot></span><span>${esc(hostTitle())}</span>${ic("down", "s10")}</button>
+        </div>
+        <button class="active-chip" data-act="tab" data-tab="projects">${panes.length} active ${ic("right", "s10")}</button>
+      </div>
+      ${target ? `<button class="icon-btn" data-act="open-spawn" data-project="${target.project.id}" data-worktree="${target.worktree ? target.worktree.id : ""}" aria-label="New agent">${ic("plus", "s18")}</button>` : ""}
+      <button class="icon-btn" data-act="open-settings" aria-label="Settings">${ic("gear", "s18")}</button>
+    </div>
+    ${reconnecting ? `<div class="recon-bar">${statusGlyph("running", "s11", true)}<span>Reconnecting to ${esc(hostTitle())}…</span><button class="retry-lnk" data-act="retry">Retry</button></div>` : ""}
+    <div class="term-bar ${barCls}">
+      ${agentTile(paneAgentKey(pane), 20)}
+      ${statusPill(effSt, effLbl)}
+      <span class="term-meta">${esc(metaParts.join(" · "))}</span>
+      <button class="icon-btn sm${prefs.wrap ? " active" : ""}" data-act="toggle-wrap" title="Toggle line wrap">${ic("wrap", "s14")}</button>
+      <button class="icon-btn sm" data-act="copy-output" data-pane="${pane.id}" title="Copy output">${ic("copy", "s14")}</button>
+      <button class="icon-btn sm" data-act="open-fs" title="Fullscreen">${ic("expand", "s14")}</button>
+    </div>
+    <div class="term-stage">
+      <div class="term-scroll${prefs.wrap ? "" : " nowrap"}" id="term-scroll">
+        <div class="term-body" id="term-body"></div>
+        <div class="term-working" id="term-working" style="display:${pane.status === "running" && !pane.rate_limit ? "flex" : "none"}"><span class="pdot"></span><span id="term-working-txt">${esc(pane.message || (pane.label + " is working…"))}</span></div>
+      </div>
+      <button class="latest-pill${termScrolledUp ? "" : " hidden"}" id="latest-pill" data-act="scroll-latest">↓ Latest</button>
+    </div>
+    <div class="dock">
+      ${actionBlock}
+      ${switchStrip}
+      ${quickStrip}
+      <div class="composer-row">
+        ${!pane.rate_limit ? `<button class="kb-btn${showQuickKeys ? " on" : ""}" data-act="toggle-keys" title="Terminal keys">${ic("kb", "s16")}</button>` : ""}
+        ${pane.status === "running" && !pane.rate_limit && !showQuickKeys ? `<button class="stop-mini" data-act="quick" data-pane="${pane.id}" data-kind="interrupt">^C</button>` : ""}
+        <div class="prompt-wrap">
+          <input class="prompt-in" id="prompt-input" data-pane="${pane.id}" placeholder="${esc(pane.status === "running" ? "Queue instruction…" : `Reply to ${pane.label}…`)}" autocomplete="off" enterkeyhint="send">
+          <button class="btn ${isPrimarySend ? "primary" : "secondary"}" data-act="send-prompt" data-pane="${pane.id}" style="padding:0 15px">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderInboxScreen() {
+  const panes = (state && state.panes) || [];
+  const alerts = (state && state.alerts) || [];
+  const urgent = panes.filter(isUrgentPane);
+  const donePanes = panes.filter((p) => p.status === "done");
+  const infoAlerts = alerts.filter((a) => a.level === "info");
+  const finCount = donePanes.length + infoAlerts.length;
+  const total = urgent.length + finCount;
+
+  let body = "";
+  if (inboxFilter !== "finished") {
+    if (urgent.length) {
+      body += `<div class="sec-lbl" style="margin-bottom:8px">Needs you · oldest first</div>`;
+      for (const p of urgent) {
+        const isAsk = p.status === "needs_input";
+        const isLim = Boolean(p.rate_limit);
+        const nextPr = healthyProfilesFor(p)[0] || null;
+        const sub = isLim ? `${p.rate_limit.from_profile} hit limit · resets in ${fmtReset(p.rate_limit.resets_at_unix) || "soon"}` : (p.message || p.status_label);
+        body += `<div class="inb-card${isAsk ? " ask" : ""}" style="margin-bottom:10px" data-act="focus-pane" data-pane="${p.id}">
+          <div class="inb-top">
+            ${projectAvatar(p.project_name, 24)}
+            <div style="flex:1;min-width:0">
+              <div class="inb-head">${statusGlyph(effectivePaneStatus(p), "s13", false)}<span class="inb-proj">${esc(p.project_name)}</span><span class="mono" style="font-size:11px;color:var(--text-3)">${esc(p.label)}</span></div>
+              <div class="inb-sub">${esc(sub)}</div>
+            </div>
+          </div>
+          ${isAsk ? `<div class="inb-acts"><button class="btn primary" data-act="quick" data-pane="${p.id}" data-kind="approve">Approve</button><button class="btn raised" data-act="quick" data-pane="${p.id}" data-kind="reject">Reject</button></div>` : ""}
+          ${isLim ? `<div class="inb-acts">${nextPr ? `<button class="btn primary" data-act="switch-prof" data-pane="${p.id}" data-profile="${esc(nextPr.id)}">Resume ${esc(nextPr.id)}</button>` : ""}<button class="btn raised" data-act="dismiss-limit" data-pane="${p.id}">Dismiss</button></div>` : ""}
+        </div>`;
+      }
+    } else if (inboxFilter === "needs") {
+      body += `<div class="empty"><div class="empty-tile">${ic("check", "s22")}</div><div class="empty-title">Nothing waiting for you</div><div class="empty-body">All running agents are progressing without prompts or rate limits.</div></div>`;
+    }
+  }
+  if (inboxFilter !== "needs") {
+    if (finCount) {
+      body += `<div class="sec-lbl" style="margin:6px 0 8px">Finished</div>`;
+      for (const p of donePanes) {
+        body += `<div class="inb-card" style="margin-bottom:10px" data-act="focus-pane" data-pane="${p.id}">
+          <div class="inb-top">${projectAvatar(p.project_name, 24)}<div style="flex:1;min-width:0"><div class="inb-head">${statusGlyph("done", "s13", false)}<span class="inb-proj">${esc(p.project_name)}</span><span class="mono" style="font-size:11px;color:var(--text-3)">${esc(p.label)}</span></div><div class="inb-sub">${esc(p.message || "Run completed cleanly")}</div></div><span class="mono" style="font-size:11px;color:var(--text-3)">now</span></div>
+        </div>`;
+      }
+      for (const a of infoAlerts.slice().reverse()) {
+        const parts = String(a.message || "").split(":");
+        const proj = parts.length > 1 ? parts[0].trim() : (a.profile || "workspace");
+        const msg = parts.length > 1 ? parts.slice(1).join(":").trim() : a.message;
+        body += `<div class="inb-card" style="margin-bottom:10px" data-act="open-alert-proj" data-proj="${esc(proj)}">
+          <div class="inb-top">${projectAvatar(proj, 24)}<div style="flex:1;min-width:0"><div class="inb-head">${statusGlyph("done", "s13", false)}<span class="inb-proj">${esc(proj)}</span><span class="mono" style="font-size:11px;color:var(--text-3)">${esc(a.profile || "Agent")}</span></div><div class="inb-sub">${esc(msg)}</div></div><span class="mono" style="font-size:11px;color:var(--text-3)">${esc((a.time || "").slice(0, 5))}</span></div>
+        </div>`;
+      }
+    } else if (inboxFilter === "finished") {
+      body += `<div class="empty"><div class="empty-tile">${ic("tray", "s22")}</div><div class="empty-title">No finished runs yet</div><div class="empty-body">Completed agent runs and summaries appear here.</div></div>`;
+    }
+  }
+  if (inboxFilter === "all" && total === 0) {
+    body = `<div class="empty"><div class="empty-tile">${ic("tray", "s22")}</div><div class="empty-title">All clear</div><div class="empty-body">When an agent asks for approval, hits a limit, or finishes, it shows up here.</div></div>`;
+  }
+
+  return `<div class="screen padded">
+    ${topHeaderHtml("Inbox")}
+    <div style="height:12px"></div>
+    <div class="seg">
+      <button class="${inboxFilter === "all" ? "on" : ""}" data-act="inbox-filter" data-val="all">All <span class="scnt">${total}</span></button>
+      <button class="${inboxFilter === "needs" ? "on" : ""}" data-act="inbox-filter" data-val="needs">Needs you <span class="scnt">${urgent.length}</span></button>
+      <button class="${inboxFilter === "finished" ? "on" : ""}" data-act="inbox-filter" data-val="finished">Finished <span class="scnt">${finCount}</span></button>
+    </div>
+    <div style="height:12px"></div>
+    <div class="scroll-body">${body}</div>
+  </div>`;
+}
+
+function renderAgentLeaf(pane) {
+  const sel = pane.id === selectedPaneId;
+  const effSt = effectivePaneStatus(pane);
+  const effLbl = effectivePaneLabel(pane);
+  const title = pane.task || pane.label;
+  const subParts = [];
+  if (pane.task) subParts.push(pane.label);
+  if (pane.profile) subParts.push(pane.profile);
+  if (pane.branch) subParts.push(pane.branch);
+  return `<div class="agent-leaf${sel ? " sel" : ""}" data-act="focus-pane" data-pane="${pane.id}">
+    ${agentTile(paneAgentKey(pane), 20)}
+    <div class="agent-leaf-info">
+      <div class="agent-leaf-t1">${esc(title)}</div>
+      ${subParts.length ? `<div class="agent-leaf-t2">${esc(subParts.join(" · "))}</div>` : ""}
+    </div>
+    ${statusPill(effSt, effLbl)}
+    <button class="close-x" data-act="close-pane" data-pane="${pane.id}" aria-label="Close pane">${ic("x", "s12")}</button>
+  </div>`;
+}
+
+function renderProjectsScreen() {
+  const tree = buildProjectTree(projectQuery);
+  let listHtml = "";
+  if (!tree.activeNodes.length && !tree.idleProjects.length) {
+    listHtml = `<div class="empty"><div class="empty-tile">${ic("squares", "s22")}</div><div class="empty-title">${projectQuery ? `No matches for “${esc(projectQuery)}”` : "No projects loaded"}</div></div>`;
+  } else {
+    if (tree.activeNodes.length) {
+      listHtml += `<button class="grp-hdr" data-act="toggle-active-grp">${ic(activeCollapsed ? "right" : "down", "s12")}<span class="sec-lbl">Active · ${tree.activeNodes.length}</span>${tree.finished ? `<span class="fin-pill"><i></i>${tree.finished} finished</span>` : ""}<span class="trail">${tree.totalLive} live</span></button>`;
+      if (!activeCollapsed) {
+        listHtml += `<div class="card" style="margin-bottom:18px">` + tree.activeNodes.map((n) => {
+          const pr = n.project;
+          const allP = [...n.directPanes, ...n.worktrees.flatMap((w) => w.panes)];
+          const dotCol = allP.some((p) => p.rate_limit) ? "var(--limited)" : allP.some((p) => p.status === "needs_input") ? "var(--input)" : allP.some((p) => p.status === "failed") ? "var(--failed)" : allP.some((p) => p.status === "running") ? "var(--running)" : allP.some((p) => p.status === "done") ? "var(--done)" : "var(--text-3)";
+          return `<div class="ptree-blk">
+            <div class="ptree-row">
+              <span class="folder-ic">${ic("folder", "s16")}<span class="folder-dot" style="background:${dotCol}"></span></span>
+              <button class="ptree-name" data-act="open-spawn" data-project="${pr.id}">${esc(pr.name)}</button>
+              ${(pr.worktrees || []).length ? `<span class="meta-chip">${ic("fork", "s11")}${pr.worktrees.length}</span>` : (pr.branch ? `<span class="meta-chip">${esc(pr.branch)}</span>` : "")}
+              <button class="plus-mini" data-act="open-spawn" data-project="${pr.id}" aria-label="New agent">${ic("plus", "s14")}</button>
+            </div>
+            ${n.directPanes.length ? `<div class="tree-branch">${n.directPanes.map(renderAgentLeaf).join("")}</div>` : ""}
+            ${n.worktrees.length ? `<div class="tree-branch">` + n.worktrees.map((wn) => `
+              <button class="wt-row" data-act="open-spawn" data-project="${pr.id}" data-worktree="${wn.worktree.id}">
+                <span style="color:var(--done)">${ic("fork", "s13")}</span>
+                <span class="wt-name">${esc(wn.worktree.name)}</span>
+                ${wn.worktree.merged ? `<span class="tag done">merged</span>` : ""}
+                <span style="color:var(--text-3)">${ic("plus", "s12")}</span>
+              </button>
+              ${wn.panes.length ? `<div class="tree-branch wt">${wn.panes.map(renderAgentLeaf).join("")}</div>` : ""}
+            `).join("") + `</div>` : ""}
+          </div>`;
+        }).join("") + `</div>`;
+      }
+    }
+    if (tree.idleProjects.length) {
+      listHtml += `<button class="grp-hdr" data-act="toggle-idle-grp">${ic(idleCollapsed ? "right" : "down", "s12")}<span class="sec-lbl">Idle · ${tree.idleProjects.length}</span><span class="trail">Tap to run or resume</span></button>`;
+      if (!idleCollapsed) {
+        listHtml += `<div class="card">` + tree.idleProjects.map((pr) => `<div class="idle-blk">
+          <button class="idle-row" data-act="open-spawn" data-project="${pr.id}">
+            <span class="folder-ic" style="color:var(--text-3)">${ic("folder", "s16")}</span>
+            <span class="ptree-name idle">${esc(pr.name)}</span>
+            ${(pr.worktrees || []).length ? `<span class="meta-chip">${ic("fork", "s11")}${pr.worktrees.length}</span>` : ""}
+            ${pr.branch ? `<span class="meta-chip">${esc(pr.branch)}</span>` : ""}
+            <span class="plus-mini">${ic("plus", "s14")}</span>
+          </button>
+          ${(pr.worktrees || []).length ? `<div class="tree-branch" style="margin:0 10px 8px 21px">` + pr.worktrees.map((w) => `
+            <button class="wt-row" data-act="open-spawn" data-project="${pr.id}" data-worktree="${w.id}">
+              <span style="color:var(--text-3)">${ic("fork", "s13")}</span>
+              <span class="wt-name">${esc(w.name)}</span>
+              ${w.merged ? `<span class="tag done">merged</span>` : ""}
+            </button>
+          `).join("") + `</div>` : ""}
+        </div>`).join("") + `</div>`;
+      }
+    }
+  }
+
+  return `<div class="screen padded">
+    ${topHeaderHtml("Projects")}
+    <div style="height:12px"></div>
+    <div class="search-box">
+      <span style="color:var(--text-3)">${ic("search", "s14")}</span>
+      <input class="search-in" id="proj-search" value="${esc(projectQuery)}" placeholder="Filter projects, worktrees & agents…" autocomplete="off">
+      ${projectQuery ? `<button data-act="clear-search" style="color:var(--text-3)" aria-label="Clear">${ic("x", "s14")}</button>` : ""}
+    </div>
+    <div style="height:14px"></div>
+    <div class="scroll-body">${listHtml}</div>
+  </div>`;
+}
+
+function renderQuotaMeter(w) {
+  if (!w) return "";
+  const pct = w.used_pct != null ? Math.round(w.used_pct) : null;
+  const tone = pct == null ? "idle" : pct >= 90 ? "limited" : pct >= 70 ? "input" : "accent";
+  const val = pct != null ? `${pct}%${w.tokens ? ` · ${fmtTokens(w.tokens)}` : ""}` : `${fmtTokens(w.tokens || 0)} tok`;
+  const rst = fmtReset(w.resets_at_unix);
+  return `<div class="meter">
+    <div class="meter-top">
+      <span class="meter-lbl">${esc(w.label)}</span>
+      <span class="meter-val${pct != null && pct >= 70 ? ` c-${tone}` : ""}">${esc(val)}</span>
+      ${rst ? `<span class="meter-rst">↺ ${esc(rst)}</span>` : ""}
+    </div>
+    <div class="bar"><i class="b-${tone}" style="width:${pct != null ? Math.min(100, Math.max(0, pct)) : 0}%"></i></div>
+  </div>`;
+}
+
+function renderAccountsScreen() {
+  const panes = (state && state.panes) || [];
+  const profiles = (state && state.profiles) || [];
+  const runningCount = panes.filter((p) => p.status === "running").length;
+  const healthyCount = profiles.filter((p) => p.enabled && p.state !== "rate_limited" && p.state !== "cooldown" && p.state !== "error").length;
+  const tok5h = profiles.reduce((s, p) => s + ((p.window_5h && p.window_5h.tokens) || 0), 0);
+  const isAuto = (state && state.failover_mode) === "auto";
+
+  const cards = profiles.length ? profiles.map((p, idx) => {
+    const acc = ACCOUNT_MAP[p.enabled ? p.state : "disabled"] || ["idle", String(p.state || "").replace("_", " ")];
+    const hint = p.account_hint ? `${p.provider} · ${p.account_hint}` : p.provider;
+    return `<div class="card acct-card" style="margin-bottom:10px${p.enabled ? "" : ";opacity:.55"}">
+      <div class="acct-top">
+        ${agentTile(p.provider, 22)}
+        <div style="flex:1;min-width:0">
+          <div class="acct-head">
+            <span class="mono" style="font-size:11px;color:var(--text-3)">#${idx + 1}</span>
+            <span class="acct-id">${esc(p.id)}</span>
+            ${p.plan_type ? `<span class="tag">${esc(p.plan_type.toUpperCase())}</span>` : ""}
+          </div>
+          <div class="acct-hint">${esc(hint)}${p.signed_in === false ? ` · <span class="c-input">Not signed in</span>` : ""}</div>
+        </div>
+        ${statusPill(acc[0], acc[1])}
+      </div>
+      ${renderQuotaMeter(p.window_5h)}
+      ${renderQuotaMeter(p.window_weekly)}
+      ${!p.window_5h && !p.window_weekly ? `<div class="mono" style="font-size:11px;color:var(--text-3)">Usage: ${fmtTokens((p.tokens_in || 0) + (p.tokens_out || 0))} tokens</div>` : ""}
+    </div>`;
+  }).join("") : `<div class="card" style="padding:16px;color:var(--text-2)">No AI agent accounts configured on this host yet.</div>`;
+
+  return `<div class="screen padded">
+    ${topHeaderHtml("Accounts")}
+    <div style="height:12px"></div>
+    <div class="scroll-body">
+      <div class="card stats-strip" style="margin-bottom:12px">
+        <div class="stat-cell"><div class="stat-lbl">Running</div><div class="stat-val">${runningCount}</div></div>
+        <div class="stat-cell"><div class="stat-lbl">Healthy</div><div class="stat-val" style="color:var(--done)">${healthyCount}/${profiles.length}</div></div>
+        <div class="stat-cell"><div class="stat-lbl">5h tokens</div><div class="stat-val">${fmtTokens(tok5h)}</div></div>
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="set-row">
+          <div class="grow"><div class="set-t1">Failover mode</div><div class="set-t2">When an account hits its usage limit</div></div>
+          <span class="tag">${isAuto ? "Automatic" : "Ask me"}</span>
+        </div>
+      </div>
+      <div class="sec-lbl" style="margin-bottom:8px">Failover order</div>
+      ${cards}
+    </div>
+  </div>`;
+}
+
+// ── Bottom Sheets & Overlays ──
+const AGENT_OPTS = [
+  { slug: "claude", label: "Claude Code", prof: true },
+  { slug: "codex", label: "Codex", prof: true },
+  { slug: "antigravity", label: "Antigravity", prof: true },
+  { slug: "opencode", label: "OpenCode", prof: false },
+  { slug: "gemini", label: "Gemini CLI", prof: false },
+  { slug: "shell", label: "Terminal", prof: false },
+];
+
+function renderSpawnSheetHtml() {
+  if (!spawnSheet || !state) return "";
+  const project = (state.projects || []).find((p) => p.id === spawnSheet.projectId);
+  if (!project) return "";
+  const wt = spawnSheet.worktreeId ? (project.worktrees || []).find((w) => w.id === spawnSheet.worktreeId) || null : null;
+  const activeOpt = AGENT_OPTS.find((a) => a.slug === spawnSheet.agent) || AGENT_OPTS[0];
+  const allSess = wt ? (wt.sessions || []) : (project.sessions || []);
+  const agentSess = spawnSheet.agent === "shell" ? [] : allSess.filter((s) => normalizeAgent(s.agent) === spawnSheet.agent);
+  const profiles = activeOpt.prof ? (state.profiles || []).filter((p) => p.enabled && normalizeAgent(p.provider) === spawnSheet.agent) : [];
+  const sub = wt ? `${project.name} › ${wt.name}${wt.branch ? ` · ${wt.branch}` : ""}` : (project.branch ? `${project.name} · ${project.branch}` : project.name);
+  const targetId = wt ? wt.id : project.id;
+
+  return `<div class="sheet-backdrop" data-act="close-spawn-bg">
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-hdr">
+        ${projectAvatar(project.name, 22)}
+        <div style="flex:1;min-width:0">
+          <div class="sheet-title">New agent</div>
+          <div class="sheet-sub">${esc(sub)}</div>
+        </div>
+        <button class="icon-btn sm" data-act="close-spawn">${ic("x", "s14")}</button>
+      </div>
+      <div class="sheet-scroll">
+        ${(project.worktrees || []).length ? `<div>
+          <div class="sec-lbl" style="margin-bottom:7px">Workspace</div>
+          <div class="hchips">
+            <button class="hchip${!wt ? " on" : ""}" data-act="spawn-wt" data-wt="">${ic("folder", "s12")}<span>${esc(project.branch || project.name)}</span></button>
+            ${project.worktrees.map((w) => `<button class="hchip${wt && wt.id === w.id ? " on" : ""}" data-act="spawn-wt" data-wt="${w.id}">${ic("fork", "s12")}<span>${esc(w.name)}</span>${w.merged ? `<span class="tag done">merged</span>` : ""}</button>`).join("")}
+          </div>
+        </div>` : ""}
+        <div>
+          <div class="sec-lbl" style="margin-bottom:8px">Agent</div>
+          <div class="ag-grid">
+            ${AGENT_OPTS.map((opt) => {
+              const on = spawnSheet.agent === opt.slug;
+              const cnt = opt.slug === "shell" ? 0 : allSess.filter((s) => normalizeAgent(s.agent) === opt.slug).length;
+              return `<button class="ag-opt${on ? " on" : ""}" data-act="spawn-agent" data-slug="${opt.slug}">${agentTile(opt.slug, 22)}<span class="lbl">${esc(opt.label)}</span>${cnt ? `<span class="cnt">${cnt}</span>` : ""}</button>`;
+            }).join("")}
+          </div>
+        </div>
+        ${profiles.length ? `<div>
+          <div class="sec-lbl" style="margin-bottom:8px">Account</div>
+          <div class="hchips">
+            <button class="hchip${!spawnSheet.profileId ? " on" : ""}" data-act="spawn-prof" data-prof=""><span>Auto</span><span class="det">best healthy</span></button>
+            ${profiles.map((pr) => {
+              const det = pr.state === "rate_limited" ? "limited" : (pr.window_5h && pr.window_5h.used_pct != null ? `${Math.round(pr.window_5h.used_pct)}%` : pr.state);
+              return `<button class="hchip${spawnSheet.profileId === pr.id ? " on" : ""}${pr.state === "rate_limited" ? " warn" : ""}" data-act="spawn-prof" data-prof="${esc(pr.id)}"><span>${esc(pr.id)}</span><span class="det">${esc(det)}</span></button>`;
+            }).join("")}
+          </div>
+        </div>` : ""}
+        <button class="btn primary block" data-act="spawn-start">${ic("plus", "s14")}${spawnSheet.agent === "shell" ? "New Terminal" : `New ${esc(activeOpt.label)} session`}</button>
+        ${spawnSheet.agent !== "shell" ? `<div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <span class="sec-lbl">Resume session${agentSess.length ? ` · ${agentSess.length}` : ""}</span>
+            ${agentSess.length ? `<span class="mono" style="font-size:10.5px;color:var(--text-3)">Tap to continue</span>` : ""}
+          </div>
+          ${agentSess.length ? `<div class="card">` + agentSess.map((s) => `
+            <button class="sess-row" data-act="spawn-resume" data-project="${targetId}" data-agent="${esc(s.agent)}" data-session="${esc(s.id)}" data-live="${s.live_pane || ""}">
+              ${statusGlyph(s.status, "s13", false)}
+              <div style="flex:1;min-width:0">
+                <div class="sess-t1">${esc(s.title)}</div>
+                <div class="sess-t2">${esc(s.profile || s.agent)} · ${esc(s.age)}</div>
+              </div>
+              ${s.live_pane ? `<span class="tag">Live</span>` : `<span class="mono" style="font-size:11px;color:var(--accent-text)">Resume</span>`}
+            </button>
+          `).join("") + `</div>` : `<div class="card" style="padding:12px;color:var(--text-3);font-size:12px">No previous ${esc(activeOpt.label)} sessions found in this workspace.</div>`}
+        </div>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderSettingsSheetHtml() {
+  if (!settingsOpen) return "";
+  const dotCls = connected ? "ok" : (reconnecting ? "warn" : "err");
+  return `<div class="sheet-backdrop" data-act="close-settings-bg">
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-hdr">
+        <div class="sheet-title" style="flex:1">Settings</div>
+        <button class="icon-btn sm" data-act="close-settings">${ic("x", "s14")}</button>
+      </div>
+      <div class="sheet-scroll">
+        <div class="card">
+          <div class="set-row">
+            <div class="grow"><div class="set-t1">Connection</div><div class="set-t2 mono" style="font-size:11px">${esc(IS_RELAY ? "Cloudflare Relay · " : "Wi-Fi LAN · ")}${esc(location.host + BASE)}</div></div>
+            <span class="pill ${connected ? "t-done" : "t-input"}"><span class="dot ${dotCls}"></span>${connected ? "Online" : "Reconnecting"}</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="set-row">
+            <div class="grow"><div class="set-t1">Dark appearance</div><div class="set-t2">Slate dark theme (matches Mobile app)</div></div>
+            <button class="switch${prefs.theme === "dark" ? " on" : ""}" data-act="toggle-theme" aria-label="Toggle theme"></button>
+          </div>
+          <div class="set-row">
+            <div class="grow"><div class="set-t1">Wrap terminal lines</div><div class="set-t2">Responsive dividers & scrollable CLI tables</div></div>
+            <button class="switch${prefs.wrap ? " on" : ""}" data-act="toggle-wrap" aria-label="Toggle line wrap"></button>
+          </div>
+          <div class="set-row">
+            <div class="grow"><div class="set-t1">Terminal font size</div><div class="set-t2 mono">${prefs.fontSize.toFixed(1)} px</div></div>
+            <div style="display:flex;gap:6px">
+              <button class="icon-btn sm" data-act="font-dec">−</button>
+              <button class="icon-btn sm" data-act="font-inc">+</button>
+            </div>
+          </div>
+        </div>
+        <button class="btn danger block" data-act="unpair">Disconnect & unpair this browser</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderFullscreenHtml() {
+  if (!fullscreenOpen) return "";
+  const pane = currentPane();
+  if (!pane) return "";
+  return `<div class="fs-overlay">
+    <div class="term-bar">
+      ${agentTile(paneAgentKey(pane), 20)}
+      <span style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(pane.project_name)}</span>
+      ${statusPill(effectivePaneStatus(pane), effectivePaneLabel(pane))}
+      <span style="flex:1"></span>
+      <button class="icon-btn sm${prefs.wrap ? " active" : ""}" data-act="toggle-wrap">${ic("wrap", "s14")}</button>
+      <button class="icon-btn sm" data-act="copy-output" data-pane="${pane.id}">${ic("copy", "s14")}</button>
+      <button class="icon-btn sm" data-act="close-fs">${ic("x", "s14")}</button>
+    </div>
+    <div class="term-stage">
+      <div class="term-scroll${prefs.wrap ? "" : " nowrap"}" id="fs-term-scroll">
+        <div class="term-body" id="fs-term-body"></div>
+      </div>
+    </div>
+    <div class="dock">
+      <div class="qkeys">
+        <button class="qk" data-act="qkey" data-pane="${pane.id}" data-key="enter">↵ Enter</button>
+        <button class="qk" data-act="qkey" data-pane="${pane.id}" data-key="esc">Esc</button>
+        <button class="qk danger" data-act="quick" data-pane="${pane.id}" data-kind="interrupt">^C Stop</button>
+        <button class="qk" data-act="qkey" data-pane="${pane.id}" data-key="tab">Tab</button>
+        <button class="qk" data-act="qkey" data-pane="${pane.id}" data-key="up">↑</button>
+        <button class="qk" data-act="qkey" data-pane="${pane.id}" data-key="down">↓</button>
+      </div>
+      <div class="prompt-wrap">
+        <input class="prompt-in" id="fs-prompt-input" data-pane="${pane.id}" placeholder="Reply to ${esc(pane.label)}…" autocomplete="off" enterkeyhint="send">
+        <button class="btn primary" data-act="send-fs-prompt" data-pane="${pane.id}">Send</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderConfirmModalHtml() {
+  if (!confirmClosePane) return "";
+  return `<div class="confirm-modal" data-act="cancel-close">
+    <div class="confirm-card">
+      <div style="font-size:16px;font-weight:600">Close ${esc(confirmClosePane.label)}?</div>
+      <div style="font-size:13px;color:var(--text-2)">This stops the active session in ${esc(confirmClosePane.project_name)}.</div>
+      <div class="btn-row" style="margin-top:4px">
+        <button class="btn raised" data-act="cancel-close">Cancel</button>
+        <button class="btn danger" data-act="confirm-close">Close</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Live Terminal Patching (ZERO scroll reset / ZERO input blur!) ──
+function patchTerminalContent(forceBottom) {
+  const pane = currentPane();
+  if (!pane) return;
+  const raw = pane.output || "(no output yet)";
+  const changedPane = lastTermPaneId !== pane.id;
+  const needsHtml = changedPane || lastTermRaw !== raw || lastTermWrap !== prefs.wrap || lastTermTheme !== prefs.theme || lastTermFont !== prefs.fontSize;
+  const html = needsHtml ? renderTerminalHtml(raw, prefs.wrap) : null;
+
+  for (const [scrollId, bodyId] of [["term-scroll", "term-body"], ["fs-term-scroll", "fs-term-body"]]) {
+    const sc = document.getElementById(scrollId);
+    const bd = document.getElementById(bodyId);
+    if (!sc || !bd) continue;
+    if (!sc.__tcBound) {
+      sc.__tcBound = true;
+      sc.addEventListener("scroll", () => {
+        const dist = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
+        const nextUp = dist > 72;
+        if (nextUp !== termScrolledUp) {
+          termScrolledUp = nextUp;
+          const lp = document.getElementById("latest-pill");
+          if (lp) lp.classList.toggle("hidden", !termScrolledUp);
+        }
+      }, { passive: true });
+    }
+    const prevTop = sc.scrollTop;
+    if (html !== null || !bd.innerHTML) {
+      bd.innerHTML = html !== null ? html : renderTerminalHtml(raw, prefs.wrap);
+    }
+    if (forceBottom || changedPane || !termScrolledUp) {
+      sc.scrollTop = sc.scrollHeight;
+      termScrolledUp = false;
+      const lp = document.getElementById("latest-pill");
+      if (lp) lp.classList.add("hidden");
+    } else {
+      sc.scrollTop = prevTop;
+    }
+  }
+  const wk = document.getElementById("term-working");
+  if (wk) {
+    wk.style.display = pane.status === "running" && !pane.rate_limit ? "flex" : "none";
+    const wkt = document.getElementById("term-working-txt");
+    if (wkt) wkt.textContent = pane.message || (pane.label + " is working…");
+  }
+  lastTermPaneId = pane.id;
+  lastTermRaw = raw;
+  lastTermWrap = prefs.wrap;
+  lastTermTheme = prefs.theme;
+  lastTermFont = prefs.fontSize;
+}
+
+function patchHeaderDots() {
+  const cls = "dot " + (connected ? "ok" : (reconnecting ? "warn" : "err"));
+  document.querySelectorAll("[data-conn-dot]").forEach((el) => { el.className = cls; });
+}
+
+let lastLiveStructKey = "";
+function liveStructKey() {
+  const pane = currentPane();
+  if (!pane) return "empty";
+  const pr = pane.rate_limit ? null : parseInteractivePrompt(pane.output || "");
+  const healthy = healthyProfilesFor(pane).slice(0, 4).map((p) => p.id).join(",");
+  return `${pane.id}|${pane.status}|${pane.status_label}|${pane.profile || ""}|${pane.branch || ""}|${pane.rate_limit ? pane.rate_limit.reason : ""}|${pr ? pr.title + pr.selectedIndex : ""}|${healthy}|${(state.panes || []).length}|${reconnecting}|${showQuickKeys}|${fullscreenOpen}|${settingsOpen}|${Boolean(spawnSheet)}`;
+}
+
+// Smart update on incoming WS/SSE snapshot: patches terminal in place when on Live so scroll & typing NEVER jank!
+function updateUI() {
+  if (tab === "live" && !settingsOpen && !spawnSheet && !confirmClosePane && document.getElementById("term-scroll")) {
+    const key = liveStructKey();
+    if (key === lastLiveStructKey) {
+      patchTerminalContent(false);
+      patchHeaderDots();
+      return;
+    }
+  }
+  render();
+}
+
+function render() {
+  root.style.setProperty("--spin-delay", `-${Date.now() % 1000}ms`);
+
+  if (pairing) {
+    root.innerHTML = `<div class="solo center"><div class="empty"><div class="empty-tile">${statusGlyph("running", "s20", true)}</div><div class="empty-title">Pairing with TernaryCode…</div><div class="empty-body">Exchanging one-time pairing code securely.</div></div></div>`;
+    return;
+  }
+  if (!token || (pairError && !state)) {
+    root.innerHTML = `<div class="solo"><div class="pair-box">
+      ${APP_LOGO}
+      <h1 class="top-title" style="margin-top:4px">Pair with TernaryCode</h1>
+      <p style="margin:0;color:var(--text-2);font-size:13px">${revoked ? "This browser was revoked on your computer. Enter the new pairing code from Settings → Phone." : "Scan the QR code in Settings → Phone on your computer, or paste the pairing code below."}</p>
+      <input class="pair-in mono" id="p-code" value="${esc(draftCode)}" placeholder="XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <input class="pair-in" id="p-name" value="${esc(draftName)}" placeholder="Device name">
+      ${pairError ? `<div class="c-failed" style="font-size:12px">${esc(pairError)}</div>` : ""}
+      <button class="btn primary block" data-act="pair">Connect</button>
+      <p style="margin:0;font-size:12px;color:var(--text-3)">${IS_RELAY ? "Connecting via Cloudflare Relay — works on Wi-Fi and 4G/5G." : "Connecting on local Wi-Fi. Enable Remote access in Settings → Phone to connect from anywhere."}</p>
+    </div></div>`;
+    return;
+  }
+  if (!state) {
+    root.innerHTML = `<div class="solo center"><div class="empty">
+      <div class="empty-tile">${ic("offline", "s22")}</div>
+      <div class="empty-title">Connecting to TernaryCode…</div>
+      <div class="empty-body">Waiting for your computer to answer${IS_RELAY ? " via Cloudflare Relay" : ""}.</div>
+      <div class="btn-row" style="width:100%;max-width:280px;margin-top:6px">
+        <button class="btn secondary" data-act="retry">Retry</button>
+        <button class="btn danger" data-act="unpair">Pair again</button>
+      </div>
+    </div></div>`;
+    return;
+  }
+
+  // Preserve active input state & scroll positions across structural re-renders.
+  const prevPrompt = document.getElementById("prompt-input");
+  const savedPrompt = prevPrompt ? { val: prevPrompt.value, focus: document.activeElement === prevPrompt, s: prevPrompt.selectionStart, e: prevPrompt.selectionEnd } : null;
+  const prevSearch = document.getElementById("proj-search");
+  const savedSearchFocus = prevSearch && document.activeElement === prevSearch;
+  const prevScroll = root.querySelector(".scroll-body");
+  const savedScrollTop = prevScroll ? prevScroll.scrollTop : 0;
+  const prevTerm = document.getElementById("term-scroll");
+  const savedTermTop = prevTerm ? prevTerm.scrollTop : null;
+
+  const panes = state.panes || [];
+  const urgentCount = panes.filter(isUrgentPane).length;
+  const screenHtml = tab === "live" ? renderLiveScreen() : tab === "inbox" ? renderInboxScreen() : tab === "projects" ? renderProjectsScreen() : renderAccountsScreen();
+
+  root.innerHTML = `<div class="shell">
+    ${screenHtml}
+    <nav class="bnav">
+      <button class="${tab === "live" ? "on" : ""}" data-act="tab" data-tab="live"><span class="nav-ic">${ic("term", "s20")}</span>Live</button>
+      <button class="${tab === "inbox" ? "on" : ""}" data-act="tab" data-tab="inbox"><span class="nav-ic">${ic("tray", "s20")}${urgentCount ? `<span class="nav-badge t-input">${urgentCount}</span>` : ""}</span>Inbox</button>
+      <button class="${tab === "projects" ? "on" : ""}" data-act="tab" data-tab="projects"><span class="nav-ic">${ic("squares", "s20")}</span>Projects</button>
+      <button class="${tab === "accounts" ? "on" : ""}" data-act="tab" data-tab="accounts"><span class="nav-ic">${ic("user", "s20")}</span>Accounts</button>
+    </nav>
+    ${renderSpawnSheetHtml()}
+    ${renderSettingsSheetHtml()}
+    ${renderFullscreenHtml()}
+    ${renderConfirmModalHtml()}
+    <div class="toast" id="tc-toast" style="display:${toastMsg ? "block" : "none"}">${esc(toastMsg)}</div>
+  </div>`;
+
+  if (tab === "live" || fullscreenOpen) {
+    lastLiveStructKey = liveStructKey();
+    patchTerminalContent(false);
+    if (savedTermTop !== null && termScrolledUp) {
+      const sc = document.getElementById("term-scroll");
+      if (sc) sc.scrollTop = savedTermTop;
+    }
+  }
+  const newScroll = root.querySelector(".scroll-body");
+  if (newScroll && savedScrollTop) newScroll.scrollTop = savedScrollTop;
+
+  if (savedPrompt) {
+    const el = document.getElementById("prompt-input");
+    if (el) {
+      el.value = savedPrompt.val;
+      if (savedPrompt.focus) { el.focus({ preventScroll: true }); try { el.setSelectionRange(savedPrompt.s, savedPrompt.e); } catch {} }
+    }
+  }
+  if (savedSearchFocus) {
+    const el = document.getElementById("proj-search");
+    if (el) { el.focus({ preventScroll: true }); try { el.setSelectionRange(el.value.length, el.value.length); } catch {} }
+  }
+}
+
+// ── Single Delegated Event Listeners (Zero XSS / Zero inline handlers) ──
+root.addEventListener("click", (ev) => {
+  const el = ev.target.closest("[data-act]");
+  if (!el) return;
+  const act = el.dataset.act;
+  if (act === "pair") {
+    doPair(document.getElementById("p-code")?.value || "", document.getElementById("p-name")?.value || "");
+  } else if (act === "tab") {
+    tab = el.dataset.tab || "live";
+    render();
+  } else if (act === "focus-pane") {
+    selectedPaneId = Number(el.dataset.pane);
+    termScrolledUp = false;
+    tab = "live";
+    render();
+  } else if (act === "toggle-wrap") {
+    prefs.wrap = !prefs.wrap;
+    savePrefs();
+    render();
+  } else if (act === "toggle-theme") {
+    prefs.theme = prefs.theme === "dark" ? "light" : "dark";
+    savePrefs();
+    render();
+  } else if (act === "font-inc") {
+    prefs.fontSize = Math.min(15, +(prefs.fontSize + 0.5).toFixed(1));
+    savePrefs();
+    render();
+  } else if (act === "font-dec") {
+    prefs.fontSize = Math.max(9.5, +(prefs.fontSize - 0.5).toFixed(1));
+    savePrefs();
+    render();
+  } else if (act === "copy-output") {
+    const p = ((state && state.panes) || []).find((x) => x.id === Number(el.dataset.pane)) || currentPane();
+    if (p) copyText(p.output || "", "Copied output");
+  } else if (act === "open-fs") {
+    fullscreenOpen = true;
+    render();
+  } else if (act === "close-fs") {
+    fullscreenOpen = false;
+    render();
+  } else if (act === "toggle-keys") {
+    showQuickKeys = !showQuickKeys;
+    render();
+  } else if (act === "scroll-latest") {
+    termScrolledUp = false;
+    const sc = document.getElementById("term-scroll");
+    if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior: "smooth" });
+    const lp = document.getElementById("latest-pill");
+    if (lp) lp.classList.add("hidden");
+  } else if (act === "send-prompt") {
+    sendComposer(Number(el.dataset.pane), "prompt-input");
+  } else if (act === "send-fs-prompt") {
+    sendComposer(Number(el.dataset.pane), "fs-prompt-input");
+  } else if (act === "quick") {
+    ev.stopPropagation();
+    const k = el.dataset.kind;
+    sendAction(Number(el.dataset.pane), k, k === "approve" ? "Approved" : k === "reject" ? "Rejected" : "Sent Stop (^C)");
+  } else if (act === "dismiss-limit") {
+    ev.stopPropagation();
+    sendAction(Number(el.dataset.pane), "dismiss_limit", "Dismissed rate limit");
+  } else if (act === "switch-prof") {
+    ev.stopPropagation();
+    switchProfile(Number(el.dataset.pane), el.dataset.profile);
+  } else if (act === "rerun") {
+    const p = ((state && state.panes) || []).find((x) => x.id === Number(el.dataset.pane));
+    if (p) sendInput(p.id, p.label, true, `Re-running ${p.label}`);
+  } else if (act === "send-esc") {
+    sendInput(Number(el.dataset.pane), "\x1B", false, "Sent Esc");
+  } else if (act === "ip-opt") {
+    if (window.__activePrompt) selectPromptOption(Number(el.dataset.pane), window.__activePrompt, Number(el.dataset.idx));
+  } else if (act === "qkey") {
+    const id = Number(el.dataset.pane), k = el.dataset.key;
+    if (k === "enter") sendInput(id, "", true, "Sent Enter");
+    else if (k === "esc") sendInput(id, "\x1B", false, "Sent Esc");
+    else if (k === "tab") sendInput(id, "\t", false, "Sent Tab");
+    else if (k === "up") sendInput(id, "\x1B[A", false, "Sent Up");
+    else if (k === "down") sendInput(id, "\x1B[B", false, "Sent Down");
+  } else if (act === "close-pane") {
+    ev.stopPropagation();
+    const p = ((state && state.panes) || []).find((x) => x.id === Number(el.dataset.pane));
+    if (!p) return;
+    if (p.status === "running" || p.status === "needs_input") { confirmClosePane = p; render(); }
+    else closePane(p);
+  } else if (act === "confirm-close") {
+    const p = confirmClosePane;
+    confirmClosePane = null;
+    render();
+    if (p) closePane(p);
+  } else if (act === "cancel-close" && (ev.target === el || el.tagName === "BUTTON")) {
+    confirmClosePane = null;
+    render();
+  } else if (act === "open-spawn") {
+    openSpawnSheet(el.dataset.project, el.dataset.worktree);
+  } else if (act === "close-spawn" || (act === "close-spawn-bg" && ev.target === el)) {
+    spawnSheet = null;
+    render();
+  } else if (act === "spawn-wt" && spawnSheet) {
+    spawnSheet.worktreeId = el.dataset.wt ? Number(el.dataset.wt) : null;
+    render();
+  } else if (act === "spawn-agent" && spawnSheet) {
+    spawnSheet.agent = el.dataset.slug;
+    spawnSheet.profileId = null;
+    render();
+  } else if (act === "spawn-prof" && spawnSheet) {
+    spawnSheet.profileId = el.dataset.prof || null;
+    render();
+  } else if (act === "spawn-start") {
+    startNewAgent();
+  } else if (act === "spawn-resume") {
+    resumeSessionFromSheet(el.dataset.project, el.dataset.agent, el.dataset.session, spawnSheet ? spawnSheet.profileId : null, el.dataset.live);
+  } else if (act === "open-settings") {
+    settingsOpen = true;
+    render();
+  } else if (act === "close-settings" || (act === "close-settings-bg" && ev.target === el)) {
+    settingsOpen = false;
+    render();
+  } else if (act === "inbox-filter") {
+    inboxFilter = el.dataset.val || "all";
+    render();
+  } else if (act === "open-alert-proj") {
+    const proj = el.dataset.proj || "";
+    const match = ((state && state.panes) || []).find((p) => p.project_name.toLowerCase() === proj.toLowerCase());
+    if (match) { selectedPaneId = match.id; tab = "live"; }
+    else { projectQuery = proj; tab = "projects"; }
+    render();
+  } else if (act === "clear-search") {
+    projectQuery = "";
+    render();
+  } else if (act === "toggle-active-grp") {
+    activeCollapsed = !activeCollapsed;
+    render();
+  } else if (act === "toggle-idle-grp") {
+    idleCollapsed = !idleCollapsed;
+    render();
+  } else if (act === "unpair") {
+    settingsOpen = false;
+    clearAuth(false);
+  } else if (act === "retry") {
+    retryMs = 1000;
+    startLive();
   }
 });
 
-if(urlPair){
-  // Explicit QR pairing link always takes precedence over any stale saved token.
+root.addEventListener("input", (ev) => {
+  const t = ev.target;
+  if (!t) return;
+  if (t.id === "p-code") draftCode = t.value;
+  else if (t.id === "p-name") draftName = t.value;
+  else if (t.id === "proj-search") { projectQuery = t.value; render(); }
+});
+
+root.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" || ev.isComposing) return;
+  const t = ev.target;
+  if (!t) return;
+  if (t.id === "prompt-input") sendComposer(Number(t.dataset.pane), "prompt-input");
+  else if (t.id === "fs-prompt-input") sendComposer(Number(t.dataset.pane), "fs-prompt-input");
+  else if (t.id === "p-code" || t.id === "p-name") doPair(document.getElementById("p-code")?.value || "", document.getElementById("p-name")?.value || "");
+});
+
+if (urlPair) {
   doPair(urlPair, draftName);
-}else if(token){
+} else if (token) {
   render();
   startLive();
-}else{
+} else {
   render();
 }
 </script>

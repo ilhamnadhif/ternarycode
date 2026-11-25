@@ -1250,7 +1250,32 @@ impl App {
     /// Starts or stops the embedded Mobile Companion server based on `settings.companion.enabled`.
     pub fn sync_companion_server(&mut self) {
         if self.settings.companion.enabled {
-            if self.companion.as_ref().is_some_and(|c| c.port != self.settings.companion.port) {
+            let relay_cfg = if self.settings.companion.relay_enabled {
+                let mut mutated = false;
+                if self.settings.companion.relay_host_id.trim().is_empty() {
+                    self.settings.companion.relay_host_id = crate::companion::random_relay_id();
+                    mutated = true;
+                }
+                if self.settings.companion.relay_secret.trim().is_empty() {
+                    self.settings.companion.relay_secret = crate::companion::random_relay_secret();
+                    mutated = true;
+                }
+                if mutated {
+                    self.settings_changed();
+                }
+                Some(crate::companion::RelayConfig {
+                    relay_url: self.settings.companion.effective_relay_url().to_string(),
+                    host_id: self.settings.companion.relay_host_id.clone(),
+                    secret: self.settings.companion.relay_secret.clone(),
+                })
+            } else {
+                None
+            };
+            if self
+                .companion
+                .as_ref()
+                .is_some_and(|c| c.port != self.settings.companion.port || c.relay_config() != relay_cfg.as_ref())
+            {
                 self.companion = None;
             }
             if self.companion.is_none() {
@@ -1258,6 +1283,7 @@ impl App {
                     self.rt.handle(),
                     self.settings.companion.port,
                     &self.settings.companion.devices,
+                    relay_cfg,
                     self.app_tx.clone(),
                     self.ctx.clone(),
                 ) {

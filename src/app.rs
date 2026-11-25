@@ -4500,6 +4500,20 @@ impl App {
                 self.sync_companion_server();
                 self.settings_changed();
             }
+            Action::ToggleCompanionRelay => {
+                self.settings.companion.relay_enabled = !self.settings.companion.relay_enabled;
+                if self.settings.companion.relay_enabled {
+                    self.settings.companion.enabled = true;
+                    if self.settings.companion.relay_host_id.trim().is_empty() {
+                        self.settings.companion.relay_host_id = crate::companion::random_relay_id();
+                    }
+                    if self.settings.companion.relay_secret.trim().is_empty() {
+                        self.settings.companion.relay_secret = crate::companion::random_relay_secret();
+                    }
+                }
+                self.sync_companion_server();
+                self.settings_changed();
+            }
             Action::RegeneratePairingToken => {
                 if let Some(c) = &self.companion {
                     c.regenerate_token();

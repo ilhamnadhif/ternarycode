@@ -159,18 +159,44 @@ pub struct PairedDevice {
     pub last_seen: i64,
 }
 
+/// Default hosted Cloudflare Workers + Durable Objects relay for zero-setup remote access.
+pub const DEFAULT_COMPANION_RELAY_URL: &str = "https://ternarycode-relay.m-ilhamnadhif121.workers.dev";
+
 /// Embedded local HTTP/SSE companion server settings for Phone Pairing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CompanionSettings {
     pub enabled: bool,
     pub port: u16,
-    /// Optional external tunnel URL (e.g. Cloudflare Tunnel / Tailscale Funnel / ngrok) used in
-    /// the QR code instead of the LAN IP.
+    /// Enable zero-setup remote access via Cloudflare Workers + Durable Objects Relay.
+    #[serde(default)]
+    pub relay_enabled: bool,
+    /// Optional custom Cloudflare Relay base URL (defaults to `DEFAULT_COMPANION_RELAY_URL`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub relay_url: String,
+    /// Persistent random host slug (`tc...`) for `/r/<relay_host_id>`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub relay_host_id: String,
+    /// Private host secret authenticating Desktop's outbound WebSocket to the relay.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub relay_secret: String,
+    /// Optional external tunnel URL override (e.g. Tailscale Funnel / ngrok / custom domain) used
+    /// in the QR code instead of the built-in Cloudflare relay or LAN IP.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tunnel_url: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<PairedDevice>,
+}
+
+impl CompanionSettings {
+    pub fn effective_relay_url(&self) -> &str {
+        let trimmed = self.relay_url.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
+            DEFAULT_COMPANION_RELAY_URL
+        } else {
+            trimmed
+        }
+    }
 }
 
 impl Default for CompanionSettings {
@@ -178,6 +204,10 @@ impl Default for CompanionSettings {
         Self {
             enabled: false,
             port: 7890,
+            relay_enabled: false,
+            relay_url: String::new(),
+            relay_host_id: String::new(),
+            relay_secret: String::new(),
             tunnel_url: String::new(),
             devices: Vec::new(),
         }

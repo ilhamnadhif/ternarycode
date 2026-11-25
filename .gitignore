@@ -7,3 +7,5 @@
 /docs/gate-*.md
 /design/
 scripts/.e2e-run*.sh
+relay/node_modules/
+relay/.wrangler/

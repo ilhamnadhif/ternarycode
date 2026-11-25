@@ -33,6 +33,7 @@ pub use browser_linux as browser_input;
 pub use browser_linux as browser_popup;
 pub mod cli;
 pub mod companion;
+pub mod companion_relay;
 #[cfg(debug_assertions)]
 pub mod devtest;
 #[cfg(debug_assertions)]

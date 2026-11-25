@@ -90,7 +90,7 @@ fn page_rows(page: SettingsPage) -> &'static [&'static str] {
                 &["An agent needs you", "Something failed", "An agent finished its turn", "A long command finished"]
             }
         }
-        SettingsPage::Phone => &["Companion server", "Port", "Tunnel address", "Scan with your phone's camera", "Paired phones"],
+        SettingsPage::Phone => &["Companion server", "Remote access", "Port", "Tunnel address", "Scan with your phone's camera", "Paired phones"],
         SettingsPage::Updates => &["Check for updates automatically", "Install update", "Releases"],
         SettingsPage::About => &["MIT license", "Releases"],
     }

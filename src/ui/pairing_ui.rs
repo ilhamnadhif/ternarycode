@@ -18,18 +18,25 @@ impl App {
         let dark = ui.visuals().dark_mode;
         let running = self.companion.is_some();
 
-        // The server, its port and a tunnel.
+        // The server, remote Cloudflare relay, port, and optional custom tunnel override.
         let port_draft_id = egui::Id::new("companion-port-draft");
         let port_s = ui.data(|d| d.get_temp::<String>(port_draft_id)).unwrap_or_else(|| self.settings.companion.port.to_string());
         let port_bad = port_s.trim().parse::<u16>().ok().filter(|&v| v >= 1024).is_none();
         let tunnel = self.settings.companion.tunnel_url.trim().to_string();
         let tunnel_bad = !tunnel.is_empty() && !tunnel.starts_with("http://") && !tunnel.starts_with("https://");
+        let relay_status = self
+            .companion
+            .as_ref()
+            .map(crate::companion::CompanionHandle::relay_status)
+            .unwrap_or_default();
         let labels = [
             (t("Companion server"), t("Serves a small web app on your local network. Each phone gets its own key.")),
+            (t("Remote access"), t("Reach this computer from anywhere via Cloudflare Relay (works outside Wi-Fi).")),
             (t("Port"), ""),
-            (t("Tunnel address"), t("Optional: Cloudflare, Tailscale or ngrok.")),
+            (t("Tunnel address"), t("Optional override: Tailscale, ngrok or custom URL.")),
         ];
         let mut toggle = false;
+        let mut toggle_relay = false;
         section(ui, search, None, None, &labels, |c| {
             c.row(labels[0].0, labels[0].1, |ui| {
                 let (st, label) = if running { (Status::Done, t("Online")) } else { (Status::Idle, t("Off")) };
@@ -42,6 +49,32 @@ impl App {
                 crate::devtest::record("companion-switch", s.rect);
                 toggle = s.changed();
             });
+            let relay_err = match &relay_status {
+                crate::companion::RelayStatus::Error(msg) => Some(msg.as_str()),
+                _ => None,
+            };
+            let mut relay_row = |ui: &mut Ui, app: &App| {
+                let (st, label) = match &relay_status {
+                    crate::companion::RelayStatus::Connected => (Status::Done, t("Connected")),
+                    crate::companion::RelayStatus::Connecting => (Status::NeedsInput, t("Connecting")),
+                    crate::companion::RelayStatus::Error(_) => (Status::Failed(1), t("Offline")),
+                    crate::companion::RelayStatus::Off => (Status::Idle, t("Off")),
+                };
+                let w = kit::state_pill_width(ui.painter(), st, label);
+                let (r, resp) = ui.allocate_exact_size(vec2(w, kit::PILL_H), Sense::hover());
+                kit::paint_state_pill(ui.painter(), r.left_center(), st, label, &p, dark);
+                if let Some(err) = relay_err {
+                    resp.on_hover_text(err);
+                }
+                let mut rel = app.settings.companion.relay_enabled;
+                let s = kit::switch(ui, &mut rel);
+                toggle_relay = s.changed();
+            };
+            if let Some(err) = relay_err {
+                c.row_note(labels[1].0, err, p.err, |ui| relay_row(ui, self));
+            } else {
+                c.row(labels[1].0, labels[1].1, |ui| relay_row(ui, self));
+            }
             let port_row = |ui: &mut Ui, app: &mut App| {
                 let port_id = egui::Id::new("companion-port");
                 let mut text = ui.data(|d| d.get_temp::<String>(port_draft_id)).unwrap_or_else(|| app.settings.companion.port.to_string());
@@ -66,11 +99,11 @@ impl App {
                 }
             };
             if port_bad {
-                c.row_note(labels[1].0, t("From 1024 to 65535."), p.err, |ui| port_row(ui, self));
+                c.row_note(labels[2].0, t("From 1024 to 65535."), p.err, |ui| port_row(ui, self));
             } else {
-                c.row(labels[1].0, "", |ui| port_row(ui, self));
+                c.row(labels[2].0, "", |ui| port_row(ui, self));
             }
-            let note = if tunnel_bad { t("It starts with https:// or http://.") } else { labels[2].1 };
+            let note = if tunnel_bad { t("It starts with https:// or http://.") } else { labels[3].1 };
             let tunnel_row = |ui: &mut Ui, app: &mut App| {
                 let mut url = app.settings.companion.tunnel_url.clone();
                 if kit::field(ui, egui::Id::new("companion-tunnel"), &mut url, Some(icons::GLOBE_SIMPLE), "https://…", 240.0, false).changed() {
@@ -79,13 +112,16 @@ impl App {
                 }
             };
             if tunnel_bad {
-                c.row_note(labels[2].0, note, p.err, |ui| tunnel_row(ui, self));
+                c.row_note(labels[3].0, note, p.err, |ui| tunnel_row(ui, self));
             } else {
-                c.row(labels[2].0, note, |ui| tunnel_row(ui, self));
+                c.row(labels[3].0, note, |ui| tunnel_row(ui, self));
             }
         });
         if toggle {
             self.actions.push(Action::ToggleCompanionServer);
+        }
+        if toggle_relay {
+            self.actions.push(Action::ToggleCompanionRelay);
         }
 
         // The code to scan (while the server runs).
@@ -94,12 +130,13 @@ impl App {
             match self.companion.as_ref().map(|c| {
                 let token = c.pair_token();
                 let valid_tunnel = if tunnel_bad { "" } else { tunnel.as_str() };
+                let has_remote = !valid_tunnel.is_empty() || c.relay_endpoint().is_some();
                 (
                     c.pairing_url(valid_tunnel),
                     token.clone(),
-                    format!("http://{}:{}", c.local_ip, c.port),
+                    c.active_endpoint(valid_tunnel),
                     format!("http://127.0.0.1:{}/?pair={token}", c.port),
-                    c.local_ip == "127.0.0.1" && valid_tunnel.is_empty(),
+                    c.local_ip == "127.0.0.1" && !has_remote,
                 )
             }) {
                 Some((pair_url, code, endpoint, preview, loopback)) => {

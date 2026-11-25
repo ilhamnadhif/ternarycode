@@ -35,6 +35,8 @@ tc-git = { path = "crates/tc-git" }
 tc-lsp = { path = "crates/tc-lsp" }
 tc-term = { path = "crates/tc-term" }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu"] }

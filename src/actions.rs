@@ -277,6 +277,8 @@ pub enum Action {
     ClearProfileCooldown(String),
     /// Starts or stops the embedded Mobile Companion HTTP/SSE server.
     ToggleCompanionServer,
+    /// Enables or disables zero-setup Cloudflare Relay remote access.
+    ToggleCompanionRelay,
     /// Generates a fresh pairing QR token (existing paired devices remain authorised).
     RegeneratePairingToken,
     /// Immediately revokes a paired phone/device token.
