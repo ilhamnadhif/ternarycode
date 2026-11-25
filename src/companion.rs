@@ -26,6 +26,8 @@ const WEB_HTML: &str = include_str!("companion_web.html");
 const MAX_BODY_BYTES: usize = 64 * 1024;
 const MAX_CONCURRENT_CONNS: usize = 64;
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
+const SSE_WRITE_TIMEOUT: Duration = Duration::from_secs(20);
+const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 const PAIR_RATE_WINDOW: Duration = Duration::from_secs(60);
 const PAIR_MAX_FAILURES: usize = 5;
 
@@ -221,6 +223,7 @@ impl CompanionHandle {
                     }
                     res = listener.accept() => {
                         let Ok((stream, addr)) = res else { continue };
+                        let _ = stream.set_nodelay(true);
                         let Ok(permit) = sem.clone().try_acquire_owned() else {
                             drop(stream);
                             continue;
@@ -786,14 +789,14 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
         }
         ("GET", "/api/events") => {
             let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-            if tokio::time::timeout(IO_TIMEOUT, stream.write_all(headers.as_bytes())).await.is_err() {
+            if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(headers.as_bytes())).await.is_err() {
                 return Ok(());
             }
             let initial = state.snapshot.read().clone();
-            if tokio::time::timeout(IO_TIMEOUT, stream.write_all(format!("data: {initial}\n\n").as_bytes())).await.is_err() {
+            if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(format!("data: {initial}\n\n").as_bytes())).await.is_err() {
                 return Ok(());
             }
-            let _ = tokio::time::timeout(IO_TIMEOUT, stream.flush()).await;
+            let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
             let mut rx = state.events.subscribe();
             let mut sd_rx = state.shutdown.subscribe();
             let mut auth_rx = state.auth_ver.subscribe();
@@ -818,25 +821,29 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
                         }
                         match msg {
                             Ok(payload) => {
-                                if tokio::time::timeout(IO_TIMEOUT, stream.write_all(format!("data: {payload}\n\n").as_bytes())).await.is_err() {
+                                if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(format!("data: {payload}\n\n").as_bytes())).await.is_err() {
                                     break;
                                 }
-                                let _ = tokio::time::timeout(IO_TIMEOUT, stream.flush()).await;
+                                let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
                             }
                             Err(broadcast::error::RecvError::Lagged(_)) => {
                                 let latest = state.snapshot.read().clone();
-                                if tokio::time::timeout(IO_TIMEOUT, stream.write_all(format!("data: {latest}\n\n").as_bytes())).await.is_err() {
+                                if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(format!("data: {latest}\n\n").as_bytes())).await.is_err() {
                                     break;
                                 }
+                                let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
                             }
                             Err(_) => break,
                         }
                     }
-                    _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                    _ = tokio::time::sleep(SSE_KEEPALIVE_INTERVAL) => {
                         if !state.auth.read().devices.contains_key(&token_hash) {
                             break;
                         }
-                        if tokio::time::timeout(IO_TIMEOUT, stream.write_all(b": keepalive\n\n")).await.is_err() {
+                        if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(b": keepalive\n\n")).await.is_err() {
+                            break;
+                        }
+                        if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await.is_err() {
                             break;
                         }
                     }

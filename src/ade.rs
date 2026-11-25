@@ -1218,12 +1218,38 @@ impl App {
             CompanionCmd::SendInput { pane, text, enter } => {
                 self.wake(ctx, pane);
                 if let Some(p) = self.panes.get_mut(&pane) {
-                    let mut bytes = text.into_bytes();
-                    if enter {
-                        bytes.push(b'\r');
-                        p.entered(Instant::now());
+                    let normalized = text.replace("\r\n", "\n");
+                    let clean = if enter && !normalized.is_empty() {
+                        normalized.trim_end_matches(['\r', '\n'])
+                    } else {
+                        normalized.as_str()
+                    };
+                    if enter && !clean.is_empty() {
+                        // Write text and Enter in separate PTY writes separated by a brief pause so
+                        // modern TUI paste-burst detectors (Codex CLI, Claude Code, OpenCode, etc.)
+                        // treat `\r` as Submit instead of inserting a pasted newline.
+                        p.input(clean.as_bytes().to_vec());
+                        let tx = self.app_tx.clone();
+                        let repaint = ctx.clone();
+                        self.rt.spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(220)).await;
+                            let _ = tx.send(AppMsg::Companion(CompanionCmd::SendInput {
+                                pane,
+                                text: String::new(),
+                                enter: true,
+                            }));
+                            repaint.request_repaint();
+                        });
+                    } else {
+                        let mut bytes = clean.as_bytes().to_vec();
+                        if enter {
+                            bytes.push(b'\r');
+                            p.entered(Instant::now());
+                        }
+                        if !bytes.is_empty() {
+                            p.input(bytes);
+                        }
                     }
-                    p.input(bytes);
                 }
                 self.push_companion_now();
             }
