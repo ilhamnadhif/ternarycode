@@ -437,7 +437,10 @@ impl App {
             let panes = active_by_profile.get(&prof.id);
             rt.active_panes = panes.map(|v| v.iter().map(|(a, b, _)| (*a, *b)).collect()).unwrap_or_default();
             if !matches!(rt.state, ProfileState::RateLimited | ProfileState::Cooldown) {
-                let running = panes.is_some_and(|v| v.iter().any(|(_, _, s)| matches!(s, Status::Running | Status::NeedsInput | Status::Unknown)));
+                // Only truly working / waiting-for-input panes mark an account "In use".
+                // Open idle agents without start hooks (`Status::Unknown`, e.g. idle Codex)
+                // stay `Ready`, consistent with idle Claude Code and Antigravity panes.
+                let running = panes.is_some_and(|v| v.iter().any(|(_, _, s)| matches!(s, Status::Running | Status::NeedsInput)));
                 let failed = panes.is_some_and(|v| v.iter().any(|(_, _, s)| matches!(s, Status::Failed(_))));
                 rt.state = if running {
                     ProfileState::Running
@@ -556,8 +559,25 @@ impl App {
             self.push_companion_now();
         }
 
-        // 3. Background real token usage scan across every profile's config dir (every 20 s, bounded to 1 in-flight).
-        if !self.usage_scan_running && self.usage_scan_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(20)) {
+        // 3. Background real token usage scan across every profile's config dir (bounded to 1 in-flight).
+        // Adaptive cadence: 12s while agents are actively running or usage views/mobile are open,
+        // relaxing to 60s while completely idle (plus instant event-driven refresh on turn finish
+        // and popover open, backed by per-file mtime caching for sub-millisecond incremental scans).
+        let any_agent_busy = self.panes.values().any(|p| {
+            p.alive()
+                && p.tracker.agent.is_some()
+                && matches!(p.tracker.status, Status::Running | Status::NeedsInput)
+        });
+        let usage_interval = if any_agent_busy
+            || self.monitor_popover
+            || matches!(self.view, View::Profiles | View::Monitor)
+            || companion_active
+        {
+            Duration::from_secs(12)
+        } else {
+            Duration::from_secs(60)
+        };
+        if !self.usage_scan_running && self.usage_scan_at.is_none_or(|t| now.duration_since(t) >= usage_interval) {
             self.usage_scan_at = Some(now);
             self.usage_scan_running = true;
             let home = paths::home_dir();
@@ -1247,6 +1267,14 @@ impl App {
             }
         } else {
             self.companion = None;
+        }
+    }
+
+    /// Triggers an immediate off-thread usage scan (debounced to >= 2s) after an agent finishes
+    /// a turn or when the user opens the Accounts & usage popover.
+    pub fn request_usage_refresh(&mut self, now: Instant) {
+        if self.usage_scan_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(2)) {
+            self.usage_scan_at = None;
         }
     }
 

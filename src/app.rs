@@ -1826,6 +1826,11 @@ impl App {
                     }
                     if let Some((proj, prof, lvl, text)) = log_info {
                         self.push_agent_log(lvl, Some(proj), Some(msg.pane), prof, text);
+                        if matches!(msg.event.as_str(), "Stop" | "AfterAgent" | "session.idle")
+                            || msg.kind.as_deref() == Some("agent-turn-complete")
+                        {
+                            self.request_usage_refresh(now);
+                        }
                         self.push_companion_now();
                     }
                 }
@@ -1962,6 +1967,7 @@ impl App {
                         }
                     }
                     self.recompute_usage_totals();
+                    self.push_companion_now();
                 }
                 AppMsg::ProjectSessions(pid, list) => {
                     self.sessions_running.remove(&pid);

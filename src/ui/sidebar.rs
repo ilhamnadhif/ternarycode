@@ -464,6 +464,9 @@ impl App {
         }
         if r.on_hover_text(t("Accounts & usage")).clicked() {
             self.monitor_popover = !self.monitor_popover;
+            if self.monitor_popover {
+                self.request_usage_refresh(std::time::Instant::now());
+            }
         }
         self.monitor_pill_rect = Some(rect);
     }

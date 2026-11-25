@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 use serde_json::Value;
@@ -605,6 +606,265 @@ pub struct ProfileUsageReport {
     pub account_email: Option<String>,
     /// Whether local auth credentials exist in this profile's config folder (`None` if indeterminate).
     pub signed_in: Option<bool>,
+    /// Unix epoch seconds when a cached server-side quota snapshot (e.g. Claude
+    /// `cachedUsageUtilization.fetchedAtMs`) was last fetched from the provider.
+    pub quota_fetched_at_unix: Option<i64>,
+}
+
+/// Bounded in-memory per-file cache for parsed JSONL usage logs, keyed by path + file size +
+/// nanosecond mtime. Eliminates redundant disk reads & JSON parsing across unchanged historical
+/// session logs while preserving exact sliding-window filtering (`cached_min_cut <= requested`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct UsageFileKey {
+    path: PathBuf,
+    len: u64,
+    mtime_ns: i128,
+}
+
+#[derive(Clone, Debug)]
+struct CachedCodexFile {
+    min_cut: i64,
+    turns: Vec<(i64, TokenUsage)>,
+    best_rl: Option<(i64, bool, Value)>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedClaudeFile {
+    min_cut: i64,
+    by_id: Vec<(String, TokenUsage, i64)>,
+    anons: Vec<(TokenUsage, i64)>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedAgyFile {
+    min_cut: i64,
+    events: Vec<(i64, bool, TokenUsage)>,
+}
+
+#[derive(Default)]
+struct UsageParseCache {
+    claude: HashMap<UsageFileKey, CachedClaudeFile>,
+    codex: HashMap<UsageFileKey, CachedCodexFile>,
+    agy: HashMap<UsageFileKey, CachedAgyFile>,
+}
+
+fn usage_cache() -> &'static Mutex<UsageParseCache> {
+    static CACHE: OnceLock<Mutex<UsageParseCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(UsageParseCache::default()))
+}
+
+fn usage_file_key(path: &Path) -> Option<UsageFileKey> {
+    let meta = fs::metadata(path).ok()?;
+    let mtime_ns = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos() as i128);
+    Some(UsageFileKey {
+        path: path.to_path_buf(),
+        len: meta.len(),
+        mtime_ns,
+    })
+}
+
+fn parse_claude_usage_file(path: &Path, fallback_ts: i64, min_cut_unix: i64) -> CachedClaudeFile {
+    let key = usage_file_key(path);
+    if let Some(ref k) = key
+        && let Ok(guard) = usage_cache().lock()
+        && let Some(hit) = guard.claude.get(k)
+        && hit.min_cut <= min_cut_unix
+    {
+        return hit.clone();
+    }
+    let mut by_id: HashMap<String, (TokenUsage, i64)> = HashMap::new();
+    let mut anons: Vec<(TokenUsage, i64)> = Vec::new();
+    for line in recent_jsonl_lines(path, 8 * 1024 * 1024, 64 * 1024 * 1024, min_cut_unix, |l| l.contains("\"usage\"")) {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        if !v["type"].as_str().is_none_or(|t| t == "assistant") {
+            continue;
+        }
+        let msg = &v["message"];
+        let u = if msg["usage"].is_object() { &msg["usage"] } else { &v["usage"] };
+        if !u.is_object() {
+            continue;
+        }
+        let ts = v["timestamp"].as_str().and_then(parse_iso_unix).unwrap_or(fallback_ts);
+        let entry = TokenUsage {
+            input: u["input_tokens"]
+                .as_u64()
+                .unwrap_or(0)
+                .saturating_add(u["cache_creation_input_tokens"].as_u64().unwrap_or(0)),
+            output: u["output_tokens"].as_u64().unwrap_or(0),
+            cache_read: u["cache_read_input_tokens"].as_u64().unwrap_or(0),
+        };
+        if let Some(id) = msg["id"].as_str() {
+            let slot = by_id.entry(id.to_string()).or_insert((TokenUsage::default(), ts));
+            slot.0.input = slot.0.input.max(entry.input);
+            slot.0.output = slot.0.output.max(entry.output);
+            slot.0.cache_read = slot.0.cache_read.max(entry.cache_read);
+            slot.1 = slot.1.max(ts);
+        } else {
+            anons.push((entry, ts));
+        }
+    }
+    let parsed = CachedClaudeFile {
+        min_cut: min_cut_unix,
+        by_id: by_id.into_iter().map(|(k, (u, ts))| (k, u, ts)).collect(),
+        anons,
+    };
+    if let Some(k) = key
+        && let Ok(mut guard) = usage_cache().lock()
+    {
+        if guard.claude.len() >= 512 {
+            guard.claude.clear();
+        }
+        guard.claude.insert(k, parsed.clone());
+    }
+    parsed
+}
+
+fn parse_codex_usage_file(path: &Path, fallback_ts: i64, min_cut_unix: i64) -> CachedCodexFile {
+    let key = usage_file_key(path);
+    if let Some(ref k) = key
+        && let Ok(guard) = usage_cache().lock()
+        && let Some(hit) = guard.codex.get(k)
+        && hit.min_cut <= min_cut_unix
+    {
+        return hit.clone();
+    }
+    let lines = recent_jsonl_lines(path, 32 * 1024 * 1024, 64 * 1024 * 1024, min_cut_unix, |l| {
+        l.contains("token_usage") || l.contains("rate_limits")
+    });
+    let mut prev_total: Option<(u64, u64, u64)> = None;
+    let mut turns: Vec<(i64, TokenUsage)> = Vec::new();
+    let mut best_rl: Option<(i64, bool, Value)> = None;
+    for line in &lines {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let payload = &v["payload"];
+        let ev_ts = v["timestamp"].as_str().and_then(parse_iso_unix).unwrap_or(fallback_ts);
+        if payload["rate_limits"].is_object() {
+            let rl = &payload["rate_limits"];
+            let is_primary_id = rl["limit_id"].as_str().is_none_or(|id| id == "codex");
+            let has_window = rl["primary"].is_object() || rl["secondary"].is_object();
+            if has_window {
+                let replace = match &best_rl {
+                    None => true,
+                    Some((best_ts, best_prim, _)) => {
+                        ev_ts > *best_ts + 5
+                            || (ev_ts >= *best_ts - 5 && is_primary_id && !*best_prim)
+                            || (ev_ts >= *best_ts && is_primary_id == *best_prim)
+                    }
+                };
+                if replace {
+                    best_rl = Some((ev_ts, is_primary_id, rl.clone()));
+                }
+            }
+        }
+        let info = &payload["info"];
+        if !info.is_object() {
+            continue;
+        }
+        let tu = &info["total_token_usage"];
+        let lu = &info["last_token_usage"];
+        let cur_total = tu.is_object().then(|| {
+            let raw_in = tu["input_tokens"].as_u64().unwrap_or(0);
+            let cached = tu["cached_input_tokens"].as_u64().unwrap_or(0);
+            let out = tu["output_tokens"].as_u64().unwrap_or(0);
+            (raw_in, out, cached)
+        });
+        if let (Some(prev), Some(cur)) = (prev_total, cur_total)
+            && prev.0 == cur.0
+            && prev.1 == cur.1
+        {
+            continue;
+        }
+        let delta = if lu.is_object() {
+            let raw_in = lu["input_tokens"].as_u64().unwrap_or(0);
+            let cached = lu["cached_input_tokens"].as_u64().unwrap_or(0);
+            let out = lu["output_tokens"].as_u64().unwrap_or(0);
+            TokenUsage {
+                input: raw_in.saturating_sub(cached),
+                output: out,
+                cache_read: cached,
+            }
+        } else if let Some((raw_in, out, cached)) = cur_total {
+            let (pi, po, pc) = prev_total.unwrap_or((0, 0, 0));
+            let di = raw_in.saturating_sub(pi);
+            let dc = cached.saturating_sub(pc);
+            let do_ = out.saturating_sub(po);
+            TokenUsage {
+                input: di.saturating_sub(dc),
+                output: do_,
+                cache_read: dc,
+            }
+        } else {
+            continue;
+        };
+        if let Some(cur) = cur_total {
+            prev_total = Some(cur);
+        }
+        if delta.total() > 0 || delta.cache_read > 0 {
+            turns.push((ev_ts, delta));
+        }
+    }
+    let parsed = CachedCodexFile {
+        min_cut: min_cut_unix,
+        turns,
+        best_rl,
+    };
+    if let Some(k) = key
+        && let Ok(mut guard) = usage_cache().lock()
+    {
+        if guard.codex.len() >= 512 {
+            guard.codex.clear();
+        }
+        guard.codex.insert(k, parsed.clone());
+    }
+    parsed
+}
+
+fn parse_agy_usage_file(path: &Path, fallback_ts: i64, cut_7d: i64) -> CachedAgyFile {
+    let key = usage_file_key(path);
+    if let Some(ref k) = key
+        && let Ok(guard) = usage_cache().lock()
+        && let Some(hit) = guard.agy.get(k)
+        && hit.min_cut <= cut_7d
+    {
+        return hit.clone();
+    }
+    let lines = recent_jsonl_lines(path, 8 * 1024 * 1024, 64 * 1024 * 1024, cut_7d, |l| {
+        l.contains("\"input_tokens\"") || l.contains("\"output_tokens\"") || l.contains("\"USER_INPUT\"")
+    });
+    let mut events = Vec::new();
+    for line in lines {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let ts = v["created_at"]
+            .as_str()
+            .or_else(|| v["timestamp"].as_str())
+            .and_then(parse_iso_unix)
+            .unwrap_or(fallback_ts);
+        if v["type"].as_str() == Some("USER_INPUT") {
+            events.push((ts, true, TokenUsage::default()));
+            continue;
+        }
+        let inp = v["input_tokens"].as_u64().unwrap_or(0);
+        let out = v["output_tokens"].as_u64().unwrap_or(0);
+        let cr = v["cache_read_tokens"].as_u64().unwrap_or(0);
+        if inp == 0 && out == 0 && cr == 0 {
+            continue;
+        }
+        events.push((ts, false, TokenUsage { input: inp, output: out, cache_read: cr }));
+    }
+    let parsed = CachedAgyFile { min_cut: cut_7d, events };
+    if let Some(k) = key
+        && let Ok(mut guard) = usage_cache().lock()
+    {
+        if guard.agy.len() >= 512 {
+            guard.agy.clear();
+        }
+        guard.agy.insert(k, parsed.clone());
+    }
+    parsed
 }
 
 /// Atomically copies `src` to `dst` if `dst` is missing or older/different than `src`.
@@ -1040,6 +1300,9 @@ fn read_claude_account_state(root: &Path, now_unix: i64, report: &mut ProfileUsa
     if !util.is_object() {
         return (None, None);
     }
+    if let Some(ms) = cached_root["fetchedAtMs"].as_i64().filter(|&m| m > 0) {
+        report.quota_fetched_at_unix = Some(ms / 1000);
+    }
 
     let parse_slot = |obj: &Value, default_mins: u32| -> (Option<f32>, Option<i64>, Option<i64>) {
         if !obj.is_object() {
@@ -1339,40 +1602,20 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
             files.sort_by_key(|f| std::cmp::Reverse(f.0));
 
             // Share message.id deduplication across parent + subagent logs so overlapping IDs
-            // are never double-counted.
+            // are never double-counted (backed by per-file mtime cache for fast incremental scans).
             let mut by_id: HashMap<String, (TokenUsage, i64)> = HashMap::new();
             let mut anons: Vec<(TokenUsage, i64)> = Vec::new();
             for (mtime, path) in files.into_iter().take(128) {
                 let fallback_ts = unix_secs(mtime);
-                for line in recent_jsonl_lines(&path, 8 * 1024 * 1024, 64 * 1024 * 1024, min_cut_unix, |l| l.contains("\"usage\"")) {
-                    let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-                    if !v["type"].as_str().is_none_or(|t| t == "assistant") {
-                        continue;
-                    }
-                    let msg = &v["message"];
-                    let u = if msg["usage"].is_object() { &msg["usage"] } else { &v["usage"] };
-                    if !u.is_object() {
-                        continue;
-                    }
-                    let ts = v["timestamp"].as_str().and_then(parse_iso_unix).unwrap_or(fallback_ts);
-                    let entry = TokenUsage {
-                        input: u["input_tokens"]
-                            .as_u64()
-                            .unwrap_or(0)
-                            .saturating_add(u["cache_creation_input_tokens"].as_u64().unwrap_or(0)),
-                        output: u["output_tokens"].as_u64().unwrap_or(0),
-                        cache_read: u["cache_read_input_tokens"].as_u64().unwrap_or(0),
-                    };
-                    if let Some(id) = msg["id"].as_str() {
-                        let slot = by_id.entry(id.to_string()).or_insert((TokenUsage::default(), ts));
-                        slot.0.input = slot.0.input.max(entry.input);
-                        slot.0.output = slot.0.output.max(entry.output);
-                        slot.0.cache_read = slot.0.cache_read.max(entry.cache_read);
-                        slot.1 = slot.1.max(ts);
-                    } else {
-                        anons.push((entry, ts));
-                    }
+                let parsed = parse_claude_usage_file(&path, fallback_ts, min_cut_unix);
+                for (id, entry, ts) in parsed.by_id {
+                    let slot = by_id.entry(id).or_insert((TokenUsage::default(), ts));
+                    slot.0.input = slot.0.input.max(entry.input);
+                    slot.0.output = slot.0.output.max(entry.output);
+                    slot.0.cache_read = slot.0.cache_read.max(entry.cache_read);
+                    slot.1 = slot.1.max(ts);
                 }
+                anons.extend(parsed.anons);
             }
             for (u, ts) in by_id.into_values().chain(anons) {
                 if ts >= cut_7d {
@@ -1423,93 +1666,35 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
 
             for (mtime, path) in files.into_iter().take(64) {
                 let fallback_ts = unix_secs(mtime);
-                let lines = recent_jsonl_lines(&path, 32 * 1024 * 1024, 64 * 1024 * 1024, min_codex_cut, |l| {
-                    l.contains("token_usage") || l.contains("rate_limits")
-                });
-                let mut prev_total: Option<(u64, u64, u64)> = None;
-                for line in &lines {
-                    let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-                    let payload = &v["payload"];
-                    let ev_ts = v["timestamp"].as_str().and_then(parse_iso_unix).unwrap_or(fallback_ts);
-                    if payload["rate_limits"].is_object() {
-                        let rl = &payload["rate_limits"];
-                        let is_primary_id = rl["limit_id"].as_str().is_none_or(|id| id == "codex");
-                        let pt = rl["plan_type"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
-                        let mut tmp = ProfileUsageReport::default();
-                        let (e5a, ela) = apply_codex_window(&mut tmp, &rl["primary"], now_unix, true);
-                        let (e5b, elb) = apply_codex_window(&mut tmp, &rl["secondary"], now_unix, false);
-                        if tmp.window_5h.used_percent.is_some()
-                            || tmp.window_weekly.used_percent.is_some()
-                            || tmp.window_5h.resets_at_unix.is_some()
-                            || tmp.window_weekly.resets_at_unix.is_some()
-                        {
-                            // Always pick the newest rate_limits snapshot across concurrent sessions,
-                            // preferring the main `"codex"` account limit over scoped sub-limits.
-                            let replace = match &best_rl {
-                                None => true,
-                                Some((best_ts, best_prim, _)) => {
-                                    ev_ts > *best_ts + 5
-                                        || (ev_ts >= *best_ts - 5 && is_primary_id && !*best_prim)
-                                        || (ev_ts >= *best_ts && is_primary_id == *best_prim)
-                                }
-                            };
-                            if replace {
-                                best_rl = Some((
-                                    ev_ts,
-                                    is_primary_id,
-                                    (pt, tmp.window_5h, tmp.window_weekly, e5a.or(e5b), ela.or(elb)),
-                                ));
-                            }
-                        }
-                    }
-                    let info = &payload["info"];
-                    if !info.is_object() {
-                        continue;
-                    }
-                    let tu = &info["total_token_usage"];
-                    let lu = &info["last_token_usage"];
-                    let cur_total = tu.is_object().then(|| {
-                        let raw_in = tu["input_tokens"].as_u64().unwrap_or(0);
-                        let cached = tu["cached_input_tokens"].as_u64().unwrap_or(0);
-                        let out = tu["output_tokens"].as_u64().unwrap_or(0);
-                        (raw_in, out, cached)
-                    });
-                    // Codex often emits duplicate consecutive `token_count` events with identical totals.
-                    if let (Some(prev), Some(cur)) = (prev_total, cur_total)
-                        && prev.0 == cur.0
-                        && prev.1 == cur.1
+                let parsed = parse_codex_usage_file(&path, fallback_ts, min_codex_cut);
+                if let Some((ev_ts, is_primary_id, rl)) = parsed.best_rl {
+                    let pt = rl["plan_type"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+                    let mut tmp = ProfileUsageReport::default();
+                    let (e5a, ela) = apply_codex_window(&mut tmp, &rl["primary"], now_unix, true);
+                    let (e5b, elb) = apply_codex_window(&mut tmp, &rl["secondary"], now_unix, false);
+                    if tmp.window_5h.used_percent.is_some()
+                        || tmp.window_weekly.used_percent.is_some()
+                        || tmp.window_5h.resets_at_unix.is_some()
+                        || tmp.window_weekly.resets_at_unix.is_some()
                     {
-                        continue;
-                    }
-                    let delta = if lu.is_object() {
-                        let raw_in = lu["input_tokens"].as_u64().unwrap_or(0);
-                        let cached = lu["cached_input_tokens"].as_u64().unwrap_or(0);
-                        let out = lu["output_tokens"].as_u64().unwrap_or(0);
-                        TokenUsage {
-                            input: raw_in.saturating_sub(cached),
-                            output: out,
-                            cache_read: cached,
+                        let replace = match &best_rl {
+                            None => true,
+                            Some((best_ts, best_prim, _)) => {
+                                ev_ts > *best_ts + 5
+                                    || (ev_ts >= *best_ts - 5 && is_primary_id && !*best_prim)
+                                    || (ev_ts >= *best_ts && is_primary_id == *best_prim)
+                            }
+                        };
+                        if replace {
+                            best_rl = Some((
+                                ev_ts,
+                                is_primary_id,
+                                (pt, tmp.window_5h, tmp.window_weekly, e5a.or(e5b), ela.or(elb)),
+                            ));
                         }
-                    } else if let Some((raw_in, out, cached)) = cur_total {
-                        let (pi, po, pc) = prev_total.unwrap_or((0, 0, 0));
-                        let di = raw_in.saturating_sub(pi);
-                        let dc = cached.saturating_sub(pc);
-                        let do_ = out.saturating_sub(po);
-                        TokenUsage {
-                            input: di.saturating_sub(dc),
-                            output: do_,
-                            cache_read: dc,
-                        }
-                    } else {
-                        continue;
-                    };
-                    if let Some(cur) = cur_total {
-                        prev_total = Some(cur);
-                    }
-                    if delta.total() > 0 || delta.cache_read > 0 {
-                        turn_tokens.push((ev_ts, delta));
                     }
                 }
+                turn_tokens.extend(parsed.turns);
             }
 
             let mut server_5h = WindowQuota::default();
@@ -1667,17 +1852,9 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
             let mut planner_turns_7d = 0u32;
             for (mtime, path) in transcripts.into_iter().take(128) {
                 let fallback_ts = unix_secs(mtime);
-                let lines = recent_jsonl_lines(&path, 8 * 1024 * 1024, 64 * 1024 * 1024, cut_7d, |l| {
-                    l.contains("\"input_tokens\"") || l.contains("\"output_tokens\"") || l.contains("\"USER_INPUT\"")
-                });
-                for line in lines {
-                    let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-                    let ts = v["created_at"]
-                        .as_str()
-                        .or_else(|| v["timestamp"].as_str())
-                        .and_then(parse_iso_unix)
-                        .unwrap_or(fallback_ts);
-                    if v["type"].as_str() == Some("USER_INPUT") {
+                let parsed = parse_agy_usage_file(&path, fallback_ts, cut_7d);
+                for (ts, is_user, u) in parsed.events {
+                    if is_user {
                         saw_user_turns = true;
                         if ts >= cut_7d {
                             report.window_weekly.turns = report.window_weekly.turns.saturating_add(1);
@@ -1687,13 +1864,6 @@ pub fn profile_usage(agent: AgentKind, root: &Path) -> ProfileUsageReport {
                         }
                         continue;
                     }
-                    let inp = v["input_tokens"].as_u64().unwrap_or(0);
-                    let out = v["output_tokens"].as_u64().unwrap_or(0);
-                    let cr = v["cache_read_tokens"].as_u64().unwrap_or(0);
-                    if inp == 0 && out == 0 && cr == 0 {
-                        continue;
-                    }
-                    let u = TokenUsage { input: inp, output: out, cache_read: cr };
                     if ts >= cut_7d {
                         report.window_weekly.tokens.add_assign(u);
                         planner_turns_7d = planner_turns_7d.saturating_add(1);
@@ -2097,6 +2267,26 @@ mod tests {
         // Does not fabricate a rolling reset clock that differs from Google's server quota window.
         assert_eq!(agy_rep.window_5h.resets_at_unix, None);
         assert_eq!(agy_rep.window_weekly.resets_at_unix, None);
+
+        // Per-file usage cache hit stays identical, and appending a new turn invalidates cleanly!
+        let agy_rep_cached = profile_usage(AgentKind::Antigravity, &agy_root);
+        assert_eq!(agy_rep_cached.window_5h.tokens.total(), 15_000);
+        write(
+            &agy_root.join("brain/conv-1/.system_generated/logs/transcript.jsonl"),
+            &format!(
+                concat!(
+                    "{{\"step_index\":0,\"type\":\"USER_INPUT\",\"created_at\":\"{now_s}\"}}\n",
+                    "{{\"step_index\":1,\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"{now_s}\",\"input_tokens\":10000,\"output_tokens\":2000,\"cache_read_tokens\":50000}}\n",
+                    "{{\"step_index\":2,\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"{now_s}\",\"input_tokens\":2000,\"output_tokens\":1000,\"cache_read_tokens\":30000}}\n",
+                    "{{\"step_index\":3,\"type\":\"USER_INPUT\",\"created_at\":\"{now_s}\"}}\n",
+                    "{{\"step_index\":4,\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"{now_s}\",\"input_tokens\":4000,\"output_tokens\":1000,\"cache_read_tokens\":0}}\n"
+                ),
+                now_s = now_s
+            ),
+        );
+        let agy_rep_updated = profile_usage(AgentKind::Antigravity, &agy_root);
+        assert_eq!(agy_rep_updated.window_5h.tokens.total(), 20_000);
+        assert_eq!(agy_rep_updated.window_5h.turns, 2);
     }
 
     #[test]

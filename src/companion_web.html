@@ -582,7 +582,6 @@ function renderProfiles(){
       </div>
       ${renderWinBar(p.window_5h)}
       ${renderWinBar(p.window_weekly)}
-      ${p.active_session?`<div class="data">Active in ${esc(p.active_session)}</div>`:""}
     </div>`;
   }).join("") : emptyState("user", "No accounts", `Add one in Settings → Accounts on your ${esc(hostName())}.`);
   html += `<button class="btn danger block" data-act="unpair">${ic("signout")}Unpair this device</button>`;
