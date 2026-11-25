@@ -464,7 +464,11 @@ impl App {
                         wake_at(Duration::from_secs(12) - age);
                     }
                 } else if now >= banner.reset_at {
-                    pane.rate_limit = None;
+                    if let Some(expired) = pane.rate_limit.take() {
+                        pane.remember_dismissed_limit(expired.reason);
+                        pane.snapshot_historical_limits();
+                        pane.limit_wait_new_turn = true;
+                    }
                 } else {
                     wake_at(banner.reset_at.saturating_duration_since(now).min(Duration::from_secs(1)));
                 }
@@ -517,16 +521,33 @@ impl App {
                 } else {
                     false
                 };
-                if !ignore_limit {
-                    if let Some(hit) = profiles::detect_rate_limit(&tail) {
-                        let already_dismissed = pane.has_dismissed_limit(&hit.reason);
-                        if !already_dismissed && pane.last_limit_sig.as_deref() != Some(hit.reason.as_str()) {
-                            pane.last_limit_sig = Some(hit.reason.clone());
+                if !ignore_limit && pane.output_seq != pane.last_limit_scan_seq {
+                    pane.last_limit_scan_seq = pane.output_seq;
+                    if pane.limit_wait_new_turn {
+                        // Resumed/replaying/dismissed session: absorb any historical rate-limit
+                        // text as baseline without firing a notice until a new turn runs.
+                        pane.snapshot_historical_limits_from(&tail);
+                    } else if let Some(hit) = profiles::detect_rate_limit(&tail) {
+                        let current_count = profiles::count_rate_limit_lines(&tail);
+                        let norm = crate::pane::normalize_limit_sig(&hit.reason);
+                        if !pane.is_limit_suppressed(&hit, current_count)
+                            && pane.last_limit_sig.as_deref() != Some(norm.as_str())
+                        {
+                            pane.last_limit_sig = Some(norm);
                             detected.push((pane.id, hit));
                         }
                     } else {
                         pane.last_limit_sig = None;
-                        pane.dismissed_limit_sigs.clear();
+                        // Only drop historical suppression once the old rate-limit text has
+                        // completely left the entire 24-line tail (never wipe it just because a
+                        // resize or spinner briefly pushed it past the bottom 10 lines).
+                        if pane.rate_limit.is_none()
+                            && profiles::collect_rate_limit_lines(&tail).is_empty()
+                        {
+                            pane.pre_turn_limit_count = 0;
+                            pane.dismissed_limit_sigs.clear();
+                            pane.dismissed_limit_patterns.clear();
+                        }
                     }
                 }
             }
@@ -1036,12 +1057,17 @@ impl App {
             pane.active_profile = Some(target.id.clone());
             pane.preset = Some(preset.id.clone());
             pane.rate_limit_dismissed = false;
-            pane.dismissed_limit_sigs.clear();
-            // Keep `last_limit_sig` and hold scanning for 6s so stale 429 output on screen never cascades!
+            // Snapshot stale 429 output currently on screen and hold scanning for 6s so replayed
+            // or pre-switch limit text never cascades onto the newly switched account.
+            pane.snapshot_historical_limits();
             pane.limit_ignore_until = Some(now + Duration::from_secs(6));
-            if !copied_session {
+            if copied_session {
+                pane.limit_wait_new_turn = true;
+            } else {
                 pane.agent_session = None;
                 pane.last_agent = Some(target.agent);
+                pane.turn_started_output_seq = pane.output_seq;
+                pane.limit_wait_new_turn = false;
             }
             if !auto {
                 pane.rate_limit = None;
@@ -1337,6 +1363,8 @@ impl App {
                 if let Some(sig) = pane.last_limit_sig.clone() {
                     pane.remember_dismissed_limit(sig);
                 }
+                pane.snapshot_historical_limits();
+                pane.limit_wait_new_turn = true;
                 pane.rate_limit_dismissed = false;
                 pane.limit_ignore_until = Some(now + Duration::from_secs(6));
                 if pane.tracker.status == Status::NeedsInput {
@@ -1372,6 +1400,8 @@ impl App {
             if let Some(sig) = p.last_limit_sig.clone() {
                 p.remember_dismissed_limit(sig);
             }
+            p.snapshot_historical_limits();
+            p.limit_wait_new_turn = true;
             p.rate_limit_dismissed = true;
             p.limit_ignore_until = Some(now + Duration::from_secs(6));
             p.tracker.dismiss_notice(now);

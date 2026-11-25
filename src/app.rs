@@ -556,6 +556,9 @@ pub struct App {
     pub monitor_pill_rect: Option<egui::Rect>,
     /// Syncs `settings.sidebar_width` into egui's left PanelState for one frame after Settings edits it.
     pub sidebar_width_sync: bool,
+    /// Tracks whether any mouse button was held on the prior frame so releasing an in-app splitter,
+    /// panel, or sidebar drag commits deferred terminal resizes immediately without mid-drag flicker.
+    pub was_pointer_down: bool,
     /// Running embedded Mobile Companion HTTP/SSE server (when Phone Pairing is enabled).
     pub companion: Option<crate::companion::CompanionHandle>,
     pub companion_last_push: Instant,
@@ -877,6 +880,7 @@ impl App {
             monitor_popover: false,
             monitor_pill_rect: None,
             sidebar_width_sync: false,
+            was_pointer_down: false,
             companion: None,
             companion_last_push: Instant::now(),
             profile_draft: None,
@@ -1789,16 +1793,18 @@ impl App {
                     let mut clear_prof_for_pane: Option<PaneId> = None;
                     let turn_done = matches!(msg.event.as_str(), "Stop" | "AfterAgent" | "session.idle")
                         || msg.kind.as_deref() == Some("agent-turn-complete");
-                    let session_start = msg.event == "SessionStart";
-                    let active_progress = matches!(msg.event.as_str(), "PreToolUse" | "PostToolUse");
+                    let session_start = matches!(msg.event.as_str(), "SessionStart" | "start");
+                    let tool_progress = matches!(msg.event.as_str(), "PreToolUse" | "PostToolUse" | "PostInvocation");
+                    let stop_has_limit_err = turn_done
+                        && msg.message.as_deref().and_then(crate::profiles::detect_rate_limit).is_some();
                     if let Some(pane) = self.panes.get_mut(&msg.pane) {
                         let agent = pane.last_agent;
                         pane.on_hook(&msg, now);
-                        if turn_done || session_start || active_progress {
-                            let tail = pane.screen_tail(10);
-                            if crate::profiles::detect_rate_limit(&tail).is_none() {
-                                clear_prof_for_pane = Some(msg.pane);
-                            }
+                        // A live tool invocation or fresh session start proves the current account
+                        // is not stuck on a stale cooldown (even if an older resumed transcript
+                        // still shows a previous account's error line in scrollback).
+                        if tool_progress || session_start || (turn_done && !stop_has_limit_err && pane.rate_limit.is_none()) {
+                            clear_prof_for_pane = Some(msg.pane);
                         }
                         if turn_done {
                             git_refresh.push(pane.project);
@@ -2863,7 +2869,16 @@ impl App {
             p.last_trust_sig = None;
             p.rate_limit_dismissed = false;
             p.dismissed_limit_sigs.clear();
+            p.dismissed_limit_patterns.clear();
+            p.pre_turn_limit_count = 0;
             p.limit_ignore_until = None;
+            p.turn_started_output_seq = p.output_seq;
+            p.last_limit_scan_seq = p.output_seq;
+            if matches!(launch, crate::actions::Launch::Session(_) | crate::actions::Launch::Last) {
+                p.mark_session_resuming();
+            } else {
+                p.limit_wait_new_turn = false;
+            }
             p.type_command(command);
             project = Some(p.project);
         }
@@ -2984,6 +2999,7 @@ impl App {
         if let Some(p) = self.panes.get_mut(&pane) {
             p.resume = None;
             p.active_profile = profile.map(|x| x.id);
+            p.mark_session_resuming();
             p.type_command(typed);
         }
         self.ensure_terminals_visible();
@@ -4917,7 +4933,7 @@ impl App {
         }
         self.release_editor_memory(ctx);
         self.enforce_scrollback_budget();
-        self.schedule_wakeups(ctx);
+        self.schedule_wakeups(ctx, false);
     }
 
     /// Terminals answer colour queries (OSC 4/10/11) with the scheme in use: programs that ask
@@ -5015,15 +5031,30 @@ impl App {
         }
     }
 
-    fn schedule_wakeups(&mut self, ctx: &egui::Context) {
+    fn schedule_wakeups(&mut self, ctx: &egui::Context, commit_resizes: bool) {
         let now = Instant::now();
+        let dragging = ctx.input(|i| i.pointer.any_down());
+        let just_released = commit_resizes && self.was_pointer_down && !dragging;
+        if commit_resizes {
+            self.was_pointer_down = dragging;
+        }
         let mut resize_due: Option<Instant> = None;
         for pane in self.panes.values_mut() {
-            if let Some(d) = pane.apply_resize(now) {
+            let due = if commit_resizes {
+                pane.apply_resize(now, dragging, just_released)
+            } else {
+                pane.pending_resize_due(dragging)
+            };
+            if let Some(d) = due {
                 resize_due = Some(resize_due.map_or(d, |x| x.min(d)));
             }
         }
-        if let Some(d) = resize_due {
+        // In `frame_logic` (`!commit_resizes`), avoid scheduling a 0 ms repaint for an already-due
+        // resize: `frame_ui` runs right after in the same pass, commits the resize + SIGWINCH, and
+        // schedules a single coalesced repaint after the post-SIGWINCH redraw hold.
+        if let Some(d) = resize_due
+            && (commit_resizes || d > now)
+        {
             ctx.request_repaint_after(d.saturating_duration_since(now));
         }
         let due: Vec<ProjectId> = self.git_due.iter().filter(|(_, t)| **t <= now).map(|(id, _)| *id).collect();
@@ -5143,7 +5174,7 @@ impl App {
         // Focus changes made while drawing count at once (no notification for a pane just
         // looked at).
         self.update_attention();
-        self.schedule_wakeups(&ctx);
+        self.schedule_wakeups(&ctx, true);
     }
 }
 

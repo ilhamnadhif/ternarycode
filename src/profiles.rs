@@ -597,8 +597,43 @@ pub fn default_command(agent: AgentKind) -> &'static str {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RateLimitHit {
     pub reason: String,
+    /// Canonical lowercase pattern key that triggered this hit (stable even when terminal
+    /// width resizing changes where the error line wraps).
+    pub pattern: &'static str,
     pub retry_after: Option<Duration>,
 }
+
+/// Canonical rate-limit / quota-exhaustion phrases matched across Claude Code, Codex / ChatGPT,
+/// and Antigravity CLI terminal output.
+const RATE_LIMIT_PATTERNS: &[&str] = &[
+    "you've hit your limit",
+    "you have hit your limit",
+    "hit your usage limit",
+    "hit your limit",
+    "usage limit reached",
+    "usage_limit_reached",
+    "claude usage limit",
+    "rate limit exceeded",
+    "rate_limit_error",
+    "rate_limit_reached",
+    "429 too many requests",
+    "status 429",
+    "http 429",
+    "error 429",
+    "error: 429",
+    "too many requests",
+    "quota exceeded",
+    "individual quota reached",
+    "insufficient_quota",
+    "resource_exhausted",
+    "resource exhausted",
+    "exceeded your current quota",
+    "spending cap",
+    "credit balance is too low",
+    "overloaded_error",
+    "limit reached · resets",
+    "limit reached. resets",
+];
 
 /// Returns true if a terminal line clearly looks like source code, diff output, or test logs
 /// rather than a genuine CLI rate-limit error banner.
@@ -619,39 +654,41 @@ fn looks_like_code_or_test(trimmed: &str) -> bool {
         || trimmed.contains("detect_rate_limit")
 }
 
+fn match_rate_limit_pattern(lower: &str) -> Option<&'static str> {
+    RATE_LIMIT_PATTERNS.iter().copied().find(|p| lower.contains(p))
+}
+
+/// Counts how many non-code lines in the recent scan window (last 10 non-empty lines) contain
+/// a rate-limit error pattern. Used to distinguish stale historical errors already visible
+/// before a turn started from a genuinely new rate-limit message appended during the turn.
+pub fn count_rate_limit_lines(tail: &str) -> usize {
+    tail.lines()
+        .rev()
+        .take(10)
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !looks_like_code_or_test(l))
+        .filter(|l| match_rate_limit_pattern(&l.to_ascii_lowercase()).is_some())
+        .count()
+}
+
+/// Returns `(pattern, reason)` for every rate-limit line visible anywhere in `tail`, so a pane
+/// can snapshot pre-existing historical lines on resume / account switch / turn start.
+pub fn collect_rate_limit_lines(tail: &str) -> Vec<(&'static str, String)> {
+    tail.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !looks_like_code_or_test(l))
+        .filter_map(|trimmed| {
+            let lower = trimmed.to_ascii_lowercase();
+            let pattern = match_rate_limit_pattern(&lower)?;
+            Some((pattern, trimmed.chars().take(120).collect()))
+        })
+        .collect()
+}
+
 /// Scans recent agent terminal lines for genuine rate-limit / usage-limit pauses across Claude
 /// Code, Codex / ChatGPT, and Antigravity CLI, supporting 2-line wrapped error messages while skipping
 /// source code / diff / test false positives.
 pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
-    let patterns = [
-        "you've hit your limit",
-        "you have hit your limit",
-        "hit your usage limit",
-        "hit your limit",
-        "usage limit reached",
-        "usage_limit_reached",
-        "claude usage limit",
-        "rate limit exceeded",
-        "rate_limit_error",
-        "rate_limit_reached",
-        "429 too many requests",
-        "status 429",
-        "http 429",
-        "error 429",
-        "error: 429",
-        "too many requests",
-        "quota exceeded",
-        "individual quota reached",
-        "insufficient_quota",
-        "resource_exhausted",
-        "resource exhausted",
-        "exceeded your current quota",
-        "spending cap",
-        "credit balance is too low",
-        "overloaded_error",
-        "limit reached · resets",
-        "limit reached. resets",
-    ];
     let lines: Vec<&str> = tail
         .lines()
         .rev()
@@ -661,7 +698,7 @@ pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
         .collect();
     for (idx, trimmed) in lines.iter().enumerate() {
         let lower = trimmed.to_ascii_lowercase();
-        if patterns.iter().any(|p| lower.contains(p)) {
+        if let Some(pattern) = match_rate_limit_pattern(&lower) {
             // Check both the matched line and the following line (idx - 1 in reversed order) in
             // case the reset timer wrapped across a narrow terminal width.
             let combined = if idx > 0 {
@@ -671,7 +708,7 @@ pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
             };
             let retry_after = parse_retry_duration(&combined);
             let reason: String = trimmed.chars().take(120).collect();
-            return Some(RateLimitHit { reason, retry_after });
+            return Some(RateLimitHit { reason, pattern, retry_after });
         }
     }
     None
@@ -1040,6 +1077,17 @@ mod tests {
             stale.push_str(&format!("Explored file_{i}.rs and updated handlers\n"));
         }
         assert!(detect_rate_limit(&stale).is_none());
+
+        // Pattern key stays identical across terminal-width line wraps and counts occurrences cleanly.
+        let wide = detect_rate_limit("Individual quota reached. Resets in 3h23m50s.").unwrap();
+        let narrow = detect_rate_limit("Individual quota reached. Resets").unwrap();
+        assert_eq!(wide.pattern, "individual quota reached");
+        assert_eq!(narrow.pattern, wide.pattern);
+        assert_eq!(
+            count_rate_limit_lines("Individual quota reached. Resets in 3h.\n> retry\nIndividual quota reached. Resets in 4h."),
+            2
+        );
+        assert_eq!(collect_rate_limit_lines(&stale).len(), 1);
     }
 
     #[test]

@@ -56,8 +56,14 @@ const PROMPT_MARK_WAIT: Duration = Duration::from_secs(45);
 /// A command waiting to be typed into a shell that does not mark its prompt is typed once the
 /// shell has been quiet this long.
 const QUIET_BEFORE_TYPING: Duration = Duration::from_millis(300);
-/// How long a pane's size must stay the same before the PTY is resized.
-const RESIZE_SETTLE: Duration = Duration::from_millis(120);
+/// How long a pane's size must stay the same before the PTY is resized during window resize or
+/// layout changes (prevents mid-drag reflow/SIGWINCH flicker).
+const RESIZE_SETTLE: Duration = Duration::from_millis(160);
+/// Snappy settle delay once an in-app drag (pane divider, panel edge, sidebar) is released.
+const DRAG_RELEASE_SETTLE: Duration = Duration::from_millis(24);
+/// Brief coalescing window right after `SIGWINCH` so a program's clear-screen + redraw burst
+/// lands in one complete frame instead of flashing a blank intermediate frame.
+const RESIZE_REDRAW_HOLD_MS: u64 = 35;
 /// The most a program may put on the clipboard at once (OSC 52), in bytes.
 const MAX_COPY: usize = 4 * 1024 * 1024;
 /// A program's title is cut to this many chars.
@@ -103,16 +109,21 @@ impl Shown {
         })
     }
 
+    /// Shared monotonic clock in nanoseconds for output-tick coalescing and post-SIGWINCH holds.
+    fn monotonic_ns() -> u64 {
+        static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64
+    }
+
     /// When output that arrives now is drawn: the next tick of this kind's period, on a clock
     /// all panes share, so output from many panes lands in the same frames (four busy Grid
     /// tiles make ~30 frames a second, not one frame per line each prints). How long until it,
     /// and which tick it is (its time on that clock).
     pub fn output_tick(self) -> (Duration, u64) {
-        static EPOCH: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
-        let period = self.period().as_nanos();
-        let since = EPOCH.elapsed().as_nanos();
+        let period = self.period().as_nanos() as u64;
+        let since = Self::monotonic_ns();
         let tick = (since / period + 1) * period;
-        (Duration::from_nanos((tick - since) as u64), tick as u64)
+        (Duration::from_nanos(tick.saturating_sub(since)), tick)
     }
 }
 
@@ -297,6 +308,9 @@ pub struct Pane {
     pub snapshot_pending: bool,
     /// A new size for the PTY, sent once the pane stops changing size (FR-T5).
     pub pending_resize: Option<(GridSize, u16, u16, Instant)>,
+    /// Monotonic ns deadline right after `SIGWINCH` during which reader output repaints coalesce
+    /// into one frame (avoids 1-frame blank flashes when TUIs emit `CSI 2 J` before redrawing).
+    resize_hold_until_ns: Arc<std::sync::atomic::AtomicU64>,
     /// The grid the PTY has now (as started, or last resized to).
     pty_grid: Option<GridSize>,
     /// Progress a program reports (OSC 9;4): its state (1 normal, 2 error, 3 indeterminate,
@@ -310,14 +324,29 @@ pub struct Pane {
     pub rate_limit: Option<crate::profiles::RateLimitBanner>,
     /// Last time this pane's screen tail was scanned for rate-limit output.
     pub last_limit_check: Instant,
-    /// Dedup key of the last rate-limit line handled in this pane.
+    /// Monotonic counter incremented on every `SessionEvent::Output` chunk.
+    pub output_seq: u64,
+    /// `output_seq` at the last rate-limit scan (resizing/scrolling with zero new output skips scans).
+    pub last_limit_scan_seq: u64,
+    /// `output_seq` when the current user turn started; only newer output can trigger a rate limit.
+    pub turn_started_output_seq: u64,
+    /// Number of rate-limit lines already visible on screen when the current turn started.
+    pub pre_turn_limit_count: usize,
+    /// When `true` (e.g. after resuming a session, switching accounts, dismissing a notice, or
+    /// `SessionStart`), suppress rate-limit detection until the user submits a genuinely new turn.
+    pub limit_wait_new_turn: bool,
+    /// When the current foreground agent entered this pane (guards hookless Enter detection).
+    pub agent_started_at: Option<Instant>,
+    /// Dedup key of the last rate-limit line handled in this pane (normalized).
     pub last_limit_sig: Option<String>,
     /// Dedup key of the last interactive trust prompt handled in this pane.
     pub last_trust_sig: Option<String>,
     /// User explicitly closed the rate-limit notice in this pane (suppresses forced header failover CTA).
     pub rate_limit_dismissed: bool,
-    /// Rate-limit signatures already dismissed or superseded in this pane so stale scrollback never re-triggers them.
+    /// Rate-limit signatures already dismissed or snapshotted from historical replay in this pane.
     pub dismissed_limit_sigs: Vec<String>,
+    /// Canonical pattern keys dismissed or snapshotted in this pane (width-wrap independent).
+    pub dismissed_limit_patterns: Vec<&'static str>,
     /// Suppresses rate-limit re-scanning immediately after failover until new output replaces old text.
     pub limit_ignore_until: Option<Instant>,
     /// Quick composer draft text for sending follow-up instructions directly to an agent pane.
@@ -382,16 +411,24 @@ impl Pane {
             snapshot_armed: true,
             snapshot_pending: false,
             pending_resize: None,
+            resize_hold_until_ns: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pty_grid: None,
             progress: None,
             start_error: None,
             active_profile: None,
             rate_limit: None,
             last_limit_check: Instant::now(),
+            output_seq: 0,
+            last_limit_scan_seq: 0,
+            turn_started_output_seq: 0,
+            pre_turn_limit_count: 0,
+            limit_wait_new_turn: false,
+            agent_started_at: None,
             last_limit_sig: None,
             last_trust_sig: None,
             rate_limit_dismissed: false,
             dismissed_limit_sigs: Vec::new(),
+            dismissed_limit_patterns: Vec::new(),
             limit_ignore_until: None,
             composer_text: String::new(),
         };
@@ -505,6 +542,13 @@ impl Pane {
         self.last_limit_sig = None;
         self.last_trust_sig = None;
         self.limit_ignore_until = None;
+        self.limit_wait_new_turn = false;
+        self.pre_turn_limit_count = 0;
+        self.turn_started_output_seq = self.output_seq;
+        self.last_limit_scan_seq = self.output_seq;
+        self.agent_started_at = None;
+        self.dismissed_limit_sigs.clear();
+        self.dismissed_limit_patterns.clear();
         match LocalPty::spawn(&opts) {
             Ok(pty) => self.attach(pty, spawn),
             Err(e) => self.fail_to_start(&e.to_string()),
@@ -518,6 +562,7 @@ impl Pane {
         let ctx = spawn.ctx.clone();
         let (id, generation) = (self.id, self.generation);
         let shown = self.shown.clone();
+        let resize_hold_until_ns = self.resize_hold_until_ns.clone();
         let said = std::sync::Mutex::new(Said::default());
         // The tick (and the frame count) last asked for: reads before that tick would
         // each ask for the same frame again, and wake the window every time. Any frame
@@ -530,6 +575,7 @@ impl Pane {
             // server said again are drawn on the pane's output tick: reads a few ms
             // apart share a frame, and a pane out of view only needs its messages taken
             // in now and then, not the whole window redrawn for every line it prints.
+            let is_exit = matches!(e, SessionEvent::Exited(_));
             let (urgent, output) = match &e {
                 SessionEvent::Output(f) => {
                     let news = said.lock().unwrap_or_else(|p| p.into_inner()).news(f);
@@ -539,6 +585,20 @@ impl Pane {
                 _ => (true, false),
             };
             let _ = tx.send(UiMsg::Pane(id, generation, e));
+            if !is_exit {
+                let hold_until = resize_hold_until_ns.load(std::sync::atomic::Ordering::Relaxed);
+                let now_ns = Shown::monotonic_ns();
+                if hold_until > now_ns && (urgent || output) {
+                    let pass = ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT);
+                    let mut asked = asked.lock().unwrap_or_else(|p| p.into_inner());
+                    if asked.1 == pass && asked.0 >= hold_until {
+                        return;
+                    }
+                    *asked = (hold_until, pass);
+                    ctx.request_repaint_after(Duration::from_nanos(hold_until - now_ns));
+                    return;
+                }
+            }
             if urgent {
                 ctx.request_repaint();
             } else if output {
@@ -880,6 +940,17 @@ impl Pane {
     pub fn entered(&mut self, now: Instant) {
         self.enter_at = Some(now);
         self.last_prompt = Some(now);
+        // For agents running without hooks, pressing Enter inside a settled foreground agent
+        // starts a new prompt turn (for hooked agents like AGY/Claude/Codex, `PreInvocation` /
+        // `UserPromptSubmit` arms the turn so local slash commands like `/resume` never do).
+        let in_agent = self.tracker.agent.is_some()
+            || matches!(self.tracker.fg, Foreground::Program { agent: Some(_), .. });
+        if in_agent
+            && !self.tracker.hooks_active
+            && self.agent_started_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(2))
+        {
+            self.arm_new_limit_turn();
+        }
         self.tracker.apply(Event::Enter, now);
         self.schedule_fg_check(now + Duration::from_millis(150));
     }
@@ -901,6 +972,7 @@ impl Pane {
         match event {
             SessionEvent::Output(fed) => {
                 self.last_output = now;
+                self.output_seq = self.output_seq.wrapping_add(1);
                 let mut changed = false;
                 if !self.got_output && (fed.repaint || !fed.reply.is_empty()) {
                     self.got_output = true;
@@ -941,6 +1013,11 @@ impl Pane {
                 self.last_limit_sig = None;
                 self.last_trust_sig = None;
                 self.limit_ignore_until = None;
+                self.limit_wait_new_turn = false;
+                self.pre_turn_limit_count = 0;
+                self.agent_started_at = None;
+                self.dismissed_limit_sigs.clear();
+                self.dismissed_limit_patterns.clear();
                 self.task = None;
                 self.last_words = None;
                 let code = match info {
@@ -1067,6 +1144,7 @@ impl Pane {
                 tc_agent::proc::ppid(pgid)
             );
         }
+        let mut resume_argv = false;
         let fg = if is_shell {
             self.fg_retries = 0;
             if pgid != pty_pid {
@@ -1081,6 +1159,9 @@ impl Pane {
                 Some(info) => {
                     self.fg_retries = 0;
                     let agent = recognize(&info.argv, info.exe.as_deref());
+                    if agent.is_some() && is_resume_argv(&info.argv) {
+                        resume_argv = true;
+                    }
                     Foreground::Program {
                         name: info.name(),
                         agent,
@@ -1107,8 +1188,15 @@ impl Pane {
             agent: Some(a), ..
         } = &fg
         {
+            let entered_agent = self.tracker.agent != Some(*a);
             self.last_agent = Some(*a);
             self.resume = None;
+            if entered_agent {
+                self.agent_started_at = Some(now);
+                if resume_argv {
+                    self.mark_session_resuming();
+                }
+            }
         }
         if fg == Foreground::Shell {
             self.program_title = None;
@@ -1130,7 +1218,11 @@ impl Pane {
             self.last_limit_sig = None;
             self.last_trust_sig = None;
             self.rate_limit_dismissed = false;
+            self.limit_wait_new_turn = false;
+            self.pre_turn_limit_count = 0;
+            self.agent_started_at = None;
             self.dismissed_limit_sigs.clear();
+            self.dismissed_limit_patterns.clear();
             self.task = None;
             self.last_words = None;
         }
@@ -1146,6 +1238,9 @@ impl Pane {
             self.cwd = cwd;
         }
         self.last_agent = Some(agent);
+        if self.agent_started_at.is_none() {
+            self.agent_started_at = Some(now);
+        }
         self.resume = None;
         if msg.event == "SessionEnd" {
             self.agent_session = None;
@@ -1166,13 +1261,55 @@ impl Pane {
         {
             self.last_words = Some(words.clone());
         }
-        // Once the agent actively works or finishes a turn, any prior manual rate-limit notice is
-        // stale (e.g. user switched models or quota reset): clear it and remember its signature.
-        if matches!(signal, tc_core::status::HookSignal::Working | tc_core::status::HookSignal::TurnDone)
-            && self.rate_limit.as_ref().is_some_and(|b| b.auto_switched_to.is_none())
-            && let Some(banner) = self.rate_limit.take()
-        {
-            self.remember_dismissed_limit(banner.reason);
+        match signal {
+            tc_core::status::HookSignal::SessionStart => {
+                // Starting or resuming a session (`/resume`, `--conversation`, `--resume`) replays
+                // historical conversation text before any prompt is sent: suppress stale rate-limit
+                // lines until a real prompt/working turn starts.
+                self.mark_session_resuming();
+            }
+            tc_core::status::HookSignal::Working => {
+                if self.rate_limit.as_ref().is_some_and(|b| b.auto_switched_to.is_none())
+                    && let Some(banner) = self.rate_limit.take()
+                {
+                    self.remember_dismissed_limit(banner.reason);
+                }
+                let starts_prompt = matches!(
+                    msg.event.as_str(),
+                    "PreInvocation" | "UserPromptSubmit" | "BeforeAgent"
+                );
+                if starts_prompt || self.limit_wait_new_turn {
+                    self.arm_new_limit_turn();
+                } else {
+                    // Mid-turn tool progress (e.g. `PreToolUse`/`PostToolUse`) proves the account
+                    // is executing cleanly; keep any pre-existing historical lines suppressed.
+                    self.snapshot_historical_limits();
+                }
+            }
+            tc_core::status::HookSignal::TurnDone => {
+                let stop_has_limit_err = msg
+                    .message
+                    .as_deref()
+                    .and_then(crate::profiles::detect_rate_limit)
+                    .is_some();
+                if !stop_has_limit_err {
+                    let tail = self.screen_tail(24);
+                    let fresh_hit = crate::profiles::detect_rate_limit(&tail).is_some_and(|hit| {
+                        let count = crate::profiles::count_rate_limit_lines(&tail);
+                        !self.is_limit_suppressed(&hit, count)
+                    });
+                    if !fresh_hit {
+                        if self.rate_limit.as_ref().is_some_and(|b| b.auto_switched_to.is_none())
+                            && let Some(banner) = self.rate_limit.take()
+                        {
+                            self.remember_dismissed_limit(banner.reason);
+                        }
+                        self.snapshot_historical_limits();
+                        self.limit_wait_new_turn = true;
+                    }
+                }
+            }
+            _ => {}
         }
         self.tracker.apply(
             Event::Hook {
@@ -1185,21 +1322,103 @@ impl Pane {
     }
 
     /// Remembers a rate-limit error line that the user dismissed (or worked past) so stale
-    /// scrollback lines — even with ticking countdown numbers — do not re-trigger the same notice.
+    /// scrollback lines — even with ticking countdown numbers or changed wrap width — do not
+    /// re-trigger the same notice.
     pub fn remember_dismissed_limit(&mut self, sig: String) {
         let norm = normalize_limit_sig(&sig);
         if norm.is_empty() || self.dismissed_limit_sigs.iter().any(|s| s == &norm) {
             return;
         }
-        if self.dismissed_limit_sigs.len() >= 8 {
+        if self.dismissed_limit_sigs.len() >= 16 {
             self.dismissed_limit_sigs.remove(0);
         }
         self.dismissed_limit_sigs.push(norm);
     }
 
+    pub fn remember_dismissed_limit_hit(&mut self, pattern: &'static str, sig: String) {
+        self.remember_dismissed_limit(sig);
+        if !self.dismissed_limit_patterns.contains(&pattern) {
+            if self.dismissed_limit_patterns.len() >= 16 {
+                self.dismissed_limit_patterns.remove(0);
+            }
+            self.dismissed_limit_patterns.push(pattern);
+        }
+    }
+
     pub fn has_dismissed_limit(&self, sig: &str) -> bool {
         let norm = normalize_limit_sig(sig);
-        !norm.is_empty() && self.dismissed_limit_sigs.iter().any(|s| s == &norm)
+        if norm.is_empty() {
+            return false;
+        }
+        self.dismissed_limit_sigs.iter().any(|stored| {
+            stored == &norm
+                || (stored.len() >= 12 && norm.len() >= 12 && (stored.starts_with(&norm) || norm.starts_with(stored.as_str())))
+        })
+    }
+
+    /// Snapshots every rate-limit line currently visible in the terminal tail as pre-existing /
+    /// historical so replayed transcripts or scrollback lines cannot re-trigger a banner.
+    pub fn snapshot_historical_limits(&mut self) {
+        let tail = self.screen_tail(24);
+        self.snapshot_historical_limits_from(&tail);
+    }
+
+    pub fn snapshot_historical_limits_from(&mut self, tail: &str) {
+        for (pattern, reason) in crate::profiles::collect_rate_limit_lines(tail) {
+            self.remember_dismissed_limit_hit(pattern, reason);
+        }
+        self.pre_turn_limit_count = crate::profiles::count_rate_limit_lines(tail);
+        self.last_limit_scan_seq = self.output_seq;
+    }
+
+    /// Marks this pane as starting or resuming a session whose initial output may replay old
+    /// rate-limit errors from a previous account or turn. Suppresses detection until a new turn.
+    pub fn mark_session_resuming(&mut self) {
+        if let Some(banner) = self.rate_limit.take() {
+            self.remember_dismissed_limit(banner.reason);
+        }
+        self.last_limit_sig = None;
+        self.limit_wait_new_turn = true;
+        self.snapshot_historical_limits();
+    }
+
+    /// Arms rate-limit detection for a genuinely new agent turn, snapshotting any historical
+    /// rate-limit lines already on screen so only newly emitted errors can trigger a notice.
+    pub fn arm_new_limit_turn(&mut self) {
+        let tail = self.screen_tail(24);
+        let existing = crate::profiles::collect_rate_limit_lines(&tail);
+        if existing.is_empty() {
+            self.dismissed_limit_sigs.clear();
+            self.dismissed_limit_patterns.clear();
+            self.pre_turn_limit_count = 0;
+        } else {
+            for (pattern, reason) in existing {
+                self.remember_dismissed_limit_hit(pattern, reason);
+            }
+            self.pre_turn_limit_count = crate::profiles::count_rate_limit_lines(&tail);
+        }
+        self.limit_wait_new_turn = false;
+        self.last_limit_sig = None;
+        self.turn_started_output_seq = self.output_seq;
+        self.last_limit_scan_seq = self.output_seq;
+    }
+
+    /// Returns whether `hit` (with `current_count` matching lines in the bottom scan window)
+    /// should be ignored because it comes from replay, dismissed text, or unchanged pre-turn output.
+    pub fn is_limit_suppressed(&self, hit: &crate::profiles::RateLimitHit, current_count: usize) -> bool {
+        if self.limit_wait_new_turn || self.output_seq <= self.turn_started_output_seq {
+            return true;
+        }
+        if current_count > self.pre_turn_limit_count && self.pre_turn_limit_count > 0 {
+            return false;
+        }
+        if self.pre_turn_limit_count > 0
+            && current_count <= self.pre_turn_limit_count
+            && (self.has_dismissed_limit(&hit.reason) || self.dismissed_limit_patterns.contains(&hit.pattern))
+        {
+            return true;
+        }
+        self.has_dismissed_limit(&hit.reason)
     }
 
     /// The pane's label: the user's title, the foreground program, or the folder.
@@ -1273,12 +1492,27 @@ impl Pane {
         self.session.take().map(|s| s.pty)
     }
 
-    /// Records a new size; the program hears about it (SIGWINCH) once the size has settled, so
-    /// dragging a divider or the window edge doesn't make full-screen programs redraw on every
-    /// frame (FR-T5).
+    /// Whether this pane should defer grid mutation during layout/drag frames until resize settles.
+    /// Live panes with output defer grid reflow so dragging splitters/sidebar/panel/window never
+    /// wipes prompts, double-wraps TUI borders, or clips alt-screen buffers mid-drag; fresh or
+    /// dormant panes resize immediately so `start_shell` spawns at the exact layout size.
+    pub fn defer_resize_during_layout(&self) -> bool {
+        self.got_output && self.alive()
+    }
+
+    /// Records a new size; both grid reflow (for live panes) and PTY `SIGWINCH` run once the
+    /// size has settled, so dragging a divider, panel, sidebar, or window edge never makes
+    /// full-screen programs clear and flash on every frame (FR-T5).
     pub fn resize_pty(&mut self, size: GridSize, px_w: u32, px_h: u32) {
         let cell_w = (px_w / size.cols.max(1) as u32) as u16;
         let cell_h = (px_h / size.rows.max(1) as u32) as u16;
+        if let Some((prev, pw, ph, _)) = self.pending_resize
+            && prev == size
+            && pw == cell_w
+            && ph == cell_h
+        {
+            return;
+        }
         // A shell still starting draws its first prompt for the size it read: tell it now, not
         // after the settle delay, or zsh's end-of-line mark wraps and a lone "%" stays above
         // the prompt.
@@ -1291,32 +1525,63 @@ impl Pane {
         self.pending_resize = Some((size, cell_w, cell_h, at));
     }
 
-    /// Sends a settled size to the PTY. Returns when to look again, if a size is still pending.
-    pub fn apply_resize(&mut self, now: Instant) -> Option<Instant> {
+    /// Deadline for a pending resize, used by `frame_logic` to schedule wakeups without mutating
+    /// the grid right before `frame_ui` paints.
+    pub fn pending_resize_due(&self, dragging: bool) -> Option<Instant> {
+        let (_, _, _, at) = self.pending_resize?;
+        if dragging && self.got_output {
+            return None;
+        }
+        Some(at + RESIZE_SETTLE)
+    }
+
+    fn arm_resize_redraw_hold(&self) {
+        let hold_until = Shown::monotonic_ns().saturating_add(RESIZE_REDRAW_HOLD_MS * 1_000_000);
+        self.resize_hold_until_ns.store(hold_until, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Commits a settled size to the terminal grid and PTY. Returns when to look again, if a
+    /// size is still pending or a post-SIGWINCH redraw frame is due.
+    pub fn apply_resize(&mut self, now: Instant, dragging: bool, just_released: bool) -> Option<Instant> {
         let (size, w, h, at) = self.pending_resize?;
+        // While the user is actively dragging a divider, sidebar, or panel edge, hold off both
+        // destructive grid reflow and SIGWINCH until mouse release.
+        if dragging && self.got_output {
+            self.pending_resize = Some((size, w, h, now));
+            return None;
+        }
+        let at = if just_released && self.got_output {
+            let fast = now.checked_sub(RESIZE_SETTLE - DRAG_RELEASE_SETTLE).unwrap_or(now);
+            self.pending_resize = Some((size, w, h, fast));
+            fast
+        } else {
+            at
+        };
         let due = at + RESIZE_SETTLE;
         if now < due {
             return Some(due);
         }
         self.pending_resize = None;
+        let same = self.pty_grid == Some(size);
+        let resized_grid = tcore::resize(&self.shared, size, f32::from(w.max(1)), f32::from(h.max(1)));
         // A prompt cleared for the resize is redrawn by the shell after SIGWINCH, or put back
         // when the size ended where it was (no SIGWINCH comes then).
-        let same = self.pty_grid == Some(size);
         tcore::settle_prompt(&self.shared, same);
         // Same columns and rows: nothing to tell the program (a new pane started at its final
-        // size). Only the pixel size would change, and macOS would still send SIGWINCH, which
-        // makes shells redraw their prompt for nothing. The terminal answers pixel-size
-        // queries itself.
+        // size, or the user dragged back to the starting size). Only the pixel size would change,
+        // and macOS would still send SIGWINCH, which makes shells redraw their prompt for nothing.
         if same {
-            return None;
+            return resized_grid.then_some(now);
         }
         self.pty_grid = Some(size);
         // A pane asleep has no PTY yet: its shell starts at the grid's size.
         if let Some(s) = &self.session {
             self.resizes += 1;
+            self.arm_resize_redraw_hold();
             s.pty.resize(size, w, h);
+            return Some(now + Duration::from_millis(RESIZE_REDRAW_HOLD_MS + 4));
         }
-        None
+        resized_grid.then_some(now)
     }
 }
 
@@ -1416,19 +1681,41 @@ fn shell_integrated(env: &HashMap<String, String>) -> bool {
         || env.contains_key(tc_agent::shell::ENV_PWSH)
 }
 
+/// Returns `true` when an agent CLI invocation is resuming a previous conversation (e.g.
+/// `agy --conversation <id>`, `claude --resume <id>`, `claude -c`, `codex resume <id>`).
+pub(crate) fn is_resume_argv(argv: &[String]) -> bool {
+    argv.iter().skip(1).any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--conversation" | "--resume" | "-r" | "--continue" | "-c" | "resume"
+        ) || arg.starts_with("--conversation=")
+            || arg.starts_with("--resume=")
+    })
+}
+
 /// Collapses digit runs (countdown timers like `4h 59m` -> `#h #m`, wall clocks `14:30` -> `#:#`)
-/// so a live countdown tick on a dismissed rate-limit error never re-triggers the same banner.
-fn normalize_limit_sig(sig: &str) -> String {
+/// and whitespace so a live countdown tick or terminal wrap width change on a dismissed
+/// rate-limit error never re-triggers the same banner.
+pub(crate) fn normalize_limit_sig(sig: &str) -> String {
     let mut out = String::with_capacity(sig.len());
     let mut in_digits = false;
+    let mut in_space = false;
     for ch in sig.trim().chars() {
         if ch.is_ascii_digit() {
+            in_space = false;
             if !in_digits {
                 out.push('#');
                 in_digits = true;
             }
+        } else if ch.is_whitespace() {
+            in_digits = false;
+            if !in_space {
+                out.push(' ');
+                in_space = true;
+            }
         } else {
             in_digits = false;
+            in_space = false;
             out.push(ch.to_ascii_lowercase());
         }
     }
@@ -1493,5 +1780,121 @@ mod place_tests {
             normalize_limit_sig("429 Too Many Requests"),
             normalize_limit_sig("You have exhausted your capacity")
         );
+    }
+
+    #[test]
+    fn resume_argv_detects_agent_session_resumes() {
+        assert!(is_resume_argv(&["agy".into(), "--conversation".into(), "abc-123".into()]));
+        assert!(is_resume_argv(&["agy".into(), "--conversation=abc-123".into()]));
+        assert!(is_resume_argv(&["claude".into(), "--resume".into(), "sess-1".into()]));
+        assert!(is_resume_argv(&["claude".into(), "-c".into()]));
+        assert!(is_resume_argv(&["codex".into(), "resume".into(), "thr-1".into()]));
+        assert!(!is_resume_argv(&["agy".into(), "-i".into(), "fix bug".into()]));
+        assert!(!is_resume_argv(&["claude".into()]));
+    }
+
+    fn test_pane(cols: usize, rows: usize) -> Pane {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let ctx = egui::Context::default();
+        let spawn = SpawnCtx {
+            rt: rt.handle(),
+            tx: &tx,
+            ctx: &ctx,
+            env: &[],
+            hook: None,
+            scrollback: 200,
+            palette: tc_term::core::QueryPalette::from(&tc_term::scheme::SCHEMES[0]),
+            cursor: tc_term::prefs::CursorStyle::Block,
+            blink: false,
+            long_command: Duration::from_secs(10),
+        };
+        Pane::new(1, 1, PathBuf::from("/tmp"), GridSize { cols, rows }, &spawn, false)
+    }
+
+    fn hook(event: &str, message: Option<&str>) -> HookMsg {
+        HookMsg {
+            pane: 1,
+            token: String::new(),
+            agent: "antigravity".into(),
+            event: event.into(),
+            kind: None,
+            message: message.map(str::to_string),
+            session: Some("conv-1".into()),
+            cwd: None,
+            prompt: None,
+        }
+    }
+
+    #[test]
+    fn resumed_session_suppresses_replayed_rate_limit_and_detects_new_ones() {
+        let mut pane = test_pane(80, 20);
+        let now = Instant::now();
+        // Resuming an AGY session after relogin replays the previous account's limit text.
+        pane.mark_session_resuming();
+        pane.on_hook(&hook("SessionStart", None), now);
+        pane.feeder.lock().feed(b"Individual quota reached. Resets in 3h23m50s.\r\n> ");
+        pane.output_seq += 1;
+
+        let tail = pane.screen_tail(24);
+        let hit = crate::profiles::detect_rate_limit(&tail).unwrap();
+        let count = crate::profiles::count_rate_limit_lines(&tail);
+        assert!(pane.is_limit_suppressed(&hit, count), "replayed history must not trigger limit notice");
+
+        // User submits a new prompt on the fresh non-limited account: old error stays suppressed
+        // even when resized narrower (changing wrap boundary) or during active streaming.
+        pane.on_hook(&hook("PreInvocation", None), now);
+        pane.feeder.lock().feed(b"Working on your request...\r\n");
+        pane.output_seq += 1;
+        let narrow_hit = crate::profiles::detect_rate_limit("Individual quota reached. Resets").unwrap();
+        assert!(pane.is_limit_suppressed(&narrow_hit, 1), "wrapped historical error must stay suppressed");
+
+        // If the new account ALSO genuinely hits a limit on this turn (a second error appears),
+        // detection immediately triggers!
+        pane.feeder.lock().feed(b"Individual quota reached. Resets in 4h59m00s.\r\n");
+        pane.output_seq += 1;
+        let tail2 = pane.screen_tail(24);
+        let hit2 = crate::profiles::detect_rate_limit(&tail2).unwrap();
+        let count2 = crate::profiles::count_rate_limit_lines(&tail2);
+        assert_eq!(count2, 2);
+        assert!(!pane.is_limit_suppressed(&hit2, count2), "genuinely new limit in current turn must trigger");
+
+        // A Stop hook arriving right after a fresh rate limit must not erase/suppress it.
+        pane.on_hook(&hook("Stop", None), now);
+        assert!(!pane.limit_wait_new_turn);
+    }
+
+    #[test]
+    fn deferred_resize_holds_during_drag_and_commits_once_after_release() {
+        use tc_term::alacritty_terminal::grid::Dimensions;
+        let mut pane = test_pane(100, 30);
+        pane.got_output = true;
+        pane.pty_grid = Some(GridSize { cols: 100, rows: 30 });
+
+        // Dragging narrower to 80 cols while pointer is down must NOT resize Term mid-drag.
+        pane.resize_pty(GridSize { cols: 80, rows: 30 }, 800, 480);
+        let t0 = Instant::now();
+        assert!(pane.apply_resize(t0 + Duration::from_secs(1), true, false).is_none());
+        assert_eq!(pane.shared.term.lock().columns(), 100);
+        assert_eq!(pane.pty_grid, Some(GridSize { cols: 100, rows: 30 }));
+
+        // Dragging back to 100 cols and releasing performs zero resize.
+        pane.resize_pty(GridSize { cols: 100, rows: 30 }, 1000, 480);
+        let t1 = Instant::now();
+        let _ = pane.apply_resize(t1, false, true);
+        let _ = pane.apply_resize(t1 + Duration::from_millis(50), false, false);
+        assert_eq!(pane.shared.term.lock().columns(), 100);
+        assert_eq!(pane.pending_resize, None);
+
+        // Dragging to 75 cols and releasing commits once after DRAG_RELEASE_SETTLE.
+        pane.resize_pty(GridSize { cols: 75, rows: 28 }, 750, 448);
+        let t2 = Instant::now();
+        let due = pane.apply_resize(t2, false, true).expect("release should schedule snappy settle");
+        assert!(due <= t2 + DRAG_RELEASE_SETTLE + Duration::from_millis(2));
+        assert_eq!(pane.shared.term.lock().columns(), 100);
+        let _ = pane.apply_resize(due + Duration::from_millis(1), false, false);
+        assert_eq!(pane.shared.term.lock().columns(), 75);
+        assert_eq!(pane.shared.term.lock().screen_lines(), 28);
+        assert_eq!(pane.pty_grid, Some(GridSize { cols: 75, rows: 28 }));
     }
 }

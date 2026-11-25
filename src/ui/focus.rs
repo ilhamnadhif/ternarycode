@@ -626,7 +626,8 @@ impl App {
                 ui.ctx().request_repaint();
             }
             let alive = pane.alive();
-            let resp = widget::show(ui, term_rect, &mut pane.view, &pane.shared, &style, is_focused, input_enabled, alive);
+            let defer_resize = pane.defer_resize_during_layout();
+            let resp = widget::show_deferred(ui, term_rect, &mut pane.view, &pane.shared, &style, is_focused, input_enabled, alive, defer_resize);
             let how = crate::pane::Shown::of(ui, pane_id, &pane.view, crate::pane::Shown::Visible);
             self.shown_now.insert(pane_id, how);
             if let Some((size, w, h)) = resp.resized {

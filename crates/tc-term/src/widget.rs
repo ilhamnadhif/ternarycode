@@ -847,7 +847,27 @@ pub fn show(
     input_enabled: bool,
     alive: bool,
 ) -> TermResponse {
-    show_inner(ui, rect, view, shared, style, active, input_enabled, alive, None, Crop::default(), true)
+    show_inner(ui, rect, view, shared, style, active, input_enabled, alive, None, Crop::default(), true, false)
+}
+
+/// Like [`show`], but when `defer_resize` is `true` the terminal's underlying grid is NOT mutated
+/// on every drag/layout frame: the existing grid keeps rendering cleanly clipped to `rect` while
+/// `TermResponse::resized` reports the target size for the caller to commit once the resize
+/// settles (preventing mid-drag prompt clearing, horizontal-rule wrap jumping, and alt-screen
+/// column truncation).
+#[allow(clippy::too_many_arguments)]
+pub fn show_deferred(
+    ui: &mut Ui,
+    rect: Rect,
+    view: &mut TermView,
+    shared: &TermShared,
+    style: &TermStyle,
+    active: bool,
+    input_enabled: bool,
+    alive: bool,
+    defer_resize: bool,
+) -> TermResponse {
+    show_inner(ui, rect, view, shared, style, active, input_enabled, alive, None, Crop::default(), true, defer_resize)
 }
 
 /// The grid a terminal drawn in `rect` gets (what `show` resizes it to). Callers use it to
@@ -933,7 +953,7 @@ pub fn show_readable(
             Crop { rows: Some(rows), cut_above }
         }
     };
-    show_inner(ui, rect, view, shared, &scaled, false, input_enabled, alive, Some(size), crop, wheel)
+    show_inner(ui, rect, view, shared, &scaled, false, input_enabled, alive, Some(size), crop, wheel, false)
 }
 
 /// The rows a cut view shows (`show_readable`).
@@ -1057,6 +1077,7 @@ fn show_inner(
     fixed: Option<GridSize>,
     crop: Crop,
     wheel: bool,
+    defer_resize: bool,
 ) -> TermResponse {
     let mut out = TermResponse::default();
     let id = *view.id.get_or_insert_with(|| {
@@ -1086,7 +1107,39 @@ fn show_inner(
         None => (rect.min.y + PAD, rect),
     };
     let origin = pos2(rect.min.x + PAD, origin_y).round_to_pixels(ppp);
-    let size = fixed.unwrap_or_else(|| grid_for(rect, cell));
+    // Pixel sizes go out in physical pixels everywhere (the PTY's size, CSI 14 t),
+    // and are re-sent when only the font changes.
+    let cell_px = ((cell.x * ppp).round() as u32, (cell.y * ppp).round() as u32);
+    // Also when the terminal was resized elsewhere (the Grid sizes it to its tile).
+    let actual = fixed.is_none().then(|| {
+        let term = shared.term.lock();
+        GridSize { cols: term.columns(), rows: term.screen_lines() }
+    });
+    let want = fixed.unwrap_or_else(|| grid_for(rect, cell));
+    let size = if fixed.is_none() && defer_resize {
+        if view.grid != Some(want) || view.cell_px != Some(cell_px) || actual != Some(want) {
+            view.grid = Some(want);
+            view.cell_px = Some(cell_px);
+            out.resized = Some((
+                want,
+                want.cols as u32 * cell_px.0,
+                want.rows as u32 * cell_px.1,
+            ));
+        }
+        actual.unwrap_or(want)
+    } else {
+        if fixed.is_none() && (view.grid != Some(want) || view.cell_px != Some(cell_px) || actual != Some(want)) {
+            view.grid = Some(want);
+            view.cell_px = Some(cell_px);
+            tcore::resize(shared, want, cell_px.0 as f32, cell_px.1 as f32);
+            out.resized = Some((
+                want,
+                want.cols as u32 * cell_px.0,
+                want.rows as u32 * cell_px.1,
+            ));
+        }
+        want
+    };
     // Screen row → slot it is drawn in, and back (pointer positions).
     let slots: Option<Vec<Option<usize>>> = crop.rows.as_ref().map(|rows| {
         let mut slots = vec![None; size.rows];
@@ -1109,24 +1162,6 @@ fn show_inner(
         let row = crop.rows.as_ref().map_or(slot, |rows| rows.get(slot).copied().unwrap_or(slot));
         (col, row.min(size.rows - 1), side)
     };
-    // Pixel sizes go out in physical pixels everywhere (the PTY's size, CSI 14 t),
-    // and are re-sent when only the font changes.
-    let cell_px = ((cell.x * ppp).round() as u32, (cell.y * ppp).round() as u32);
-    // Also when the terminal was resized elsewhere (the Grid sizes it to its tile).
-    let actual = fixed.is_none().then(|| {
-        let term = shared.term.lock();
-        GridSize { cols: term.columns(), rows: term.screen_lines() }
-    });
-    if fixed.is_none() && (view.grid != Some(size) || view.cell_px != Some(cell_px) || actual != Some(size)) {
-        view.grid = Some(size);
-        view.cell_px = Some(cell_px);
-        tcore::resize(shared, size, cell_px.0 as f32, cell_px.1 as f32);
-        out.resized = Some((
-            size,
-            size.cols as u32 * cell_px.0,
-            size.rows as u32 * cell_px.1,
-        ));
-    }
 
     // ----- focus -------------------------------------------------------------------------
     // Keys are only taken in a frame that began with this terminal focused: when it takes
