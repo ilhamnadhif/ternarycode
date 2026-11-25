@@ -249,7 +249,7 @@ function fmtSec(s){if(!s||s<=0)return"";const h=Math.floor(s/3600),m=Math.floor(
 // Status glyphs: [icon, colour token]. Unknown values fall back to idle.
 const STATUS = {
   running:["notch","running"], needs_input:["chat","input"], done:["check","done"], failed:["x","failed"],
-  idle:["circle","idle"], rate_limited:["hourglass","limited"], cooldown:["clock","cooldown"]
+  idle:["circle","idle"], active:["circle","idle"], rate_limited:["hourglass","limited"], cooldown:["clock","cooldown"]
 };
 // Account states: [status glyph, label].
 const ACCOUNT = {

@@ -1463,6 +1463,7 @@ impl App {
                 p.status != "needs_input",
                 p.status != "running",
                 p.status != "failed",
+                p.status != "active",
                 p.provider.is_none(),
                 p.id,
             )
@@ -1661,7 +1662,8 @@ fn status_slug(s: Status) -> &'static str {
         Status::Failed(_) => "failed",
         Status::Done => "done",
         Status::CommandDone => "done",
-        Status::Unknown => "running",
+        // Matches desktop: an open agent with no hook telemetry is calm "Active", never spinning "Running".
+        Status::Unknown => "active",
         Status::Ended => "idle",
     }
 }
@@ -1669,4 +1671,17 @@ fn status_slug(s: Status) -> &'static str {
 /// Helper to check whether `View` is one of the ADE management views (Profiles / Monitor / Pairing).
 pub fn is_management_view(v: View) -> bool {
     matches!(v, View::Profiles | View::Monitor | View::Pairing)
+}
+
+#[cfg(test)]
+mod status_slug_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_agent_status_maps_to_calm_active_not_running() {
+        assert_eq!(status_slug(Status::Unknown), "active");
+        assert_eq!(status_slug(Status::Running), "running");
+        assert_eq!(status_slug(Status::Idle), "idle");
+        assert_eq!(status_slug(Status::NeedsInput), "needs_input");
+    }
 }

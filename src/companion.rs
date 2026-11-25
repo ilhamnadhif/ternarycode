@@ -868,11 +868,9 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
             let mut auth_rx = state.auth_ver.subscribe();
             state.ensure_fresh_snapshot().await;
             let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-            if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(headers.as_bytes())).await.is_err() {
-                return Ok(());
-            }
             let initial = state.snapshot.read().clone();
-            if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(format!("data: {initial}\n\n").as_bytes())).await.is_err() {
+            let first_payload = format!("{headers}data: {initial}\n\n");
+            if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(first_payload.as_bytes())).await.is_err() {
                 return Ok(());
             }
             let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
@@ -1316,9 +1314,14 @@ mod tests {
             let mut sse = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
             sse.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             sse.write_all(format!("GET /api/events?token={sse_tok} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes()).unwrap();
+            let mut first = String::new();
             let mut buf = [0u8; 512];
-            let n = sse.read(&mut buf).unwrap();
-            let first = String::from_utf8_lossy(&buf[..n]).into_owned();
+            while !first.contains("data:") || !first.ends_with("\n\n") {
+                match sse.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => first.push_str(&String::from_utf8_lossy(&buf[..n])),
+                }
+            }
             drop(sse);
             first
         });
