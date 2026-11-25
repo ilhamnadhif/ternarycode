@@ -1071,7 +1071,16 @@ impl App {
         self.ensure_terminals_visible();
         match agent {
             None => {
-                if let Some(pane) = self.new_tab(ctx) {
+                let pane = if let Some(fresh) = self.fresh_command_pane() {
+                    self.wake(ctx, fresh);
+                    Some(fresh)
+                } else {
+                    self.new_tab(ctx)
+                };
+                if let Some(pane) = pane {
+                    if let Some(p) = self.panes.get_mut(&pane) {
+                        p.remote_opened = true;
+                    }
                     self.focus_pane(pane);
                 }
             }
@@ -1218,6 +1227,7 @@ impl App {
             CompanionCmd::SendInput { pane, text, enter } => {
                 self.wake(ctx, pane);
                 if let Some(p) = self.panes.get_mut(&pane) {
+                    p.remote_opened = true;
                     let normalized = text.replace("\r\n", "\n");
                     let clean = if enter && !normalized.is_empty() {
                         normalized.trim_end_matches(['\r', '\n'])
@@ -1282,6 +1292,10 @@ impl App {
             }
             CompanionCmd::SpawnAgent { project, agent, profile_id } => {
                 self.spawn_project_agent(ctx, project, agent, profile_id);
+            }
+            CompanionCmd::ClosePane { pane } => {
+                self.close_pane(ctx, pane);
+                self.push_companion_now();
             }
             CompanionCmd::DevicePaired(dev) => {
                 let name = dev.name.clone();
@@ -1350,6 +1364,7 @@ impl App {
         let mut panes: Vec<CompanionPane> = self
             .panes
             .values()
+            .filter(|p| p.is_companion_active())
             .map(|p| {
                 let proj = self.project(p.project);
                 let rate_limit = p
@@ -1366,7 +1381,11 @@ impl App {
                         }
                     });
                 let output = profiles::redact_secrets(&p.screen_tail(45), &secrets);
-                let pane_agent = p.tracker.agent.or(p.last_agent);
+                let pane_agent = p
+                    .tracker
+                    .agent
+                    .or(p.last_agent)
+                    .or_else(|| p.preset.as_deref().and_then(AgentKind::from_slug));
                 let supports_profiles = pane_agent.is_some_and(profiles::supports_profile);
                 CompanionPane {
                     id: p.id,
@@ -1382,10 +1401,20 @@ impl App {
                     message: p.tracker.message.clone(),
                     output,
                     rate_limit,
+                    remote_opened: p.remote_opened,
                 }
             })
             .collect();
-        panes.sort_by_key(|p| (p.rate_limit.is_none(), p.status != "needs_input", p.status != "running", p.id));
+        panes.sort_by_key(|p| {
+            (
+                p.rate_limit.is_none(),
+                p.status != "needs_input",
+                p.status != "running",
+                p.status != "failed",
+                p.provider.is_none(),
+                p.id,
+            )
+        });
 
         let profiles: Vec<CompanionProfile> = profiles_cfg
             .iter()

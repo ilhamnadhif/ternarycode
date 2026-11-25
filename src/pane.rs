@@ -270,6 +270,9 @@ pub struct Pane {
     started: Instant,
     /// The user typed into the current shell (Ctrl+D included).
     typed: bool,
+    /// Explicitly opened or interacted with from the Mobile Companion so it stays listed
+    /// under Active on the phone even while sitting at an idle shell prompt.
+    pub remote_opened: bool,
     /// When the user last pressed Enter in it (sent a prompt to its agent, say). Not merely typed:
     /// keys typed while an agent works are no new prompt.
     pub last_prompt: Option<Instant>,
@@ -365,6 +368,7 @@ impl Pane {
             closing: false,
             started: Instant::now(),
             typed: false,
+            remote_opened: false,
             last_prompt: None,
             enter_at: None,
             resizes: 0,
@@ -707,6 +711,7 @@ impl Pane {
     pub fn is_fresh(&self) -> bool {
         !self.adopted
             && !self.typed
+            && !self.remote_opened
             && self.preset.is_none()
             && self.exit.is_none()
             && self.pending_command.is_none()
@@ -714,6 +719,21 @@ impl Pane {
             && self.resume.is_none()
             && self.tracker.agent.is_none()
             && !matches!(self.tracker.fg, Foreground::Program { .. })
+    }
+
+    /// Whether this pane represents a live AI agent, running foreground process, attention-worthy
+    /// state, or a shell explicitly opened/used from Mobile Companion. Bare idle default shells
+    /// return `false` so they never clutter the Active list or waste SSE bandwidth.
+    pub fn is_companion_active(&self) -> bool {
+        self.tracker.agent.is_some()
+            || self.last_agent.is_some()
+            || self.preset.is_some()
+            || self.pending_command.is_some()
+            || self.resume.is_some()
+            || self.rate_limit.is_some()
+            || self.remote_opened
+            || !matches!(self.tracker.status, tc_core::status::Status::Idle)
+            || matches!(self.tracker.fg, Foreground::Program { .. })
     }
 
     /// Whether this pane's live shell has no foreground program or agent running and no partial

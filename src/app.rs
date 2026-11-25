@@ -2574,7 +2574,7 @@ impl App {
         Some(new)
     }
 
-    fn close_pane(&mut self, ctx: &egui::Context, id: PaneId) {
+    pub(crate) fn close_pane(&mut self, ctx: &egui::Context, id: PaneId) {
         // A page of a Browser panel.
         if self.browsers.contains_key(&id) {
             self.close_page(id);

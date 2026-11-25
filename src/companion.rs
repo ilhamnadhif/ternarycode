@@ -46,6 +46,7 @@ pub enum CompanionCmd {
     SwitchProfile { pane: PaneId, profile_id: String },
     ResumeSession { project: ProjectId, agent: AgentKind, session_id: String, profile_id: Option<String> },
     SpawnAgent { project: ProjectId, agent: Option<AgentKind>, profile_id: Option<String> },
+    ClosePane { pane: PaneId },
     DevicePaired(PairedDevice),
     DeviceSeen { id: String, ip: String, at: i64 },
 }
@@ -94,6 +95,8 @@ pub struct CompanionPane {
     pub message: Option<String>,
     pub output: String,
     pub rate_limit: Option<CompanionRateLimit>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub remote_opened: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -929,6 +932,15 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
             state.ctx.request_repaint();
             write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
         }
+        ("POST", p) if p.strip_prefix("/api/pane/").and_then(|s| s.strip_suffix("/close")).is_some() => {
+            let id_str = p.strip_prefix("/api/pane/").and_then(|s| s.strip_suffix("/close")).unwrap_or("");
+            let Ok(pane) = id_str.parse::<PaneId>() else {
+                return write_response(&mut stream, 400, "application/json", r#"{"error":"bad pane id"}"#).await;
+            };
+            let _ = state.tx.send(AppMsg::Companion(CompanionCmd::ClosePane { pane }));
+            state.ctx.request_repaint();
+            write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
+        }
         _ => write_response(&mut stream, 404, "application/json", r#"{"error":"not found"}"#).await,
     }
 }
@@ -1123,6 +1135,20 @@ mod tests {
                 profile_id: None,
             })
         )));
+
+        // Closing a pane dispatches ClosePane and rejects non-numeric IDs.
+        let close_resp = http_req(
+            port,
+            &format!("POST /api/pane/7/close HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {dev_token}\r\nContent-Length: 0\r\n\r\n"),
+        );
+        assert!(close_resp.starts_with("HTTP/1.1 200"), "{close_resp}");
+        let close_bad = http_req(
+            port,
+            &format!("POST /api/pane/notanid/close HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {dev_token}\r\nContent-Length: 0\r\n\r\n"),
+        );
+        assert!(close_bad.starts_with("HTTP/1.1 400"), "{close_bad}");
+        let close_msgs: Vec<_> = rx.try_iter().collect();
+        assert!(close_msgs.iter().any(|m| matches!(m, AppMsg::Companion(CompanionCmd::ClosePane { pane: 7 }))));
 
         // Revoking the device immediately closes active SSE streams and invalidates its token.
         let mut sse = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
