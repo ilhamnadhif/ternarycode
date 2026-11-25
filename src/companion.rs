@@ -43,6 +43,7 @@ pub enum CompanionCmd {
     QuickAction { pane: PaneId, kind: QuickRemoteAction },
     SwitchProfile { pane: PaneId, profile_id: String },
     ResumeSession { project: ProjectId, agent: AgentKind, session_id: String, profile_id: Option<String> },
+    SpawnAgent { project: ProjectId, agent: Option<AgentKind>, profile_id: Option<String> },
     DevicePaired(PairedDevice),
     DeviceSeen { id: String, ip: String, at: i64 },
 }
@@ -531,6 +532,15 @@ struct ResumeReq {
     profile_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct SpawnReq {
+    project_id: ProjectId,
+    #[serde(default)]
+    agent: String,
+    #[serde(default)]
+    profile_id: Option<String>,
+}
+
 fn check_pair_rate_limit(state: &ServerState, ip: IpAddr) -> bool {
     let now = Instant::now();
     let mut map = state.pair_failures.write();
@@ -834,6 +844,28 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
             }
             Ok(())
         }
+        ("POST", "/api/pane/spawn") => {
+            let Ok(req) = serde_json::from_slice::<SpawnReq>(&body) else {
+                return write_response(&mut stream, 400, "application/json", r#"{"error":"invalid JSON"}"#).await;
+            };
+            let slug = req.agent.trim().to_ascii_lowercase();
+            let agent = if slug.is_empty() || slug == "shell" || slug == "terminal" {
+                None
+            } else {
+                let Some(kind) = AgentKind::from_slug(&slug) else {
+                    return write_response(&mut stream, 400, "application/json", r#"{"error":"unknown agent"}"#).await;
+                };
+                Some(kind)
+            };
+            let profile_id = req.profile_id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            let _ = state.tx.send(AppMsg::Companion(CompanionCmd::SpawnAgent {
+                project: req.project_id,
+                agent,
+                profile_id,
+            }));
+            state.ctx.request_repaint();
+            write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
+        }
         ("POST", "/api/session/resume") => {
             let Ok(req) = serde_json::from_slice::<ResumeReq>(&body) else {
                 return write_response(&mut stream, 400, "application/json", r#"{"error":"invalid JSON"}"#).await;
@@ -1038,6 +1070,52 @@ mod tests {
         assert!(sw_resp.starts_with("HTTP/1.1 200"), "{sw_resp}");
         let msgs: Vec<_> = rx.try_iter().collect();
         assert!(msgs.iter().any(|m| matches!(m, AppMsg::Companion(CompanionCmd::SwitchProfile { pane: 7, profile_id }) if profile_id == "claude2")));
+
+        // Spawning a new agent pane on a project dispatches SpawnAgent cleanly.
+        let sp = r#"{"project_id":42,"agent":"claude","profile_id":"claude1"}"#;
+        let sp_resp = http_req(
+            port,
+            &format!(
+                "POST /api/pane/spawn HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {dev_token}\r\nContent-Length: {}\r\n\r\n{sp}",
+                sp.len()
+            ),
+        );
+        assert!(sp_resp.starts_with("HTTP/1.1 200"), "{sp_resp}");
+        let sp_shell = r#"{"project_id":42,"agent":"shell"}"#;
+        let sp_shell_resp = http_req(
+            port,
+            &format!(
+                "POST /api/pane/spawn HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {dev_token}\r\nContent-Length: {}\r\n\r\n{sp_shell}",
+                sp_shell.len()
+            ),
+        );
+        assert!(sp_shell_resp.starts_with("HTTP/1.1 200"), "{sp_shell_resp}");
+        let sp_bad = r#"{"project_id":42,"agent":"not_a_real_agent"}"#;
+        let sp_bad_resp = http_req(
+            port,
+            &format!(
+                "POST /api/pane/spawn HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {dev_token}\r\nContent-Length: {}\r\n\r\n{sp_bad}",
+                sp_bad.len()
+            ),
+        );
+        assert!(sp_bad_resp.starts_with("HTTP/1.1 400"), "{sp_bad_resp}");
+        let spawn_msgs: Vec<_> = rx.try_iter().collect();
+        assert!(spawn_msgs.iter().any(|m| matches!(
+            m,
+            AppMsg::Companion(CompanionCmd::SpawnAgent {
+                project: 42,
+                agent: Some(AgentKind::Claude),
+                profile_id: Some(pid),
+            }) if pid == "claude1"
+        )));
+        assert!(spawn_msgs.iter().any(|m| matches!(
+            m,
+            AppMsg::Companion(CompanionCmd::SpawnAgent {
+                project: 42,
+                agent: None,
+                profile_id: None,
+            })
+        )));
 
         // Revoking the device immediately closes active SSE streams and invalidates its token.
         let mut sse = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();

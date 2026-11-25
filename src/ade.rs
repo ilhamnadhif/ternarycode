@@ -1055,6 +1055,48 @@ impl App {
         self.run_agent_preset_with_profile(ctx, preset, Launch::Session(session_id), Some(0), valid_profile_id);
     }
 
+    /// Spawns a new agent (or plain terminal when `agent` is `None`) inside `project` from Mobile Companion.
+    pub fn spawn_project_agent(
+        &mut self,
+        ctx: &egui::Context,
+        project: ProjectId,
+        agent: Option<AgentKind>,
+        profile_id: Option<String>,
+    ) {
+        if self.project(project).is_none() {
+            return;
+        }
+        self.active = Some(project);
+        self.show_focus();
+        self.ensure_terminals_visible();
+        match agent {
+            None => {
+                if let Some(pane) = self.new_tab(ctx) {
+                    self.focus_pane(pane);
+                }
+            }
+            Some(kind) => {
+                let valid_profile_id = if profiles::supports_profile(kind) {
+                    profile_id
+                        .as_deref()
+                        .and_then(|id| self.profile_by_id(id))
+                        .filter(|p| p.enabled && p.agent == kind)
+                        .map(|p| p.id)
+                } else {
+                    None
+                };
+                if let Some(prof_id) = &valid_profile_id
+                    && let Some(p) = self.project_mut(project)
+                {
+                    p.active_profile = Some(prof_id.clone());
+                }
+                let preset = self.preset_for_agent(kind);
+                self.run_agent_preset_with_profile(ctx, preset, Launch::New, Some(0), valid_profile_id);
+            }
+        }
+        self.push_companion_now();
+    }
+
     /// Starts a new session directly inside `project` with an optional chosen profile.
     pub fn new_project_session(&mut self, ctx: &egui::Context, project: ProjectId, profile_id: Option<String>) {
         if self.project(project).is_none() {
@@ -1206,9 +1248,14 @@ impl App {
             }
             CompanionCmd::SwitchProfile { pane, profile_id } => {
                 self.switch_pane_profile_and_resume(ctx, pane, &profile_id, false);
+                self.push_companion_now();
             }
             CompanionCmd::ResumeSession { project, agent, session_id, profile_id } => {
                 self.resume_project_session(ctx, project, agent, session_id, profile_id);
+                self.push_companion_now();
+            }
+            CompanionCmd::SpawnAgent { project, agent, profile_id } => {
+                self.spawn_project_agent(ctx, project, agent, profile_id);
             }
             CompanionCmd::DevicePaired(dev) => {
                 let name = dev.name.clone();
