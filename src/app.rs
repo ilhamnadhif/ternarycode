@@ -2800,6 +2800,7 @@ impl App {
             p.resume = None;
             p.rate_limit = None;
             p.last_limit_sig = None;
+            p.last_trust_sig = None;
             p.rate_limit_dismissed = false;
             p.dismissed_limit_sigs.clear();
             p.limit_ignore_until = None;

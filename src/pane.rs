@@ -312,6 +312,8 @@ pub struct Pane {
     pub last_limit_check: Instant,
     /// Dedup key of the last rate-limit line handled in this pane.
     pub last_limit_sig: Option<String>,
+    /// Dedup key of the last interactive trust prompt handled in this pane.
+    pub last_trust_sig: Option<String>,
     /// User explicitly closed the rate-limit notice in this pane (suppresses forced header failover CTA).
     pub rate_limit_dismissed: bool,
     /// Rate-limit signatures already dismissed or superseded in this pane so stale scrollback never re-triggers them.
@@ -387,6 +389,7 @@ impl Pane {
             rate_limit: None,
             last_limit_check: Instant::now(),
             last_limit_sig: None,
+            last_trust_sig: None,
             rate_limit_dismissed: false,
             dismissed_limit_sigs: Vec::new(),
             limit_ignore_until: None,
@@ -500,6 +503,7 @@ impl Pane {
         }
         self.rate_limit = None;
         self.last_limit_sig = None;
+        self.last_trust_sig = None;
         self.limit_ignore_until = None;
         match LocalPty::spawn(&opts) {
             Ok(pty) => self.attach(pty, spawn),
@@ -935,6 +939,7 @@ impl Pane {
                 self.active_profile = None;
                 self.rate_limit = None;
                 self.last_limit_sig = None;
+                self.last_trust_sig = None;
                 self.limit_ignore_until = None;
                 self.task = None;
                 self.last_words = None;
@@ -1123,6 +1128,7 @@ impl Pane {
             self.active_profile = None;
             self.rate_limit = None;
             self.last_limit_sig = None;
+            self.last_trust_sig = None;
             self.rate_limit_dismissed = false;
             self.dismissed_limit_sigs.clear();
             self.task = None;

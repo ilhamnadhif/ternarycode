@@ -412,9 +412,10 @@ impl App {
         let mut wake_at = |d: Duration| {
             next_wake = Some(next_wake.map_or(d, |w| w.min(d)));
         };
+        let companion_active = self.companion.as_ref().is_some_and(|c| c.has_active_clients());
         let timer_visible = matches!(self.view, View::Profiles | View::Monitor)
             || self.monitor_popover
-            || self.companion.is_some();
+            || companion_active;
 
         for rt in self.profiles_rt.values_mut() {
             if let Some(reset_at) = rt.reset_at {
@@ -466,28 +467,24 @@ impl App {
             }
         }
 
-        // 2. Scan live agent panes (currently running a profile-tracked agent) for rate-limit
-        // output and passive plan-tier detection (e.g. Antigravity CLI's Google AI Pro/Ultra banner).
+        // 2. Scan live agent panes for rate-limit output, passive plan-tier detection (e.g.
+        // Antigravity CLI's Google AI Pro/Ultra banner), and interactive trust dialogs (e.g.
+        // Claude Code's "Do you trust the files in this folder?" before hooks load).
         let mut detected: Vec<(PaneId, RateLimitHit)> = Vec::new();
+        let mut trust_detected: Vec<(PaneId, &'static str)> = Vec::new();
         let mut agy_plan: Option<String> = None;
         let need_agy_plan = profiles
             .iter()
             .find(|p| p.agent == AgentKind::Antigravity)
             .is_some_and(|p| self.profiles_rt.get(&p.id).is_none_or(|rt| rt.effective_plan().is_none()));
         for pane in self.panes.values_mut() {
-            let in_agent = pane.alive()
-                && pane.tracker.agent.is_some_and(profiles::supports_profile)
+            let in_any_agent = pane.alive()
+                && (pane.tracker.agent.is_some() || pane.preset.is_some())
                 && !matches!(pane.tracker.fg, tc_core::status::Foreground::Shell | tc_core::status::Foreground::Gone);
-            if !in_agent {
+            if !in_any_agent {
                 continue;
             }
-            if let Some(until) = pane.limit_ignore_until {
-                if now < until {
-                    wake_at(until.saturating_duration_since(now));
-                    continue;
-                }
-                pane.limit_ignore_until = None;
-            }
+            let supports_prof = pane.tracker.agent.is_some_and(profiles::supports_profile);
             let elapsed = now.duration_since(pane.last_limit_check);
             if elapsed < Duration::from_millis(1200) {
                 if pane.last_output > pane.last_limit_check {
@@ -503,15 +500,40 @@ impl App {
                 let wide_tail = pane.screen_tail(60);
                 agy_plan = profiles::detect_agy_plan(&wide_tail);
             }
-            let tail = pane.screen_tail(16);
-            if let Some(hit) = profiles::detect_rate_limit(&tail) {
-                let already_dismissed = pane.dismissed_limit_sigs.iter().any(|s| s == &hit.reason);
-                if !already_dismissed && pane.last_limit_sig.as_deref() != Some(hit.reason.as_str()) {
-                    pane.last_limit_sig = Some(hit.reason.clone());
-                    detected.push((pane.id, hit));
+            let tail = pane.screen_tail(24);
+            if supports_prof {
+                let ignore_limit = if let Some(until) = pane.limit_ignore_until {
+                    if now < until {
+                        wake_at(until.saturating_duration_since(now));
+                        true
+                    } else {
+                        pane.limit_ignore_until = None;
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !ignore_limit {
+                    if let Some(hit) = profiles::detect_rate_limit(&tail) {
+                        let already_dismissed = pane.dismissed_limit_sigs.iter().any(|s| s == &hit.reason);
+                        if !already_dismissed && pane.last_limit_sig.as_deref() != Some(hit.reason.as_str()) {
+                            pane.last_limit_sig = Some(hit.reason.clone());
+                            detected.push((pane.id, hit));
+                        }
+                    } else {
+                        pane.last_limit_sig = None;
+                    }
                 }
-            } else {
-                pane.last_limit_sig = None;
+            }
+            if !pane.tracker.hooks_active || pane.tracker.agent == Some(AgentKind::Codex) {
+                if let Some(msg) = profiles::detect_trust_prompt(&tail) {
+                    if pane.last_trust_sig.as_deref() != Some(msg) {
+                        pane.last_trust_sig = Some(msg.into());
+                        trust_detected.push((pane.id, msg));
+                    }
+                } else {
+                    pane.last_trust_sig = None;
+                }
             }
         }
         if let Some(plan) = agy_plan
@@ -521,6 +543,17 @@ impl App {
         }
         for (pane_id, hit) in detected {
             self.handle_rate_limit(ctx, pane_id, hit);
+        }
+        let mut any_trust = false;
+        for (pane_id, msg) in trust_detected {
+            if let Some(pane) = self.panes.get_mut(&pane_id)
+                && pane.tracker.apply(tc_core::status::Event::Notify { message: Some(msg.into()) }, now)
+            {
+                any_trust = true;
+            }
+        }
+        if any_trust {
+            self.push_companion_now();
         }
 
         // 3. Background real token usage scan across every profile's config dir (every 20 s, bounded to 1 in-flight).
@@ -570,16 +603,22 @@ impl App {
         }
 
         // 5. Publish live snapshot to connected Mobile Companion clients (throttled ~350 ms).
-        if self.companion.is_some() {
-            let elapsed = now.duration_since(self.companion_last_push);
-            if elapsed >= Duration::from_millis(350) {
-                self.companion_last_push = now;
-                let snap = self.build_companion_snapshot();
-                if let Some(c) = &self.companion {
-                    c.publish(&snap);
+        // When no mobile client is connected, skip JSON serialization completely (0% idle CPU)
+        // and mark dirty so the next connecting phone gets an immediate on-demand sync.
+        if let Some(c) = &self.companion {
+            if c.has_active_clients() {
+                let elapsed = now.duration_since(self.companion_last_push);
+                if elapsed >= Duration::from_millis(350) {
+                    self.companion_last_push = now;
+                    let snap = self.build_companion_snapshot();
+                    if let Some(c) = &self.companion {
+                        c.publish(&snap);
+                    }
+                } else if self.panes.values().any(|p| p.last_output > self.companion_last_push) {
+                    wake_at(Duration::from_millis(350) - elapsed);
                 }
-            } else if self.panes.values().any(|p| p.last_output > self.companion_last_push) {
-                wake_at(Duration::from_millis(350) - elapsed);
+            } else {
+                c.mark_dirty();
             }
         }
 
@@ -1212,12 +1251,16 @@ impl App {
     }
 
     pub fn push_companion_now(&mut self) {
-        if self.companion.is_some() {
-            let snap = self.build_companion_snapshot();
-            if let Some(c) = &self.companion {
-                c.publish(&snap);
+        if let Some(c) = &self.companion {
+            if c.has_active_clients() {
+                let snap = self.build_companion_snapshot();
+                if let Some(c) = &self.companion {
+                    c.publish(&snap);
+                }
+                self.companion_last_push = Instant::now();
+            } else {
+                c.mark_dirty();
             }
-            self.companion_last_push = Instant::now();
         }
     }
 
@@ -1296,6 +1339,15 @@ impl App {
             CompanionCmd::ClosePane { pane } => {
                 self.close_pane(ctx, pane);
                 self.push_companion_now();
+            }
+            CompanionCmd::SyncSnapshot => {
+                if self.companion.is_some() {
+                    let snap = self.build_companion_snapshot();
+                    if let Some(c) = &self.companion {
+                        c.publish(&snap);
+                    }
+                    self.companion_last_push = Instant::now();
+                }
             }
             CompanionCmd::DevicePaired(dev) => {
                 let name = dev.name.clone();

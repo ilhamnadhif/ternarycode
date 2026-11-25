@@ -674,6 +674,57 @@ pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
     None
 }
 
+/// Detects an active interactive workspace/folder trust dialog (e.g. Claude Code's
+/// "Do you trust the files in this folder?" / "Quick safety check: Is this a project you created
+/// or one you trust?", Codex CLI trust prompt, or Gemini CLI trust dialog) in the bottom visible
+/// terminal lines. Returns a concise UI message when an unanswered trust prompt is on screen.
+pub fn detect_trust_prompt(tail: &str) -> Option<&'static str> {
+    let lines: Vec<String> = tail
+        .lines()
+        .rev()
+        .take(24)
+        .map(|l| {
+            let trimmed = l.trim();
+            // Unwrap outer Unicode box borders (`│ ... │` / `┃ ... ┃`) used by Ink/Ratatui dialogs.
+            let inner = trimmed
+                .strip_prefix('│')
+                .or_else(|| trimmed.strip_prefix('┃'))
+                .map(|s| s.trim_end_matches(['│', '┃']).trim())
+                .unwrap_or(trimmed);
+            inner.to_string()
+        })
+        .filter(|l| !l.is_empty() && !looks_like_code_or_test(l))
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let joined = lines.iter().rev().cloned().collect::<Vec<_>>().join("\n").to_ascii_lowercase();
+    let has_trust_question = joined.contains("trust the files in this folder")
+        || joined.contains("trust this folder")
+        || joined.contains("trust this workspace")
+        || joined.contains("trust this directory")
+        || joined.contains("trust this project")
+        || (joined.contains("quick safety check") && joined.contains("trust"))
+        || (joined.contains("do you trust")
+            && (joined.contains("folder")
+                || joined.contains("directory")
+                || joined.contains("project")
+                || joined.contains("hooks")));
+    if !has_trust_question {
+        return None;
+    }
+    let has_action_cue = joined.contains("yes, i trust")
+        || joined.contains("yes, proceed")
+        || joined.contains("no, exit")
+        || joined.contains("enter to confirm")
+        || joined.contains("esc to cancel")
+        || joined.contains('❯')
+        || joined.contains("› 1.")
+        || joined.contains("[y/n]")
+        || joined.contains("(y/n)");
+    has_action_cue.then_some("Trust this folder?")
+}
+
 /// Parses human durations after reset/retry clauses like `"resets in 1h 25m"`, `"try again in 45 seconds"`,
 /// `"retry after 12 min"`, or wall-clock times like `"resets 5pm"` / `"resets at 14:30"`.
 pub fn parse_retry_duration(lower: &str) -> Option<Duration> {
@@ -986,6 +1037,38 @@ mod tests {
             stale.push_str(&format!("Explored file_{i}.rs and updated handlers\n"));
         }
         assert!(detect_rate_limit(&stale).is_none());
+    }
+
+    #[test]
+    fn trust_prompt_detector_handles_claude_codex_and_ignores_code() {
+        let claude_boxed = "\
+╭──────────────────────────────────────────────────╮
+│ Do you trust the files in this folder?           │
+│                                                  │
+│ /Users/ilham/Developments/demo                   │
+│                                                  │
+│ ❯ 1. Yes, proceed                                │
+│   2. No, exit                                    │
+│                                                  │
+│ Enter to confirm · Esc to cancel                 │
+╰──────────────────────────────────────────────────╯";
+        assert_eq!(detect_trust_prompt(claude_boxed), Some("Trust this folder?"));
+
+        let claude_v2 = "\
+Accessing workspace:
+/Users/ilham/Developments/demo
+Quick safety check: Is this a project you created or one you trust?
+❯ 1. Yes, I trust this folder
+  2. No, exit
+Enter to confirm · Esc to cancel";
+        assert_eq!(detect_trust_prompt(claude_v2), Some("Trust this folder?"));
+
+        let codex_trust = "Do you trust this project's hooks?\n› 1. Yes, trust\n  2. No";
+        assert_eq!(detect_trust_prompt(codex_trust), Some("Trust this folder?"));
+
+        // Source code / normal agent chatter mentioning trust without interactive prompt cues must NOT match.
+        assert!(detect_trust_prompt("// Do you trust this folder?\nlet x = 1;").is_none());
+        assert!(detect_trust_prompt("Updated trust settings in config.toml and ran tests.").is_none());
     }
 
     #[test]

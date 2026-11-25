@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,8 @@ const MAX_CONCURRENT_CONNS: usize = 64;
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const SSE_WRITE_TIMEOUT: Duration = Duration::from_secs(20);
 const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const CLIENT_POLL_ACTIVE_WINDOW: Duration = Duration::from_secs(15);
+const SNAPSHOT_SYNC_TIMEOUT: Duration = Duration::from_millis(180);
 const PAIR_RATE_WINDOW: Duration = Duration::from_secs(60);
 const PAIR_MAX_FAILURES: usize = 5;
 
@@ -47,6 +50,7 @@ pub enum CompanionCmd {
     ResumeSession { project: ProjectId, agent: AgentKind, session_id: String, profile_id: Option<String> },
     SpawnAgent { project: ProjectId, agent: Option<AgentKind>, profile_id: Option<String> },
     ClosePane { pane: PaneId },
+    SyncSnapshot,
     DevicePaired(PairedDevice),
     DeviceSeen { id: String, ip: String, at: i64 },
 }
@@ -152,6 +156,10 @@ struct ServerState {
     auth: RwLock<AuthState>,
     pair_failures: RwLock<HashMap<IpAddr, Vec<Instant>>>,
     snapshot: RwLock<String>,
+    snapshot_dirty: AtomicBool,
+    snapshot_seq: watch::Sender<u64>,
+    sse_clients: AtomicUsize,
+    last_client_poll: RwLock<Option<Instant>>,
     events: broadcast::Sender<String>,
     shutdown: watch::Sender<bool>,
     auth_ver: watch::Sender<u64>,
@@ -163,6 +171,48 @@ impl ServerState {
     fn bump_auth(&self) {
         let next = self.auth_ver.borrow().wrapping_add(1);
         let _ = self.auth_ver.send(next);
+    }
+
+    fn touch_client(&self) {
+        *self.last_client_poll.write() = Some(Instant::now());
+    }
+
+    fn has_active_clients(&self) -> bool {
+        if self.sse_clients.load(Ordering::Relaxed) > 0 {
+            return true;
+        }
+        self.last_client_poll
+            .read()
+            .is_some_and(|t| t.elapsed() < CLIENT_POLL_ACTIVE_WINDOW)
+    }
+
+    /// Requests an immediate fresh snapshot from the UI thread when idle suppression marked the
+    /// cached snapshot dirty (or before the first publish), waiting briefly so the connecting
+    /// client receives up-to-date state on its very first response.
+    async fn ensure_fresh_snapshot(&self) {
+        let needs_sync = self.snapshot_dirty.load(Ordering::Acquire) || *self.snapshot.read() == "{}";
+        if !needs_sync {
+            return;
+        }
+        let mut seq_rx = self.snapshot_seq.subscribe();
+        let _ = self.tx.send(AppMsg::Companion(CompanionCmd::SyncSnapshot));
+        self.ctx.request_repaint();
+        let _ = tokio::time::timeout(SNAPSHOT_SYNC_TIMEOUT, seq_rx.changed()).await;
+    }
+}
+
+struct SseClientGuard<'a>(&'a AtomicUsize);
+
+impl<'a> SseClientGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(counter)
+    }
+}
+
+impl Drop for SseClientGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -189,10 +239,15 @@ impl CompanionHandle {
         let (events, _) = broadcast::channel(32);
         let (shutdown, mut sd_rx) = watch::channel(false);
         let (auth_ver, _) = watch::channel(0u64);
+        let (snapshot_seq, _) = watch::channel(0u64);
         let shared = Arc::new(ServerState {
             auth: RwLock::new(AuthState { pair_token, devices: dev_map }),
             pair_failures: RwLock::new(HashMap::new()),
             snapshot: RwLock::new("{}".into()),
+            snapshot_dirty: AtomicBool::new(true),
+            snapshot_seq,
+            sse_clients: AtomicUsize::new(0),
+            last_client_poll: RwLock::new(None),
             events,
             shutdown,
             auth_ver,
@@ -289,6 +344,17 @@ impl CompanionHandle {
         format!("{base}{sep}{}", self.pair_token())
     }
 
+    /// True when at least one mobile companion has an open SSE stream or polled recently.
+    /// When false, the UI loop skips snapshot serialization for zero idle CPU overhead.
+    pub fn has_active_clients(&self) -> bool {
+        self.shared.has_active_clients()
+    }
+
+    /// Marks the cached snapshot stale without building JSON when no mobile client is connected.
+    pub fn mark_dirty(&self) {
+        self.shared.snapshot_dirty.store(true, Ordering::Release);
+    }
+
     pub fn publish(&self, snap: &CompanionSnapshot) {
         if let Ok(json) = serde_json::to_string(snap) {
             let changed = {
@@ -300,6 +366,9 @@ impl CompanionHandle {
                     true
                 }
             };
+            self.shared.snapshot_dirty.store(false, Ordering::Release);
+            let next_seq = self.shared.snapshot_seq.borrow().wrapping_add(1);
+            let _ = self.shared.snapshot_seq.send(next_seq);
             if changed {
                 let _ = self.shared.events.send(json);
             }
@@ -779,6 +848,7 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
     let (Some(dev_id), Some(token_hash)) = (dev_id, token_hash) else {
         return write_response(&mut stream, 401, "application/json", r#"{"error":"unauthorized"}"#).await;
     };
+    state.touch_client();
     let _ = state.tx.send(AppMsg::Companion(CompanionCmd::DeviceSeen {
         id: dev_id,
         ip: addr.ip().to_string(),
@@ -787,10 +857,16 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
 
     match (method, path) {
         ("GET", "/api/state") => {
+            state.ensure_fresh_snapshot().await;
             let snap = state.snapshot.read().clone();
             write_response(&mut stream, 200, "application/json", &snap).await
         }
         ("GET", "/api/events") => {
+            let _sse_guard = SseClientGuard::new(&state.sse_clients);
+            let mut rx = state.events.subscribe();
+            let mut sd_rx = state.shutdown.subscribe();
+            let mut auth_rx = state.auth_ver.subscribe();
+            state.ensure_fresh_snapshot().await;
             let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
             if tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.write_all(headers.as_bytes())).await.is_err() {
                 return Ok(());
@@ -800,9 +876,6 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
                 return Ok(());
             }
             let _ = tokio::time::timeout(SSE_WRITE_TIMEOUT, stream.flush()).await;
-            let mut rx = state.events.subscribe();
-            let mut sd_rx = state.shutdown.subscribe();
-            let mut auth_rx = state.auth_ver.subscribe();
             loop {
                 if *sd_rx.borrow() || !state.auth.read().devices.contains_key(&token_hash) {
                     break;
@@ -1214,5 +1287,52 @@ mod tests {
         let ip: Ipv4Addr = detect_lan_ip().parse().expect("valid IPv4 string");
         assert!(!ip.is_unspecified());
         assert!(!ip.is_link_local());
+    }
+
+    #[test]
+    fn idle_client_tracking_and_sync_on_connect() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = CompanionHandle::start(rt.handle(), 0, &[], tx, egui::Context::default()).unwrap();
+        let port = handle.port;
+
+        // With no paired client connected, idle overhead guard reports inactive.
+        assert!(!handle.has_active_clients());
+
+        // Pair a test device.
+        let body = format!(r#"{{"token":"{}","device_name":"IdleTest"}}"#, handle.pair_token());
+        let pair_resp = http_req(
+            port,
+            &format!("POST /api/pair HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}", body.len()),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(pair_resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let dev_token = parsed["device_token"].as_str().unwrap().to_string();
+
+        // Mark snapshot dirty while idle, then connect SSE on a background thread while the main
+        // thread services `CompanionCmd::SyncSnapshot` like the real UI loop.
+        handle.mark_dirty();
+        let sse_tok = dev_token.clone();
+        let sse_thread = std::thread::spawn(move || {
+            let mut sse = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            sse.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            sse.write_all(format!("GET /api/events?token={sse_tok} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes()).unwrap();
+            let mut buf = [0u8; 512];
+            let n = sse.read(&mut buf).unwrap();
+            let first = String::from_utf8_lossy(&buf[..n]).into_owned();
+            drop(sse);
+            first
+        });
+
+        let mut saw_sync = false;
+        for _ in 0..40 {
+            if let Ok(AppMsg::Companion(CompanionCmd::SyncSnapshot)) = rx.recv_timeout(Duration::from_millis(25)) {
+                saw_sync = true;
+                handle.publish(&CompanionSnapshot { failover_mode: "fresh-on-connect".into(), ..Default::default() });
+                break;
+            }
+        }
+        assert!(saw_sync, "connecting while dirty must trigger SyncSnapshot");
+        let first_frame = sse_thread.join().unwrap();
+        assert!(first_frame.contains("fresh-on-connect"), "{first_frame}");
     }
 }
