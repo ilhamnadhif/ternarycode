@@ -1158,28 +1158,28 @@ pub fn is_signed_in(agent: AgentKind, root: &Path) -> Option<bool> {
     }
 }
 
-/// Reads the most recent signed-in Google email from Antigravity CLI's local log (`cli.log` or
-/// newest `log/cli-*.log`, matching `applyAuthResult: email=<addr>,`).
+/// Reads the most recent signed-in Google email from Antigravity CLI's newest local log
+/// (`cli.log` or `log/cli-*.log`, sorted newest mtime first so switching Google accounts
+/// in a newer session is detected immediately even if an older `cli.log` still exists).
 fn antigravity_auth_email(root: &Path) -> Option<String> {
-    let mut candidates = vec![root.join("cli.log")];
+    let mut logs: Vec<(SystemTime, PathBuf)> = Vec::new();
+    let root_log = root.join("cli.log");
+    if root_log.is_file() {
+        logs.push((modified(&root_log), root_log));
+    }
     let log_dir = root.join("log");
     if let Ok(entries) = fs::read_dir(&log_dir) {
-        let mut logs: Vec<(SystemTime, PathBuf)> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".log"))
-            })
-            .map(|p| (modified(&p), p))
-            .collect();
-        logs.sort_by_key(|x| std::cmp::Reverse(x.0));
-        for (_, p) in logs.into_iter().take(4) {
-            candidates.push(p);
+        for p in entries.flatten().map(|e| e.path()) {
+            if p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".log"))
+            {
+                logs.push((modified(&p), p));
+            }
         }
     }
-    for path in candidates {
+    logs.sort_by_key(|x| std::cmp::Reverse(x.0));
+    for (_, path) in logs.into_iter().take(6) {
         let (head, tail) = edges(&path, 64 * 1024, 64 * 1024);
         for line in tail.iter().rev().chain(head.iter().rev()) {
             if let Some(pos) = line.find("applyAuthResult: email=") {
@@ -2287,6 +2287,15 @@ mod tests {
         let agy_rep_updated = profile_usage(AgentKind::Antigravity, &agy_root);
         assert_eq!(agy_rep_updated.window_5h.tokens.total(), 20_000);
         assert_eq!(agy_rep_updated.window_5h.turns, 2);
+
+        // Switching Google accounts in a newer `log/cli-*.log` overrides an older `cli.log` email!
+        age(&agy_root.join("cli.log"), 120);
+        write(
+            &agy_root.join("log/cli-20261125-150000.log"),
+            "I1125 15:00:01.100 310 server_oauth.go:221] applyAuthResult: email=fresh@example.com, authMethod=consumer, quotaProject=\n",
+        );
+        let agy_rep_switched = profile_usage(AgentKind::Antigravity, &agy_root);
+        assert_eq!(agy_rep_switched.account_email.as_deref(), Some("fresh@example.com"));
     }
 
     #[test]

@@ -324,7 +324,7 @@ pub struct App {
     settings_dirty: bool,
     pub window_focused: bool,
     /// The ask (see `Tracker::ask`) each pane was last notified for, or seen at.
-    notified: HashMap<PaneId, u64>,
+    pub(crate) notified: HashMap<PaneId, u64>,
     badge: usize,
     #[cfg(target_os = "macos")]
     menu: Option<(ui::menu::AppMenu, Receiver<muda::MenuEvent>)>,
@@ -1791,11 +1791,20 @@ impl App {
                 UiMsg::Call(call, reply) => self.browser_call(call, reply),
                 UiMsg::Hook(msg) => {
                     let mut log_info: Option<(ProjectId, Option<String>, crate::profiles::LogLevel, String)> = None;
+                    let mut clear_prof_for_pane: Option<PaneId> = None;
+                    let turn_done = matches!(msg.event.as_str(), "Stop" | "AfterAgent" | "session.idle")
+                        || msg.kind.as_deref() == Some("agent-turn-complete");
+                    let session_start = msg.event == "SessionStart";
+                    let active_progress = matches!(msg.event.as_str(), "PreToolUse" | "PostToolUse");
                     if let Some(pane) = self.panes.get_mut(&msg.pane) {
-                        let turn_done = matches!(msg.event.as_str(), "Stop" | "AfterAgent" | "session.idle")
-                            || msg.kind.as_deref() == Some("agent-turn-complete");
                         let agent = pane.last_agent;
                         pane.on_hook(&msg, now);
+                        if turn_done || session_start || active_progress {
+                            let tail = pane.screen_tail(10);
+                            if crate::profiles::detect_rate_limit(&tail).is_none() {
+                                clear_prof_for_pane = Some(msg.pane);
+                            }
+                        }
                         if turn_done {
                             git_refresh.push(pane.project);
                             log_info = Some((
@@ -1824,11 +1833,35 @@ impl App {
                         }
                         resume_changed |= pane.last_agent != agent;
                     }
+                    // A completed turn or clean session start proves the active account has quota
+                    // again (e.g. after switching Google/Claude/Codex accounts or model): auto-clear
+                    // any stale profile-level rate-limit cooldown immediately.
+                    if let Some(pid) = clear_prof_for_pane {
+                        let profiles = self.effective_profiles();
+                        let prof_id = self.panes.get(&pid).and_then(|p| {
+                            p.tracker
+                                .agent
+                                .or(p.last_agent)
+                                .and_then(|a| self.resolved_pane_profile_id(p, a, &profiles))
+                        });
+                        if let Some(prof_id) = prof_id
+                            && self.profiles_rt.get(&prof_id).is_some_and(|rt| {
+                                matches!(
+                                    rt.state,
+                                    crate::profiles::ProfileState::RateLimited
+                                        | crate::profiles::ProfileState::Cooldown
+                                )
+                            })
+                        {
+                            self.clear_profile_rate_limit(&prof_id, now);
+                        }
+                    }
+                    if session_start {
+                        self.request_usage_refresh(now);
+                    }
                     if let Some((proj, prof, lvl, text)) = log_info {
                         self.push_agent_log(lvl, Some(proj), Some(msg.pane), prof, text);
-                        if matches!(msg.event.as_str(), "Stop" | "AfterAgent" | "session.idle")
-                            || msg.kind.as_deref() == Some("agent-turn-complete")
-                        {
+                        if turn_done {
                             self.request_usage_refresh(now);
                         }
                         self.push_companion_now();
@@ -1957,14 +1990,39 @@ impl App {
                 AppMsg::ProfileUsages(reports) => {
                     self.usage_scan_running = false;
                     let valid = self.effective_profiles();
+                    let mut auto_clear_limits: Vec<String> = Vec::new();
                     for (id, report) in reports {
                         if valid.iter().any(|p| p.id == id) {
-                            let rt = self.profiles_rt.entry(id).or_default();
+                            let rt = self.profiles_rt.entry(id.clone()).or_default();
+                            let was_limited = matches!(
+                                rt.state,
+                                crate::profiles::ProfileState::RateLimited
+                                    | crate::profiles::ProfileState::Cooldown
+                            );
+                            let email_changed = match (
+                                rt.usage.account_email.as_deref(),
+                                report.account_email.as_deref(),
+                            ) {
+                                (Some(old), Some(new)) => !old.eq_ignore_ascii_case(new),
+                                (None, Some(_)) => rt.usage_updated.is_some(),
+                                _ => false,
+                            };
+                            let auth_changed = rt.usage.signed_in != report.signed_in
+                                && report.signed_in.is_some();
+                            let fresh_quota_ok = report.quota_fetched_at_unix.is_some_and(|t| {
+                                rt.rate_limited_at_unix.is_some_and(|lim| t > lim)
+                            }) && report.window_5h.used_percent.is_some_and(|u| u < 99.0);
                             rt.tokens_in = report.recent_24h.input;
                             rt.tokens_out = report.recent_24h.output;
                             rt.usage = report;
                             rt.usage_updated = Some(now);
+                            if was_limited && (email_changed || auth_changed || fresh_quota_ok) {
+                                auto_clear_limits.push(id);
+                            }
                         }
+                    }
+                    for id in auto_clear_limits {
+                        self.clear_profile_rate_limit(&id, now);
                     }
                     self.recompute_usage_totals();
                     self.push_companion_now();
@@ -1973,6 +2031,7 @@ impl App {
                     self.sessions_running.remove(&pid);
                     if self.project(pid).is_some() {
                         self.project_sessions.insert(pid, list);
+                        self.push_companion_now();
                     }
                 }
                 AppMsg::Companion(cmd) => self.handle_companion_cmd(ctx, cmd),
@@ -4411,27 +4470,15 @@ impl App {
                 self.switch_pane_profile_and_resume(ctx, pane, &profile_id, false);
             }
             Action::DismissRateLimit(pane) => {
-                let now = Instant::now();
-                if let Some(p) = self.panes.get_mut(&pane) {
-                    if let Some(banner) = p.rate_limit.take() {
-                        p.remember_dismissed_limit(banner.reason);
-                    }
-                    if let Some(sig) = p.last_limit_sig.clone() {
-                        p.remember_dismissed_limit(sig);
-                    }
-                    p.rate_limit_dismissed = true;
-                    p.tracker.dismiss_notice(now);
-                    self.notified.insert(pane, p.tracker.ask);
-                }
-                self.push_companion_now();
+                self.dismiss_pane_rate_limit(pane, Instant::now());
             }
             Action::DismissNotice(pane) => {
                 let now = Instant::now();
+                let had_limit = self.panes.get(&pane).is_some_and(|p| p.rate_limit.is_some());
+                if had_limit {
+                    self.dismiss_pane_rate_limit(pane, now);
+                }
                 if let Some(p) = self.panes.get_mut(&pane) {
-                    if let Some(banner) = p.rate_limit.take() {
-                        p.remember_dismissed_limit(banner.reason);
-                        p.rate_limit_dismissed = true;
-                    }
                     if let Some(sig) = p.last_limit_sig.clone() {
                         p.remember_dismissed_limit(sig);
                     }
@@ -4445,27 +4492,8 @@ impl App {
             Action::TestProfile(id) => self.test_profile(id),
             Action::LoginProfile(id) => self.login_profile(ctx, &id),
             Action::ClearProfileCooldown(id) => {
-                let now = Instant::now();
-                if let Some(rt) = self.profiles_rt.get_mut(&id) {
-                    rt.reset_at = None;
-                    rt.reset_reason = None;
-                    rt.state = crate::profiles::ProfileState::Idle;
-                }
-                for pane in self.panes.values_mut() {
-                    if pane.rate_limit.as_ref().is_some_and(|b| b.from_profile == id)
-                        || pane.active_profile.as_deref() == Some(id.as_str())
-                    {
-                        if let Some(banner) = pane.rate_limit.take() {
-                            pane.remember_dismissed_limit(banner.reason);
-                        }
-                        pane.rate_limit_dismissed = false;
-                        if pane.tracker.status == tc_core::status::Status::NeedsInput {
-                            pane.tracker.dismiss_notice(now);
-                        }
-                    }
-                }
+                self.clear_profile_rate_limit(&id, Instant::now());
                 self.toast_ok(tf("Cleared cooldown for {}.", &[&id]));
-                self.push_companion_now();
             }
             Action::ToggleCompanionServer => {
                 self.settings.companion.enabled = !self.settings.companion.enabled;

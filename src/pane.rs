@@ -1185,15 +1185,21 @@ impl Pane {
     }
 
     /// Remembers a rate-limit error line that the user dismissed (or worked past) so stale
-    /// scrollback lines do not re-trigger the same notification.
+    /// scrollback lines — even with ticking countdown numbers — do not re-trigger the same notice.
     pub fn remember_dismissed_limit(&mut self, sig: String) {
-        if sig.is_empty() || self.dismissed_limit_sigs.iter().any(|s| s == &sig) {
+        let norm = normalize_limit_sig(&sig);
+        if norm.is_empty() || self.dismissed_limit_sigs.iter().any(|s| s == &norm) {
             return;
         }
         if self.dismissed_limit_sigs.len() >= 8 {
             self.dismissed_limit_sigs.remove(0);
         }
-        self.dismissed_limit_sigs.push(sig);
+        self.dismissed_limit_sigs.push(norm);
+    }
+
+    pub fn has_dismissed_limit(&self, sig: &str) -> bool {
+        let norm = normalize_limit_sig(sig);
+        !norm.is_empty() && self.dismissed_limit_sigs.iter().any(|s| s == &norm)
     }
 
     /// The pane's label: the user's title, the foreground program, or the folder.
@@ -1410,6 +1416,25 @@ fn shell_integrated(env: &HashMap<String, String>) -> bool {
         || env.contains_key(tc_agent::shell::ENV_PWSH)
 }
 
+/// Collapses digit runs (countdown timers like `4h 59m` -> `#h #m`, wall clocks `14:30` -> `#:#`)
+/// so a live countdown tick on a dismissed rate-limit error never re-triggers the same banner.
+fn normalize_limit_sig(sig: &str) -> String {
+    let mut out = String::with_capacity(sig.len());
+    let mut in_digits = false;
+    for ch in sig.trim().chars() {
+        if ch.is_ascii_digit() {
+            if !in_digits {
+                out.push('#');
+                in_digits = true;
+            }
+        } else {
+            in_digits = false;
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod place_tests {
     use super::*;
@@ -1456,5 +1481,17 @@ mod place_tests {
         assert_eq!(clean_title("✳ Review the PR").as_deref(), Some("✳ Review the PR"));
         assert_eq!(clean_title("vim notes.md").as_deref(), Some("vim notes.md"));
         assert_eq!(clean_title("Mail to bob@example.com").as_deref(), Some("Mail to bob@example.com"));
+    }
+
+    #[test]
+    fn rate_limit_sig_normalizes_countdown_ticks() {
+        assert_eq!(
+            normalize_limit_sig("You have exhausted your capacity. Resets in 4h 59m."),
+            normalize_limit_sig("You have exhausted your capacity. Resets in 4h 58m.")
+        );
+        assert_ne!(
+            normalize_limit_sig("429 Too Many Requests"),
+            normalize_limit_sig("You have exhausted your capacity")
+        );
     }
 }

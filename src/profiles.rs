@@ -63,6 +63,9 @@ pub struct ProfileRuntime {
     pub live_plan_type: Option<String>,
     pub reset_at: Option<Instant>,
     pub reset_reason: Option<String>,
+    /// Unix epoch seconds when `ProfileState::RateLimited` was entered (so fresher post-limit
+    /// quota reports or relogin events can automatically clear stale cooldowns).
+    pub rate_limited_at_unix: Option<i64>,
     pub last_error: Option<String>,
     pub active_panes: Vec<(PaneId, ProjectId)>,
     pub connection: Option<ConnectionTest>,

@@ -20,7 +20,8 @@ use crate::actions::{Action, Launch};
 use crate::app::{App, AppMsg, ToastKind};
 use crate::companion::{
     CompanionAlert, CompanionCmd, CompanionHandle, CompanionPane, CompanionProfile,
-    CompanionProject, CompanionRateLimit, CompanionSession, CompanionSnapshot, QuickRemoteAction,
+    CompanionProject, CompanionRateLimit, CompanionSession, CompanionSnapshot, CompanionWorktree,
+    QuickRemoteAction,
 };
 use crate::i18n::{t, tf};
 use crate::paths;
@@ -518,13 +519,14 @@ impl App {
                 };
                 if !ignore_limit {
                     if let Some(hit) = profiles::detect_rate_limit(&tail) {
-                        let already_dismissed = pane.dismissed_limit_sigs.iter().any(|s| s == &hit.reason);
+                        let already_dismissed = pane.has_dismissed_limit(&hit.reason);
                         if !already_dismissed && pane.last_limit_sig.as_deref() != Some(hit.reason.as_str()) {
                             pane.last_limit_sig = Some(hit.reason.clone());
                             detected.push((pane.id, hit));
                         }
                     } else {
                         pane.last_limit_sig = None;
+                        pane.dismissed_limit_sigs.clear();
                     }
                 }
             }
@@ -568,7 +570,12 @@ impl App {
                 && p.tracker.agent.is_some()
                 && matches!(p.tracker.status, Status::Running | Status::NeedsInput)
         });
+        let any_profile_limited = self
+            .profiles_rt
+            .values()
+            .any(|rt| matches!(rt.state, ProfileState::RateLimited | ProfileState::Cooldown));
         let usage_interval = if any_agent_busy
+            || any_profile_limited
             || self.monitor_popover
             || matches!(self.view, View::Profiles | View::Monitor)
             || companion_active
@@ -846,6 +853,7 @@ impl App {
         rt.state = ProfileState::RateLimited;
         rt.reset_at = Some(reset_at);
         rt.reset_reason = Some(hit.reason.clone());
+        rt.rate_limited_at_unix = Some(profiles::now_unix_secs());
 
         self.push_agent_log(
             LogLevel::Warn,
@@ -1270,6 +1278,98 @@ impl App {
         }
     }
 
+    /// Clears a profile's rate-limit / cooldown state and all associated pane banners (e.g. after
+    /// logging into a different account, finishing a real turn on the profile, receiving a fresh
+    /// sub-100% quota report, or manual reset). Remembers old error signatures and holds scanning
+    /// briefly so stale scrollback never re-triggers the cleared limit.
+    pub fn clear_profile_rate_limit(&mut self, profile_id: &str, now: Instant) {
+        if let Some(rt) = self.profiles_rt.get_mut(profile_id) {
+            rt.reset_at = None;
+            rt.reset_reason = None;
+            rt.rate_limited_at_unix = None;
+            if matches!(rt.state, ProfileState::RateLimited | ProfileState::Cooldown) {
+                rt.state = ProfileState::Idle;
+            }
+        }
+        let profiles = self.effective_profiles();
+        let pane_ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for pid in pane_ids {
+            let matches_prof = self.panes.get(&pid).is_some_and(|p| {
+                p.rate_limit.as_ref().is_some_and(|b| b.from_profile == profile_id)
+                    || p.active_profile.as_deref() == Some(profile_id)
+                    || p.tracker
+                        .agent
+                        .or(p.last_agent)
+                        .and_then(|a| self.resolved_pane_profile_id(p, a, &profiles))
+                        .as_deref()
+                        == Some(profile_id)
+            });
+            if matches_prof && let Some(pane) = self.panes.get_mut(&pid) {
+                if let Some(banner) = pane.rate_limit.take() {
+                    pane.remember_dismissed_limit(banner.reason);
+                }
+                if let Some(sig) = pane.last_limit_sig.clone() {
+                    pane.remember_dismissed_limit(sig);
+                }
+                pane.rate_limit_dismissed = false;
+                pane.limit_ignore_until = Some(now + Duration::from_secs(6));
+                if pane.tracker.status == Status::NeedsInput {
+                    pane.tracker.dismiss_notice(now);
+                    self.notified.insert(pid, pane.tracker.ask);
+                }
+            }
+        }
+        self.push_companion_now();
+    }
+
+    /// Dismisses the active rate-limit notice on `pane_id`. If no other pane is still paused on the
+    /// same profile, also clears the profile's rate-limit cooldown so fallback buttons and mobile
+    /// badges stop nagging after the user has dismissed or relogged in.
+    pub fn dismiss_pane_rate_limit(&mut self, pane_id: PaneId, now: Instant) {
+        let profiles = self.effective_profiles();
+        let resolved_prof = self.panes.get(&pane_id).and_then(|p| {
+            p.rate_limit
+                .as_ref()
+                .map(|b| b.from_profile.clone())
+                .or_else(|| p.active_profile.clone())
+                .or_else(|| {
+                    p.tracker
+                        .agent
+                        .or(p.last_agent)
+                        .and_then(|a| self.resolved_pane_profile_id(p, a, &profiles))
+                })
+        });
+        if let Some(p) = self.panes.get_mut(&pane_id) {
+            if let Some(banner) = p.rate_limit.take() {
+                p.remember_dismissed_limit(banner.reason);
+            }
+            if let Some(sig) = p.last_limit_sig.clone() {
+                p.remember_dismissed_limit(sig);
+            }
+            p.rate_limit_dismissed = true;
+            p.limit_ignore_until = Some(now + Duration::from_secs(6));
+            p.tracker.dismiss_notice(now);
+            self.notified.insert(pane_id, p.tracker.ask);
+        }
+        if let Some(prof_id) = resolved_prof {
+            let other_limited = self.panes.iter().any(|(&id, p)| {
+                id != pane_id
+                    && p.rate_limit
+                        .as_ref()
+                        .is_some_and(|b| b.auto_switched_to.is_none() && b.from_profile == prof_id)
+            });
+            if !other_limited && let Some(rt) = self.profiles_rt.get_mut(&prof_id) {
+                rt.reset_at = None;
+                rt.reset_reason = None;
+                rt.rate_limited_at_unix = None;
+                if matches!(rt.state, ProfileState::RateLimited | ProfileState::Cooldown) {
+                    rt.state = ProfileState::Idle;
+                }
+            }
+        }
+        self.push_companion_now();
+    }
+
     /// Triggers an immediate off-thread usage scan (debounced to >= 2s) after an agent finishes
     /// a turn or when the user opens the Accounts & usage popover.
     pub fn request_usage_refresh(&mut self, now: Instant) {
@@ -1335,6 +1435,10 @@ impl App {
                 self.push_companion_now();
             }
             CompanionCmd::QuickAction { pane, kind } => {
+                if kind == QuickRemoteAction::DismissLimit {
+                    self.dismiss_pane_rate_limit(pane, Instant::now());
+                    return;
+                }
                 self.wake(ctx, pane);
                 if let Some(p) = self.panes.get_mut(&pane) {
                     let now = Instant::now();
@@ -1349,6 +1453,7 @@ impl App {
                         QuickRemoteAction::Interrupt => {
                             p.input(vec![0x03]);
                         }
+                        QuickRemoteAction::DismissLimit => unreachable!(),
                     }
                 }
                 self.push_companion_now();
@@ -1367,6 +1472,17 @@ impl App {
             CompanionCmd::ClosePane { pane } => {
                 self.close_pane(ctx, pane);
                 self.push_companion_now();
+            }
+            CompanionCmd::RefreshSessions { project } => {
+                let targets: Vec<(ProjectId, std::path::PathBuf)> = self
+                    .projects
+                    .iter()
+                    .filter(|p| p.id == project || p.parent == Some(project))
+                    .map(|p| (p.id, p.path.clone()))
+                    .collect();
+                for (pid, path) in targets {
+                    self.refresh_project_sessions(pid, path);
+                }
             }
             CompanionCmd::SyncSnapshot => {
                 if self.companion.is_some() {
@@ -1408,34 +1524,67 @@ impl App {
         let now = Instant::now();
         let profiles_cfg = self.effective_profiles();
         let secrets = self.known_profile_secrets();
+        let map_sessions = |pid: ProjectId| -> Vec<CompanionSession> {
+            self.merged_project_sessions(pid)
+                .into_iter()
+                .take(15)
+                .map(|s| CompanionSession {
+                    id: s.id,
+                    title: s.title,
+                    agent: s.agent.slug().into(),
+                    profile: s.profile_id,
+                    status: status_slug(s.status).into(),
+                    age: if s.live_pane.is_some() {
+                        "live".into()
+                    } else {
+                        crate::ui::dialogs::ago(s.updated)
+                    },
+                    live_pane: s.live_pane,
+                })
+                .collect()
+        };
         let projects: Vec<CompanionProject> = self
             .projects
             .iter()
             .filter(|p| !p.is_worktree())
             .map(|pr| {
-                let sessions = self
-                    .merged_project_sessions(pr.id)
-                    .into_iter()
-                    .take(10)
-                    .map(|s| CompanionSession {
-                        id: s.id,
-                        title: s.title,
-                        agent: s.agent.slug().into(),
-                        profile: s.profile_id,
-                        status: status_slug(s.status).into(),
-                        age: if s.live_pane.is_some() {
-                            "live".into()
-                        } else {
-                            crate::ui::dialogs::ago(s.updated)
-                        },
-                        live_pane: s.live_pane,
+                let worktrees: Vec<CompanionWorktree> = self
+                    .projects
+                    .iter()
+                    .filter(|w| w.parent == Some(pr.id))
+                    .map(|w| {
+                        let wt_status = w
+                            .panes()
+                            .into_iter()
+                            .filter_map(|pid| self.panes.get(&pid))
+                            .filter(|p| p.is_companion_active())
+                            .map(|p| p.tracker.status)
+                            .min_by_key(|s| match s {
+                                Status::NeedsInput => 0,
+                                Status::Failed(_) => 1,
+                                Status::Running => 2,
+                                Status::Done | Status::CommandDone => 3,
+                                Status::Unknown => 4,
+                                Status::Idle | Status::Ended => 5,
+                            })
+                            .map_or("idle", status_slug)
+                            .to_string();
+                        CompanionWorktree {
+                            id: w.id,
+                            name: w.name.clone(),
+                            branch: w.git.as_ref().map(|g| g.branch.clone()).unwrap_or_default(),
+                            merged: w.git.as_ref().is_some_and(|g| g.merged),
+                            status: wt_status,
+                            sessions: map_sessions(w.id),
+                        }
                     })
                     .collect();
                 CompanionProject {
                     id: pr.id,
                     name: pr.name.clone(),
                     branch: pr.git.as_ref().map(|g| g.branch.clone()),
-                    sessions,
+                    sessions: map_sessions(pr.id),
+                    worktrees,
                 }
             })
             .collect();
@@ -1467,11 +1616,19 @@ impl App {
                     .or(p.last_agent)
                     .or_else(|| p.preset.as_deref().and_then(AgentKind::from_slug));
                 let supports_profiles = pane_agent.is_some_and(profiles::supports_profile);
+                let task = p
+                    .title
+                    .clone()
+                    .or_else(|| p.task.clone())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
                 CompanionPane {
                     id: p.id,
                     project_id: p.project,
+                    parent_project_id: proj.and_then(|x| x.parent),
                     project_name: self.project_label(p.project),
                     label: p.label(),
+                    task,
                     branch: proj.and_then(|x| x.git.as_ref()).map(|g| g.branch.clone()),
                     provider: pane_agent.map(|a| a.label().into()),
                     profile: supports_profiles.then(|| p.active_profile.clone()).flatten(),

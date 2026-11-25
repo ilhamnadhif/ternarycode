@@ -39,6 +39,7 @@ pub enum QuickRemoteAction {
     Approve,
     Reject,
     Interrupt,
+    DismissLimit,
 }
 
 /// Commands sent from paired mobile companions back to the desktop UI thread.
@@ -50,6 +51,7 @@ pub enum CompanionCmd {
     ResumeSession { project: ProjectId, agent: AgentKind, session_id: String, profile_id: Option<String> },
     SpawnAgent { project: ProjectId, agent: Option<AgentKind>, profile_id: Option<String> },
     ClosePane { pane: PaneId },
+    RefreshSessions { project: ProjectId },
     SyncSnapshot,
     DevicePaired(PairedDevice),
     DeviceSeen { id: String, ip: String, at: i64 },
@@ -71,6 +73,20 @@ pub struct CompanionProject {
     pub name: String,
     pub branch: Option<String>,
     pub sessions: Vec<CompanionSession>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktrees: Vec<CompanionWorktree>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CompanionWorktree {
+    pub id: ProjectId,
+    pub name: String,
+    pub branch: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub merged: bool,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<CompanionSession>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -88,8 +104,12 @@ pub struct CompanionSession {
 pub struct CompanionPane {
     pub id: PaneId,
     pub project_id: ProjectId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_project_id: Option<ProjectId>,
     pub project_name: String,
     pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
     pub branch: Option<String>,
     pub provider: Option<String>,
     pub profile: Option<String>,
@@ -978,6 +998,7 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
                 "approve" => CompanionCmd::QuickAction { pane, kind: QuickRemoteAction::Approve },
                 "reject" => CompanionCmd::QuickAction { pane, kind: QuickRemoteAction::Reject },
                 "interrupt" => CompanionCmd::QuickAction { pane, kind: QuickRemoteAction::Interrupt },
+                "dismiss_limit" => CompanionCmd::QuickAction { pane, kind: QuickRemoteAction::DismissLimit },
                 "" => CompanionCmd::SendInput { pane, text: req.text, enter: req.enter },
                 _ => return write_response(&mut stream, 400, "application/json", r#"{"error":"unknown action"}"#).await,
             };
@@ -1009,6 +1030,15 @@ async fn handle_conn(mut stream: TcpStream, addr: SocketAddr, state: Arc<ServerS
                 return write_response(&mut stream, 400, "application/json", r#"{"error":"bad pane id"}"#).await;
             };
             let _ = state.tx.send(AppMsg::Companion(CompanionCmd::ClosePane { pane }));
+            state.ctx.request_repaint();
+            write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
+        }
+        ("POST", p) if p.strip_prefix("/api/project/").and_then(|s| s.strip_suffix("/sessions/refresh")).is_some() => {
+            let id_str = p.strip_prefix("/api/project/").and_then(|s| s.strip_suffix("/sessions/refresh")).unwrap_or("");
+            let Ok(project) = id_str.parse::<ProjectId>() else {
+                return write_response(&mut stream, 400, "application/json", r#"{"error":"bad project id"}"#).await;
+            };
+            let _ = state.tx.send(AppMsg::Companion(CompanionCmd::RefreshSessions { project }));
             state.ctx.request_repaint();
             write_response(&mut stream, 200, "application/json", r#"{"ok":true}"#).await
         }
@@ -1206,6 +1236,39 @@ mod tests {
                 profile_id: None,
             })
         )));
+
+        // Dismissing a rate-limit notice dispatches QuickRemoteAction::DismissLimit.
+        let dis_act = r#"{"action":"dismiss_limit"}"#;
+        let dis_resp = http_req(
+            port,
+            &format!(
+                "POST /api/pane/7/input HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {dev_token}\r\nContent-Length: {}\r\n\r\n{dis_act}",
+                dis_act.len()
+            ),
+        );
+        assert!(dis_resp.starts_with("HTTP/1.1 200"), "{dis_resp}");
+        let dis_msgs: Vec<_> = rx.try_iter().collect();
+        assert!(dis_msgs.iter().any(|m| matches!(
+            m,
+            AppMsg::Companion(CompanionCmd::QuickAction {
+                pane: 7,
+                kind: QuickRemoteAction::DismissLimit,
+            })
+        )));
+
+        // Refreshing project session history dispatches RefreshSessions and rejects non-numeric IDs.
+        let ref_resp = http_req(
+            port,
+            &format!("POST /api/project/42/sessions/refresh HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {dev_token}\r\nContent-Length: 0\r\n\r\n"),
+        );
+        assert!(ref_resp.starts_with("HTTP/1.1 200"), "{ref_resp}");
+        let ref_bad = http_req(
+            port,
+            &format!("POST /api/project/abc/sessions/refresh HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {dev_token}\r\nContent-Length: 0\r\n\r\n"),
+        );
+        assert!(ref_bad.starts_with("HTTP/1.1 400"), "{ref_bad}");
+        let ref_msgs: Vec<_> = rx.try_iter().collect();
+        assert!(ref_msgs.iter().any(|m| matches!(m, AppMsg::Companion(CompanionCmd::RefreshSessions { project: 42 }))));
 
         // Closing a pane dispatches ClosePane and rejects non-numeric IDs.
         let close_resp = http_req(
