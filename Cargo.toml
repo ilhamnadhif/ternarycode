@@ -36,6 +36,7 @@ tc-lsp = { path = "crates/tc-lsp" }
 tc-term = { path = "crates/tc-term" }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 futures-util = "0.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]

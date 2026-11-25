@@ -528,16 +528,17 @@ impl App {
         // ----- the page's head: its title and line, "Saved as you change them", × -----------
         let body = Rect::from_min_max(pos2(nav.right() + 1.0, full.top()), full.max);
         let hx = body.left() + PAD_X;
-        let close = Rect::from_min_size(pos2(body.right() - PAD_X - 24.0, body.top() + PAD_TOP), vec2(24.0, 24.0));
+        let close = Rect::from_min_size(pos2(body.right() - PAD_X - 24.0, body.top() + PAD_TOP + 3.0), vec2(24.0, 24.0));
         if ui.scope_builder(egui::UiBuilder::new().max_rect(close), |ui| kit::icon_button_ex(ui, icons::X, t("Close"), false, 24.0)).inner.clicked() {
             keep = false;
         }
         let mut saved_x = close.left() - 12.0;
         if body.width() >= 480.0 {
             let g = galley(ui, t("Saved as you change them"), FontId::proportional(style::SMALL), p.text_faint, None, 16.0);
+            let cy = close.center().y;
             saved_x -= g.size().x;
-            ui.painter().galley(pos2(saved_x, body.top() + PAD_TOP), g, p.text_faint);
-            ui.painter().text(pos2(saved_x - 5.0 - 6.0, body.top() + PAD_TOP + 8.0), Align2::CENTER_CENTER, icons::CHECK, style::icon_font(12.0), p.ok);
+            ui.painter().galley(pos2(saved_x, cy - g.size().y / 2.0), g, p.text_faint);
+            ui.painter().text(pos2(saved_x - 5.0 - 6.0, cy), Align2::CENTER_CENTER, icons::CHECK, style::icon_font(12.0), p.ok);
             saved_x -= 5.0 + 12.0 + 12.0;
         }
         let (title, lead) = page_head_text(*page);

@@ -56,7 +56,7 @@ impl App {
             let mut relay_row = |ui: &mut Ui, app: &App| {
                 let (st, label) = match &relay_status {
                     crate::companion::RelayStatus::Connected => (Status::Done, t("Connected")),
-                    crate::companion::RelayStatus::Connecting => (Status::NeedsInput, t("Connecting")),
+                    crate::companion::RelayStatus::Connecting => (Status::Running, t("Connecting")),
                     crate::companion::RelayStatus::Error(_) => (Status::Failed(1), t("Offline")),
                     crate::companion::RelayStatus::Off => (Status::Idle, t("Off")),
                 };
@@ -141,6 +141,8 @@ impl App {
             }) {
                 Some((pair_url, code, endpoint, preview, loopback)) => {
                     raised(ui, 16, |ui| {
+                        let card_inner_w = ui.available_width();
+                        let col_w = (card_inner_w - 176.0 - 24.0).max(160.0);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 24.0;
                             let (qr, _) = ui.allocate_exact_size(vec2(176.0, 176.0), Sense::hover());
@@ -151,16 +153,17 @@ impl App {
                             let text_h_id = egui::Id::new("pairing-text-h");
                             let text_h = ui.data(|d| d.get_temp::<f32>(text_h_id)).unwrap_or(110.0);
                             let block = ui.vertical(|ui| {
+                                ui.set_width(col_w);
+                                ui.set_max_width(col_w);
                                 ui.add_space(((176.0 - text_h) / 2.0).max(0.0));
                                 ui.spacing_mut().item_spacing.y = 10.0;
-                                ui.set_max_width(ui.available_width().min(420.0));
-                                text(ui, qr_labels[0].0, style::semibold(style::HEADING), p.text, 20.0, false);
+                                text(ui, qr_labels[0].0, style::semibold(style::HEADING), p.text, 20.0, true);
                                 text(ui, qr_labels[0].1, FontId::proportional(style::SMALL), p.text_muted, 16.0, true);
                                 if loopback {
                                     text(ui, t("No Wi-Fi address found: join a network, or add a tunnel address above."), FontId::proportional(style::SMALL), p.warn, 16.0, true);
                                 }
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
                                     let g = galley(ui, &code, style::mono_semibold(style::DATA), p.text, None, 14.0);
                                     let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 24.0, 30.0), Sense::hover());
                                     ui.painter().rect_filled(r, CornerRadius::same(7), p.inset);
@@ -173,12 +176,18 @@ impl App {
                                         self.actions.push(Action::RegeneratePairingToken);
                                     }
                                 });
-                                // The address: a click opens the phone's app here, in the browser.
-                                let g = galley(ui, &endpoint, style::mono(style::DATA), p.text_faint, None, 14.0);
-                                let (r, resp) = ui.allocate_exact_size(g.size(), Sense::click());
+                                // The address: truncated cleanly inside the card width; full URL on hover, click opens browser.
+                                let mut job = egui::text::LayoutJob::default();
+                                let mut fmt = egui::TextFormat::simple(style::mono(style::DATA), p.text_faint);
+                                fmt.line_height = Some(14.0);
+                                job.append(&endpoint, 0.0, fmt);
+                                job.wrap = egui::text::TextWrapping::truncate_at_width(col_w);
+                                let g = ui.painter().layout_job(job);
+                                let (r, resp) = ui.allocate_exact_size(vec2(g.size().x.min(col_w), g.size().y), Sense::click());
                                 let c = if resp.hovered() { p.accent_text } else { p.text_faint };
                                 ui.painter().galley(r.min, g, c);
-                                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t("Open the phone's app here")).clicked() {
+                                let tip = format!("{}\n{endpoint}", t("Open the phone's app here"));
+                                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
                                     crate::platform::open_url(&preview);
                                 }
                                 r.bottom()

@@ -112,8 +112,16 @@ fn set_status(state: &ServerState, status: RelayStatus) {
     state.ctx.request_repaint();
 }
 
+fn ensure_tls_provider() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Long-running task maintaining the outbound Cloudflare Relay WebSocket until shutdown.
 pub(crate) async fn run_relay_loop(state: Arc<ServerState>, cfg: RelayConfig) {
+    ensure_tls_provider();
     let mut sd_rx = state.shutdown.subscribe();
     let mut backoff_secs = 1u64;
 
@@ -371,6 +379,48 @@ mod tests {
     use super::*;
     use crate::companion::{CompanionHandle, CompanionSnapshot};
     use tokio::net::TcpListener;
+
+    #[test]
+    #[ignore = "hits live deployed Cloudflare Worker over TLS 1.3 wss://"]
+    fn live_cloudflare_wss_connect_succeeds() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host_id = crate::companion::random_relay_id();
+        let cfg = RelayConfig {
+            relay_url: tc_core::model::DEFAULT_COMPANION_RELAY_URL.into(),
+            host_id: host_id.clone(),
+            secret: crate::companion::random_relay_secret(),
+        };
+        let handle = CompanionHandle::start(
+            rt.handle(),
+            0,
+            &[],
+            Some(cfg),
+            tx,
+            eframe::egui::Context::default(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match handle.relay_status() {
+                RelayStatus::Connected => return,
+                RelayStatus::Error(e) => panic!("Live Cloudflare WSS failed: {e}"),
+                _ => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+        panic!("Timed out waiting for live Cloudflare WSS Connected (status: {:?})", handle.relay_status());
+    }
+
+    #[test]
+    fn tls_crypto_provider_installs_without_panicking() {
+        ensure_tls_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        let _cfg = rustls::ClientConfig::builder().with_root_certificates(rustls::RootCertStore::empty()).with_no_client_auth();
+    }
 
     #[test]
     fn host_ws_url_converts_schemes_cleanly() {
