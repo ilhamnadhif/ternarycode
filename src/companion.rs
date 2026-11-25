@@ -2,7 +2,7 @@
 //! remote monitoring & control (zero extra web-framework dependencies).
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -366,16 +366,127 @@ fn random_bytes(len: usize) -> Vec<u8> {
     buf
 }
 
-/// Best-effort LAN IPv4 address using non-transmitting UDP route lookups (including private RFC1918
-/// probes so offline / air-gapped Wi-Fi networks still resolve the local interface).
+fn is_virtual_or_vpn_iface(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    const SKIP_PREFIXES: &[&str] = &[
+        "lo", "utun", "tun", "tap", "wg", "ppp", "ipsec", "tailscale", "zt", "docker", "br-",
+        "veth", "virbr", "vmnet", "vboxnet", "awdl", "llw", "anpi", "bridge", "ap", "gif", "stf",
+    ];
+    SKIP_PREFIXES.iter().any(|p| lower.starts_with(p))
+}
+
+fn is_primary_lan_iface(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("en") || lower.starts_with("eth") || lower.starts_with("wl")
+}
+
+fn is_cgnat(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 100 && (o[1] & 0xC0) == 64
+}
+
+/// Scores a local IPv4 interface candidate for LAN phone pairing.
+/// Returns `None` for loopback, link-local, point-to-point (VPN/tunnel), or virtual interfaces.
+fn score_lan_candidate(name: &str, ip: Ipv4Addr, is_p2p: bool) -> Option<u8> {
+    if is_p2p
+        || ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || is_virtual_or_vpn_iface(name)
+    {
+        return None;
+    }
+    let primary = is_primary_lan_iface(name);
+    let private = ip.is_private();
+    if primary && private {
+        Some(if name == "en0" { 5 } else { 4 })
+    } else if private {
+        Some(3)
+    } else if primary && !is_cgnat(ip) {
+        Some(2)
+    } else if !is_cgnat(ip) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn detect_unix_lan_ip() -> Option<String> {
+    use std::ffi::CStr;
+
+    let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: `getifaddrs` writes a valid linked list pointer on success (0),
+    // which we always release with `freeifaddrs` before returning.
+    if unsafe { libc::getifaddrs(&mut ifap) } != 0 || ifap.is_null() {
+        return None;
+    }
+
+    let mut best: Option<(u8, String, Ipv4Addr)> = None;
+    let mut cur = ifap;
+    while !cur.is_null() {
+        // SAFETY: `cur` walks the non-null `ifa_next` pointers of the list returned by `getifaddrs`.
+        let ifa = unsafe { &*cur };
+        cur = ifa.ifa_next;
+
+        if ifa.ifa_addr.is_null() || ifa.ifa_name.is_null() {
+            continue;
+        }
+        let flags = ifa.ifa_flags as i32;
+        let is_up = (flags & libc::IFF_UP) != 0 && (flags & libc::IFF_RUNNING) != 0;
+        let is_loopback = (flags & libc::IFF_LOOPBACK) != 0;
+        let is_p2p = (flags & libc::IFF_POINTOPOINT) != 0;
+        if !is_up || is_loopback {
+            continue;
+        }
+
+        // SAFETY: `ifa_addr` is non-null and its `sa_family` field is valid for all sockaddr variants.
+        let family = unsafe { (*ifa.ifa_addr).sa_family } as i32;
+        if family != libc::AF_INET {
+            continue;
+        }
+
+        // SAFETY: `family == AF_INET` guarantees `ifa_addr` points to a `sockaddr_in`.
+        let sin = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in) };
+        let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+        // SAFETY: `ifa_name` is a non-null NUL-terminated C string owned by the ifaddrs list.
+        let name = unsafe { CStr::from_ptr(ifa.ifa_name) }.to_string_lossy().into_owned();
+
+        if let Some(score) = score_lan_candidate(&name, ip, is_p2p) {
+            let better = match &best {
+                None => true,
+                Some((best_score, best_name, _)) => score > *best_score || (score == *best_score && name < *best_name),
+            };
+            if better {
+                best = Some((score, name, ip));
+            }
+        }
+    }
+
+    // SAFETY: `ifap` was non-null and returned by `getifaddrs`.
+    unsafe { libc::freeifaddrs(ifap) };
+    best.map(|(_, _, ip)| ip.to_string())
+}
+
+/// Best-effort LAN IPv4 address for phone pairing on the same Wi-Fi/Ethernet network.
+/// On Unix, prefers active physical LAN interfaces (`en0`, `eth*`, `wl*`) and skips VPN/tunnel
+/// point-to-point interfaces (`utun*`, `tun*`, `wg*`) so QR codes remain reachable when a VPN is on.
 pub fn detect_lan_ip() -> String {
-    for target in ["8.8.8.8:80", "192.168.0.1:80", "10.0.0.1:80", "172.16.0.1:80"] {
+    #[cfg(unix)]
+    if let Some(ip) = detect_unix_lan_ip() {
+        return ip;
+    }
+    // Probe private RFC1918 routes before public 8.8.8.8 so split-tunnel VPNs still pick the LAN IP.
+    for target in ["192.168.0.1:80", "10.0.0.1:80", "172.16.0.1:80", "8.8.8.8:80"] {
         if let Ok(sock) = UdpSocket::bind("0.0.0.0:0")
             && sock.connect(target).is_ok()
             && let Ok(addr) = sock.local_addr()
             && let IpAddr::V4(ip) = addr.ip()
             && !ip.is_loopback()
             && !ip.is_unspecified()
+            && !ip.is_link_local()
         {
             return ip.to_string();
         }
@@ -960,5 +1071,31 @@ mod tests {
             &format!("POST /api/pair HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{bad}", bad.len()),
         );
         assert!(blocked.starts_with("HTTP/1.1 429"), "{blocked}");
+    }
+
+    #[test]
+    fn lan_candidate_skips_vpn_and_prefers_wifi() {
+        // VPN point-to-point & utun interfaces must be ignored even with RFC1918 IPs.
+        assert_eq!(score_lan_candidate("utun4", Ipv4Addr::new(192, 168, 234, 48), true), None);
+        assert_eq!(score_lan_candidate("utun4", Ipv4Addr::new(192, 168, 234, 48), false), None);
+        assert_eq!(score_lan_candidate("tun0", Ipv4Addr::new(10, 8, 0, 2), true), None);
+        assert_eq!(score_lan_candidate("wg0", Ipv4Addr::new(10, 0, 0, 5), true), None);
+        assert_eq!(score_lan_candidate("docker0", Ipv4Addr::new(172, 17, 0, 1), false), None);
+        assert_eq!(score_lan_candidate("awdl0", Ipv4Addr::new(169, 254, 1, 2), false), None);
+        assert_eq!(score_lan_candidate("en0", Ipv4Addr::new(169, 254, 10, 20), false), None);
+        assert_eq!(score_lan_candidate("en0", Ipv4Addr::new(100, 84, 12, 9), false), None);
+
+        // Primary Wi-Fi/Ethernet RFC1918 scores highest, with en0 prioritized on macOS.
+        let en0 = score_lan_candidate("en0", Ipv4Addr::new(192, 168, 1, 50), false).unwrap();
+        let eth0 = score_lan_candidate("eth0", Ipv4Addr::new(192, 168, 1, 51), false).unwrap();
+        let other = score_lan_candidate("custom0", Ipv4Addr::new(192, 168, 1, 52), false).unwrap();
+        assert!(en0 > eth0 && eth0 > other);
+    }
+
+    #[test]
+    fn detect_lan_ip_returns_valid_ipv4() {
+        let ip: Ipv4Addr = detect_lan_ip().parse().expect("valid IPv4 string");
+        assert!(!ip.is_unspecified());
+        assert!(!ip.is_link_local());
     }
 }
