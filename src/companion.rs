@@ -2,7 +2,9 @@
 //! remote monitoring & control (zero extra web-framework dependencies).
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+#[cfg(any(unix, test))]
+use std::net::Ipv4Addr;
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -366,6 +368,7 @@ fn random_bytes(len: usize) -> Vec<u8> {
     buf
 }
 
+#[cfg(any(unix, test))]
 fn is_virtual_or_vpn_iface(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     const SKIP_PREFIXES: &[&str] = &[
@@ -375,11 +378,13 @@ fn is_virtual_or_vpn_iface(name: &str) -> bool {
     SKIP_PREFIXES.iter().any(|p| lower.starts_with(p))
 }
 
+#[cfg(any(unix, test))]
 fn is_primary_lan_iface(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.starts_with("en") || lower.starts_with("eth") || lower.starts_with("wl")
 }
 
+#[cfg(any(unix, test))]
 fn is_cgnat(ip: Ipv4Addr) -> bool {
     let o = ip.octets();
     o[0] == 100 && (o[1] & 0xC0) == 64
@@ -387,6 +392,7 @@ fn is_cgnat(ip: Ipv4Addr) -> bool {
 
 /// Scores a local IPv4 interface candidate for LAN phone pairing.
 /// Returns `None` for loopback, link-local, point-to-point (VPN/tunnel), or virtual interfaces.
+#[cfg(any(unix, test))]
 fn score_lan_candidate(name: &str, ip: Ipv4Addr, is_p2p: bool) -> Option<u8> {
     if is_p2p
         || ip.is_loopback()
