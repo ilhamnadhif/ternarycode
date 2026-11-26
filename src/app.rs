@@ -4508,6 +4508,9 @@ impl App {
             }
             Action::ToggleCompanionServer => {
                 self.settings.companion.enabled = !self.settings.companion.enabled;
+                if !self.settings.companion.enabled {
+                    self.settings.companion.relay_enabled = false;
+                }
                 self.sync_companion_server();
                 self.settings_changed();
             }

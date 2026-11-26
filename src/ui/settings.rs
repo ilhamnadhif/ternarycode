@@ -208,17 +208,22 @@ pub(super) struct Card<'a> {
 
 impl Card<'_> {
     pub fn row(&mut self, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
-        self.row_full(None, label, note, None, control);
+        self.row_full(None, label, note, None, false, control);
     }
 
     /// A row with a status icon before its name (Notifications).
     pub fn row_icon(&mut self, icon: &'static str, color: Color32, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
-        self.row_full(Some((icon, color)), label, note, None, control);
+        self.row_full(Some((icon, color)), label, note, None, false, control);
     }
 
     /// A row whose note is in `color` (an error under a field).
     pub fn row_note(&mut self, label: &str, note: &str, color: Color32, control: impl FnOnce(&mut Ui)) {
-        self.row_full(None, label, note, Some(color), control);
+        self.row_full(None, label, note, Some(color), false, control);
+    }
+
+    /// A dependent row muted and non-interactive while its parent setting is off.
+    pub fn row_disabled(&mut self, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
+        self.row_full(None, label, note, None, true, control);
     }
 
     /// Content of its own, the card's width, with `pad` around it; shown when one of `labels`
@@ -252,7 +257,15 @@ impl Card<'_> {
 
     /// The row: the text at the left (as wide as the control leaves; the control's size is the
     /// one it had last frame), the control at the right, both centred in the row.
-    fn row_full(&mut self, icon: Option<(&'static str, Color32)>, label: &str, note: &str, note_color: Option<Color32>, control: impl FnOnce(&mut Ui)) {
+    fn row_full(
+        &mut self,
+        icon: Option<(&'static str, Color32)>,
+        label: &str,
+        note: &str,
+        note_color: Option<Color32>,
+        disabled: bool,
+        control: impl FnOnce(&mut Ui),
+    ) {
         let row_idx = self.row_idx;
         self.row_idx += 1;
         if !hit(&self.search, label, note) {
@@ -267,8 +280,9 @@ impl Card<'_> {
         let icon_w = if icon.is_some() { 16.0 + 14.0 } else { 0.0 };
         let ctrl_room = if ctrl.x > 0.0 { ctrl.x + 14.0 } else { 0.0 };
         let text_w = (w - 32.0 - icon_w - ctrl_room).max(80.0);
-        let lg = galley(ui, label, FontId::proportional(style::BODY), p.text, Some(text_w), 18.0);
-        let note_c = note_color.unwrap_or(p.text_faint);
+        let label_c = if disabled { p.text_muted } else { p.text };
+        let lg = galley(ui, label, FontId::proportional(style::BODY), label_c, Some(text_w), 18.0);
+        let note_c = note_color.unwrap_or(if disabled { p.text_faint.gamma_multiply(0.8) } else { p.text_faint });
         let ng = (!note.is_empty()).then(|| galley(ui, note, FontId::proportional(style::SMALL), note_c, Some(text_w), 16.0));
         let label_h = lg.size().y;
         let text_h = label_h + ng.as_ref().map_or(0.0, |g| 3.0 + g.size().y);
@@ -280,13 +294,16 @@ impl Card<'_> {
             x += icon_w;
         }
         let ty = rect.top() + 12.0 + (inner_h - text_h) / 2.0;
-        ui.painter().galley(pos2(x, ty), lg, p.text);
+        ui.painter().galley(pos2(x, ty), lg, label_c);
         if let Some(g) = ng {
             ui.painter().galley(pos2(x, ty + label_h + 3.0), g, note_c);
         }
         let cr = Rect::from_min_max(pos2(rect.right() - 16.0 - ctrl.x, rect.top() + 12.0), pos2(rect.right() - 16.0, rect.bottom() - 12.0));
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("settings-ctrl", row_idx, label)).max_rect(cr).layout(egui::Layout::left_to_right(egui::Align::Center)));
         child.spacing_mut().item_spacing = vec2(10.0, 6.0);
+        if disabled {
+            child.disable();
+        }
         control(&mut child);
         let used = child.min_rect().size();
         if (used - ctrl).abs().max_elem() > 0.5 {

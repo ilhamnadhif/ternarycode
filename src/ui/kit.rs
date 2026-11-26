@@ -1342,12 +1342,12 @@ pub fn vsep(ui: &mut Ui) {
 /// An on/off switch (26 × 16). Clicking flips `on`; the response says it changed.
 pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     let p = style::pal(ui);
+    let enabled = ui.is_enabled();
     let (rect, mut resp) = ui.allocate_exact_size(vec2(26.0, 16.0), Sense::click());
-    if resp.clicked() {
+    if enabled && resp.clicked() {
         *on = !*on;
         resp.mark_changed();
     }
-    let enabled = ui.is_enabled();
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }

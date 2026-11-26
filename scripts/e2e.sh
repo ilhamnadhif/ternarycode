@@ -712,12 +712,14 @@ open(info_path + ".ok", "w").write("PASS\n")
 PY
 run ade-pairing 60 "sleep 1000;; action add-project $P1;; sleep 1000;; action pairing;; sleep 600;; expect-dialog open;; action toggle-companion;; sleep 1000;; expect-shown pairing-qr;; expect-shown pairing-endpoint;; expect-companion-url $PAIR_INFO;; spawn python3 $PAIR_CHECK $PAIR_INFO;; sleep 2500;; expect-file $PAIR_INFO.ok PASS;; shot e2e-ade-pairing;; key esc;; sleep 400;; wait-screen companion-lan-ok;; action pairing;; sleep 400;; action toggle-companion;; sleep 500;; quit"
 
-# 5. Live Cloudflare Relay Remote Access E2E: enables Remote access, verifies wss:// Connected,
-#    verifies QR URL switches to Cloudflare Relay, pairs & reads state & sends terminal input
-#    through the live Cloudflare Worker + Durable Object relay, and checks Phone settings bounds.
+# 5. Live Cloudflare Relay Remote Access E2E: seeds stale `{enabled:false, relay_enabled:true}` to
+#    verify startup healing & disabled subordinate Remote access switch, turns on Companion server,
+#    enables Remote access via real UI switch click, verifies wss:// Connected + live Cloudflare
+#    Worker/DO HTTP proxy + terminal input, then turns off Companion server and verifies Remote
+#    access cascades cleanly to OFF (never stays ON while status says Off).
 RELAYPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 mkdir -p "$WORK/data-ade-relay-remote"
-printf '{"companion":{"port":%s}}\n' "$RELAYPORT" > "$WORK/data-ade-relay-remote/settings.json"
+printf '{"companion":{"port":%s,"enabled":false,"relay_enabled":true}}\n' "$RELAYPORT" > "$WORK/data-ade-relay-remote/settings.json"
 RELAY_INFO="$WORK/relay-info.json"
 RELAY_CHECK="$WORK/relay-check.py"
 cat > "$RELAY_CHECK" <<'PY'
@@ -773,7 +775,7 @@ res = json.loads(urllib.request.urlopen(inp, timeout=15).read().decode())
 assert res.get("ok") is True, f"relay input failed: {res}"
 open(info_path + ".ok", "w").write("PASS\n")
 PY
-run ade-relay-remote 75 "sleep 1000;; action add-project $P1;; sleep 1000;; action pairing;; sleep 600;; expect-dialog open;; action toggle-relay;; wait-relay connected;; sleep 600;; expect-shown pairing-qr;; expect-shown pairing-endpoint;; expect-width pairing-endpoint 80 480;; expect-companion-url $RELAY_INFO;; shot e2e-ade-relay;; spawn python3 $RELAY_CHECK $RELAY_INFO;; sleep 5000;; expect-file $RELAY_INFO.ok PASS;; key esc;; sleep 400;; wait-screen relay-remote-ok;; action pairing;; sleep 400;; action toggle-companion;; sleep 400;; quit"
+run ade-relay-remote 85 "sleep 1000;; action add-project $P1;; sleep 1000;; action pairing;; sleep 600;; expect-dialog open;; wait-relay off;; expect-hidden pairing-qr;; shot e2e-ade-relay-off;; click companion-relay-switch;; sleep 400;; wait-relay off;; expect-hidden pairing-qr;; click companion-switch;; sleep 800;; expect-shown pairing-qr;; wait-relay off;; click companion-relay-switch;; wait-relay connected;; sleep 600;; expect-shown pairing-qr;; expect-shown pairing-endpoint;; expect-width pairing-endpoint 80 480;; expect-companion-url $RELAY_INFO;; shot e2e-ade-relay;; spawn python3 $RELAY_CHECK $RELAY_INFO;; sleep 5000;; expect-file $RELAY_INFO.ok PASS;; key esc;; sleep 400;; wait-screen relay-remote-ok;; action pairing;; sleep 500;; click companion-switch;; sleep 600;; wait-relay off;; expect-hidden pairing-qr;; shot e2e-ade-relay-cascade-off;; click companion-switch;; sleep 600;; expect-shown pairing-qr;; wait-relay off;; click companion-switch;; sleep 400;; quit"
 
 # 6. Companion Web UI rendered in real WebKit browser: auto-pairs via ?pair=, renders all 4 tabs
 #    (Live, Inbox, Projects, Accounts), opens Settings & switches Dark/Light theme, sends input

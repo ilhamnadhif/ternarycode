@@ -1319,6 +1319,8 @@ impl App {
                     }
                     Err(e) => {
                         self.settings.companion.enabled = false;
+                        self.settings.companion.relay_enabled = false;
+                        self.settings_changed();
                         self.toast_err(e);
                     }
                 }
@@ -1327,6 +1329,9 @@ impl App {
             }
         } else {
             self.companion = None;
+            if self.settings.companion.normalize() {
+                self.settings_changed();
+            }
         }
     }
 

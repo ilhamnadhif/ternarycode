@@ -197,6 +197,21 @@ impl CompanionSettings {
             trimmed
         }
     }
+
+    /// Whether remote relay access is actually active (requires the companion server to be on).
+    pub fn relay_active(&self) -> bool {
+        self.enabled && self.relay_enabled
+    }
+
+    /// Enforces the parent–child invariant: remote access cannot remain on when the companion
+    /// server is off. Returns `true` if `relay_enabled` was cleared.
+    pub fn normalize(&mut self) -> bool {
+        if !self.enabled && self.relay_enabled {
+            self.relay_enabled = false;
+            return true;
+        }
+        false
+    }
 }
 
 impl Default for CompanionSettings {
@@ -727,6 +742,7 @@ impl Settings {
         self.long_command_secs = self.long_command_secs.clamp(1, 86_400);
         self.failover.default_cooldown_mins = self.failover.default_cooldown_mins.clamp(1, 1440);
         self.companion.port = self.companion.port.clamp(1024, 65535);
+        self.companion.normalize();
         // Claude Code and ChatGPT / Codex support multi-account profiles; Antigravity CLI is
         // strictly limited to 1 profile using its single system sign-in (Google policy).
         // Legacy Gemini / OpenCode / Custom profiles are dropped cleanly.
@@ -1150,5 +1166,24 @@ mod tests {
         assert_eq!(legacy.profiles[0].config_dir, None);
         assert_eq!(legacy.profiles[1].id, "chatgpt1");
         assert_eq!(legacy.profiles[1].agent, AgentKind::Codex);
+    }
+
+    #[test]
+    fn companion_relay_requires_companion_server() {
+        let mut stale = Settings::default();
+        stale.companion.enabled = false;
+        stale.companion.relay_enabled = true;
+        assert!(!stale.companion.relay_active());
+        assert!(stale.sanitize());
+        assert!(!stale.companion.enabled);
+        assert!(!stale.companion.relay_enabled);
+        assert!(!stale.companion.normalize());
+
+        let mut active = Settings::default();
+        active.companion.enabled = true;
+        active.companion.relay_enabled = true;
+        assert!(active.companion.relay_active());
+        assert!(!active.companion.normalize());
+        assert!(active.companion.relay_enabled);
     }
 }

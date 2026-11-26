@@ -50,29 +50,37 @@ impl App {
                 toggle = s.changed();
             });
             let relay_err = match &relay_status {
-                crate::companion::RelayStatus::Error(msg) => Some(msg.as_str()),
+                crate::companion::RelayStatus::Error(msg) if running => Some(msg.as_str()),
                 _ => None,
             };
             let mut relay_row = |ui: &mut Ui, app: &App| {
-                let (st, label) = match &relay_status {
-                    crate::companion::RelayStatus::Connected => (Status::Done, t("Connected")),
-                    crate::companion::RelayStatus::Connecting => (Status::Running, t("Connecting")),
-                    crate::companion::RelayStatus::Error(_) => (Status::Failed(1), t("Offline")),
-                    crate::companion::RelayStatus::Off => (Status::Idle, t("Off")),
-                };
-                let w = kit::state_pill_width(ui.painter(), st, label);
-                let (r, resp) = ui.allocate_exact_size(vec2(w, kit::PILL_H), Sense::hover());
-                kit::paint_state_pill(ui.painter(), r.left_center(), st, label, &p, dark);
-                if let Some(err) = relay_err {
-                    resp.on_hover_text(err);
+                if running {
+                    let (st, label) = match &relay_status {
+                        crate::companion::RelayStatus::Connected => (Status::Done, t("Connected")),
+                        crate::companion::RelayStatus::Connecting => (Status::Running, t("Connecting")),
+                        crate::companion::RelayStatus::Error(_) => (Status::Failed(1), t("Offline")),
+                        crate::companion::RelayStatus::Off => (Status::Idle, t("Off")),
+                    };
+                    let w = kit::state_pill_width(ui.painter(), st, label);
+                    let (r, resp) = ui.allocate_exact_size(vec2(w, kit::PILL_H), Sense::hover());
+                    kit::paint_state_pill(ui.painter(), r.left_center(), st, label, &p, dark);
+                    if let Some(err) = relay_err {
+                        resp.on_hover_text(err);
+                    }
                 }
-                let mut rel = app.settings.companion.relay_enabled;
-                let s = kit::switch(ui, &mut rel);
+                let mut rel = running && app.settings.companion.relay_active();
+                let s = kit::switch(ui, &mut rel).on_disabled_hover_text(t("Turn on Companion server first."));
                 #[cfg(debug_assertions)]
                 crate::devtest::record("companion-relay-switch", s.rect);
-                toggle_relay = s.changed();
+                toggle_relay = running && s.changed();
             };
-            if let Some(err) = relay_err {
+            if !running {
+                c.row_disabled(
+                    labels[1].0,
+                    t("Turn on Companion server to reach this computer via Cloudflare Relay."),
+                    |ui| relay_row(ui, self),
+                );
+            } else if let Some(err) = relay_err {
                 c.row_note(labels[1].0, err, p.err, |ui| relay_row(ui, self));
             } else {
                 c.row(labels[1].0, labels[1].1, |ui| relay_row(ui, self));
