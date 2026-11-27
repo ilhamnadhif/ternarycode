@@ -399,6 +399,7 @@ impl App {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 4.0;
                         for (ix, alert) in alerts.iter().enumerate() {
+                            let _ = ix;
                             let failed = alert.status == crate::automations::RunStatus::Failed;
                             let col = if failed { p.err } else { p.warn };
                             let row_frame = egui::Frame::NONE

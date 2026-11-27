@@ -835,5 +835,17 @@ if [ -d "$WORK/data-automations-full" ]; then
     run automations-persist 50 "sleep 1200;; click nav:automations;; sleep 400;; expect-view automations;; expect-automation-count 2;; wait-automation Worktree Fixer|clean;; expect-automation-files Worktree Fixer|1;; wait-automation Quiet Audit|clean;; shot e2e-automations-persisted;; quit"
 fi
 
+# 10. Real Antigravity CLI (`agy`) automation E2E:
+#     - Verifies silent exit-0 permission-denied detection (never false-green Clean)
+#     - Runs a REAL `agy` automation inside TernaryCode with Auto-approve tools ON in an isolated worktree
+#       executing a real `command` tool (`echo agy-live-ok > agy_ran.txt`), verifying NeedsReview + 1 changed file
+#       and zero interference with the main repo!
+if [ "$ONLY" = "automations-agy" ] && command -v agy >/dev/null 2>&1; then
+    AGY_REPO="$WORK/agy-auto-repo"
+    mkdir -p "$AGY_REPO"
+    (cd "$AGY_REPO" && git init -q -b main && printf 'seed\n' > README.md && git add -A && git -c user.name=t -c user.email=t@t commit -qm init)
+    TERNARYCODE_DEV_WAIT=60 run automations-agy 110 "sleep 1000;; action add-project $AGY_REPO;; sleep 1200;; click nav:automations;; sleep 400;; expect-view automations;; click auto-new;; wait-shown auto-modal;; click auto-field-name;; sleep 100;; keys Denied Guard;; sleep 100;; click auto-agent:shell;; sleep 150;; scroll auto-modal-scroll -120;; sleep 150;; click auto-field-prompt;; sleep 100;; keys printf 'jetski: no output produced — a tool required the \"command\" permission that headless mode cannot prompt for, so it was auto-denied.\\n';; sleep 150;; click auto-modal-save-run;; wait-hidden auto-modal;; wait-automation Denied Guard|failed;; expect-automation-alerts 1;; click auto-delete;; wait-shown auto-delete-confirm;; click auto-delete-confirm;; sleep 250;; expect-automation-count 0;; click auto-new;; wait-shown auto-modal;; click auto-field-name;; sleep 100;; keys Live Agy Task;; sleep 100;; click auto-agent:antigravity;; sleep 150;; scroll auto-modal-scroll -150;; sleep 150;; click auto-field-prompt;; sleep 100;; keys Run the shell command 'echo agy-live-ok > agy_ran.txt' using your command tool and reply ONLY with DONE.;; sleep 150;; click auto-modal-save-run;; wait-hidden auto-modal;; wait-automation Live Agy Task|needs-review;; expect-automation-files Live Agy Task|1;; expect-automation-alerts 1;; expect-not-file $AGY_REPO/agy_ran.txt agy-live-ok;; shot e2e-automations-agy-success;; quit"
+fi
+
 echo "---- $PASS passed, $FAIL failed (logs: $WORK)"
 [ "$FAIL" -eq 0 ]

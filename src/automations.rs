@@ -493,6 +493,10 @@ impl AutomationRun {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Saved automation definition + bounded run history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -511,6 +515,9 @@ pub struct Automation {
     pub session_mode: SessionMode,
     pub workspace_mode: WorkspaceMode,
     pub quiet_when_clean: bool,
+    /// Pass headless auto-approve flag (`--dangerously-skip-permissions`, etc.) so tools are not auto-denied.
+    #[serde(default = "default_true")]
+    pub auto_approve: bool,
     pub overlap: OverlapPolicy,
     pub timeout_mins: u32,
     pub missed: MissedPolicy,
@@ -538,6 +545,7 @@ impl Default for Automation {
             session_mode: SessionMode::Fresh,
             workspace_mode: WorkspaceMode::Worktree,
             quiet_when_clean: true,
+            auto_approve: true,
             overlap: OverlapPolicy::Skip,
             timeout_mins: 30,
             missed: MissedPolicy::Skip,
@@ -766,6 +774,7 @@ pub struct AutomationDraft {
     pub session_mode: SessionMode,
     pub workspace_mode: WorkspaceMode,
     pub quiet_when_clean: bool,
+    pub auto_approve: bool,
     pub overlap: OverlapPolicy,
     pub timeout_mins: u32,
     pub missed: MissedPolicy,
@@ -790,6 +799,7 @@ impl AutomationDraft {
             session_mode: SessionMode::Fresh,
             workspace_mode: WorkspaceMode::Worktree,
             quiet_when_clean: true,
+            auto_approve: true,
             overlap: OverlapPolicy::Skip,
             timeout_mins: 30,
             missed: MissedPolicy::Skip,
@@ -847,6 +857,7 @@ impl AutomationDraft {
             session_mode: a.session_mode,
             workspace_mode: a.workspace_mode,
             quiet_when_clean: a.quiet_when_clean,
+            auto_approve: a.auto_approve,
             overlap: a.overlap,
             timeout_mins: a.timeout_mins,
             missed: a.missed,
@@ -1254,6 +1265,7 @@ struct RunSpec {
     workspace_mode: WorkspaceMode,
     worktree_setup: WorktreeSetup,
     quiet_when_clean: bool,
+    auto_approve: bool,
     auto_failover: bool,
     candidates: Vec<Option<AgentProfile>>,
     secrets: Vec<String>,
@@ -1318,7 +1330,13 @@ fn copy_worktree_path(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-fn build_command(agent: AgentKind, prompt: &str, session_mode: SessionMode, last_session: Option<&str>) -> Command {
+fn build_command(
+    agent: AgentKind,
+    prompt: &str,
+    session_mode: SessionMode,
+    last_session: Option<&str>,
+    auto_approve: bool,
+) -> Command {
     #[allow(unused_mut)]
     let mut cmd = match agent {
         AgentKind::Custom => {
@@ -1344,12 +1362,18 @@ fn build_command(agent: AgentKind, prompt: &str, session_mode: SessionMode, last
                     c.arg("--continue");
                 }
             }
+            if auto_approve {
+                c.arg("--dangerously-skip-permissions");
+            }
             c.args(["-p", prompt, "--output-format", "text"]);
             c
         }
         AgentKind::Codex => {
             let mut c = crate::platform::command("codex");
             c.arg("exec");
+            if auto_approve {
+                c.arg("--dangerously-bypass-approvals-and-sandbox");
+            }
             if session_mode == SessionMode::Continue {
                 c.arg("resume");
                 if let Some(sid) = last_session {
@@ -1370,7 +1394,12 @@ fn build_command(agent: AgentKind, prompt: &str, session_mode: SessionMode, last
                     c.arg("--continue");
                 }
             }
-            c.args(["-p", prompt, "--output-format", "text", "--mode", "auto"]);
+            if auto_approve {
+                // Works across macOS, Linux, and Windows (avoids `--mode auto` sandbox warning on Windows
+                // and prevents headless tool calls from being auto-denied).
+                c.arg("--dangerously-skip-permissions");
+            }
+            c.args(["-p", prompt, "--output-format", "text"]);
             c
         }
         AgentKind::OpenCode => {
@@ -1380,6 +1409,9 @@ fn build_command(agent: AgentKind, prompt: &str, session_mode: SessionMode, last
         }
         AgentKind::Gemini => {
             let mut c = crate::platform::command("gemini");
+            if auto_approve {
+                c.arg("--yolo");
+            }
             c.args(["-p", prompt]);
             c
         }
@@ -1397,6 +1429,20 @@ fn build_command(agent: AgentKind, prompt: &str, session_mode: SessionMode, last
         }
     }
     cmd
+}
+
+/// Detects headless agent failures where the CLI exited with code 0 despite blocking/denying tools
+/// (for example `agy` printing `jetski: no output produced — a tool required ... so it was auto-denied`).
+fn detect_headless_failure(lines: &[String]) -> Option<String> {
+    let joined = lines.join("\n");
+    let lower = joined.to_ascii_lowercase();
+    if lower.contains("headless mode cannot prompt")
+        || (lower.contains("no output produced") && (lower.contains("auto-denied") || lower.contains("permission")))
+        || (lower.contains("tool required") && lower.contains("auto-denied"))
+    {
+        return Some("Tool permission denied in headless mode (enable Auto-approve tools)".into());
+    }
+    None
 }
 
 fn execute_run(spec: RunSpec, tx: std::sync::mpsc::Sender<AppMsg>, ctx: egui::Context) {
@@ -1468,7 +1514,7 @@ fn execute_run(spec: RunSpec, tx: std::sync::mpsc::Sender<AppMsg>, ctx: egui::Co
                 }
                 if !spec.worktree_setup.run.trim().is_empty() {
                     emit_log(format!("Running worktree setup: {}", spec.worktree_setup.run.trim()));
-                    let mut sc = build_command(AgentKind::Custom, spec.worktree_setup.run.trim(), SessionMode::Fresh, None);
+                    let mut sc = build_command(AgentKind::Custom, spec.worktree_setup.run.trim(), SessionMode::Fresh, None, true);
                     sc.current_dir(&wt_dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
                     if let Some(p) = &spec.path_env {
                         sc.env("PATH", p);
@@ -1523,7 +1569,13 @@ fn execute_run(spec: RunSpec, tx: std::sync::mpsc::Sender<AppMsg>, ctx: egui::Co
             paths::contract_tilde(&work_dir)
         ));
 
-        let mut cmd = build_command(spec.agent, &spec.prompt, spec.session_mode, spec.last_session_id.as_deref());
+        let mut cmd = build_command(
+            spec.agent,
+            &spec.prompt,
+            spec.session_mode,
+            spec.last_session_id.as_deref(),
+            spec.auto_approve,
+        );
         cmd.current_dir(&work_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1624,7 +1676,12 @@ fn execute_run(spec: RunSpec, tx: std::sync::mpsc::Sender<AppMsg>, ctx: egui::Co
         }
         match status {
             Ok(st) if st.success() => {
-                exit_ok = true;
+                if let Some(reason) = detect_headless_failure(&lines_now) {
+                    last_err = Some(reason);
+                    exit_ok = false;
+                } else {
+                    exit_ok = true;
+                }
                 break;
             }
             Ok(st) => {
@@ -1754,10 +1811,10 @@ fn execute_run(spec: RunSpec, tx: std::sync::mpsc::Sender<AppMsg>, ctx: egui::Co
         )
     };
 
+    // Only keep a real CLI session ID if known; never fabricate a synthetic ID that would break `--resume`.
     let session_id = spec
         .last_session_id
-        .filter(|_| spec.session_mode == SessionMode::Continue)
-        .or_else(|| Some(format!("auto-{}-r{}", profiles::sanitize_id(&spec.auto_id), spec.run_number)));
+        .filter(|s| spec.session_mode == SessionMode::Continue && !s.starts_with("auto-"));
 
     let _ = tx.send(AppMsg::Automation(AutomationMsg::Finished {
         auto_id: spec.auto_id,
@@ -1789,6 +1846,9 @@ impl App {
         let now = now_epoch_secs();
         let mut items = save.items;
         for a in &mut items {
+            if a.last_session_id.as_deref().is_some_and(|s| s.starts_with("auto-")) {
+                a.last_session_id = None;
+            }
             for r in &mut a.runs {
                 if r.status == RunStatus::Running {
                     r.status = RunStatus::Cancelled;
@@ -2091,6 +2151,7 @@ impl App {
             workspace_mode: auto.workspace_mode,
             worktree_setup,
             quiet_when_clean: auto.quiet_when_clean,
+            auto_approve: auto.auto_approve,
             auto_failover,
             candidates,
             secrets,
@@ -2378,6 +2439,7 @@ impl App {
                 slot.session_mode = draft.session_mode;
                 slot.workspace_mode = draft.workspace_mode;
                 slot.quiet_when_clean = draft.quiet_when_clean;
+                slot.auto_approve = draft.auto_approve;
                 slot.overlap = draft.overlap;
                 slot.timeout_mins = draft.timeout_mins.max(1);
                 slot.missed = draft.missed;
@@ -2402,6 +2464,7 @@ impl App {
                 session_mode: draft.session_mode,
                 workspace_mode: draft.workspace_mode,
                 quiet_when_clean: draft.quiet_when_clean,
+                auto_approve: draft.auto_approve,
                 overlap: draft.overlap,
                 timeout_mins: draft.timeout_mins.max(1),
                 missed: draft.missed,
@@ -2546,6 +2609,7 @@ mod tests {
                 workspace_mode: WorkspaceMode::Worktree,
                 worktree_setup: WorktreeSetup::default(),
                 quiet_when_clean: true,
+                auto_approve: true,
                 auto_failover: false,
                 candidates: vec![None],
                 secrets: Vec::new(),
@@ -2586,6 +2650,7 @@ mod tests {
                 workspace_mode: WorkspaceMode::Worktree,
                 worktree_setup: WorktreeSetup::default(),
                 quiet_when_clean: true,
+                auto_approve: true,
                 auto_failover: false,
                 candidates: vec![None],
                 secrets: Vec::new(),
@@ -2619,5 +2684,44 @@ mod tests {
             let _ = tc_git::worktree::delete_branch(&root, br, true);
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn headless_command_flags_auto_approve_and_permission_deny_detection() {
+        let args_of = |c: &Command| -> Vec<String> {
+            c.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+
+        // Antigravity with auto_approve passes --dangerously-skip-permissions and never passes --mode auto.
+        let agy_on = build_command(AgentKind::Antigravity, "check repo", SessionMode::Fresh, None, true);
+        let a_on = args_of(&agy_on);
+        assert!(a_on.contains(&"--dangerously-skip-permissions".to_string()), "{a_on:?}");
+        assert!(!a_on.contains(&"auto".to_string()), "must not emit --mode auto: {a_on:?}");
+
+        let agy_off = build_command(AgentKind::Antigravity, "check repo", SessionMode::Continue, None, false);
+        let a_off = args_of(&agy_off);
+        assert!(!a_off.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(a_off.contains(&"--continue".to_string()));
+
+        // Claude & Codex auto-approve flags.
+        let claude_on = args_of(&build_command(AgentKind::Claude, "hi", SessionMode::Fresh, None, true));
+        assert!(claude_on.contains(&"--dangerously-skip-permissions".to_string()));
+        let codex_on = args_of(&build_command(AgentKind::Codex, "hi", SessionMode::Fresh, None, true));
+        assert!(codex_on.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+
+        // Legacy saved automation without `auto_approve` field defaults to true.
+        let legacy: Automation = serde_json::from_str(r#"{"id":"a1","name":"Legacy"}"#).unwrap();
+        assert!(legacy.auto_approve);
+
+        // Headless auto-deny detection catches agy's exact Windows/headless error even on exit 0.
+        let denied_log = vec![
+            "warning: --mode auto is not available".to_string(),
+            r#"jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied."#.to_string(),
+        ];
+        assert!(detect_headless_failure(&denied_log).is_some());
+
+        // Normal clean output must not false-positive.
+        let ok_log = vec!["agy-headless-ok".to_string(), "All tests passed.".to_string()];
+        assert!(detect_headless_failure(&ok_log).is_none());
     }
 }

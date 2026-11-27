@@ -546,6 +546,7 @@ impl App {
                     egui::Frame::NONE.inner_margin(Margin::symmetric(8, 8)).show(ui, |ui| {
                         let mut last_group: Option<u8> = None;
                         for (ix, row) in rows.iter().enumerate() {
+                            let _ = ix;
                             if last_group != Some(row.group) {
                                 if last_group.is_some() {
                                     ui.add_space(6.0);
@@ -1565,7 +1566,17 @@ impl App {
                 SessionMode::Continue => t("Continue last session").to_string(),
             }),
             (t("Quiet when clean"), if auto.quiet_when_clean { t("On — notify Inbox only on changes or failures").to_string() } else { t("Off — notify Inbox on every run").to_string() }),
-            (t("Guardrails"), format!("{} · {} min timeout · {}", auto.overlap.label(), auto.timeout_mins, auto.missed.label())),
+            (t("Guardrails"), format!(
+                "{}{} · {} min timeout · {}",
+                if auto.agent != AgentKind::Custom && auto.auto_approve {
+                    "Auto-approve tools · "
+                } else {
+                    ""
+                },
+                auto.overlap.label(),
+                auto.timeout_mins,
+                auto.missed.label()
+            )),
         ];
 
         egui::Frame::NONE
@@ -1761,6 +1772,7 @@ impl App {
                                         );
                                         #[cfg(debug_assertions)]
                                         crate::devtest::record("auto-field-name", r.rect);
+                                        let _ = r;
                                     });
 
                                     form_divider(ui);
@@ -1906,6 +1918,7 @@ impl App {
                                                 );
                                                 #[cfg(debug_assertions)]
                                                 crate::devtest::record("auto-field-time", r.rect);
+                                                let _ = r;
                                             });
                                         }
                                         CadenceKind::Daily | CadenceKind::Weekdays => {
@@ -1921,6 +1934,7 @@ impl App {
                                                 );
                                                 #[cfg(debug_assertions)]
                                                 crate::devtest::record("auto-field-time", r.rect);
+                                                let _ = r;
                                             });
                                         }
                                         CadenceKind::Weekly => {
@@ -1943,6 +1957,7 @@ impl App {
                                                     );
                                                     #[cfg(debug_assertions)]
                                                     crate::devtest::record("auto-field-time", r.rect);
+                                                    let _ = r;
                                                 });
                                             });
                                         }
@@ -1959,6 +1974,7 @@ impl App {
                                                 );
                                                 #[cfg(debug_assertions)]
                                                 crate::devtest::record("auto-field-time", r.rect);
+                                                let _ = r;
                                             });
                                         }
                                         CadenceKind::Once => {
@@ -1974,6 +1990,7 @@ impl App {
                                                 );
                                                 #[cfg(debug_assertions)]
                                                 crate::devtest::record("auto-field-time", r.rect);
+                                                let _ = r;
                                             });
                                         }
                                     }
@@ -2120,8 +2137,24 @@ impl App {
                                             let sw = kit::switch(ui, &mut draft.quiet_when_clean);
                                             #[cfg(debug_assertions)]
                                             crate::devtest::record("auto-switch-quiet", sw.rect);
+                                            let _ = sw;
                                         },
                                     );
+
+                                    if draft.agent != AgentKind::Custom {
+                                        form_divider(ui);
+                                        form_row(
+                                            ui,
+                                            t("Auto-approve tools"),
+                                            t("Skip interactive permission prompts so headless runs can execute commands and edits"),
+                                            |ui| {
+                                                let sw = kit::switch(ui, &mut draft.auto_approve);
+                                                #[cfg(debug_assertions)]
+                                                crate::devtest::record("auto-switch-approve", sw.rect);
+                                                let _ = sw;
+                                            },
+                                        );
+                                    }
 
                                     form_divider(ui);
 
