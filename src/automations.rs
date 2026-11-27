@@ -1319,6 +1319,7 @@ fn copy_worktree_path(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 fn build_command(agent: AgentKind, prompt: &str, session_mode: SessionMode, last_session: Option<&str>) -> Command {
+    #[allow(unused_mut)]
     let mut cmd = match agent {
         AgentKind::Custom => {
             #[cfg(windows)]
