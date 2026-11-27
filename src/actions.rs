@@ -118,6 +118,14 @@ pub enum Action {
     NextAttention,
     BackAttention,
     ToggleAttention,
+    /// Opens or leaves the Automations workspace view.
+    ToggleAutomations,
+    /// Opens the New Automation modal (optionally prefilled from a template index).
+    NewAutomation(Option<usize>),
+    /// Triggers a manual run of an automation by id.
+    RunAutomation(String),
+    /// Cancels an active run of an automation by id.
+    StopAutomation(String),
     /// Takes a pane out of the attention queue without going to it.
     MarkSeen(PaneId),
     MarkAllSeen,

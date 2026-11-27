@@ -93,6 +93,8 @@ pub enum AppMsg {
         created: Vec<PathBuf>,
         errors: Vec<String>,
     },
+    /// Background automation lifecycle, live output chunks, worktree info, and completion.
+    Automation(crate::automations::AutomationMsg),
 }
 
 /// Where files currently dragged over the window will land if dropped.
@@ -315,7 +317,7 @@ pub struct App {
     pub focus_request: Option<PaneId>,
     pub actions: Vec<Action>,
     save_due: Option<Instant>,
-    saver: std::sync::Arc<paths::Saver>,
+    pub(crate) saver: std::sync::Arc<paths::Saver>,
     /// The workspace as last written (to skip writing it unchanged).
     saved_workspace: Vec<u8>,
     settings_dirty: bool,
@@ -569,6 +571,18 @@ pub struct App {
     pub prev_view: View,
     /// Search/filter query in the Agent Logs drawer tab.
     pub logs_filter: String,
+    /// Scheduled background automations and live run state.
+    pub automations: Vec<crate::automations::Automation>,
+    pub automations_dirty: bool,
+    pub automations_checked_at: Option<Instant>,
+    pub active_automation_runs: HashMap<String, crate::automations::ActiveAutomationRun>,
+    pub automation_sel: Option<String>,
+    pub automation_run_ix: usize,
+    pub automation_filter: crate::automations::AutomationFilter,
+    pub automation_tab: crate::automations::AutomationDetailTab,
+    pub automation_draft: Option<crate::automations::AutomationDraft>,
+    pub automation_modal_err: Option<String>,
+    pub automation_modal_seq: u64,
     #[cfg(debug_assertions)]
     pub devtest: crate::devtest::Script,
 }
@@ -887,6 +901,17 @@ impl App {
             profile_draft: None,
             prev_view: View::Focus,
             logs_filter: String::new(),
+            automations: Self::load_automations(),
+            automations_dirty: false,
+            automations_checked_at: None,
+            active_automation_runs: HashMap::new(),
+            automation_sel: None,
+            automation_run_ix: 0,
+            automation_filter: crate::automations::AutomationFilter::All,
+            automation_tab: crate::automations::AutomationDetailTab::Runs,
+            automation_draft: None,
+            automation_modal_err: None,
+            automation_modal_seq: 0,
             #[cfg(debug_assertions)]
             devtest: crate::devtest::Script::from_env(),
         };
@@ -1336,7 +1361,7 @@ impl App {
                 })
                 .collect(),
             active: self.active,
-            view: if crate::ade::is_management_view(self.view) || self.view == View::Inbox { View::Focus } else { self.view },
+            view: if crate::ade::is_management_view(self.view) || matches!(self.view, View::Inbox | View::Automations) { View::Focus } else { self.view },
             grid_columns: self.grid_columns,
             grid_active_only: self.grid_filter == tc_core::model::GridFilter::Active,
             grid_filter: Some(self.grid_filter),
@@ -1385,6 +1410,7 @@ impl App {
                 self.saver.queue(&self.rt, paths::settings_file(), data);
             }
         }
+        self.save_automations_if_dirty();
     }
 
     /// Keeps the window's place and size for the next start (not while it is full screen,
@@ -1477,7 +1503,7 @@ impl App {
         match self.view {
             View::Grid => self.grid_focus,
             View::Focus => self.current_pane(),
-            View::Inbox | View::Profiles | View::Monitor | View::Pairing => None,
+            View::Inbox | View::Automations | View::Profiles | View::Monitor | View::Pairing => None,
         }
     }
 
@@ -1589,6 +1615,7 @@ impl App {
     /// True when any modal overlay or popover covers the workspace stage and should own Escape/keys.
     pub fn overlay_open(&self) -> bool {
         self.dialog.is_some()
+            || self.automation_draft.is_some()
             || self.palette.is_some()
             || self.attention_open
             || self.monitor_popover
@@ -1622,7 +1649,7 @@ impl App {
                 self.current_pane()
             }
             View::Grid => self.grid_focus,
-            View::Inbox | View::Profiles | View::Monitor | View::Pairing => None,
+            View::Inbox | View::Automations | View::Profiles | View::Monitor | View::Pairing => None,
         }
     }
 
@@ -2139,6 +2166,7 @@ impl App {
                         self.toast_err(first.clone());
                     }
                 }
+                AppMsg::Automation(msg) => self.on_automation_msg(msg),
             }
         }
         for (id, mut paths) in files_changed {
@@ -3223,6 +3251,7 @@ impl App {
     /// Ends every pane's program as the app quits, the way closing its terminal does, and
     /// makes sure none is left behind (waits at most 1.5 s, only for those that do not end).
     fn end_programs(&mut self) {
+        self.stop_all_automations();
         let ptys: Vec<_> = self.panes.values_mut().filter_map(Pane::take_for_quit).collect();
         tc_term::pty::hang_up_all(&ptys, Duration::from_millis(1500));
     }
@@ -3746,10 +3775,34 @@ impl App {
                 self.dialog = None;
                 self.dispatch(ctx, Action::SetView(v));
             }
+            Action::ToggleAutomations => {
+                let v = if self.view == View::Automations {
+                    self.automations_back()
+                } else {
+                    View::Automations
+                };
+                self.dialog = None;
+                self.dispatch(ctx, Action::SetView(v));
+            }
+            Action::NewAutomation(template_ix) => {
+                self.dialog = None;
+                self.palette = None;
+                if self.view != View::Automations {
+                    self.dispatch(ctx, Action::SetView(View::Automations));
+                }
+                self.open_new_automation_modal(template_ix);
+            }
+            Action::RunAutomation(id) => {
+                self.start_automation_run(&id, crate::automations::RunTrigger::Manual);
+            }
+            Action::StopAutomation(id) => {
+                self.stop_automation_run(&id);
+            }
             Action::MarkSeen(id) => self.mark_seen(&[id]),
             Action::MarkAllSeen => {
                 let all: Vec<PaneId> = self.attention_queue().iter().map(|e| e.pane).collect();
                 self.mark_seen(&all);
+                self.mark_all_automation_alerts_reviewed();
             }
             Action::ToggleSidebar => {
                 self.settings.sidebar_hidden = !self.settings.sidebar_hidden;
@@ -3789,9 +3842,9 @@ impl App {
             Action::SetView(v) => {
                 self.monitor_popover = false;
                 self.drawer_maximized = false;
-                if v == View::Inbox && self.view != View::Inbox {
-                    // Back (Esc, ⌥⌘J) goes where it was opened from. The terminal or page that
-                    // had the keyboard lets go of it: the list's keys are the Inbox's.
+                if matches!(v, View::Inbox | View::Automations) && self.view != v {
+                    // Back (Esc, shortcut again) goes where it was opened from. The terminal or page that
+                    // had the keyboard lets go of it so the list's keys take over.
                     self.prev_view = self.view;
                     self.attention_open = false;
                     self.palette = None;
@@ -3805,6 +3858,10 @@ impl App {
                     if self.view == View::Grid {
                         self.fit_all_to_focus(ctx);
                         self.grid_pick.clear();
+                    }
+                    if v == View::Automations && self.automation_sel.is_none() {
+                        self.automation_sel = self.automations.first().map(|a| a.id.clone());
+                        self.automation_run_ix = 0;
                     }
                 }
                 if v != View::Focus {
@@ -5016,6 +5073,7 @@ impl App {
         self.history_follow();
         self.update_attention();
         self.ade_tick(ctx);
+        self.automations_tick(ctx);
         self.take_run_snapshots();
         self.lsp_tick(ctx);
         if let Some(d) = self.lsp_repaint_after.take() {
@@ -5309,6 +5367,7 @@ fn shortcuts() -> Vec<(egui::Modifiers, egui::Key, Action)> {
     let cmd = Modifiers::CTRL | Modifiers::SHIFT;
     let mut keys = vec![
         (cmd | Modifiers::ALT, Key::J, Action::ToggleAttention),
+        (cmd | Modifiers::ALT, Key::A, Action::ToggleAutomations),
         (cmd | Modifiers::ALT, Key::K, Action::ClearScrollback),
         (cmd | Modifiers::ALT, Key::B, Action::ShowBrowser),
         (cmd | Modifiers::ALT, Key::T, Action::ReopenClosedPage),

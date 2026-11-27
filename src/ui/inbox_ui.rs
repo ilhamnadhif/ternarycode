@@ -86,6 +86,19 @@ const GROUP_H: f32 = 30.0;
 const LIST_W: f32 = 460.0;
 const FOOT_H: f32 = 40.0;
 
+/// One unreviewed automation run surfaced in the Inbox.
+struct InboxAutoAlert {
+    auto_id: String,
+    run_id: String,
+    name: String,
+    project: String,
+    summary: String,
+    status: crate::automations::RunStatus,
+    files_changed: usize,
+    additions: u32,
+    deletions: u32,
+}
+
 /// What a row shows (read before drawing, nothing borrowed while it draws).
 struct Row {
     item: InboxItem,
@@ -159,7 +172,8 @@ impl App {
         let p = style::pal(ui);
         let full = ui.max_rect();
         let items = self.inbox_items();
-        let total = items.len();
+        let auto_alerts = self.inbox_automation_alerts();
+        let total = items.len() + auto_alerts.len();
         let body = self.top_bar(
             ui,
             full,
@@ -179,7 +193,7 @@ impl App {
         super::focus::paint_sheet(ui.painter(), sheet, &p, super::focus::SheetLook::Plain);
         let keys_free = self.inbox_keys_free(ui);
         if total == 0 {
-            let body = tf("Questions, failures and finished turns show up here. {} jumps to the next one from anywhere.", &[kit::keys(&Action::NextAttention).unwrap_or("⌘J")]);
+            let body = tf("Questions, failures, finished turns and automation findings show up here. {} jumps to the next one from anywhere.", &[kit::keys(&Action::NextAttention).unwrap_or("⌘J")]);
             kit::empty_state_at(ui, sheet, icons::TRAY, t("Nothing waits for you"), &body, None);
             if keys_free && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.actions.push(Action::SetView(self.inbox_back()));
@@ -236,8 +250,19 @@ impl App {
         }
 
         let foot = Rect::from_min_max(pos2(sheet.left(), sheet.bottom() - FOOT_H), sheet.max);
-        let main = Rect::from_min_max(sheet.min, pos2(sheet.right(), foot.top()));
-        if shown.is_empty() {
+        let mut main = Rect::from_min_max(sheet.min, pos2(sheet.right(), foot.top()));
+        if !auto_alerts.is_empty() {
+            let strip_h = (36.0 + auto_alerts.len().min(4) as f32 * 52.0 + 10.0).min(main.height() * 0.55);
+            let strip = Rect::from_min_max(main.min, pos2(main.right(), main.top() + strip_h));
+            self.inbox_automation_strip(ui, strip, &auto_alerts);
+            main = Rect::from_min_max(pos2(main.left(), strip.bottom()), main.max);
+            if !items.is_empty() {
+                ui.painter().hline(sheet.x_range(), strip.bottom() + 0.5, Stroke::new(1.0, p.border));
+            }
+        }
+        if items.is_empty() {
+            // Only automation findings are waiting — already presented above cleanly.
+        } else if shown.is_empty() {
             self.inbox_filter_empty(ui, main);
         } else {
             let with_detail = main.width() >= 640.0;
@@ -277,8 +302,9 @@ impl App {
     /// filter (All, Needs you, Finished, each with its count).
     pub(super) fn inbox_toolbar(&mut self, ui: &mut Ui) {
         let items = self.inbox_items();
+        let auto_alerts = self.unreviewed_automation_alerts_count();
         // Nothing waits: nothing to filter or mark.
-        if items.is_empty() {
+        if items.is_empty() && auto_alerts == 0 {
             return;
         }
         let needs = items.iter().filter(|i| i.kind.needs_you()).count();
@@ -291,6 +317,9 @@ impl App {
             for i in items.iter().filter(|i| i.kind == InboxKind::Limited) {
                 self.actions.push(Action::DismissRateLimit(i.pane));
             }
+        }
+        if items.is_empty() {
+            return;
         }
         ui.add_space(10.0);
         let labels = [
@@ -314,6 +343,132 @@ impl App {
             self.inbox_filter = filters[i];
             self.inbox_ix = 0;
             self.inbox_sel = None;
+        }
+    }
+
+    /// Collects unreviewed automation runs (diffs needing review or failed runs) for Inbox triage.
+    fn inbox_automation_alerts(&self) -> Vec<InboxAutoAlert> {
+        let mut out = Vec::new();
+        for a in &self.automations {
+            for r in &a.runs {
+                if r.unreviewed_alert() {
+                    out.push(InboxAutoAlert {
+                        auto_id: a.id.clone(),
+                        run_id: r.id.clone(),
+                        name: a.name.clone(),
+                        project: a.project_name.clone(),
+                        summary: r.summary_title.clone(),
+                        status: r.status,
+                        files_changed: r.files_changed,
+                        additions: r.additions,
+                        deletions: r.deletions,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    fn inbox_automation_strip(&mut self, ui: &mut Ui, area: Rect, alerts: &[InboxAutoAlert]) {
+        let p = style::pal(ui);
+        let dark = ui.visuals().dark_mode;
+        let mut open_auto: Option<(String, String)> = None;
+        let mut review_run: Option<(String, String)> = None;
+        let mut mark_seen: Option<(String, String)> = None;
+
+        ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+            ui.set_clip_rect(area.shrink(1.0).intersect(ui.clip_rect()));
+            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    kit::icon(ui, icons::CLOCK, 13.0, p.accent_text);
+                    ui.label(
+                        RichText::new(t("AUTOMATION FINDINGS"))
+                            .font(style::semibold(10.5))
+                            .color(p.text_faint),
+                    );
+                    let badge = alerts.len().to_string();
+                    let pw = kit::pill_width(ui.painter(), None, &badge);
+                    let (pr, _) = ui.allocate_exact_size(vec2(pw, 16.0), Sense::hover());
+                    kit::paint_pill(ui.painter(), pr.left_center(), None, &badge, p.warn, style::tint(p.warn, dark));
+                });
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("inbox-auto-alerts")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        for (ix, alert) in alerts.iter().enumerate() {
+                            let failed = alert.status == crate::automations::RunStatus::Failed;
+                            let col = if failed { p.err } else { p.warn };
+                            let row_frame = egui::Frame::NONE
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0, p.border))
+                                .corner_radius(CornerRadius::same(8))
+                                .inner_margin(egui::Margin::symmetric(12, 8));
+                            let rr = row_frame.show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    kit::dot(ui, col, 3.5);
+                                    ui.label(RichText::new(&alert.name).font(style::semibold(style::BODY)).color(p.text));
+                                    ui.label(RichText::new(&alert.project).font(style::mono(style::DATA)).color(p.text_faint));
+                                    if alert.files_changed > 0 {
+                                        let diff = format!("{}f +{} -{}", alert.files_changed, alert.additions, alert.deletions);
+                                        let pw = kit::pill_width(ui.painter(), None, &diff);
+                                        let (pr, _) = ui.allocate_exact_size(vec2(pw, 18.0), Sense::hover());
+                                        kit::paint_pill(ui.painter(), pr.left_center(), None, &diff, p.ok, style::tint(p.ok, dark));
+                                    }
+                                    ui.label(RichText::new(&alert.summary).font(egui::FontId::proportional(style::SMALL)).color(p.text_muted));
+
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        let seen_b = kit::button_ex(ui, kit::Kind::Ghost, Some(icons::CHECK), t("Mark seen"), true);
+                                        #[cfg(debug_assertions)]
+                                        crate::devtest::record(format!("inbox-auto-seen:{ix}"), seen_b.rect);
+                                        if seen_b.clicked() {
+                                            mark_seen = Some((alert.auto_id.clone(), alert.run_id.clone()));
+                                        }
+                                        if alert.files_changed > 0 {
+                                            let rev_b = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::GIT_DIFF), t("Review diff"), true);
+                                            #[cfg(debug_assertions)]
+                                            crate::devtest::record(format!("inbox-auto-review:{ix}"), rev_b.rect);
+                                            if rev_b.clicked() {
+                                                review_run = Some((alert.auto_id.clone(), alert.run_id.clone()));
+                                            }
+                                        }
+                                        let open_b = kit::button_ex(ui, kit::Kind::Primary, Some(icons::ARROW_SQUARE_OUT), t("Open"), true);
+                                        #[cfg(debug_assertions)]
+                                        crate::devtest::record(format!("inbox-auto-open:{ix}"), open_b.rect);
+                                        if open_b.clicked() {
+                                            open_auto = Some((alert.auto_id.clone(), alert.run_id.clone()));
+                                        }
+                                    });
+                                });
+                            });
+                            #[cfg(debug_assertions)]
+                            crate::devtest::record(format!("inbox-auto-row:{ix}"), rr.response.rect);
+                            let _ = rr;
+                        }
+                    });
+            });
+        });
+
+        if let Some((aid, rid)) = open_auto {
+            self.automation_sel = Some(aid.clone());
+            self.automation_run_ix = self
+                .automations
+                .iter()
+                .find(|a| a.id == aid)
+                .and_then(|a| a.runs.iter().position(|r| r.id == rid))
+                .unwrap_or(0);
+            self.automation_tab = crate::automations::AutomationDetailTab::Runs;
+            self.actions.push(Action::SetView(View::Automations));
+        } else if let Some((aid, rid)) = review_run {
+            let ctx = ui.ctx().clone();
+            self.open_automation_run_workspace(&ctx, &aid, &rid, true);
+        } else if let Some((aid, rid)) = mark_seen {
+            self.mark_automation_run_reviewed(&aid, &rid);
         }
     }
 

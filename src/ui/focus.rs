@@ -128,6 +128,10 @@ impl App {
             self.inbox_toolbar(ui);
             return;
         }
+        if self.view == View::Automations {
+            self.automations_toolbar(ui);
+            return;
+        }
         let Some(pid) = self.active else { return };
         let compact = ui.available_width() < 760.0;
         // The panel's four toggles, in an inset group (the open one tinted).

@@ -162,9 +162,9 @@ impl App {
         y = search.bottom() + GAP;
         let searching = typing || !self.project_filter.trim().is_empty();
 
-        // ----- Inbox, Overview ---------------------------------------------------------------
+        // ----- Inbox, Overview, Automations --------------------------------------------------
         if !searching {
-            let waiting = self.attention_queue().len();
+            let waiting = self.attention_queue().len() + self.unreviewed_automation_alerts_count();
             let inbox = Rect::from_min_size(pos2(inner_l, y), vec2(inner_r - inner_l, sc.nav_h));
             let r = nav_item(ui, inbox, icons::TRAY, t("Inbox"), (waiting > 0).then_some(waiting), None, self.view == View::Inbox, sc, &p);
             #[cfg(debug_assertions)]
@@ -180,7 +180,27 @@ impl App {
             if r.on_hover_text(t("Every project at once")).clicked() {
                 self.actions.push(Action::SetView(if self.view == View::Grid { View::Focus } else { View::Grid }));
             }
-            y = overview.bottom() + GAP;
+            let automations = overview.translate(vec2(0.0, sc.nav_h + 2.0));
+            let auto_running = self.running_automations_count();
+            let auto_alerts = self.unreviewed_automation_alerts_count();
+            let auto_keys = if auto_running > 0 { None } else { kit::keys(&Action::ToggleAutomations) };
+            let auto_count = if auto_running == 0 && auto_alerts > 0 { Some(auto_alerts) } else { None };
+            let r = nav_item(ui, automations, icons::CLOCK, t("Automations"), auto_count, auto_keys, self.view == View::Automations, sc, &p);
+            if auto_running > 0 {
+                let dark = ui.visuals().dark_mode;
+                let txt = format!("● {auto_running}");
+                let g = ui.painter().layout_no_wrap(txt, style::mono_semibold(style::DATA), p.info);
+                let w = (g.size().x + 10.0).max(24.0);
+                let pill = Rect::from_min_size(pos2(automations.right() - 8.0 - w, automations.center().y - 9.0), vec2(w, 18.0));
+                ui.painter().rect_filled(pill, CornerRadius::same(9), style::tint(p.info, dark));
+                ui.painter().galley(pill.center() - g.size() / 2.0, g, p.info);
+            }
+            #[cfg(debug_assertions)]
+            crate::devtest::record("nav:automations", automations);
+            if r.on_hover_text(kit::tip(t("Scheduled background runs"), Action::ToggleAutomations)).clicked() {
+                self.actions.push(Action::ToggleAutomations);
+            }
+            y = automations.bottom() + GAP;
         }
 
         // ----- foot: the account in use, Settings (while searching: the keys) -------------------
@@ -1085,7 +1105,7 @@ impl App {
             self.actions.push(Action::Palette);
         }
         y += 32.0 + 8.0;
-        let waiting = self.attention_queue().len();
+        let waiting = self.attention_queue().len() + self.unreviewed_automation_alerts_count();
         let r = rail_button(ui, cell(y), icons::TRAY, &kit::tip(t("Inbox"), Action::ToggleAttention), self.view == View::Inbox, false, &p);
         #[cfg(debug_assertions)]
         crate::devtest::record("nav:inbox", r.rect);
@@ -1106,6 +1126,19 @@ impl App {
         crate::devtest::record("nav:overview", r.rect);
         if r.clicked() {
             self.actions.push(Action::SetView(if self.view == View::Grid { View::Focus } else { View::Grid }));
+        }
+        y += 32.0 + 8.0;
+        let r = rail_button(ui, cell(y), icons::CLOCK, &kit::tip(t("Automations"), Action::ToggleAutomations), self.view == View::Automations, false, &p);
+        #[cfg(debug_assertions)]
+        crate::devtest::record("nav:automations", r.rect);
+        let auto_running = self.running_automations_count();
+        let auto_alerts = self.unreviewed_automation_alerts_count();
+        if auto_running > 0 || auto_alerts > 0 {
+            let dot_col = if auto_running > 0 { p.info } else { p.warn };
+            ui.painter().circle_filled(pos2(r.rect.right() - 6.0, r.rect.top() + 6.0), 4.0, dot_col);
+        }
+        if r.clicked() {
+            self.actions.push(Action::ToggleAutomations);
         }
         y += 32.0 + 8.0;
         ui.painter().hline((cx - 14.0)..=(cx + 14.0), y + 0.5, Stroke::new(1.0, p.border));

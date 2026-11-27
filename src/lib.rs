@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod ade;
 pub mod app;
+pub mod automations;
 pub mod browser;
 pub mod browser_agent;
 #[cfg(target_os = "macos")]

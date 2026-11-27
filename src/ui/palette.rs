@@ -472,6 +472,8 @@ impl App {
             add(icons::BELL, t("Go to Next Waiting Agent"), Action::NextAttention);
             add(icons::ARROW_LEFT, t("Back to Where I Was"), Action::BackAttention);
             add(icons::TRAY, t("Show Attention List"), Action::ToggleAttention);
+            add(icons::CLOCK, t("Automations"), Action::ToggleAutomations);
+            add(icons::PLUS_CIRCLE, t("New Automation…"), Action::NewAutomation(None));
             add(icons::PLAY, t("Run Agent…"), Action::PickPreset);
             add(icons::FOLDER_PLUS, t("Add Project…"), Action::AddProject);
             add(icons::MAGNIFYING_GLASS, t("Find in Pane…"), Action::Find);

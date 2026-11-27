@@ -198,6 +198,7 @@ impl AppMenu {
         let history = item(t("Commit History"), Action::History);
         let commit = item(t("Commit…"), Action::Commit);
         let attention = item(t("Inbox"), Action::ToggleAttention);
+        let automations = item(t("Automations"), Action::ToggleAutomations);
         let agent_menu = Submenu::with_items(
             t("Agent"),
             true,
@@ -210,6 +211,7 @@ impl AppMenu {
                 &next_attention,
                 &back,
                 &attention,
+                &automations,
             ],
         )
         .expect("agent menu");

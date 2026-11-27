@@ -57,6 +57,21 @@ impl App {
                 #[cfg(debug_assertions)]
                 crate::devtest::record("status-running", r.rect);
                 r.on_hover_text(t("Agents at work in every project"));
+                let auto_running = self.running_automations_count();
+                if auto_running > 0 {
+                    let label = crate::i18n::count(auto_running, t("1 automation"), t("{} automations"));
+                    let r = bar_item(
+                        ui,
+                        |painter, at| status::paint_glyph(painter, at, Status::Running, &p, 12.0),
+                        &label,
+                        style::medium(style::SMALL),
+                        p.info,
+                        None,
+                    );
+                    if r.on_hover_text(t("Background automations running now")).clicked() {
+                        self.actions.push(Action::SetView(tc_core::model::View::Automations));
+                    }
+                }
                 let r = if waiting > 0 {
                     let keys = kit::keys(&Action::NextAttention);
                     bar_item(ui, |painter, at| status::paint_glyph(painter, at, Status::NeedsInput, &p, 12.0), &tf("{} waiting", &[&waiting.to_string()]), style::medium(style::SMALL), p.warn, keys)

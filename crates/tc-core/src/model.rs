@@ -25,6 +25,8 @@ pub enum View {
     /// Everything that waits for the user, from every project: a list and the chosen one's
     /// question, its terminal's last lines and what can be done about it.
     Inbox,
+    /// Scheduled and recurring background agent automations with isolated runs and worktrees.
+    Automations,
     /// Multi-account agent profiles and rate-limit failover configuration.
     Profiles,
     /// Unified real-time usage and status monitor across all agents and profiles.
@@ -1113,7 +1115,7 @@ mod tests {
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back, s);
         // Views serialize cleanly and fall back gracefully on unknown strings.
-        for v in [View::Focus, View::Grid, View::Inbox, View::Profiles, View::Monitor, View::Pairing] {
+        for v in [View::Focus, View::Grid, View::Inbox, View::Automations, View::Profiles, View::Monitor, View::Pairing] {
             let enc = serde_json::to_string(&v).unwrap();
             let dec: View = serde_json::from_str(&enc).unwrap();
             assert_eq!(dec, v);

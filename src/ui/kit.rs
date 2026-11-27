@@ -55,6 +55,7 @@ pub fn key_labels(action: &crate::actions::Action) -> Option<(&'static str, &'st
         A::NextAttention => ("⌘J", "Ctrl+Shift+J"),
         A::BackAttention => ("⇧⌘J", "Ctrl+Alt+J"),
         A::ToggleAttention => ("⌥⌘J", "Ctrl+Shift+Alt+J"),
+        A::ToggleAutomations => ("⌥⌘A", "Ctrl+Shift+Alt+A"),
         A::ToggleGrid => ("⌘0", "Ctrl+Shift+0"),
         A::OpenGridTile => ("⌘↵", "Ctrl+Shift+Enter"),
         A::SaveFile => ("⌘S", "Ctrl+Shift+S"),

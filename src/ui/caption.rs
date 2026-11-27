@@ -159,6 +159,7 @@ impl App {
                 Some((t("Go to Next Waiting Agent"), A::NextAttention)),
                 Some((t("Back to Where I Was"), A::BackAttention)),
                 Some((t("Inbox"), A::ToggleAttention)),
+                Some((t("Automations"), A::ToggleAutomations)),
             ]);
         });
         ui.menu_button(t("Window"), |ui| {

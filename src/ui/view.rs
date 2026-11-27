@@ -124,6 +124,7 @@ impl App {
         self.monitor_popover_ui(&ctx);
         self.palette_ui(&ctx);
         self.dialogs(&ctx);
+        self.automation_editor_modal(&ctx);
         self.updates(&ctx);
         self.toast_ui(&ctx);
     }
@@ -132,6 +133,7 @@ impl App {
     /// the Review, the Inbox, a management view, Zen Mode, a browser page, a menu popup, or the attention list.
     pub fn terminals_take_keys(&self) -> bool {
         self.dialog.is_none()
+            && self.automation_draft.is_none()
             && self.palette.is_none()
             && !self.review_full()
             && !self.attention_open
@@ -140,6 +142,7 @@ impl App {
             && self.browser_focus.is_none()
             && self.pane_search.is_none()
             && self.view != tc_core::model::View::Inbox
+            && self.view != tc_core::model::View::Automations
             && !crate::ade::is_management_view(self.view)
             && !egui::Popup::is_any_open(&self.ctx)
     }
@@ -149,6 +152,10 @@ impl App {
         // work (a state saved by an older version).
         if crate::ade::is_management_view(self.view) {
             self.view = if crate::ade::is_management_view(self.prev_view) { tc_core::model::View::Focus } else { self.prev_view };
+        }
+        if self.view == tc_core::model::View::Automations {
+            self.automations_view(ui);
+            return;
         }
         if self.projects.is_empty() {
             let full = ui.max_rect();
@@ -185,6 +192,7 @@ impl App {
                 ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| self.grid_view(ui));
             }
             tc_core::model::View::Inbox => self.inbox_view(ui),
+            tc_core::model::View::Automations => self.automations_view(ui),
             tc_core::model::View::Profiles | tc_core::model::View::Monitor | tc_core::model::View::Pairing => {}
         }
     }

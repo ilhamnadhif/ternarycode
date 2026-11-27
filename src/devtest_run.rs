@@ -211,6 +211,24 @@ impl App {
             "wait-queue" => {
                 Some(self.attention_queue().len().to_string() == arg.trim()).filter(|ok| *ok)
             }
+            // `wait-automation <name>|<status>`: wait until automation <name> has latest run in <status>
+            // (`running`, `needs-review`, `clean`, `failed`, `stopped`).
+            "wait-automation" => {
+                let (name, want) = arg.split_once('|').unwrap_or((arg.trim(), ""));
+                let got = self
+                    .automations
+                    .iter()
+                    .find(|a| a.name == name.trim())
+                    .and_then(|a| a.latest_run())
+                    .map(|r| match r.status {
+                        crate::automations::RunStatus::Running => "running",
+                        crate::automations::RunStatus::NeedsReview => "needs-review",
+                        crate::automations::RunStatus::Clean => "clean",
+                        crate::automations::RunStatus::Failed => "failed",
+                        crate::automations::RunStatus::Cancelled => "cancelled",
+                    });
+                Some(got == Some(want.trim())).filter(|ok| *ok)
+            }
             "wait-relay" => {
                 let status = self
                     .companion
@@ -629,6 +647,8 @@ impl App {
                     "move-down" => Some(Action::MoveActiveProject(false)),
                     "expand-panel" => Some(Action::TogglePanelExpanded),
                     "inbox" => Some(Action::SetView(tc_core::model::View::Inbox)),
+                    "automations" => Some(Action::SetView(tc_core::model::View::Automations)),
+                    "new-automation" => Some(Action::NewAutomation(None)),
                     "grid-all" => Some(Action::GridFilter(tc_core::model::GridFilter::All)),
                     "grid-waiting" => Some(Action::GridFilter(tc_core::model::GridFilter::Waiting)),
                     "ide" => {
@@ -767,7 +787,7 @@ impl App {
                 let want = devtest::unescape(content);
                 self.devtest.check(!disk.contains(&want), &format!("expect-not-file {path} lacks {want:?}"));
             }
-            "wait-screen" | "wait-status" | "wait-agent" | "wait-queue" | "wait-relay" | "wait-editor" | "wait-conflict" | "wait-browser"
+            "wait-screen" | "wait-status" | "wait-agent" | "wait-queue" | "wait-automation" | "wait-relay" | "wait-editor" | "wait-conflict" | "wait-browser"
             | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-page" | "wait-page-count" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-dialog" | "wait-download" | "wait-page-find" | "wait-inspector" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
             | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" | "wait-web" => {
@@ -1009,11 +1029,39 @@ impl App {
                     tc_core::model::View::Focus => "focus",
                     tc_core::model::View::Grid => "grid",
                     tc_core::model::View::Inbox => "inbox",
+                    tc_core::model::View::Automations => "automations",
                     tc_core::model::View::Profiles => "profiles",
                     tc_core::model::View::Monitor => "monitor",
                     tc_core::model::View::Pairing => "pairing",
                 };
                 self.devtest.check(got == arg.trim(), &format!("expect-view {arg} (got {got})"));
+            }
+            "expect-automation-count" => {
+                let want: usize = arg.trim().parse().unwrap_or(0);
+                let got = self.automations.len();
+                self.devtest.check(got == want, &format!("expect-automation-count {want} (got {got})"));
+            }
+            "expect-automation-alerts" => {
+                let want: usize = arg.trim().parse().unwrap_or(0);
+                let got = self.unreviewed_automation_alerts_count();
+                self.devtest.check(got == want, &format!("expect-automation-alerts {want} (got {got})"));
+            }
+            "expect-automation-files" => {
+                let (name, want_s) = arg.split_once('|').unwrap_or((arg.trim(), "0"));
+                let want: usize = want_s.trim().parse().unwrap_or(0);
+                let got = self
+                    .automations
+                    .iter()
+                    .find(|a| a.name == name.trim())
+                    .and_then(|a| a.latest_run())
+                    .map(|r| r.files_changed);
+                self.devtest.check(got == Some(want), &format!("expect-automation-files {arg} (got {got:?})"));
+            }
+            "expect-automation-enabled" => {
+                let (name, want_s) = arg.split_once('|').unwrap_or((arg.trim(), "true"));
+                let want = want_s.trim() == "true";
+                let got = self.automations.iter().find(|a| a.name == name.trim()).map(|a| a.enabled);
+                self.devtest.check(got == Some(want), &format!("expect-automation-enabled {arg} (got {got:?})"));
             }
             // `set-failover auto|manual`: switch failover mode for E2E verification.
             "set-failover" => {

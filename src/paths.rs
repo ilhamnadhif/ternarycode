@@ -74,6 +74,14 @@ pub fn workspace_file() -> PathBuf {
     data_dir().join("workspace.json")
 }
 
+pub fn automations_file() -> PathBuf {
+    data_dir().join("automations.json")
+}
+
+pub fn automation_worktrees_dir() -> PathBuf {
+    data_dir().join("automation-worktrees")
+}
+
 /// Files TernaryCode generates for agent hooks (the `--settings` file, install records,
 /// backups of agent configuration files).
 pub fn integrations_dir() -> PathBuf {
