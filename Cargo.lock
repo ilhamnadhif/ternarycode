@@ -4957,7 +4957,7 @@ dependencies = [
 
 [[package]]
 name = "ternarycode"
-version = "0.3.26"
+version = "0.3.27"
 dependencies = [
  "block2 0.6.2",
  "chrono",
