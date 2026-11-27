@@ -835,7 +835,7 @@ if [ -d "$WORK/data-automations-full" ]; then
     run automations-persist 50 "sleep 1200;; click nav:automations;; sleep 400;; expect-view automations;; expect-automation-count 2;; wait-automation Worktree Fixer|clean;; expect-automation-files Worktree Fixer|1;; wait-automation Quiet Audit|clean;; shot e2e-automations-persisted;; quit"
 fi
 
-# 10. Real Antigravity CLI (`agy`) automation E2E:
+# 10. Real Antigravity CLI (`agy`) automation E2E (including Built-in Browser MCP + file upload!):
 #     - Verifies silent exit-0 permission-denied detection (never false-green Clean)
 #     - Runs a REAL `agy` automation inside TernaryCode with Auto-approve tools ON in an isolated worktree
 #       executing a real `command` tool (`echo agy-live-ok > agy_ran.txt`), verifying NeedsReview + 1 changed file
@@ -845,6 +845,51 @@ if [ "$ONLY" = "automations-agy" ] && command -v agy >/dev/null 2>&1; then
     mkdir -p "$AGY_REPO"
     (cd "$AGY_REPO" && git init -q -b main && printf 'seed\n' > README.md && git add -A && git -c user.name=t -c user.email=t@t commit -qm init)
     TERNARYCODE_DEV_WAIT=60 run automations-agy 110 "sleep 1000;; action add-project $AGY_REPO;; sleep 1200;; click nav:automations;; sleep 400;; expect-view automations;; click auto-new;; wait-shown auto-modal;; click auto-field-name;; sleep 100;; keys Denied Guard;; sleep 100;; click auto-agent:shell;; sleep 150;; scroll auto-modal-scroll -120;; sleep 150;; click auto-field-prompt;; sleep 100;; keys printf 'jetski: no output produced — a tool required the \"command\" permission that headless mode cannot prompt for, so it was auto-denied.\\n';; sleep 150;; click auto-modal-save-run;; wait-hidden auto-modal;; wait-automation Denied Guard|failed;; expect-automation-alerts 1;; click auto-delete;; wait-shown auto-delete-confirm;; click auto-delete-confirm;; sleep 250;; expect-automation-count 0;; click auto-new;; wait-shown auto-modal;; click auto-field-name;; sleep 100;; keys Live Agy Task;; sleep 100;; click auto-agent:antigravity;; sleep 150;; scroll auto-modal-scroll -150;; sleep 150;; click auto-field-prompt;; sleep 100;; keys Run the shell command 'echo agy-live-ok > agy_ran.txt' using your command tool and reply ONLY with DONE.;; sleep 150;; click auto-modal-save-run;; wait-hidden auto-modal;; wait-automation Live Agy Task|needs-review;; expect-automation-files Live Agy Task|1;; expect-automation-alerts 1;; expect-not-file $AGY_REPO/agy_ran.txt agy-live-ok;; shot e2e-automations-agy-success;; quit"
+fi
+
+# 11. Real Antigravity CLI (`agy`) Built-in Browser MCP + File Upload E2E (simulates YouTube Studio upload!):
+#     - Starts a local HTTP server with an upload form (file input + Submit button)
+#     - Runs a real `agy` automation that navigates via TernaryCode's Built-in Browser MCP,
+#       uploads `clip.mp4` from the project folder via `browser_file_upload`, submits the form,
+#       and proves the server received the file while staying inside TernaryCode!
+if [ "$ONLY" = "automations-agy-browser" ] && command -v agy >/dev/null 2>&1; then
+    B_REPO="$WORK/agy-browser-repo"
+    mkdir -p "$B_REPO"
+    printf 'fake-video-bytes-yt-upload-ok\n' > "$B_REPO/clip.mp4"
+    (cd "$B_REPO" && git init -q -b main && git add -A && git -c user.name=t -c user.email=t@t commit -qm init)
+    UPLOAD_DONE="$WORK/upload-received.txt"
+    B_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+    cat > "$WORK/upload_server.py" <<'PY'
+import sys, http.server, socketserver
+port, out_path = int(sys.argv[1]), sys.argv[2]
+HTML = b"""<!doctype html><html><head><title>Studio Upload Test</title></head><body>
+<h1>Studio Video Upload</h1>
+<form id="f" method="POST" action="/upload" enctype="multipart/form-data">
+  <input id="file" type="file" name="video" />
+  <button id="pub" type="submit">Publish Video</button>
+</form>
+</body></html>"""
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        self.send_response(200); self.send_header("Content-Type", "text/html"); self.end_headers()
+        self.wfile.write(HTML)
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(n).decode("utf-8", errors="ignore")
+        with open(out_path, "w") as f:
+            f.write(body)
+        self.send_response(200); self.send_header("Content-Type", "text/html"); self.end_headers()
+        self.wfile.write(b"<!doctype html><html><head><title>Published</title></head><body><h1>UPLOAD_CONFIRMED_OK</h1></body></html>")
+socketserver.TCPServer.allow_reuse_address = True
+with socketserver.TCPServer(("127.0.0.1", port), H) as httpd:
+    httpd.serve_forever()
+PY
+    python3 "$WORK/upload_server.py" "$B_PORT" "$UPLOAD_DONE" &
+    B_SRV_PID=$!
+    sleep 0.4
+    TERNARYCODE_DEV_WAIT=75 run automations-agy-browser 120 "sleep 1000;; action add-project $B_REPO;; sleep 1200;; click nav:automations;; sleep 400;; expect-view automations;; click auto-new;; wait-shown auto-modal;; click auto-field-name;; sleep 100;; keys YT Upload Test;; sleep 100;; click auto-agent:antigravity;; sleep 150;; scroll auto-modal-scroll -150;; sleep 150;; click auto-field-prompt;; sleep 100;; keys Use TernaryCode built-in browser MCP tools (browser_navigate, browser_file_upload, browser_click). Open http://127.0.0.1:${B_PORT}/, upload clip.mp4 into the file input, click Publish Video, and reply ONLY with the confirmation heading text you see.;; sleep 150;; click auto-modal-save-run;; wait-hidden auto-modal;; wait-automation YT Upload Test|clean;; expect-file $UPLOAD_DONE fake-video-bytes-yt-upload-ok;; shot e2e-automations-agy-browser;; quit"
+    kill "$B_SRV_PID" 2>/dev/null || true
 fi
 
 echo "---- $PASS passed, $FAIL failed (logs: $WORK)"

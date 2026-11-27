@@ -160,16 +160,28 @@ pub struct Job {
     redo: Option<Op>,
 }
 
-/// A file an agent may upload: one that exists, in the project's folder (a relative path is
-/// taken from there) or the Downloads folder; nothing else of the user's leaves for a site.
-fn upload_path(f: &str, root: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    let p = std::path::Path::new(f.trim());
-    let p = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
+/// A file an agent may upload: one that exists, in the project's folder (or automation's active
+/// worktree, a relative path is taken from there) or the Downloads folder; nothing else of the
+/// user's leaves for a site.
+fn upload_path(f: &str, root: &std::path::Path, extra_root: Option<&std::path::Path>) -> Result<std::path::PathBuf, String> {
+    let raw = std::path::Path::new(f.trim());
+    let p = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else if let Some(extra) = extra_root
+        && extra.join(raw).exists()
+    {
+        extra.join(raw)
+    } else {
+        root.join(raw)
+    };
     let p = p.canonicalize().map_err(|_| format!("No such file: {f}"))?;
     if !p.is_file() {
         return Err(format!("Not a file: {f}"));
     }
     let mut places = vec![root.to_path_buf()];
+    if let Some(extra) = extra_root {
+        places.push(extra.to_path_buf());
+    }
     if let Some(dl) = dirs::download_dir().or_else(|| Some(crate::paths::home_dir().join("Downloads"))) {
         places.push(dl);
     }
@@ -265,6 +277,15 @@ fn status(agent: AgentKind, asking: bool, message: Option<String>) -> StatusEven
 }
 
 impl App {
+    /// Resolves the project owning an agent pane — either a live terminal pane or an active
+    /// background automation's virtual MCP pane.
+    fn pane_project_id(&self, agent_pane: PaneId) -> Option<tc_core::ProjectId> {
+        self.panes
+            .get(&agent_pane)
+            .map(|p| p.project)
+            .or_else(|| self.automation_mcp_project(agent_pane))
+    }
+
     /// An agent's browser tool call: becomes a job (or is answered at once when it can't run).
     pub fn browser_call(&mut self, call: CallMsg, reply: Reply) {
         let fail = |reply: Reply, e: &str| {
@@ -274,7 +295,7 @@ impl App {
             return fail(reply, crate::browser::UNSUPPORTED);
         }
         let agent_pane = call.pane;
-        let Some(project) = self.panes.get(&agent_pane).map(|p| p.project) else {
+        let Some(project) = self.pane_project_id(agent_pane) else {
             return fail(reply, "The pane this agent runs in is gone.");
         };
         // `ternarycode browse` / `$BROWSER` / `open https://…` in a pane: the user's page, in
@@ -299,7 +320,9 @@ impl App {
                 "Running your own JavaScript in pages is off. The user can turn it on in TernaryCode (Settings → Browser → Agents may run JavaScript in pages); the other tools work without it.",
             );
         }
-        let who = call.agent.as_deref().and_then(AgentKind::from_slug).map_or("The agent", AgentKind::label).to_string();
+        let who = self
+            .automation_mcp_label(agent_pane)
+            .unwrap_or_else(|| call.agent.as_deref().and_then(AgentKind::from_slug).map_or("The agent", AgentKind::label).to_string());
         if call.call == "browser_close" {
             let panel = call.args["panel"].as_bool().unwrap_or(false);
             let page = self.agent_page(agent_pane, project);
@@ -404,10 +427,11 @@ impl App {
             "browser_file_upload" => {
                 let e = element();
                 let root = self.project(project).map(|p| p.path.clone()).unwrap_or_default();
+                let extra_root = self.automation_mcp_work_dir(agent_pane);
                 let mut files = Vec::new();
                 for f in a["paths"].as_array().cloned().unwrap_or_default() {
                     let f = f.as_str().unwrap_or("");
-                    match upload_path(f, &root) {
+                    match upload_path(f, &root, extra_root.as_deref()) {
                         Ok(p) => files.push(p),
                         Err(e) => return fail(reply, &e),
                     }
@@ -687,8 +711,12 @@ impl App {
             None => "the user's".into(),
             Some(o) if o == agent_pane => "yours".into(),
             Some(o) => {
-                let kind = self.panes.get(&o).and_then(|p| p.tracker.agent.or(p.last_agent));
-                format!("{}'s", kind.map_or("another agent", AgentKind::label))
+                if let Some(label) = self.automation_mcp_label(o) {
+                    format!("{label}'s")
+                } else {
+                    let kind = self.panes.get(&o).and_then(|p| p.tracker.agent.or(p.last_agent));
+                    format!("{}'s", kind.map_or("another agent", AgentKind::label))
+                }
             }
         }
     }
@@ -749,6 +777,15 @@ impl App {
             ));
         }
         out
+    }
+
+    /// Sites `agent_pane` in `project` may open without asking: unattended automations with
+    /// Auto-approve tools enabled can open any site without stalling on an interactive prompt.
+    fn agent_sites_for(&self, project: tc_core::ProjectId, agent_pane: PaneId) -> Vec<String> {
+        if self.automation_mcp_auto_approve(agent_pane) {
+            return vec!["*".into()];
+        }
+        self.agent_sites(project)
     }
 
     /// The sites an agent of `project` may open without asking: any (unless the user wants to
@@ -857,9 +894,9 @@ impl App {
     /// asked. (A click on a link or a form to such a site is asked about before it is made.)
     pub fn stop_unasked_load(&mut self, id: PaneId, url: &str, before: &str) {
         let Some(project) = self.browsers.get(&id).map(|b| b.project) else { return };
-        let sites = self.agent_sites(project);
+        let Some(agent_pane) = self.browsers.get(&id).and_then(|b| b.driver.as_ref().filter(|d| !d.paused).map(|d| d.pane)) else { return };
+        let sites = self.agent_sites_for(project, agent_pane);
         let Some(b) = self.browsers.get_mut(&id) else { return };
-        let Some(agent_pane) = b.driver.as_ref().filter(|d| !d.paused).map(|d| d.pane) else { return };
         if b.ask.is_some() || crate::browser::agent_may_open(url, &sites, b.pass.as_deref()) {
             if b.pass.as_deref() == Some(crate::browser::host_of(url).as_str()) {
                 b.pass = None;
@@ -888,10 +925,12 @@ impl App {
             let Some(d) = &b.driver else { continue };
             // Taken over, it stays the user's until they hand it back (the agent's next calls are
             // told so), or the agent's pane is gone.
-            let gone = !self.panes.contains_key(&d.pane);
-            let turn_over = self.panes.get(&d.pane).is_none_or(|p| {
-                !matches!(p.tracker.status, tc_core::status::Status::Running | tc_core::status::Status::NeedsInput)
-            });
+            let is_auto = self.active_automation_runs.values().any(|r| r.mcp_pane == Some(d.pane));
+            let gone = !self.panes.contains_key(&d.pane) && !is_auto;
+            let turn_over = !is_auto
+                && self.panes.get(&d.pane).is_none_or(|p| {
+                    !matches!(p.tracker.status, tc_core::status::Status::Running | tc_core::status::Status::NeedsInput)
+                });
             let idle = !jobs.contains(&b.id) && b.ask.is_none() && (turn_over || now.duration_since(d.last) > DRIVER_LINGER);
             if gone || (idle && !d.paused) {
                 b.driver = None;
@@ -957,7 +996,7 @@ impl App {
             // A page not up yet (a new browser gets its web view once it has an address) counts
             // as loading.
             let loading = view.as_ref().is_none_or(|w| crate::browser::loading_in(w));
-            let sites = self.agent_sites(b.project);
+            let sites = self.agent_sites_for(b.project, self.browser_jobs[i].agent_pane);
             let pass = b.pass.clone();
             let answer = b.ask.as_ref().and_then(|a| a.answer.map(|x| (x, a.host.clone(), a.url.clone())));
             let here = b.url.clone();
@@ -1456,7 +1495,7 @@ impl App {
             crate::browser_popup::agent_stopped();
             self.actions.push(crate::actions::Action::FocusPane(id));
             self.browser_focus_request = Some(id);
-        } else {
+        } else if self.panes.contains_key(&agent) {
             self.actions.push(crate::actions::Action::FocusPane(agent));
         }
     }

@@ -1431,6 +1431,7 @@ impl App {
         let in_use = self.browsers_in_use();
         let now = std::time::Instant::now();
         let covered = self.dialog.is_some()
+            || self.automation_draft.is_some()
             || self.updater.dialog_open
             || self.palette.is_some()
             || self.review_full()

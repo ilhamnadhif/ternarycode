@@ -1172,6 +1172,13 @@ pub fn strip_ansi(s: &str) -> String {
 /// Handle for an actively executing background automation run.
 pub struct ActiveAutomationRun {
     pub run_id: String,
+    pub name: String,
+    pub agent: AgentKind,
+    pub project_id: Option<ProjectId>,
+    /// Virtual pane ID registered with `HookServer` so Built-in Browser MCP works identically to a live pane.
+    pub mcp_pane: Option<tc_core::PaneId>,
+    pub auto_approve: bool,
+    pub work_dir: PathBuf,
     pub started: Instant,
     pub timeout: Duration,
     pub cancel: Arc<AtomicBool>,
@@ -1270,6 +1277,13 @@ struct RunSpec {
     candidates: Vec<Option<AgentProfile>>,
     secrets: Vec<String>,
     path_env: Option<std::ffi::OsString>,
+    /// TernaryCode base env (MCP configs, `TC_BROWSER_AGENTS`, `OPENCODE_CONFIG_CONTENT`, preset env).
+    extra_env: Vec<(String, String)>,
+    /// Hook/MCP socket registration `(sock_path, virtual_pane_id, token)` for Built-in Browser MCP tools.
+    hook_env: Option<(String, tc_core::PaneId, String)>,
+    /// Optional per-launch MCP flags for Claude (`--mcp-config`, `--settings`) and Codex (`-c ...`).
+    claude_mcp: Option<(String, Option<String>)>,
+    codex_mcp: Option<(String, Option<String>)>,
     home: PathBuf,
     data_dir: PathBuf,
     worktree_prefix: String,
@@ -1336,6 +1350,8 @@ fn build_command(
     session_mode: SessionMode,
     last_session: Option<&str>,
     auto_approve: bool,
+    claude_mcp: Option<&(String, Option<String>)>,
+    codex_mcp: Option<&(String, Option<String>)>,
 ) -> Command {
     #[allow(unused_mut)]
     let mut cmd = match agent {
@@ -1355,6 +1371,12 @@ fn build_command(
         }
         AgentKind::Claude => {
             let mut c = crate::platform::command("claude");
+            if let Some((mcp, settings)) = claude_mcp {
+                c.args(["--mcp-config", mcp]);
+                if let Some(s) = settings {
+                    c.args(["--settings", s]);
+                }
+            }
             if session_mode == SessionMode::Continue {
                 if let Some(sid) = last_session {
                     c.args(["--resume", sid]);
@@ -1370,6 +1392,12 @@ fn build_command(
         }
         AgentKind::Codex => {
             let mut c = crate::platform::command("codex");
+            if let Some((mcp, guide)) = codex_mcp {
+                c.args(["-c", mcp]);
+                if let Some(g) = guide {
+                    c.args(["-c", g]);
+                }
+            }
             c.arg("exec");
             if auto_approve {
                 c.arg("--dangerously-bypass-approvals-and-sandbox");
@@ -1514,7 +1542,7 @@ fn execute_run(spec: RunSpec, tx: std::sync::mpsc::Sender<AppMsg>, ctx: egui::Co
                 }
                 if !spec.worktree_setup.run.trim().is_empty() {
                     emit_log(format!("Running worktree setup: {}", spec.worktree_setup.run.trim()));
-                    let mut sc = build_command(AgentKind::Custom, spec.worktree_setup.run.trim(), SessionMode::Fresh, None, true);
+                    let mut sc = build_command(AgentKind::Custom, spec.worktree_setup.run.trim(), SessionMode::Fresh, None, true, None, None);
                     sc.current_dir(&wt_dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
                     if let Some(p) = &spec.path_env {
                         sc.env("PATH", p);
@@ -1575,6 +1603,8 @@ fn execute_run(spec: RunSpec, tx: std::sync::mpsc::Sender<AppMsg>, ctx: egui::Co
             spec.session_mode,
             spec.last_session_id.as_deref(),
             spec.auto_approve,
+            spec.claude_mcp.as_ref(),
+            spec.codex_mcp.as_ref(),
         );
         cmd.current_dir(&work_dir)
             .stdin(Stdio::null())
@@ -1582,6 +1612,14 @@ fn execute_run(spec: RunSpec, tx: std::sync::mpsc::Sender<AppMsg>, ctx: egui::Co
             .stderr(Stdio::piped())
             .env("TERNARYCODE_AUTOMATION", &spec.auto_id)
             .env("TERNARYCODE_AUTOMATION_RUN", &spec.run_id);
+        for (k, v) in &spec.extra_env {
+            cmd.env(k, v);
+        }
+        if let Some((sock, pane, token)) = &spec.hook_env {
+            cmd.env(tc_agent::ENV_SOCK, sock)
+                .env(tc_agent::ENV_PANE, pane.to_string())
+                .env(tc_agent::ENV_TOKEN, token);
+        }
         if let Some(p) = &spec.path_env {
             cmd.env("PATH", p);
         }
@@ -1895,10 +1933,60 @@ impl App {
 
     /// Cancels all running automation child processes (called on app quit).
     pub fn stop_all_automations(&mut self) {
+        let panes: Vec<tc_core::PaneId> = self
+            .active_automation_runs
+            .values()
+            .filter_map(|a| a.mcp_pane)
+            .collect();
         for active in self.active_automation_runs.values() {
             active.cancel_now();
         }
         self.active_automation_runs.clear();
+        for p in panes {
+            self.cleanup_automation_mcp(Some(p));
+        }
+    }
+
+    /// Maps an active automation's virtual MCP pane ID to its project ID (for Built-in Browser MCP).
+    pub fn automation_mcp_project(&self, pane: tc_core::PaneId) -> Option<ProjectId> {
+        self.active_automation_runs
+            .values()
+            .find(|r| r.mcp_pane == Some(pane))
+            .and_then(|r| r.project_id)
+    }
+
+    pub fn automation_mcp_running(&self, pane: tc_core::PaneId) -> bool {
+        self.active_automation_runs.values().any(|r| r.mcp_pane == Some(pane))
+    }
+
+    pub fn automation_mcp_auto_approve(&self, pane: tc_core::PaneId) -> bool {
+        self.active_automation_runs
+            .values()
+            .find(|r| r.mcp_pane == Some(pane))
+            .is_some_and(|r| r.auto_approve)
+    }
+
+    pub fn automation_mcp_work_dir(&self, pane: tc_core::PaneId) -> Option<PathBuf> {
+        self.active_automation_runs
+            .values()
+            .find(|r| r.mcp_pane == Some(pane))
+            .map(|r| r.work_dir.clone())
+    }
+
+    pub fn automation_mcp_label(&self, pane: tc_core::PaneId) -> Option<String> {
+        self.active_automation_runs
+            .values()
+            .find(|r| r.mcp_pane == Some(pane))
+            .map(|r| format!("{} ({})", automation_agent_label(r.agent), r.name))
+    }
+
+    fn cleanup_automation_mcp(&mut self, mcp_pane: Option<tc_core::PaneId>) {
+        let Some(pane) = mcp_pane else { return };
+        if let Some(h) = &self.hooks {
+            h.unregister(pane);
+        }
+        self.agent_pane_closed(pane);
+        self.agent_panel_shown.remove(&pane);
     }
 
     /// Periodic scheduler tick called from `frame_logic`: checks timeouts and scheduled triggers.
@@ -2117,10 +2205,73 @@ impl App {
             override_ms.map(Duration::from_millis).unwrap_or_else(|| Duration::from_secs(u64::from(auto.timeout_mins.max(1)) * 60))
         };
 
+        let canonical_proj = paths::canonical(&auto.project_path);
+        let project_id = self
+            .projects
+            .iter()
+            .find(|p| paths::canonical(&p.path) == canonical_proj)
+            .map(|p| p.id);
+        let mcp_pane = if project_id.is_some() && self.hooks.is_some() {
+            Some(self.new_id())
+        } else {
+            None
+        };
+        let hook_env = mcp_pane.and_then(|pane_id| {
+            self.hooks.as_ref().map(|h| {
+                (
+                    h.path().to_string_lossy().into_owned(),
+                    pane_id,
+                    h.register(pane_id),
+                )
+            })
+        });
+
+        // Carry over TernaryCode MCP & agent env (excluding interactive shell prompt overrides)
+        // plus any preset-configured env vars so headless automations match main terminal prompts.
+        const SKIP_SHELL_ENV: &[&str] = &["ZDOTDIR", "BASH_ENV", "ENV", "XDG_DATA_DIRS", "PROMPT_COMMAND"];
+        let mut extra_env: Vec<(String, String)> = self
+            .base_env
+            .iter()
+            .filter(|(k, _)| !SKIP_SHELL_ENV.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        if let Some(preset) = self.presets().into_iter().find(|p| p.agent == Some(auto.agent)) {
+            for (k, v) in preset.env {
+                extra_env.retain(|(ek, _)| ek != &k);
+                extra_env.push((k, v));
+            }
+        }
+        let env_val = |key: &str| -> Option<String> {
+            self.base_env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()).filter(|v| !v.is_empty())
+        };
+        let browser_mcp_on = self.settings.browser_agents && hook_env.is_some();
+        let claude_mcp = if browser_mcp_on && auto.agent == AgentKind::Claude {
+            env_val(tc_agent::integrate::ENV_CLAUDE_MCP).map(|mcp| {
+                let settings = env_val(tc_agent::integrate::ENV_CLAUDE_INSTALLED_SETTINGS);
+                (mcp, settings)
+            })
+        } else {
+            None
+        };
+        let codex_mcp = if browser_mcp_on && auto.agent == AgentKind::Codex {
+            env_val(tc_agent::integrate::ENV_CODEX_MCP).map(|mcp| {
+                let guide = env_val(tc_agent::integrate::ENV_CODEX_GUIDE);
+                (mcp, guide)
+            })
+        } else {
+            None
+        };
+
         self.active_automation_runs.insert(
             auto.id.clone(),
             ActiveAutomationRun {
                 run_id: run_id.clone(),
+                name: auto.name.clone(),
+                agent: auto.agent,
+                project_id,
+                mcp_pane,
+                auto_approve: auto.auto_approve,
+                work_dir: auto.project_path.clone(),
                 started: Instant::now(),
                 timeout,
                 cancel: cancel.clone(),
@@ -2156,6 +2307,10 @@ impl App {
             candidates,
             secrets,
             path_env: self.lsp.path_env.clone(),
+            extra_env,
+            hook_env,
+            claude_mcp,
+            codex_mcp,
             home: paths::home_dir(),
             data_dir: paths::data_dir().to_path_buf(),
             worktree_prefix: self.settings.worktrees.prefix.clone(),
@@ -2195,6 +2350,11 @@ impl App {
                 }
             }
             AutomationMsg::WorktreeReady { auto_id, run_id, path, branch, base_commit } => {
+                if let Some(act) = self.active_automation_runs.get_mut(&auto_id)
+                    && act.run_id == run_id
+                {
+                    act.work_dir = path.clone();
+                }
                 if let Some(a) = self.automations.iter_mut().find(|x| x.id == auto_id)
                     && let Some(r) = a.runs.iter_mut().find(|r| r.id == run_id)
                 {
@@ -2216,14 +2376,20 @@ impl App {
                 }
             }
             AutomationMsg::Finished { auto_id, run_id, outcome } => {
-                let queued = self
+                let (queued, finished_mcp_pane) = if self
                     .active_automation_runs
                     .get(&auto_id)
-                    .filter(|act| act.run_id == run_id)
-                    .and_then(|act| act.queued);
-                if self.active_automation_runs.get(&auto_id).is_some_and(|act| act.run_id == run_id) {
-                    self.active_automation_runs.remove(&auto_id);
-                }
+                    .is_some_and(|act| act.run_id == run_id)
+                {
+                    let removed = self.active_automation_runs.remove(&auto_id);
+                    (
+                        removed.as_ref().and_then(|act| act.queued),
+                        removed.and_then(|act| act.mcp_pane),
+                    )
+                } else {
+                    (None, None)
+                };
+                self.cleanup_automation_mcp(finished_mcp_pane);
 
                 let mut notify_info: Option<(String, String, String)> = None;
                 if let Some(a) = self.automations.iter_mut().find(|x| x.id == auto_id) {
@@ -2399,6 +2565,7 @@ impl App {
     pub fn delete_automation(&mut self, auto_id: &str) {
         if let Some(active) = self.active_automation_runs.remove(auto_id) {
             active.cancel_now();
+            self.cleanup_automation_mcp(active.mcp_pane);
         }
         let name = self.automations.iter().find(|a| a.id == auto_id).map(|a| a.name.clone());
         self.automations.retain(|a| a.id != auto_id);
@@ -2614,6 +2781,10 @@ mod tests {
                 candidates: vec![None],
                 secrets: Vec::new(),
                 path_env: std::env::var_os("PATH"),
+                extra_env: Vec::new(),
+                hook_env: None,
+                claude_mcp: None,
+                codex_mcp: None,
                 home: paths::home_dir(),
                 data_dir: paths::data_dir().to_path_buf(),
                 worktree_prefix: "tc/".into(),
@@ -2655,6 +2826,10 @@ mod tests {
                 candidates: vec![None],
                 secrets: Vec::new(),
                 path_env: std::env::var_os("PATH"),
+                extra_env: Vec::new(),
+                hook_env: None,
+                claude_mcp: None,
+                codex_mcp: None,
                 home: paths::home_dir(),
                 data_dir: paths::data_dir().to_path_buf(),
                 worktree_prefix: "tc/".into(),
@@ -2693,21 +2868,26 @@ mod tests {
         };
 
         // Antigravity with auto_approve passes --dangerously-skip-permissions and never passes --mode auto.
-        let agy_on = build_command(AgentKind::Antigravity, "check repo", SessionMode::Fresh, None, true);
+        let agy_on = build_command(AgentKind::Antigravity, "check repo", SessionMode::Fresh, None, true, None, None);
         let a_on = args_of(&agy_on);
         assert!(a_on.contains(&"--dangerously-skip-permissions".to_string()), "{a_on:?}");
         assert!(!a_on.contains(&"auto".to_string()), "must not emit --mode auto: {a_on:?}");
 
-        let agy_off = build_command(AgentKind::Antigravity, "check repo", SessionMode::Continue, None, false);
+        let agy_off = build_command(AgentKind::Antigravity, "check repo", SessionMode::Continue, None, false, None, None);
         let a_off = args_of(&agy_off);
         assert!(!a_off.contains(&"--dangerously-skip-permissions".to_string()));
         assert!(a_off.contains(&"--continue".to_string()));
 
-        // Claude & Codex auto-approve flags.
-        let claude_on = args_of(&build_command(AgentKind::Claude, "hi", SessionMode::Fresh, None, true));
+        // Claude & Codex auto-approve + Built-in Browser MCP flags.
+        let cmcp = ("/tmp/claude-mcp.json".to_string(), Some("/tmp/claude-settings.json".to_string()));
+        let claude_on = args_of(&build_command(AgentKind::Claude, "hi", SessionMode::Fresh, None, true, Some(&cmcp), None));
         assert!(claude_on.contains(&"--dangerously-skip-permissions".to_string()));
-        let codex_on = args_of(&build_command(AgentKind::Codex, "hi", SessionMode::Fresh, None, true));
+        assert!(claude_on.contains(&"--mcp-config".to_string()));
+        assert!(claude_on.contains(&"/tmp/claude-mcp.json".to_string()));
+        let xm = ("mcp_servers.ternarycode={}".to_string(), Some("developer_instructions=\"use browser\"".to_string()));
+        let codex_on = args_of(&build_command(AgentKind::Codex, "hi", SessionMode::Fresh, None, true, None, Some(&xm)));
         assert!(codex_on.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(codex_on.contains(&"mcp_servers.ternarycode={}".to_string()));
 
         // Legacy saved automation without `auto_approve` field defaults to true.
         let legacy: Automation = serde_json::from_str(r#"{"id":"a1","name":"Legacy"}"#).unwrap();
