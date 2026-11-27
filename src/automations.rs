@@ -362,6 +362,26 @@ fn parse_cron_field(field: &str, min: u32, max: u32, map_seven_to_zero: bool) ->
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    /// Runs inside a real interactive terminal tab of the project (or isolated worktree),
+    /// appearing under Active in the sidebar with full TUI, Browser MCP, and live follow-up.
+    #[default]
+    LiveSession,
+    /// Runs headlessly in the background off the UI thread without creating a terminal tab.
+    Background,
+}
+
+impl ExecutionMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LiveSession => "Live session",
+            Self::Background => "Background",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionMode {
     #[default]
     Fresh,
@@ -482,6 +502,9 @@ pub struct AutomationRun {
     pub log_lines: Vec<String>,
     pub reviewed: bool,
     pub notified_inbox: bool,
+    /// Live terminal pane ID when executed in `ExecutionMode::LiveSession` (runtime-only; not persisted).
+    #[serde(skip)]
+    pub live_pane: Option<tc_core::PaneId>,
 }
 
 impl AutomationRun {
@@ -512,6 +535,8 @@ pub struct Automation {
     pub schedule: ScheduleKind,
     pub prompt: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub execution_mode: ExecutionMode,
     pub session_mode: SessionMode,
     pub workspace_mode: WorkspaceMode,
     pub quiet_when_clean: bool,
@@ -542,6 +567,7 @@ impl Default for Automation {
             schedule: ScheduleKind::default(),
             prompt: String::new(),
             enabled: false,
+            execution_mode: ExecutionMode::LiveSession,
             session_mode: SessionMode::Fresh,
             workspace_mode: WorkspaceMode::Worktree,
             quiet_when_clean: true,
@@ -771,6 +797,7 @@ pub struct AutomationDraft {
     pub time_text: String,
     pub weekday: u8,
     pub prompt: String,
+    pub execution_mode: ExecutionMode,
     pub session_mode: SessionMode,
     pub workspace_mode: WorkspaceMode,
     pub quiet_when_clean: bool,
@@ -796,6 +823,7 @@ impl AutomationDraft {
             time_text: "02:00".into(),
             weekday: 0,
             prompt: String::new(),
+            execution_mode: ExecutionMode::LiveSession,
             session_mode: SessionMode::Fresh,
             workspace_mode: WorkspaceMode::Worktree,
             quiet_when_clean: true,
@@ -812,6 +840,11 @@ impl AutomationDraft {
         self.agent = tpl.agent;
         self.cadence_kind = tpl.cadence_kind;
         self.time_text = tpl.time_text.into();
+        self.execution_mode = if tpl.agent == AgentKind::Custom {
+            ExecutionMode::Background
+        } else {
+            ExecutionMode::LiveSession
+        };
         self.session_mode = tpl.session_mode;
         self.workspace_mode = tpl.workspace_mode;
         self.quiet_when_clean = tpl.quiet_when_clean;
@@ -821,14 +854,7 @@ impl AutomationDraft {
 
     pub fn from_template(tpl: &AutomationTemplate, project_path: PathBuf, project_name: String) -> Self {
         let mut d = Self::new_for(project_path, project_name);
-        d.name = tpl.name.into();
-        d.agent = tpl.agent;
-        d.cadence_kind = tpl.cadence_kind;
-        d.time_text = tpl.time_text.into();
-        d.session_mode = tpl.session_mode;
-        d.workspace_mode = tpl.workspace_mode;
-        d.quiet_when_clean = tpl.quiet_when_clean;
-        d.prompt = tpl.prompt.into();
+        d.apply_template(tpl);
         d
     }
 
@@ -854,6 +880,7 @@ impl AutomationDraft {
             time_text,
             weekday,
             prompt: a.prompt.clone(),
+            execution_mode: a.execution_mode,
             session_mode: a.session_mode,
             workspace_mode: a.workspace_mode,
             quiet_when_clean: a.quiet_when_clean,
@@ -942,6 +969,11 @@ impl AutomationDraft {
             .iter()
             .any(|k| lower.contains(k));
         self.session_mode = if stateful { SessionMode::Continue } else { SessionMode::Fresh };
+        self.execution_mode = if self.agent == AgentKind::Custom || lower.contains("background") || lower.contains("headless") {
+            ExecutionMode::Background
+        } else {
+            ExecutionMode::LiveSession
+        };
         // Name
         if self.name.trim().is_empty() {
             let clean: String = raw
@@ -1169,14 +1201,39 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Handle for an actively executing background automation run.
+/// Runtime tracking state for an automation executing inside a real interactive PTY tab.
+pub struct LiveRunState {
+    pub run_number: u32,
+    pub auto: Automation,
+    pub profile: Option<AgentProfile>,
+    pub account_used: String,
+    pub secrets: Vec<String>,
+    pub cmd_sent: bool,
+    pub seen_running: bool,
+    pub trust_confirmed: bool,
+    pub hook_done: bool,
+    pub hook_message: Option<String>,
+    pub hook_session: Option<String>,
+    pub finishing: bool,
+    pub base_snap: Option<tc_git::Snapshot>,
+    pub worktree_branch: Option<String>,
+    pub worktree_base_commit: Option<String>,
+    pub prompt_file: Option<PathBuf>,
+    pub last_tail_at: Option<Instant>,
+}
+
+/// Handle for an actively executing automation run (either live interactive tab or headless background).
 pub struct ActiveAutomationRun {
     pub run_id: String,
     pub name: String,
     pub agent: AgentKind,
     pub project_id: Option<ProjectId>,
-    /// Virtual pane ID registered with `HookServer` so Built-in Browser MCP works identically to a live pane.
+    /// Virtual pane ID registered with `HookServer` so Built-in Browser MCP works identically in background runs.
     pub mcp_pane: Option<tc_core::PaneId>,
+    /// Real interactive terminal pane ID when running in `ExecutionMode::LiveSession`.
+    pub live_pane: Option<tc_core::PaneId>,
+    /// Live-session runtime state (`Some` when `ExecutionMode::LiveSession`, `None` for background).
+    pub live: Option<LiveRunState>,
     pub auto_approve: bool,
     pub work_dir: PathBuf,
     pub started: Instant,
@@ -1209,6 +1266,15 @@ pub enum AutomationMsg {
         path: PathBuf,
         branch: String,
         base_commit: String,
+    },
+    LiveWorktreeReady {
+        auto_id: String,
+        run_id: String,
+        work_dir: PathBuf,
+        branch: Option<String>,
+        base_commit: Option<String>,
+        base_snap: Option<tc_git::Snapshot>,
+        note: Option<String>,
     },
     AccountSwitched {
         auto_id: String,
@@ -1457,6 +1523,116 @@ fn build_command(
         }
     }
     cmd
+}
+
+fn is_fish_shell() -> bool {
+    !cfg!(windows)
+        && std::env::var_os("SHELL")
+            .and_then(|s| s.into_string().ok())
+            .is_some_and(|s| s.ends_with("/fish") || s == "fish")
+}
+
+/// Shell-safe single-argument expression that reads a UTF-8 prompt file verbatim (preserving
+/// arbitrary newlines, quotes, `$`, backticks, and Unicode across PowerShell, zsh/bash, and fish).
+fn prompt_shell_expr(path: &Path, powershell: bool, fish: bool) -> String {
+    let raw = path.to_string_lossy();
+    if powershell {
+        format!("(Get-Content -Raw -Encoding UTF8 '{}').TrimEnd()", raw.replace('\'', "''"))
+    } else if fish {
+        format!("(string collect < '{}')", raw.replace('\\', "\\\\").replace('\'', "\\'"))
+    } else {
+        format!("\"$(cat '{}')\"", raw.replace('\'', "'\\''"))
+    }
+}
+
+/// Builds the interactive CLI command launched inside a live PTY terminal tab for `agent`.
+fn build_live_base_command(
+    agent: AgentKind,
+    preset_cmd: &str,
+    prompt_expr: &str,
+    raw_prompt: &str,
+    session_mode: SessionMode,
+    last_session: Option<&str>,
+    auto_approve: bool,
+) -> String {
+    if agent == AgentKind::Custom {
+        return raw_prompt.trim().to_string();
+    }
+    let base = {
+        let trimmed = preset_cmd.trim();
+        if trimmed.is_empty() { profiles::default_command(agent) } else { trimmed }
+    };
+    let has_flag = |flag: &str| base.split_whitespace().any(|w| w == flag);
+    let sid = last_session.filter(|s| tc_agent::sessions::valid_session_id(s));
+    let mut parts: Vec<String> = vec![base.to_string()];
+
+    match agent {
+        AgentKind::Antigravity => {
+            if session_mode == SessionMode::Continue {
+                if let Some(id) = sid {
+                    parts.push(format!("--conversation {id}"));
+                } else {
+                    parts.push("--continue".into());
+                }
+            }
+            if auto_approve && !has_flag("--dangerously-skip-permissions") {
+                parts.push("--dangerously-skip-permissions".into());
+            }
+            parts.push(format!("--prompt-interactive {prompt_expr}"));
+        }
+        AgentKind::Claude => {
+            if session_mode == SessionMode::Continue {
+                if let Some(id) = sid {
+                    parts.push(format!("--resume {id}"));
+                } else {
+                    parts.push("--continue".into());
+                }
+            }
+            if auto_approve && !has_flag("--dangerously-skip-permissions") {
+                parts.push("--dangerously-skip-permissions".into());
+            }
+            parts.push(prompt_expr.to_string());
+        }
+        AgentKind::Codex => {
+            if session_mode == SessionMode::Continue {
+                parts.push("resume".into());
+                if auto_approve && !has_flag("--dangerously-bypass-approvals-and-sandbox") {
+                    parts.push("--dangerously-bypass-approvals-and-sandbox".into());
+                }
+                if let Some(id) = sid {
+                    parts.push(id.into());
+                } else {
+                    parts.push("--last".into());
+                }
+            } else if auto_approve && !has_flag("--dangerously-bypass-approvals-and-sandbox") {
+                parts.push("--dangerously-bypass-approvals-and-sandbox".into());
+            }
+            parts.push(prompt_expr.to_string());
+        }
+        AgentKind::OpenCode => {
+            if session_mode == SessionMode::Continue {
+                if let Some(id) = sid {
+                    parts.push(format!("--session {id}"));
+                } else {
+                    parts.push("--continue".into());
+                }
+            }
+            parts.push(format!("--prompt {prompt_expr}"));
+        }
+        AgentKind::Gemini => {
+            if session_mode == SessionMode::Continue
+                && let Some(id) = sid
+            {
+                parts.push(format!("--resume {id}"));
+            }
+            if auto_approve && !has_flag("--yolo") {
+                parts.push("--yolo".into());
+            }
+            parts.push(format!("-i {prompt_expr}"));
+        }
+        AgentKind::Custom => unreachable!(),
+    }
+    parts.join(" ")
 }
 
 /// Detects headless agent failures where the CLI exited with code 0 despite blocking/denying tools
@@ -1880,6 +2056,20 @@ impl App {
     /// Loads saved automations from `<data_dir>/automations.json`, marking any run left
     /// `Running` from a previous crash/quit as `Cancelled` and recomputing next schedule slots.
     pub fn load_automations() -> Vec<Automation> {
+        // Prune leftover temp prompt files older than 24h from crashed runs.
+        if let Ok(entries) = std::fs::read_dir(paths::automation_prompts_dir()) {
+            let cutoff = SystemTime::now().checked_sub(Duration::from_secs(86_400));
+            for entry in entries.flatten() {
+                let old = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .is_some_and(|t| cutoff.is_some_and(|c| t < c));
+                if old {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
         let save: AutomationsSave = tc_core::persist::load_json(&paths::automations_file());
         let now = now_epoch_secs();
         let mut items = save.items;
@@ -1931,23 +2121,37 @@ impl App {
             .count()
     }
 
-    /// Cancels all running automation child processes (called on app quit).
+    /// Cancels all running automation child processes and live runs (called on app quit).
     pub fn stop_all_automations(&mut self) {
         let panes: Vec<tc_core::PaneId> = self
             .active_automation_runs
             .values()
             .filter_map(|a| a.mcp_pane)
             .collect();
+        let live_panes: Vec<tc_core::PaneId> = self
+            .active_automation_runs
+            .values()
+            .filter_map(|a| a.live_pane)
+            .collect();
         for active in self.active_automation_runs.values() {
             active.cancel_now();
+            if let Some(pf) = active.live.as_ref().and_then(|l| l.prompt_file.as_ref()) {
+                let _ = std::fs::remove_file(pf);
+            }
         }
         self.active_automation_runs.clear();
+        for p in live_panes {
+            if let Some(pane) = self.panes.get_mut(&p) {
+                pane.clear_pending_command();
+                pane.write(vec![0x03]);
+            }
+        }
         for p in panes {
             self.cleanup_automation_mcp(Some(p));
         }
     }
 
-    /// Maps an active automation's virtual MCP pane ID to its project ID (for Built-in Browser MCP).
+    /// Maps an active background automation's virtual MCP pane ID to its project ID (for Built-in Browser MCP).
     pub fn automation_mcp_project(&self, pane: tc_core::PaneId) -> Option<ProjectId> {
         self.active_automation_runs
             .values()
@@ -1956,27 +2160,29 @@ impl App {
     }
 
     pub fn automation_mcp_running(&self, pane: tc_core::PaneId) -> bool {
-        self.active_automation_runs.values().any(|r| r.mcp_pane == Some(pane))
+        self.active_automation_runs
+            .values()
+            .any(|r| r.mcp_pane == Some(pane) || r.live_pane == Some(pane))
     }
 
     pub fn automation_mcp_auto_approve(&self, pane: tc_core::PaneId) -> bool {
         self.active_automation_runs
             .values()
-            .find(|r| r.mcp_pane == Some(pane))
+            .find(|r| r.mcp_pane == Some(pane) || r.live_pane == Some(pane))
             .is_some_and(|r| r.auto_approve)
     }
 
     pub fn automation_mcp_work_dir(&self, pane: tc_core::PaneId) -> Option<PathBuf> {
         self.active_automation_runs
             .values()
-            .find(|r| r.mcp_pane == Some(pane))
+            .find(|r| r.mcp_pane == Some(pane) || r.live_pane == Some(pane))
             .map(|r| r.work_dir.clone())
     }
 
     pub fn automation_mcp_label(&self, pane: tc_core::PaneId) -> Option<String> {
         self.active_automation_runs
             .values()
-            .find(|r| r.mcp_pane == Some(pane))
+            .find(|r| r.mcp_pane == Some(pane) || r.live_pane == Some(pane))
             .map(|r| format!("{} ({})", automation_agent_label(r.agent), r.name))
     }
 
@@ -1989,29 +2195,77 @@ impl App {
         self.agent_panel_shown.remove(&pane);
     }
 
-    /// Periodic scheduler tick called from `frame_logic`: checks timeouts and scheduled triggers.
+    /// Notified by `UiMsg::Hook` when a live automation's interactive agent finishes its turn.
+    pub fn on_live_automation_turn_done(
+        &mut self,
+        pane: tc_core::PaneId,
+        message: Option<String>,
+        session: Option<String>,
+    ) {
+        for active in self.active_automation_runs.values_mut() {
+            if active.live_pane == Some(pane)
+                && let Some(live) = active.live.as_mut()
+                && !live.finishing
+            {
+                live.hook_done = true;
+                if message.is_some() {
+                    live.hook_message = message;
+                }
+                if session.is_some() {
+                    live.hook_session = session;
+                }
+                self.ctx.request_repaint();
+                break;
+            }
+        }
+    }
+
+    /// Periodic scheduler tick called from `frame_logic`: checks timeouts, polls live sessions, and fires scheduled triggers.
     pub fn automations_tick(&mut self, ctx: &egui::Context) {
         let now_inst = Instant::now();
         // 1. Check active run timeouts.
-        let timed_out: Vec<String> = self
+        let timed_out: Vec<(String, bool, u32)> = self
             .active_automation_runs
             .iter()
-            .filter(|(_, r)| now_inst.duration_since(r.started) >= r.timeout)
-            .map(|(id, _)| id.clone())
+            .filter(|(_, r)| {
+                now_inst.duration_since(r.started) >= r.timeout
+                    && r.live.as_ref().is_none_or(|l| !l.finishing)
+            })
+            .map(|(id, r)| {
+                let mins = self
+                    .automations
+                    .iter()
+                    .find(|x| x.id == *id)
+                    .map_or(30, |x| x.timeout_mins);
+                (id.clone(), r.live.is_some(), mins)
+            })
             .collect();
-        for id in timed_out {
-            if let Some(active) = self.active_automation_runs.get(&id) {
-                active.cancel_now();
-            }
+        for (id, is_live, mins) in timed_out {
             if let Some(a) = self.automations.iter_mut().find(|x| x.id == id)
                 && let Some(r) = a.runs.first_mut()
                 && r.status == RunStatus::Running
             {
-                r.log_lines.push(format!("Timed out after {}m — terminating run.", a.timeout_mins));
+                r.log_lines.push(format!("Timed out after {}m — terminating run.", mins));
+            }
+            if is_live {
+                if let Some(pid) = self.active_automation_runs.get(&id).and_then(|r| r.live_pane)
+                    && let Some(pane) = self.panes.get_mut(&pid)
+                {
+                    pane.clear_pending_command();
+                    pane.write(vec![0x03]);
+                }
+                self.finalize_live_run(&id, false, false, Some(format!("Timed out after {}m", mins)));
+            } else if let Some(active) = self.active_automation_runs.get(&id) {
+                active.cancel_now();
             }
         }
+
+        // 2. Poll active live interactive session runs (stream screen tail + detect completion).
+        self.poll_live_automation_runs(ctx);
+
         if !self.active_automation_runs.is_empty() {
-            ctx.request_repaint_after(Duration::from_secs(1));
+            let has_live = self.active_automation_runs.values().any(|r| r.live.is_some());
+            ctx.request_repaint_after(Duration::from_millis(if has_live { 250 } else { 1000 }));
         }
 
         // 2. Check scheduled triggers once per second.
@@ -2099,8 +2353,20 @@ impl App {
                     return;
                 }
                 OverlapPolicy::CancelPrevious => {
+                    let prev_live = active.live_pane;
                     active.cancel_now();
+                    if let Some(pf) = active.live.as_ref().and_then(|l| l.prompt_file.as_ref()) {
+                        let _ = std::fs::remove_file(pf);
+                    }
+                    let prev_mcp = active.mcp_pane;
                     self.active_automation_runs.remove(auto_id);
+                    if let Some(pid) = prev_live
+                        && let Some(pane) = self.panes.get_mut(&pid)
+                    {
+                        pane.clear_pending_command();
+                        pane.write(vec![0x03]);
+                    }
+                    self.cleanup_automation_mcp(prev_mcp);
                 }
             }
         }
@@ -2158,6 +2424,7 @@ impl App {
             .map(|p| self.worktree_setup_of(p.id))
             .unwrap_or_default();
 
+        let is_live_mode = auto.execution_mode == ExecutionMode::LiveSession;
         let initial_run = AutomationRun {
             id: run_id.clone(),
             run_number,
@@ -2166,7 +2433,7 @@ impl App {
             started_at: now_epoch,
             finished_at: None,
             duration_secs: 0,
-            account_used,
+            account_used: account_used.clone(),
             session_id: auto.last_session_id.clone().filter(|_| auto.session_mode == SessionMode::Continue),
             workspace_path: auto.project_path.clone(),
             worktree_branch: None,
@@ -2174,8 +2441,14 @@ impl App {
             files_changed: 0,
             additions: 0,
             deletions: 0,
-            summary_title: format!("Running #{} in background…", run_number),
-            summary_body: if auto.session_mode == SessionMode::Fresh {
+            summary_title: if is_live_mode {
+                format!("Running #{} in live session…", run_number)
+            } else {
+                format!("Running #{} in background…", run_number)
+            },
+            summary_body: if is_live_mode {
+                "Live interactive tab active in sidebar (Active) — click Open live tab to watch & interact.".into()
+            } else if auto.session_mode == SessionMode::Fresh {
                 "Fresh isolated session streaming live output below.".into()
             } else {
                 "Continuing previous session context.".into()
@@ -2183,6 +2456,7 @@ impl App {
             log_lines: Vec::new(),
             reviewed: false,
             notified_inbox: false,
+            live_pane: None,
         };
 
         let slot = &mut self.automations[idx];
@@ -2205,12 +2479,40 @@ impl App {
             override_ms.map(Duration::from_millis).unwrap_or_else(|| Duration::from_secs(u64::from(auto.timeout_mins.max(1)) * 60))
         };
 
+        let mut secrets = Vec::new();
+        for p in &all_profiles {
+            if let Some(k) = &p.api_key
+                && k.len() >= 8
+            {
+                secrets.push(k.clone());
+            }
+        }
+
         let canonical_proj = paths::canonical(&auto.project_path);
         let project_id = self
             .projects
             .iter()
             .find(|p| paths::canonical(&p.path) == canonical_proj)
             .map(|p| p.id);
+
+        if is_live_mode {
+            let profile = candidates.first().cloned().flatten();
+            self.start_live_session_run(
+                auto,
+                run_id,
+                run_number,
+                project_id,
+                profile,
+                account_used,
+                worktree_setup,
+                secrets,
+                timeout,
+                cancel,
+                child_pid,
+            );
+            return;
+        }
+
         let mcp_pane = if project_id.is_some() && self.hooks.is_some() {
             Some(self.new_id())
         } else {
@@ -2270,6 +2572,8 @@ impl App {
                 agent: auto.agent,
                 project_id,
                 mcp_pane,
+                live_pane: None,
+                live: None,
                 auto_approve: auto.auto_approve,
                 work_dir: auto.project_path.clone(),
                 started: Instant::now(),
@@ -2279,15 +2583,6 @@ impl App {
                 queued: None,
             },
         );
-
-        let mut secrets = Vec::new();
-        for p in &all_profiles {
-            if let Some(k) = &p.api_key
-                && k.len() >= 8
-            {
-                secrets.push(k.clone());
-            }
-        }
 
         let spec = RunSpec {
             auto_id: auto.id.clone(),
@@ -2330,11 +2625,718 @@ impl App {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn start_live_session_run(
+        &mut self,
+        auto: Automation,
+        run_id: String,
+        run_number: u32,
+        project_id: Option<ProjectId>,
+        profile: Option<AgentProfile>,
+        account_used: String,
+        worktree_setup: WorktreeSetup,
+        secrets: Vec<String>,
+        timeout: Duration,
+        cancel: Arc<AtomicBool>,
+        child_pid: Arc<Mutex<Option<u32>>>,
+    ) {
+        let auto_id = auto.id.clone();
+        let auto_name = auto.name.clone();
+        let project_path = auto.project_path.clone();
+        let workspace_mode = auto.workspace_mode;
+        let path_env = self.lsp.path_env.clone();
+        let worktree_prefix = self.settings.worktrees.prefix.clone();
+
+        self.active_automation_runs.insert(
+            auto_id.clone(),
+            ActiveAutomationRun {
+                run_id: run_id.clone(),
+                name: auto_name.clone(),
+                agent: auto.agent,
+                project_id,
+                mcp_pane: None,
+                live_pane: None,
+                live: Some(LiveRunState {
+                    run_number,
+                    auto: auto.clone(),
+                    profile,
+                    account_used: account_used.clone(),
+                    secrets,
+                    cmd_sent: false,
+                    seen_running: false,
+                    trust_confirmed: false,
+                    hook_done: false,
+                    hook_message: None,
+                    hook_session: None,
+                    finishing: false,
+                    base_snap: None,
+                    worktree_branch: None,
+                    worktree_base_commit: None,
+                    prompt_file: None,
+                    last_tail_at: None,
+                }),
+                auto_approve: auto.auto_approve,
+                work_dir: project_path.clone(),
+                started: Instant::now(),
+                timeout,
+                cancel,
+                child_pid,
+                queued: None,
+            },
+        );
+
+        let tx = self.app_tx.clone();
+        let ctx = self.ctx.clone();
+        if !project_path.is_dir() {
+            let _ = tx.send(AppMsg::Automation(AutomationMsg::Finished {
+                auto_id,
+                run_id,
+                outcome: RunOutcome {
+                    status: RunStatus::Failed,
+                    duration_secs: 0,
+                    account_used,
+                    session_id: auto.last_session_id,
+                    workspace_path: project_path.clone(),
+                    worktree_branch: None,
+                    worktree_base_commit: None,
+                    files_changed: 0,
+                    additions: 0,
+                    deletions: 0,
+                    summary_title: "Project folder not found".into(),
+                    summary_body: format!("Directory `{}` does not exist.", paths::contract_tilde(&project_path)),
+                    notified_inbox: true,
+                },
+            }));
+            ctx.request_repaint();
+            return;
+        }
+
+        // Provision isolated Git worktree (when requested on a git repo) and capture baseline git
+        // snapshot off the UI thread so spawning the live PTY tab never blocks rendering.
+        self.rt.spawn_blocking(move || {
+            let mut work_dir = project_path.clone();
+            let mut branch: Option<String> = None;
+            let mut base_commit: Option<String> = None;
+            let mut note: Option<String> = None;
+
+            if workspace_mode == WorkspaceMode::Worktree
+                && let Some(repo) = tc_git::repo_root(&project_path)
+            {
+                let slug = profiles::sanitize_id(&auto_name);
+                let proj_slug = project_path
+                    .file_name()
+                    .map(|n| profiles::sanitize_id(&n.to_string_lossy()))
+                    .unwrap_or_else(|| "project".into());
+                let suffix = format!("{slug}-r{run_number}");
+                let br = format!("{}auto-{suffix}", worktree_prefix.trim());
+                let wt_dir = paths::automation_worktrees_dir().join(&proj_slug).join(&suffix);
+                let base = tc_git::worktree::current_branch(&repo).unwrap_or_else(|| "HEAD".into());
+                if let Some(parent) = wt_dir.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match tc_git::worktree::add(&repo, &wt_dir, &br, &base) {
+                    Ok(commit) => {
+                        for rel in &worktree_setup.copy {
+                            let from = repo.join(rel);
+                            if from.exists() {
+                                let _ = copy_worktree_path(&from, &wt_dir.join(rel));
+                            }
+                        }
+                        if !worktree_setup.run.trim().is_empty() {
+                            let mut sc = build_command(
+                                AgentKind::Custom,
+                                worktree_setup.run.trim(),
+                                SessionMode::Fresh,
+                                None,
+                                true,
+                                None,
+                                None,
+                            );
+                            sc.current_dir(&wt_dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+                            if let Some(p) = &path_env {
+                                sc.env("PATH", p);
+                            }
+                            let _ = sc.status();
+                        }
+                        work_dir = wt_dir;
+                        branch = Some(br);
+                        base_commit = Some(commit);
+                    }
+                    Err(e) => {
+                        note = Some(format!("Worktree setup failed ({e}); running live session in project folder."));
+                    }
+                }
+            }
+
+            let base_snap = tc_git::snapshot(&work_dir).ok();
+            let _ = tx.send(AppMsg::Automation(AutomationMsg::LiveWorktreeReady {
+                auto_id,
+                run_id,
+                work_dir,
+                branch,
+                base_commit,
+                base_snap,
+                note,
+            }));
+            ctx.request_repaint();
+        });
+
+        self.push_agent_log(
+            LogLevel::Info,
+            project_id,
+            None,
+            None,
+            format!("Started live automation \"{}\" (#{run_number})", auto.name),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn launch_live_pane(
+        &mut self,
+        auto_id: &str,
+        run_id: &str,
+        work_dir: PathBuf,
+        branch: Option<String>,
+        base_commit: Option<String>,
+        base_snap: Option<tc_git::Snapshot>,
+        note: Option<String>,
+    ) {
+        let Some((auto, run_number, profile, account_used, cancelled)) = self
+            .active_automation_runs
+            .get(auto_id)
+            .filter(|a| a.run_id == run_id)
+            .and_then(|a| {
+                let l = a.live.as_ref()?;
+                Some((
+                    l.auto.clone(),
+                    l.run_number,
+                    l.profile.clone(),
+                    l.account_used.clone(),
+                    a.cancel.load(Ordering::SeqCst),
+                ))
+            })
+        else {
+            return;
+        };
+
+        if cancelled {
+            self.finalize_live_run(auto_id, true, false, Some("Run stopped by user".into()));
+            return;
+        }
+
+        let ctx = self.ctx.clone();
+        let canonical_dir = paths::canonical(&work_dir);
+        let canonical_proj = paths::canonical(&auto.project_path);
+        let tab_title = format!("{} #{}", auto.name, run_number);
+        let root_id = self
+            .projects
+            .iter()
+            .find(|p| paths::canonical(&p.path) == canonical_proj)
+            .map(|p| p.id);
+
+        // Spawn a real terminal tab inside the target project (or attach the new isolated worktree
+        // as a real child project under `root_id`) without stealing the user's current view.
+        let spawned: Option<(ProjectId, tc_core::PaneId)> = if let Some(existing_pid) = self
+            .projects
+            .iter()
+            .find(|p| paths::canonical(&p.path) == canonical_dir)
+            .map(|p| p.id)
+        {
+            let size = self.grid_in(&tc_term::layout::Layout::Pane(0), 0);
+            let pane_id = self.new_pane(&ctx, existing_pid, canonical_dir.clone(), size);
+            let keep_user_tab = self.view == tc_core::model::View::Focus && self.active == Some(existing_pid);
+            if let Some(proj) = self.project_mut(existing_pid) {
+                proj.tabs.push(crate::project::Tab {
+                    layout: tc_term::layout::Layout::Pane(pane_id),
+                    focused: pane_id,
+                    title: Some(tab_title.clone()),
+                });
+                if !keep_user_tab {
+                    proj.active_tab = proj.tabs.len() - 1;
+                }
+            }
+            Some((existing_pid, pane_id))
+        } else if let (Some(br), Some(bc), Some(root_pid)) = (&branch, &base_commit, root_id) {
+            let wt_pid = self.new_id();
+            let color = self.project(root_pid).map_or(0, |p| p.color);
+            let wt_save = tc_core::model::WorktreeSave {
+                branch: br.clone(),
+                base: tc_git::worktree::current_branch(&auto.project_path).unwrap_or_else(|| "main".into()),
+                start: bc.clone(),
+            };
+            let size = self.grid_in(&tc_term::layout::Layout::Pane(0), 0);
+            let pane_id = self.new_pane(&ctx, wt_pid, canonical_dir.clone(), size);
+            let mut proj = crate::project::Project::from_save(&tc_core::model::ProjectSave {
+                id: wt_pid,
+                name: br.clone(),
+                path: canonical_dir.clone(),
+                color,
+                parent: Some(root_pid),
+                worktree: Some(wt_save),
+                ..Default::default()
+            });
+            proj.tabs = vec![crate::project::Tab {
+                layout: tc_term::layout::Layout::Pane(pane_id),
+                focused: pane_id,
+                title: Some(tab_title.clone()),
+            }];
+            self.watch_project(&ctx, &proj);
+            self.projects.push(proj);
+            if let Some(parent) = self.project_mut(root_pid) {
+                parent.folded = false;
+            }
+            self.sort_projects();
+            self.refresh_git(wt_pid);
+            Some((wt_pid, pane_id))
+        } else if let Some(root_pid) = root_id {
+            let size = self.grid_in(&tc_term::layout::Layout::Pane(0), 0);
+            let pane_id = self.new_pane(&ctx, root_pid, canonical_dir.clone(), size);
+            let keep_user_tab = self.view == tc_core::model::View::Focus && self.active == Some(root_pid);
+            if let Some(proj) = self.project_mut(root_pid) {
+                proj.tabs.push(crate::project::Tab {
+                    layout: tc_term::layout::Layout::Pane(pane_id),
+                    focused: pane_id,
+                    title: Some(tab_title.clone()),
+                });
+                if !keep_user_tab {
+                    proj.active_tab = proj.tabs.len() - 1;
+                }
+            }
+            Some((root_pid, pane_id))
+        } else {
+            None
+        };
+
+        let Some((target_pid, pane_id)) = spawned else {
+            self.finalize_live_run(
+                auto_id,
+                false,
+                false,
+                Some("Project is no longer in the workspace.".into()),
+            );
+            return;
+        };
+
+        // Ensure Antigravity CLI plugin is synced before launching `agy` interactively.
+        if auto.agent == AgentKind::Antigravity
+            && !cfg!(test)
+            && std::env::var_os("TERNARYCODE_DATA_DIR").is_none()
+            && self.settings.browser_agents
+            && self.settings.integrations.get(AgentKind::Antigravity.slug()) != Some(&tc_core::model::Integration::Off)
+            && self.hook_bin.bin.exists()
+            && let Some(hooks_path) = Self::agent_config_path(AgentKind::Antigravity)
+            && let Ok(record) = tc_agent::integrate::sync_antigravity_plugin(&self.hook_bin, &hooks_path)
+        {
+            let _ = tc_core::persist::save_json(&Self::install_record_path(AgentKind::Antigravity), &record);
+            if !self.settings.integrations.contains_key(AgentKind::Antigravity.slug()) {
+                self.settings
+                    .integrations
+                    .insert(AgentKind::Antigravity.slug().into(), tc_core::model::Integration::Installed);
+            }
+        }
+
+        // Persist prompt verbatim as UTF-8 for safe multiline delivery across PowerShell & POSIX shells.
+        let mut prompt_file: Option<PathBuf> = None;
+        let (preset_id, full_cmd) = if auto.agent == AgentKind::Custom {
+            (None, auto.prompt.trim().to_string())
+        } else {
+            let pfile = paths::automation_prompts_dir().join(format!("{run_id}.txt"));
+            let _ = paths::write_private(&pfile, auto.prompt.as_bytes());
+            let prompt_expr = prompt_shell_expr(&pfile, cfg!(windows), is_fish_shell());
+            prompt_file = Some(pfile);
+            let preset = self.preset_for_agent(auto.agent);
+            let base_cmd = build_live_base_command(
+                auto.agent,
+                &preset.command,
+                &prompt_expr,
+                &auto.prompt,
+                auto.session_mode,
+                auto.last_session_id.as_deref(),
+                auto.auto_approve,
+            );
+            let typed = self.launch_command_for_profile_ex(&preset, &base_cmd, profile.as_ref(), false);
+            (Some(preset.id), typed)
+        };
+
+        if let Some(p) = self.panes.get_mut(&pane_id) {
+            p.preset = preset_id;
+            p.active_profile = profile.as_ref().map(|x| x.id.clone());
+            p.resume = None;
+            p.rate_limit = None;
+            p.last_limit_sig = None;
+            p.last_trust_sig = None;
+            p.rate_limit_dismissed = false;
+            p.dismissed_limit_sigs.clear();
+            p.dismissed_limit_patterns.clear();
+            p.pre_turn_limit_count = 0;
+            p.limit_ignore_until = None;
+            p.turn_started_output_seq = p.output_seq;
+            p.last_limit_scan_seq = p.output_seq;
+            if auto.session_mode == SessionMode::Continue {
+                p.mark_session_resuming();
+            } else {
+                p.limit_wait_new_turn = false;
+            }
+            p.type_command(full_cmd);
+        }
+
+        if let Some(act) = self.active_automation_runs.get_mut(auto_id)
+            && act.run_id == run_id
+        {
+            act.project_id = Some(target_pid);
+            act.live_pane = Some(pane_id);
+            act.work_dir = canonical_dir.clone();
+            if let Some(live) = act.live.as_mut() {
+                live.base_snap = base_snap;
+                live.worktree_branch = branch.clone();
+                live.worktree_base_commit = base_commit.clone();
+                live.prompt_file = prompt_file;
+            }
+        }
+        if let Some(a) = self.automations.iter_mut().find(|x| x.id == auto_id)
+            && let Some(r) = a.runs.iter_mut().find(|r| r.id == run_id)
+        {
+            r.live_pane = Some(pane_id);
+            r.workspace_path = canonical_dir.clone();
+            r.worktree_branch = branch;
+            r.worktree_base_commit = base_commit;
+            if let Some(n) = note {
+                r.log_lines.push(n);
+            }
+            r.log_lines.push(format!(
+                "Started live {} ({account_used}) in tab \"{tab_title}\" · {}",
+                automation_agent_label(auto.agent),
+                paths::contract_tilde(&canonical_dir)
+            ));
+        }
+
+        self.mark_dirty();
+        self.mark_automations_dirty();
+        self.ctx.request_repaint();
+    }
+
+    /// Streams live terminal screen text into `run.log_lines` and detects when each live
+    /// interactive automation tab completes its turn or exits.
+    fn poll_live_automation_runs(&mut self, ctx: &egui::Context) {
+        let live_ids: Vec<String> = self
+            .active_automation_runs
+            .iter()
+            .filter_map(|(id, act)| {
+                let l = act.live.as_ref()?;
+                (act.live_pane.is_some() && !l.finishing).then(|| id.clone())
+            })
+            .collect();
+        if live_ids.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut to_finish: Vec<(String, bool, bool, Option<String>)> = Vec::new();
+        let mut to_trust: Vec<tc_core::PaneId> = Vec::new();
+
+        for id in live_ids {
+            let Some(act) = self.active_automation_runs.get_mut(&id) else { continue };
+            let Some(pane_id) = act.live_pane else { continue };
+            let Some(live) = act.live.as_mut() else { continue };
+            let run_id = act.run_id.clone();
+
+            let Some(pane) = self.panes.get(&pane_id) else {
+                to_finish.push((id, true, false, Some("Live session tab closed".into())));
+                continue;
+            };
+
+            if !live.cmd_sent && !pane.has_pending_command() {
+                live.cmd_sent = true;
+            }
+
+            // Refresh live log preview in Automations view at ~2.5 Hz while active, and
+            // auto-confirm workspace trust dialogs in brand-new isolated worktrees when
+            // `auto_approve` is enabled so unattended Claude/Codex/AGY runs never stall.
+            if live.last_tail_at.is_none_or(|t| now.duration_since(t) >= Duration::from_millis(400)) {
+                live.last_tail_at = Some(now);
+                let tail = pane.screen_tail(120);
+                if live.cmd_sent
+                    && live.auto.auto_approve
+                    && !live.trust_confirmed
+                    && profiles::detect_trust_prompt(&tail).is_some()
+                {
+                    live.trust_confirmed = true;
+                    to_trust.push(pane_id);
+                }
+                if !tail.trim().is_empty()
+                    && let Some(a) = self.automations.iter_mut().find(|x| x.id == id)
+                    && let Some(r) = a.runs.iter_mut().find(|r| r.id == run_id)
+                {
+                    r.log_lines = tail
+                        .lines()
+                        .map(|l| profiles::redact_secrets(l, &live.secrets))
+                        .collect();
+                }
+            }
+            if live.cmd_sent
+                && (pane.tracker.status == tc_core::status::Status::Running
+                    || matches!(pane.tracker.fg, tc_core::status::Foreground::Program { .. })
+                    || pane.cmd_done_seq != pane.typed_cmd_seq
+                    || live.hook_done)
+            {
+                live.seen_running = true;
+            }
+
+            if !live.cmd_sent {
+                continue;
+            }
+
+            if live.hook_done {
+                to_finish.push((id, false, true, None));
+            } else if let Some(exit) = pane.exit {
+                let ok = matches!(exit, tc_term::pty::ExitInfo::Code(0));
+                let err = (!ok).then(|| "Live session shell exited with error".into());
+                to_finish.push((id, false, ok, err));
+            } else if pane.cmd_done_seq != pane.typed_cmd_seq {
+                let ok = pane.last_cmd_exit.is_none_or(|c| c == 0);
+                let err = pane.last_cmd_exit.filter(|&c| c != 0).map(|c| format!("Exited with exit {c}"));
+                to_finish.push((id, false, ok, err));
+            } else if pane.tracker.status == tc_core::status::Status::Done {
+                to_finish.push((id, false, true, None));
+            } else if let tc_core::status::Status::Failed(code) = pane.tracker.status {
+                to_finish.push((id, false, false, Some(format!("Exited with exit {code}"))));
+            } else if live.seen_running
+                && matches!(pane.tracker.fg, tc_core::status::Foreground::Shell)
+                && pane.tracker.status != tc_core::status::Status::Running
+                && act.started.elapsed() >= Duration::from_secs(2)
+            {
+                to_finish.push((id, false, true, None));
+            }
+        }
+
+        for pid in to_trust {
+            if let Some(pane) = self.panes.get(&pid) {
+                pane.write(b"\r".to_vec());
+            }
+        }
+        if !to_finish.is_empty() {
+            for (id, cancelled, exit_ok, err) in to_finish {
+                self.finalize_live_run(&id, cancelled, exit_ok, err);
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    /// Captures the final live terminal output and computes Git diff stats off the UI thread,
+    /// leaving the live interactive terminal tab and its worktree open for inspection / follow-up.
+    fn finalize_live_run(&mut self, auto_id: &str, cancelled: bool, mut exit_ok: bool, mut last_err: Option<String>) {
+        let Some(act) = self.active_automation_runs.get_mut(auto_id) else { return };
+        let Some(live) = act.live.as_mut() else { return };
+        if live.finishing {
+            return;
+        }
+        live.finishing = true;
+
+        let run_id = act.run_id.clone();
+        let work_dir = act.work_dir.clone();
+        let duration_secs = act.started.elapsed().as_secs();
+        let pane_id = act.live_pane;
+        let secrets = live.secrets.clone();
+        let base_snap = live.base_snap.clone();
+        let wt_branch = live.worktree_branch.clone();
+        let wt_base_commit = live.worktree_base_commit.clone();
+        let account_used = live.account_used.clone();
+        let quiet_when_clean = live.auto.quiet_when_clean;
+        let session_mode = live.auto.session_mode;
+        let last_session_id = live.auto.last_session_id.clone();
+        let hook_message = live.hook_message.clone();
+        let hook_session = live.hook_session.clone();
+        if let Some(pf) = live.prompt_file.take() {
+            let _ = std::fs::remove_file(pf);
+        }
+
+        let mut final_lines: Vec<String> = Vec::new();
+        let mut pane_session: Option<String> = None;
+        let mut pane_last_words: Option<String> = None;
+        if let Some(pid) = pane_id
+            && let Some(pane) = self.panes.get(&pid)
+        {
+            pane_session = pane.agent_session.clone();
+            pane_last_words = pane.last_words.clone();
+            let tail = pane.screen_tail(120);
+            if !tail.trim().is_empty() {
+                final_lines = tail
+                    .lines()
+                    .map(|l| profiles::redact_secrets(l, &secrets))
+                    .collect();
+            }
+        }
+        if !final_lines.is_empty()
+            && let Some(a) = self.automations.iter_mut().find(|x| x.id == auto_id)
+            && let Some(r) = a.runs.iter_mut().find(|r| r.id == run_id)
+        {
+            r.log_lines = final_lines.clone();
+        }
+        if exit_ok
+            && !cancelled
+            && let Some(reason) = detect_headless_failure(&final_lines)
+        {
+            exit_ok = false;
+            last_err = Some(reason);
+        }
+
+        let session_id = hook_session
+            .or(pane_session)
+            .or(last_session_id)
+            .filter(|s| session_mode == SessionMode::Continue && !s.starts_with("auto-"));
+
+        let preferred_snippet = hook_message
+            .or(pane_last_words)
+            .map(|s| profiles::redact_secrets(s.trim(), &secrets))
+            .filter(|s| !s.is_empty());
+
+        let auto_id_owned = auto_id.to_string();
+        let tx = self.app_tx.clone();
+        let ctx = self.ctx.clone();
+        self.rt.spawn_blocking(move || {
+            let mut files_changed = 0usize;
+            let mut additions = 0u32;
+            let mut deletions = 0u32;
+            let mut has_new_commits = false;
+
+            if let Some(before) = &base_snap
+                && let Ok(after) = tc_git::snapshot(&work_dir)
+            {
+                if let Ok(changes) = tc_git::changes(&work_dir, &before.tree, &after.tree) {
+                    files_changed = changes.len();
+                    additions = changes.iter().filter_map(|c| c.additions).sum();
+                    deletions = changes.iter().filter_map(|c| c.deletions).sum();
+                }
+                if let (Some(base_c), Some(now_c)) = (&wt_base_commit, tc_git::worktree::head(&work_dir))
+                    && now_c != *base_c
+                {
+                    has_new_commits = true;
+                    if files_changed == 0
+                        && let Ok((fc, a, d)) = tc_git::worktree::diff_stat(&work_dir, base_c, &now_c)
+                    {
+                        files_changed = fc;
+                        additions = a;
+                        deletions = d;
+                    }
+                }
+            }
+
+            let non_empty: Vec<&str> = final_lines
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| {
+                    !s.is_empty()
+                        && !s.ends_with(" %")
+                        && !s.ends_with(" $")
+                        && !s.ends_with(" >")
+                        && !matches!(*s, "%" | "$" | ">" | "❯")
+                        && !s.chars().all(|c| matches!(c, '─' | '━' | '═' | '-' | '_' | ' '))
+                })
+                .collect();
+            let tail_snippet = preferred_snippet.unwrap_or_else(|| {
+                non_empty.iter().rev().take(2).rev().copied().collect::<Vec<_>>().join(" · ")
+            });
+
+            let (status, notified_inbox, summary_title, summary_body) = if cancelled {
+                (
+                    RunStatus::Cancelled,
+                    false,
+                    last_err.unwrap_or_else(|| "Run stopped by user".into()),
+                    if tail_snippet.is_empty() {
+                        "Execution cancelled before completion.".into()
+                    } else {
+                        tail_snippet
+                    },
+                )
+            } else if !exit_ok {
+                (
+                    RunStatus::Failed,
+                    true,
+                    last_err.unwrap_or_else(|| "Run failed".into()),
+                    if tail_snippet.is_empty() {
+                        "Open the live tab or inspect the log below for error details.".into()
+                    } else {
+                        tail_snippet
+                    },
+                )
+            } else if files_changed > 0 || has_new_commits {
+                let title = if files_changed > 0 {
+                    format!(
+                        "Completed with {} changed {} (+{additions} -{deletions})",
+                        files_changed,
+                        if files_changed == 1 { "file" } else { "files" }
+                    )
+                } else {
+                    "Completed with new commits in worktree".into()
+                };
+                let body = if tail_snippet.is_empty() {
+                    "Live session tab is still open for follow-up or Review diff.".into()
+                } else {
+                    tail_snippet
+                };
+                (RunStatus::NeedsReview, true, title, body)
+            } else if !quiet_when_clean {
+                (
+                    RunStatus::NeedsReview,
+                    true,
+                    "Completed — report ready".into(),
+                    if tail_snippet.is_empty() {
+                        "Live session finished with no file changes.".into()
+                    } else {
+                        tail_snippet
+                    },
+                )
+            } else {
+                (
+                    RunStatus::Clean,
+                    false,
+                    "Clean run — no action needed (quiet)".into(),
+                    if tail_snippet.is_empty() {
+                        "Live session finished cleanly; tab stays open for follow-up.".into()
+                    } else {
+                        tail_snippet
+                    },
+                )
+            };
+
+            let _ = tx.send(AppMsg::Automation(AutomationMsg::Finished {
+                auto_id: auto_id_owned,
+                run_id,
+                outcome: RunOutcome {
+                    status,
+                    duration_secs,
+                    account_used,
+                    session_id,
+                    workspace_path: work_dir,
+                    worktree_branch: wt_branch,
+                    worktree_base_commit: wt_base_commit,
+                    files_changed,
+                    additions,
+                    deletions,
+                    summary_title,
+                    summary_body,
+                    notified_inbox,
+                },
+            }));
+            ctx.request_repaint();
+        });
+    }
+
     pub fn stop_automation_run(&mut self, auto_id: &str) {
+        let live_info = self.active_automation_runs.get(auto_id).map(|a| (a.live.is_some(), a.live_pane));
+        let Some((is_live, live_pane)) = live_info else { return };
         if let Some(active) = self.active_automation_runs.get(auto_id) {
             active.cancel_now();
-            self.toast(t("Stopping automation run…").into());
         }
+        if is_live {
+            if let Some(pid) = live_pane
+                && let Some(pane) = self.panes.get_mut(&pid)
+            {
+                pane.clear_pending_command();
+                pane.write(vec![0x03]);
+            }
+            self.finalize_live_run(auto_id, true, false, Some("Run stopped by user".into()));
+        }
+        self.toast(t("Stopping automation run…").into());
     }
 
     pub fn on_automation_msg(&mut self, msg: AutomationMsg) {
@@ -2362,6 +3364,17 @@ impl App {
                     r.worktree_branch = Some(branch);
                     r.worktree_base_commit = Some(base_commit);
                 }
+            }
+            AutomationMsg::LiveWorktreeReady {
+                auto_id,
+                run_id,
+                work_dir,
+                branch,
+                base_commit,
+                base_snap,
+                note,
+            } => {
+                self.launch_live_pane(&auto_id, &run_id, work_dir, branch, base_commit, base_snap, note);
             }
             AutomationMsg::AccountSwitched { auto_id, run_id, account_used, limited_profile, retry_after } => {
                 let now = Instant::now();
@@ -2461,7 +3474,7 @@ impl App {
         }
     }
 
-    /// Registers/selects the automation run's worktree (or project) and opens Focus or Review.
+    /// Registers/selects the automation run's live tab or worktree (or project) and opens Focus or Review.
     pub fn open_automation_run_workspace(&mut self, ctx: &egui::Context, auto_id: &str, run_id: &str, open_review: bool) {
         let Some((proj_path, run)) = self.automations.iter().find(|a| a.id == auto_id).and_then(|a| {
             let r = a.runs.iter().find(|r| r.id == run_id)?.clone();
@@ -2469,6 +3482,25 @@ impl App {
         }) else {
             return;
         };
+        // If this run has a live interactive terminal tab still open, jump straight to it!
+        if let Some(live_pid) = run.live_pane
+            && let Some(live_proj) = self.panes.get(&live_pid).map(|p| p.project)
+        {
+            if open_review {
+                self.active = Some(live_proj);
+                self.view = tc_core::model::View::Focus;
+                self.ensure_terminals_visible();
+                self.actions.push(crate::actions::Action::Review);
+            } else {
+                self.focus_pane(live_pid);
+            }
+            self.toast_with(
+                ToastKind::Ok,
+                tf("Opened run #{} in {}", &[&run.run_number.to_string(), &self.project_label(live_proj)]),
+                None,
+            );
+            return;
+        }
         let raw_dir = if run.workspace_path.is_dir() { run.workspace_path.clone() } else { proj_path.clone() };
         let target_dir = crate::paths::canonical(&raw_dir);
         let canonical_proj = crate::paths::canonical(&proj_path);
@@ -2565,6 +3597,15 @@ impl App {
     pub fn delete_automation(&mut self, auto_id: &str) {
         if let Some(active) = self.active_automation_runs.remove(auto_id) {
             active.cancel_now();
+            if let Some(pf) = active.live.as_ref().and_then(|l| l.prompt_file.as_ref()) {
+                let _ = std::fs::remove_file(pf);
+            }
+            if let Some(pid) = active.live_pane
+                && let Some(pane) = self.panes.get_mut(&pid)
+            {
+                pane.clear_pending_command();
+                pane.write(vec![0x03]);
+            }
             self.cleanup_automation_mcp(active.mcp_pane);
         }
         let name = self.automations.iter().find(|a| a.id == auto_id).map(|a| a.name.clone());
@@ -2603,6 +3644,7 @@ impl App {
                 slot.profile_id = draft.profile_id;
                 slot.schedule = schedule;
                 slot.prompt = draft.prompt.trim().to_string();
+                slot.execution_mode = draft.execution_mode;
                 slot.session_mode = draft.session_mode;
                 slot.workspace_mode = draft.workspace_mode;
                 slot.quiet_when_clean = draft.quiet_when_clean;
@@ -2628,6 +3670,7 @@ impl App {
                 schedule,
                 prompt: draft.prompt.trim().to_string(),
                 enabled: run_now || draft.enabled,
+                execution_mode: draft.execution_mode,
                 session_mode: draft.session_mode,
                 workspace_mode: draft.workspace_mode,
                 quiet_when_clean: draft.quiet_when_clean,
@@ -2903,5 +3946,76 @@ mod tests {
         // Normal clean output must not false-positive.
         let ok_log = vec!["agy-headless-ok".to_string(), "All tests passed.".to_string()];
         assert!(detect_headless_failure(&ok_log).is_none());
+    }
+
+    #[test]
+    fn live_session_mode_defaults_prompt_expressions_and_cli_commands() {
+        // Legacy saved AI automation without `execution_mode` upgrades seamlessly to LiveSession.
+        let legacy: Automation = serde_json::from_str(r#"{"id":"a1","name":"Video","agent":"antigravity"}"#).unwrap();
+        assert_eq!(legacy.execution_mode, ExecutionMode::LiveSession);
+
+        // Prompt shell expression escapes single quotes cleanly for PowerShell, POSIX, and fish.
+        let p = Path::new("/tmp/it's/run-1.txt");
+        assert_eq!(
+            prompt_shell_expr(p, true, false),
+            "(Get-Content -Raw -Encoding UTF8 '/tmp/it''s/run-1.txt').TrimEnd()"
+        );
+        assert_eq!(
+            prompt_shell_expr(p, false, false),
+            "\"$(cat '/tmp/it'\\''s/run-1.txt')\""
+        );
+        assert_eq!(
+            prompt_shell_expr(p, false, true),
+            "(string collect < '/tmp/it\\'s/run-1.txt')"
+        );
+
+        let expr = "\"$(cat '/tmp/p.txt')\"";
+        // Antigravity interactive fresh + continue + auto_approve toggle.
+        assert_eq!(
+            build_live_base_command(AgentKind::Antigravity, "agy", expr, "hi", SessionMode::Fresh, None, true),
+            "agy --dangerously-skip-permissions --prompt-interactive \"$(cat '/tmp/p.txt')\""
+        );
+        assert_eq!(
+            build_live_base_command(AgentKind::Antigravity, "agy", expr, "hi", SessionMode::Continue, Some("conv-42"), false),
+            "agy --conversation conv-42 --prompt-interactive \"$(cat '/tmp/p.txt')\""
+        );
+        assert_eq!(
+            build_live_base_command(AgentKind::Antigravity, "agy", expr, "hi", SessionMode::Continue, None, true),
+            "agy --continue --dangerously-skip-permissions --prompt-interactive \"$(cat '/tmp/p.txt')\""
+        );
+
+        // Claude interactive fresh + continue.
+        assert_eq!(
+            build_live_base_command(AgentKind::Claude, "claude", expr, "hi", SessionMode::Fresh, None, true),
+            "claude --dangerously-skip-permissions \"$(cat '/tmp/p.txt')\""
+        );
+        assert_eq!(
+            build_live_base_command(AgentKind::Claude, "claude", expr, "hi", SessionMode::Continue, Some("sess-1"), false),
+            "claude --resume sess-1 \"$(cat '/tmp/p.txt')\""
+        );
+
+        // Codex interactive fresh + continue.
+        assert_eq!(
+            build_live_base_command(AgentKind::Codex, "codex", expr, "hi", SessionMode::Fresh, None, true),
+            "codex --dangerously-bypass-approvals-and-sandbox \"$(cat '/tmp/p.txt')\""
+        );
+        assert_eq!(
+            build_live_base_command(AgentKind::Codex, "codex", expr, "hi", SessionMode::Continue, None, true),
+            "codex resume --dangerously-bypass-approvals-and-sandbox --last \"$(cat '/tmp/p.txt')\""
+        );
+
+        // OpenCode & Gemini & Custom shell.
+        assert_eq!(
+            build_live_base_command(AgentKind::OpenCode, "opencode", expr, "hi", SessionMode::Continue, None, true),
+            "opencode --continue --prompt \"$(cat '/tmp/p.txt')\""
+        );
+        assert_eq!(
+            build_live_base_command(AgentKind::Gemini, "gemini", expr, "hi", SessionMode::Fresh, None, true),
+            "gemini --yolo -i \"$(cat '/tmp/p.txt')\""
+        );
+        assert_eq!(
+            build_live_base_command(AgentKind::Custom, "", expr, "  echo hello  ", SessionMode::Fresh, None, true),
+            "echo hello"
+        );
     }
 }

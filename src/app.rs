@@ -1888,13 +1888,18 @@ impl App {
                     let mut clear_prof_for_pane: Option<PaneId> = None;
                     let turn_done = matches!(msg.event.as_str(), "Stop" | "AfterAgent" | "session.idle")
                         || msg.kind.as_deref() == Some("agent-turn-complete");
+                    let session_end = matches!(msg.event.as_str(), "SessionEnd" | "session.end");
                     let session_start = matches!(msg.event.as_str(), "SessionStart" | "start");
                     let tool_progress = matches!(msg.event.as_str(), "PreToolUse" | "PostToolUse" | "PostInvocation");
                     let stop_has_limit_err = turn_done
                         && msg.message.as_deref().and_then(crate::profiles::detect_rate_limit).is_some();
+                    let mut live_done_session: Option<String> = None;
                     if let Some(pane) = self.panes.get_mut(&msg.pane) {
                         let agent = pane.last_agent;
                         pane.on_hook(&msg, now);
+                        if turn_done || session_end {
+                            live_done_session = pane.agent_session.clone();
+                        }
                         // A live tool invocation or fresh session start proves the current account
                         // is not stuck on a stale cooldown (even if an older resumed transcript
                         // still shows a previous account's error line in scrollback).
@@ -1954,6 +1959,9 @@ impl App {
                     }
                     if session_start {
                         self.request_usage_refresh(now);
+                    }
+                    if turn_done || session_end {
+                        self.on_live_automation_turn_done(msg.pane, msg.message.clone(), live_done_session);
                     }
                     if let Some((proj, prof, lvl, text)) = log_info {
                         self.push_agent_log(lvl, Some(proj), Some(msg.pane), prof, text);
@@ -3338,11 +3346,11 @@ impl App {
         crate::handoff::clean();
     }
 
-    fn install_record_path(agent: AgentKind) -> PathBuf {
+    pub(crate) fn install_record_path(agent: AgentKind) -> PathBuf {
         paths::integrations_dir().join(format!("{}-install.json", agent.slug()))
     }
 
-    fn agent_config_path(agent: AgentKind) -> Option<PathBuf> {
+    pub(crate) fn agent_config_path(agent: AgentKind) -> Option<PathBuf> {
         let home = paths::home_dir();
         match agent {
             AgentKind::Claude => Some(home.join(".claude/settings.json")),

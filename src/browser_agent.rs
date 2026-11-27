@@ -925,7 +925,10 @@ impl App {
             let Some(d) = &b.driver else { continue };
             // Taken over, it stays the user's until they hand it back (the agent's next calls are
             // told so), or the agent's pane is gone.
-            let is_auto = self.active_automation_runs.values().any(|r| r.mcp_pane == Some(d.pane));
+            let is_auto = self
+                .active_automation_runs
+                .values()
+                .any(|r| r.mcp_pane == Some(d.pane) || r.live_pane == Some(d.pane));
             let gone = !self.panes.contains_key(&d.pane) && !is_auto;
             let turn_over = !is_auto
                 && self.panes.get(&d.pane).is_none_or(|p| {

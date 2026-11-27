@@ -16,7 +16,7 @@ use crate::actions::Action;
 use crate::app::App;
 use crate::automations::{
     Automation, AutomationDetailTab, AutomationDraft, AutomationFilter, AutomationRun, AutomationStatus, CadenceKind,
-    MissedPolicy, OverlapPolicy, RunStatus, RunTrigger, STARTER_TEMPLATES, SessionMode, WorkspaceMode,
+    ExecutionMode, MissedPolicy, OverlapPolicy, RunStatus, RunTrigger, STARTER_TEMPLATES, SessionMode, WorkspaceMode,
     automation_agent_label, format_countdown, format_local_short, now_epoch_secs,
 };
 use crate::i18n::{t, tf};
@@ -987,7 +987,14 @@ impl App {
 
                         // ----- 4-cell Summary Metrics Card -----
                         let (next_val, next_sub) = if is_running {
-                            (t("Running now").to_string(), t("Live session in progress").to_string())
+                            (
+                                t("Running now").to_string(),
+                                if auto.execution_mode == ExecutionMode::LiveSession {
+                                    t("Live tab active in sidebar").to_string()
+                                } else {
+                                    t("Background run in progress").to_string()
+                                },
+                            )
                         } else if !auto.enabled {
                             (t("Paused").to_string(), t("Toggle Active to resume schedule").to_string())
                         } else if let Some(next_at) = auto.next_run_at {
@@ -1022,17 +1029,21 @@ impl App {
                                 t("Read-only / direct workspace").to_string(),
                             ),
                         };
+                        let exec_tag = match auto.execution_mode {
+                            ExecutionMode::LiveSession => t("Live session"),
+                            ExecutionMode::Background => t("Background"),
+                        };
                         let (sess_val, sess_sub) = match auto.session_mode {
                             SessionMode::Fresh => (
-                                t("Fresh per run").to_string(),
+                                format!("{exec_tag} · {}", t("Fresh")),
                                 if auto.quiet_when_clean {
-                                    t("Quiet when clean · clean context").to_string()
+                                    t("Quiet when clean · fresh context").to_string()
                                 } else {
-                                    t("Clean context · always notifies").to_string()
+                                    t("Fresh context · always notifies").to_string()
                                 },
                             ),
                             SessionMode::Continue => (
-                                t("Continue last").to_string(),
+                                format!("{exec_tag} · {}", t("Continue")),
                                 if auto.quiet_when_clean {
                                     t("Resumes previous session · quiet").to_string()
                                 } else {
@@ -1310,6 +1321,10 @@ impl App {
                     if !sel_run.account_used.is_empty() {
                         paint_mono_chip(ui, icons::USER_CIRCLE, &sel_run.account_used, p.text_muted, p.hover, &p);
                     }
+                    let has_live_tab = sel_run.live_pane.is_some_and(|pid| self.panes.contains_key(&pid));
+                    if has_live_tab {
+                        paint_mono_chip(ui, icons::TERMINAL, t("Live tab"), p.info, style::tint(p.info, dark), &p);
+                    }
                     if auto.agent != AgentKind::Custom
                         && let Some(sid) = &sel_run.session_id
                     {
@@ -1363,21 +1378,34 @@ impl App {
                             act_review = Some(sel_run.id.clone());
                         }
                     }
+                    let has_live_tab = sel_run.live_pane.is_some_and(|pid| self.panes.contains_key(&pid));
                     let open_kind = if sel_run.files_changed > 0 || sel_run.worktree_branch.is_some() {
                         kit::Kind::Secondary
                     } else {
                         kit::Kind::Primary
                     };
+                    let open_label = if has_live_tab {
+                        t("Open live tab")
+                    } else {
+                        t("Open in Focus")
+                    };
                     let open_b = kit::button_ex(
                         ui,
                         open_kind,
                         Some(icons::ARROW_SQUARE_OUT),
-                        t("Open in Focus"),
+                        open_label,
                         false,
                     );
                     #[cfg(debug_assertions)]
                     crate::devtest::record("auto-run-open", open_b.rect);
-                    if open_b.clicked() {
+                    if open_b
+                        .on_hover_text(if has_live_tab {
+                            t("Jump directly to this automation's live interactive terminal tab")
+                        } else {
+                            t("Open this run's project or worktree in Focus")
+                        })
+                        .clicked()
+                    {
                         act_open = Some(sel_run.id.clone());
                     }
 
@@ -1552,11 +1580,15 @@ impl App {
             .profile_id
             .clone()
             .unwrap_or_else(|| t("Auto-failover (healthy pool)").to_string());
-        let rows: [(&str, String); 8] = [
+        let rows: [(&str, String); 9] = [
             (t("Schedule"), auto.schedule.preview_sentence()),
             (t("Project"), format!("{}  ({})", auto.project_name, crate::paths::contract_tilde(&auto.project_path))),
             (t("Agent"), automation_agent_label(auto.agent).to_string()),
             (t("Account"), if auto.agent == AgentKind::Custom { t("N/A (shell)").to_string() } else { account_val }),
+            (t("Execution"), match auto.execution_mode {
+                ExecutionMode::LiveSession => t("Live session — interactive terminal tab listed under Active").to_string(),
+                ExecutionMode::Background => t("Background — silent headless run off the UI thread").to_string(),
+            }),
             (t("Workspace"), match auto.workspace_mode {
                 WorkspaceMode::Worktree => t("Isolated Git worktree (cleaned automatically if no diff)").to_string(),
                 WorkspaceMode::ProjectDir => t("Project folder directly").to_string(),
@@ -1827,7 +1859,15 @@ impl App {
                                         crate::devtest::record(*marker, sr);
                                     }
                                     if let Some(ix) = kit::segmented_in(ui, ar, ui.id().with("auto-agent-seg"), &agent_segs, cur_a) {
-                                        draft.agent = agents[ix].0;
+                                        let next_agent = agents[ix].0;
+                                        if draft.editing_id.is_none() && next_agent != draft.agent {
+                                            draft.execution_mode = if next_agent == AgentKind::Custom {
+                                                ExecutionMode::Background
+                                            } else {
+                                                ExecutionMode::LiveSession
+                                            };
+                                        }
+                                        draft.agent = next_agent;
                                         draft.profile_id = None;
                                     }
                                     ui.add_space(4.0);
@@ -2068,6 +2108,36 @@ impl App {
 
                                 // ----- Card 4: Isolation, Session & Guardrails -----
                                 modal_card(ui, t("Isolation & guardrails"), |ui| {
+                                    // Execution mode: Live interactive session tab vs silent Background.
+                                    form_row(
+                                        ui,
+                                        t("Execution"),
+                                        t("Live session opens an interactive tab in Active; Background runs silently headless"),
+                                        |ui| {
+                                            let opts = [
+                                                kit::Seg::new(t("Live session"), t("Runs in a real interactive terminal tab under Active")).icon(icons::TERMINAL),
+                                                kit::Seg::new(t("Background"), t("Runs headlessly off the UI thread without a tab")),
+                                            ];
+                                            let on = usize::from(draft.execution_mode == ExecutionMode::Background);
+                                            let (er, _) = ui.allocate_exact_size(vec2(236.0, kit::SEGMENTED_H), Sense::hover());
+                                            #[cfg(debug_assertions)]
+                                            {
+                                                let segs = kit::segment_rects(er, 2);
+                                                crate::devtest::record("auto-exec:live", segs[0]);
+                                                crate::devtest::record("auto-exec:bg", segs[1]);
+                                            }
+                                            if let Some(i) = kit::segmented_in(ui, er, ui.id().with("auto-exec-seg"), &opts, on) {
+                                                draft.execution_mode = if i == 0 {
+                                                    ExecutionMode::LiveSession
+                                                } else {
+                                                    ExecutionMode::Background
+                                                };
+                                            }
+                                        },
+                                    );
+
+                                    form_divider(ui);
+
                                     // Session mode.
                                     form_row(
                                         ui,
@@ -2146,7 +2216,7 @@ impl App {
                                         form_row(
                                             ui,
                                             t("Auto-approve tools"),
-                                            t("Skip interactive permission prompts so headless runs can execute commands and edits"),
+                                            t("Skip permission prompts so runs can execute commands, edits, and browser actions unattended"),
                                             |ui| {
                                                 let sw = kit::switch(ui, &mut draft.auto_approve);
                                                 #[cfg(debug_assertions)]

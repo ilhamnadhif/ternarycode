@@ -308,13 +308,26 @@ impl App {
     /// Builds a shell launch command for `preset` combining hooks, permissions flag, preset env,
     /// and isolated account profile env (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `AGY_DATA_DIR`, API keys).
     pub fn launch_command_for_profile(&self, preset: &Preset, command: &str, profile: Option<&AgentProfile>) -> String {
+        self.launch_command_for_profile_ex(preset, command, profile, true)
+    }
+
+    /// Like [`Self::launch_command_for_profile`], optionally skipping the global `skip_permissions`
+    /// injection (used by Live Session automations which honor their own per-automation `auto_approve` toggle).
+    pub fn launch_command_for_profile_ex(
+        &self,
+        preset: &Preset,
+        command: &str,
+        profile: Option<&AgentProfile>,
+        apply_global_skip: bool,
+    ) -> String {
         let integration = preset
             .agent
             .filter(|_| self.per_launch)
             .map(|a| self.settings.integration(a))
             .unwrap_or(Integration::Off);
         let mut command = command.trim().to_string();
-        if let Some(flag) = preset.agent.filter(|a| self.skips_permissions(*a)).and_then(tc_agent::sessions::skip_permissions_flag)
+        if apply_global_skip
+            && let Some(flag) = preset.agent.filter(|a| self.skips_permissions(*a)).and_then(tc_agent::sessions::skip_permissions_flag)
             && !command.split_whitespace().any(|w| w == flag)
         {
             command = integrate::insert_flag(&command, flag);
@@ -552,7 +565,13 @@ impl App {
                 }
             }
             if !pane.tracker.hooks_active || pane.tracker.agent == Some(AgentKind::Codex) {
-                if let Some(msg) = profiles::detect_trust_prompt(&tail) {
+                let auto_trusting = self
+                    .active_automation_runs
+                    .values()
+                    .any(|r| r.live_pane == Some(pane.id) && r.auto_approve);
+                if !auto_trusting
+                    && let Some(msg) = profiles::detect_trust_prompt(&tail)
+                {
                     if pane.last_trust_sig.as_deref() != Some(msg) {
                         pane.last_trust_sig = Some(msg.into());
                         trust_detected.push((pane.id, msg));

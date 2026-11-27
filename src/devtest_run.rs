@@ -229,6 +229,25 @@ impl App {
                     });
                 Some(got == Some(want.trim())).filter(|ok| *ok)
             }
+            // `wait-automation-live-pane <name>`: waits until the latest run of <name> has spawned
+            // its real interactive terminal tab and made its project Active in the sidebar.
+            "wait-automation-live-pane" => {
+                let name = arg.trim();
+                let pane_id = self
+                    .automations
+                    .iter()
+                    .find(|a| a.name == name)
+                    .and_then(|a| a.latest_run())
+                    .and_then(|r| r.live_pane);
+                let live_proj = pane_id.and_then(|id| self.panes.get(&id)).map(|p| p.project);
+                let now = Instant::now();
+                let active = live_proj.is_some_and(|pid| {
+                    let top = self.project(pid).and_then(|p| p.parent).unwrap_or(pid);
+                    self.project_activity(pid, now) == crate::ui::grid::Activity::Active
+                        || self.project_activity(top, now) == crate::ui::grid::Activity::Active
+                });
+                Some(pane_id.is_some() && active).filter(|ok| *ok)
+            }
             "wait-relay" => {
                 let status = self
                     .companion
@@ -787,7 +806,7 @@ impl App {
                 let want = devtest::unescape(content);
                 self.devtest.check(!disk.contains(&want), &format!("expect-not-file {path} lacks {want:?}"));
             }
-            "wait-screen" | "wait-status" | "wait-agent" | "wait-queue" | "wait-automation" | "wait-relay" | "wait-editor" | "wait-conflict" | "wait-browser"
+            "wait-screen" | "wait-status" | "wait-agent" | "wait-queue" | "wait-automation" | "wait-automation-live-pane" | "wait-relay" | "wait-editor" | "wait-conflict" | "wait-browser"
             | "wait-review" | "wait-snapshot" | "wait-tree" | "wait-git" | "wait-open" | "wait-tabs" | "wait-pages" | "wait-page" | "wait-page-count" | "wait-panel" | "wait-popups" | "wait-popup" | "wait-popup-title" | "wait-dialog" | "wait-download" | "wait-page-find" | "wait-inspector" | "wait-find" | "wait-caret"
             | "wait-active" | "wait-diag" | "wait-completion" | "wait-hover" | "wait-signature" | "wait-rename" | "wait-locations"
             | "wait-lsp" | "wait-doc" | "wait-toast" | "wait-shown" | "wait-hidden" | "wait-project" | "wait-page-focus" | "wait-web" => {
@@ -1062,6 +1081,26 @@ impl App {
                 let want = want_s.trim() == "true";
                 let got = self.automations.iter().find(|a| a.name == name.trim()).map(|a| a.enabled);
                 self.devtest.check(got == Some(want), &format!("expect-automation-enabled {arg} (got {got:?})"));
+            }
+            "expect-automation-live-pane" => {
+                let name = arg.trim();
+                let pane_id = self
+                    .automations
+                    .iter()
+                    .find(|a| a.name == name)
+                    .and_then(|a| a.latest_run())
+                    .and_then(|r| r.live_pane);
+                let live_proj = pane_id.and_then(|id| self.panes.get(&id)).map(|p| p.project);
+                let now = Instant::now();
+                let active = live_proj.is_some_and(|pid| {
+                    let top = self.project(pid).and_then(|p| p.parent).unwrap_or(pid);
+                    self.project_activity(pid, now) == crate::ui::grid::Activity::Active
+                        || self.project_activity(top, now) == crate::ui::grid::Activity::Active
+                });
+                self.devtest.check(
+                    pane_id.is_some() && live_proj.is_some() && active,
+                    &format!("expect-automation-live-pane {name} (pane={pane_id:?}, proj={live_proj:?}, active={active})"),
+                );
             }
             // `set-failover auto|manual`: switch failover mode for E2E verification.
             "set-failover" => {

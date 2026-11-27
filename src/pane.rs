@@ -243,6 +243,12 @@ pub struct Pane {
     pub preset: Option<String>,
     /// Typed into the shell once it waits at its prompt (`type_pending`).
     pending_command: Option<String>,
+    /// Monotonic counter incremented on every shell `CommandFinished` mark (OSC 133;D).
+    pub cmd_done_seq: u64,
+    /// Snapshot of `cmd_done_seq` at the instant `type_pending` wrote the command to the PTY.
+    pub typed_cmd_seq: u64,
+    /// Exit code reported by the latest shell `CommandFinished` mark (OSC 133;D).
+    pub last_cmd_exit: Option<i32>,
     got_output: bool,
     /// The shell loads TernaryCode's integration, so it marks its prompt (OSC 133).
     expects_marks: bool,
@@ -381,6 +387,9 @@ impl Pane {
             cwd,
             preset: None,
             pending_command: None,
+            cmd_done_seq: 0,
+            typed_cmd_seq: 0,
+            last_cmd_exit: None,
             got_output: false,
             expects_marks: false,
             exit: None,
@@ -929,6 +938,14 @@ impl Pane {
         self.type_pending(Instant::now());
     }
 
+    pub fn has_pending_command(&self) -> bool {
+        self.pending_command.is_some()
+    }
+
+    pub fn clear_pending_command(&mut self) {
+        self.pending_command = None;
+    }
+
     /// Types the command waiting to be typed once the shell is ready for it, and says when to
     /// look again. A shell's startup files can ask something first (oh-my-zsh: "Would you like to
     /// update? [Y/n]", which takes the first key typed, so `claude` ran as `laude`): a shell that
@@ -949,6 +966,7 @@ impl Pane {
             return Some(if in_program { now + Duration::from_millis(200) } else { due });
         }
         let command = self.pending_command.take()?;
+        self.typed_cmd_seq = self.cmd_done_seq;
         self.write(format!("{command}\r").into_bytes());
         self.schedule_fg_check(now + Duration::from_millis(500));
         None
@@ -1084,7 +1102,11 @@ impl Pane {
                 }
                 let mark = match mark {
                     PromptMark::CommandExecuted => ShellMark::CommandStart,
-                    PromptMark::CommandFinished(code) => ShellMark::CommandFinished(code),
+                    PromptMark::CommandFinished(code) => {
+                        self.cmd_done_seq = self.cmd_done_seq.wrapping_add(1);
+                        self.last_cmd_exit = code;
+                        ShellMark::CommandFinished(code)
+                    }
                     _ => return false,
                 };
                 self.tracker.apply(Event::Shell(mark), now)

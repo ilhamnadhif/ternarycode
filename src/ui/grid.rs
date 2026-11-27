@@ -187,8 +187,11 @@ impl App {
         };
         let mut out = Activity::Idle;
         for pane in p.panes().iter().filter_map(|id| self.panes.get(id)) {
-            // An agent session that ran here before a restart, waiting to be resumed.
-            if pane.resume.is_some() {
+            // An agent session that ran here before a restart, waiting to be resumed,
+            // or a live automation currently running in this pane.
+            if pane.resume.is_some()
+                || self.active_automation_runs.values().any(|r| r.live_pane == Some(pane.id))
+            {
                 return Activity::Active;
             }
             match (activity(&pane.tracker, now), out) {
