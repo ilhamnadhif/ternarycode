@@ -216,6 +216,65 @@ pub fn set_window_movable(movable: bool) {
 #[cfg(not(target_os = "macos"))]
 pub fn set_window_movable(_movable: bool) {}
 
+/// True while the user is actively dragging a macOS window border/corner (`NSWindow.inLiveResize`).
+/// AppKit owns the mouse during OS window resize, so egui's `pointer.any_down()` reads `false`.
+#[cfg(target_os = "macos")]
+pub fn window_in_live_resize() -> bool {
+    use objc2::{MainThreadMarker, msg_send};
+    use objc2_app_kit::NSApplication;
+    let Some(mtm) = MainThreadMarker::new() else { return false };
+    let windows = NSApplication::sharedApplication(mtm).windows();
+    for i in 0..windows.count() {
+        let w = windows.objectAtIndex(i);
+        // SAFETY: `-[NSWindow inLiveResize]` returns BOOL on the main thread.
+        let live: bool = unsafe { msg_send![&*w, inLiveResize] };
+        if live {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn window_in_live_resize() -> bool {
+    false
+}
+
+/// Paints the main `NSWindow`'s backing colour to match TernaryCode's chrome colour so live OS
+/// window resizing never flashes a contrasting white/black strip along newly exposed edges.
+#[cfg(target_os = "macos")]
+pub fn set_window_background(r: u8, g: u8, b: u8) {
+    use objc2::runtime::AnyObject;
+    use objc2::{MainThreadMarker, msg_send};
+    use objc2_app_kit::NSApplication;
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let windows = NSApplication::sharedApplication(mtm).windows();
+    // SAFETY: `NSColor` factory and `-[NSWindow setBackgroundColor:]` called on the main thread;
+    // child windows (transparent WKWebView hosts) are skipped via `parentWindow().is_none()`.
+    unsafe {
+        let color: *mut AnyObject = msg_send![
+            objc2::class!(NSColor),
+            colorWithSRGBRed: f64::from(r) / 255.0,
+            green: f64::from(g) / 255.0,
+            blue: f64::from(b) / 255.0,
+            alpha: 1.0f64
+        ];
+        if color.is_null() {
+            return;
+        }
+        for i in 0..windows.count() {
+            let w = windows.objectAtIndex(i);
+            let parent: *mut AnyObject = msg_send![&*w, parentWindow];
+            if parent.is_null() {
+                let _: () = msg_send![&*w, setBackgroundColor: color];
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_window_background(_r: u8, _g: u8, _b: u8) {}
+
 /// Windows: the app draws the title bar itself (mark, name, menus and the window buttons, above
 /// the sidebar and the top bar; `ui::caption`) and its resize edges: the system's caption is off
 /// (`with_decorations(false)`).

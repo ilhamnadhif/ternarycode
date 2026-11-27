@@ -626,8 +626,8 @@ impl App {
                 ui.ctx().request_repaint();
             }
             let alive = pane.alive();
-            let defer_resize = pane.defer_resize_during_layout();
-            let resp = widget::show_deferred(ui, term_rect, &mut pane.view, &pane.shared, &style, is_focused, input_enabled, alive, defer_resize);
+            let resize_paint = pane.resize_paint();
+            let resp = widget::show_deferred(ui, term_rect, &mut pane.view, &pane.shared, &style, is_focused, input_enabled, alive, resize_paint);
             let how = crate::pane::Shown::of(ui, pane_id, &pane.view, crate::pane::Shown::Visible);
             self.shown_now.insert(pane_id, how);
             if let Some((size, w, h)) = resp.resized {
@@ -647,6 +647,7 @@ impl App {
                 // Clear any lingering Office/label selection so a previous document drag cannot
                 // hijack ⌘C after the user moves back to the terminal.
                 ui.ctx().plugin::<egui::text_selection::LabelSelectionState>().lock().clear_selection();
+                self.last_panel_close_at = None;
             }
             if resp.activated && !is_focused {
                 self.actions.push(Action::FocusPane(pane_id));

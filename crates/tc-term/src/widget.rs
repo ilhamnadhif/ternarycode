@@ -66,6 +66,26 @@ pub struct TermView {
     menu_link: Option<Link>,
     /// The clipboard's text came since V was last released: the paste shortcut pasted text.
     pasted_since_v: bool,
+    /// Last clean painted shapes captured right before a resize commits (`SIGWINCH`), held and
+    /// re-painted (translated + clipped) during the brief clear+redraw burst so the terminal
+    /// never flashes a blank prompt or half-drawn TUI frame.
+    frozen_frame: Option<(Pos2, Vec<egui::Shape>)>,
+}
+
+/// How [`show_deferred`] handles grid reflow and post-`SIGWINCH` redraw bursts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResizePaint {
+    /// Immediate grid resize (fresh/dormant panes or Grid previews).
+    #[default]
+    Immediate,
+    /// Defer grid mutation during layout changes; capture a snapshot only when a resize begins.
+    Defer,
+    /// A resize is actively pending (dragging / settling): defer grid mutation and keep the
+    /// pre-`SIGWINCH` snapshot up to date with the latest clean frame.
+    DeferPending,
+    /// `SIGWINCH` was just sent and the program is clearing/redrawing: keep painting the frozen
+    /// pre-resize snapshot cleanly clipped to `rect` until the redraw finishes.
+    HoldSnapshot,
 }
 
 impl TermView {
@@ -847,14 +867,11 @@ pub fn show(
     input_enabled: bool,
     alive: bool,
 ) -> TermResponse {
-    show_inner(ui, rect, view, shared, style, active, input_enabled, alive, None, Crop::default(), true, false)
+    show_inner(ui, rect, view, shared, style, active, input_enabled, alive, None, Crop::default(), true, ResizePaint::Immediate)
 }
 
-/// Like [`show`], but when `defer_resize` is `true` the terminal's underlying grid is NOT mutated
-/// on every drag/layout frame: the existing grid keeps rendering cleanly clipped to `rect` while
-/// `TermResponse::resized` reports the target size for the caller to commit once the resize
-/// settles (preventing mid-drag prompt clearing, horizontal-rule wrap jumping, and alt-screen
-/// column truncation).
+/// Like [`show`], controlled by [`ResizePaint`] so live panes neither mutate/reflow their grid
+/// mid-drag nor flash blank/wiped prompts while a shell or TUI processes `SIGWINCH`.
 #[allow(clippy::too_many_arguments)]
 pub fn show_deferred(
     ui: &mut Ui,
@@ -865,9 +882,9 @@ pub fn show_deferred(
     active: bool,
     input_enabled: bool,
     alive: bool,
-    defer_resize: bool,
+    resize_paint: ResizePaint,
 ) -> TermResponse {
-    show_inner(ui, rect, view, shared, style, active, input_enabled, alive, None, Crop::default(), true, defer_resize)
+    show_inner(ui, rect, view, shared, style, active, input_enabled, alive, None, Crop::default(), true, resize_paint)
 }
 
 /// The grid a terminal drawn in `rect` gets (what `show` resizes it to). Callers use it to
@@ -953,7 +970,7 @@ pub fn show_readable(
             Crop { rows: Some(rows), cut_above }
         }
     };
-    show_inner(ui, rect, view, shared, &scaled, false, input_enabled, alive, Some(size), crop, wheel, false)
+    show_inner(ui, rect, view, shared, &scaled, false, input_enabled, alive, Some(size), crop, wheel, ResizePaint::Immediate)
 }
 
 /// The rows a cut view shows (`show_readable`).
@@ -1077,8 +1094,9 @@ fn show_inner(
     fixed: Option<GridSize>,
     crop: Crop,
     wheel: bool,
-    defer_resize: bool,
+    resize_paint: ResizePaint,
 ) -> TermResponse {
+    let defer_resize = resize_paint != ResizePaint::Immediate;
     let mut out = TermResponse::default();
     let id = *view.id.get_or_insert_with(|| {
         Id::new((
@@ -1667,6 +1685,25 @@ fn show_inner(
     let default_bg = palette(257, colors, scheme);
     ui.painter_at(rect).rect_filled(rect, CornerRadius::ZERO, default_bg);
     let painter = ui.painter_at(clip);
+    // During the brief post-SIGWINCH redraw hold, repaint the last clean pre-resize snapshot
+    // (translated if the pane origin shifted, clipped to `clip`) instead of exposing a cleared
+    // prompt or half-redrawn TUI buffer.
+    if resize_paint == ResizePaint::HoldSnapshot
+        && let Some((old_origin, old_shapes)) = &view.frozen_frame
+    {
+        drop(term);
+        let delta = origin - *old_origin;
+        if delta == Vec2::ZERO {
+            painter.extend(old_shapes.clone());
+        } else {
+            let mut shifted = old_shapes.clone();
+            for s in &mut shifted {
+                s.translate(delta);
+            }
+            painter.extend(shifted);
+        }
+        return out;
+    }
     // The cells' shapes, handed to the painter at once (one lock of the context, not one per
     // shape), in the order they are drawn.
     let mut shapes: Vec<egui::Shape> = Vec::new();
@@ -2019,6 +2056,11 @@ fn show_inner(
                 }
             }
         }
+    }
+    if resize_paint == ResizePaint::DeferPending || (defer_resize && out.resized.is_some()) {
+        view.frozen_frame = Some((origin, shapes.clone()));
+    } else if resize_paint != ResizePaint::HoldSnapshot {
+        view.frozen_frame = None;
     }
     painter.extend(shapes);
     if crop.cut_above {

@@ -515,12 +515,13 @@ pub fn definitions(choice: &FontChoice, load_cjk: bool) -> FontDefinitions {
     defs.font_data
         .insert("Inter-SemiBold".into(), font(INTER_SEMIBOLD));
     let mut phosphor = FontData::from_static(PHOSPHOR);
-    // Icons sit a little high next to Inter's x-height.
+    // Inline icons inside Inter sit a little high next to Inter's x-height.
     phosphor.tweak.y_offset_factor = 0.08;
     defs.font_data.insert("Phosphor".into(), Arc::new(phosphor));
-    let mut phosphor_fill = FontData::from_static(PHOSPHOR_FILL);
-    phosphor_fill.tweak.y_offset_factor = 0.08;
-    defs.font_data.insert("PhosphorFill".into(), Arc::new(phosphor_fill));
+    // Standalone icons (Align2::CENTER_CENTER) already sit dead-center in Phosphor's 1024×1024
+    // box (hhea 960 / -64), matching Inter's cap-to-baseline center; no downward nudge.
+    defs.font_data.insert("PhosphorIcon".into(), font(PHOSPHOR));
+    defs.font_data.insert("PhosphorIconFill".into(), font(PHOSPHOR_FILL));
     let ui_family = |first: &str| {
         let mut family = vec![first.to_string(), "Phosphor".to_string()];
         family.extend(fallbacks.iter().cloned());
@@ -536,11 +537,11 @@ pub fn definitions(choice: &FontChoice, load_cjk: bool) -> FontDefinitions {
     );
     defs.families.insert(
         FontFamily::Name(ICONS.into()),
-        vec!["Phosphor".into(), "Inter".into()],
+        vec!["PhosphorIcon".into(), "Inter".into()],
     );
     defs.families.insert(
         FontFamily::Name(ICONS_FILL.into()),
-        vec!["PhosphorFill".into(), "Phosphor".into(), "Inter".into()],
+        vec!["PhosphorIconFill".into(), "PhosphorIcon".into(), "Inter".into()],
     );
     // The UI's data: JetBrains Mono, then Inter for what it lacks (⌘, ⌥ …), then the icons.
     for (family, first) in [(MONO, "JetBrainsMono"), (MONO_MEDIUM, "JetBrainsMono-Medium"), (MONO_SEMIBOLD, "JetBrainsMono-SemiBold")] {

@@ -385,6 +385,8 @@ impl App {
     pub fn dialogs(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.dialog.take() else { return };
         let mut keep = true;
+        let account_popup_was_open =
+            matches!(&dialog, Dialog::Settings(super::settings::SettingsPage::Accounts)) && self.profile_draft.is_some();
         let enter = ctx.input(|i| i.key_pressed(Key::Enter));
         let p = style::palette(ctx.global_style().visuals.dark_mode);
         let modal = egui::Modal::new(egui::Id::new("dialog"))
@@ -908,7 +910,7 @@ impl App {
                     }
                 }
             });
-        if modal.should_close() {
+        if !account_popup_was_open && modal.should_close() {
             keep = false;
             // As its Cancel: back to the integrations it was asked from.
             if matches!(dialog, Dialog::Install(..) | Dialog::ConfirmUninstall(..)) {
@@ -919,6 +921,13 @@ impl App {
                 Dialog::RemoveWorktree(id, _) => ctx.data_mut(|d| d.remove::<Vec<(String, String)>>(egui::Id::new(("remove-commits", *id)))),
                 _ => {}
             }
+        }
+        // Account create/edit pop-up modal floating above Settings → Accounts.
+        if keep
+            && matches!(&dialog, Dialog::Settings(super::settings::SettingsPage::Accounts))
+            && self.profile_draft.is_some()
+        {
+            self.profile_editor_modal(ctx);
         }
         // A dialog that opened another while it was drawn (Settings' "Clear…"): that one shows,
         // and this one comes back after it.
@@ -949,6 +958,7 @@ impl App {
             });
             if matches!(dialog, Dialog::Settings(_)) {
                 self.settings_search.clear();
+                self.profile_draft = None;
             }
             if let Some(back) = self.dialog_back.take() {
                 self.dialog = Some(back);

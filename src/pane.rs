@@ -56,14 +56,16 @@ const PROMPT_MARK_WAIT: Duration = Duration::from_secs(45);
 /// A command waiting to be typed into a shell that does not mark its prompt is typed once the
 /// shell has been quiet this long.
 const QUIET_BEFORE_TYPING: Duration = Duration::from_millis(300);
-/// How long a pane's size must stay the same before the PTY is resized during window resize or
-/// layout changes (prevents mid-drag reflow/SIGWINCH flicker).
-const RESIZE_SETTLE: Duration = Duration::from_millis(160);
-/// Snappy settle delay once an in-app drag (pane divider, panel edge, sidebar) is released.
-const DRAG_RELEASE_SETTLE: Duration = Duration::from_millis(24);
-/// Brief coalescing window right after `SIGWINCH` so a program's clear-screen + redraw burst
-/// lands in one complete frame instead of flashing a blank intermediate frame.
-const RESIZE_REDRAW_HOLD_MS: u64 = 35;
+/// How long a pane's size must stay the same before the PTY is resized on non-drag layout
+/// changes (toggles, splits, or window resize on platforms without live-resize notifications).
+const RESIZE_SETTLE: Duration = Duration::from_millis(70);
+/// Snappy settle delay once a drag (pane divider, panel edge, sidebar, or macOS window edge) is
+/// released.
+const DRAG_RELEASE_SETTLE: Duration = Duration::from_millis(16);
+/// Maximum coalescing window right after `SIGWINCH` while a shell/TUI clears and redraws; cleared
+/// immediately as soon as the shell emits its prompt mark (OSC 133;B) or a DEC 2026 sync frame
+/// completes (`CSI ? 2026 l`), or when the user types.
+const RESIZE_REDRAW_HOLD_MS: u64 = 65;
 /// The most a program may put on the clipboard at once (OSC 52), in bytes.
 const MAX_COPY: usize = 4 * 1024 * 1024;
 /// A program's title is cut to this many chars.
@@ -576,6 +578,13 @@ impl Pane {
             // apart share a frame, and a pane out of view only needs its messages taken
             // in now and then, not the whole window redrawn for every line it prints.
             let is_exit = matches!(e, SessionEvent::Exited(_));
+            let redraw_done = match &e {
+                SessionEvent::Output(f) => {
+                    f.sync_ended
+                        || f.signals.iter().any(|s| matches!(s, OscSignal::Prompt(PromptMark::CommandStart)))
+                }
+                _ => false,
+            };
             let (urgent, output) = match &e {
                 SessionEvent::Output(f) => {
                     let news = said.lock().unwrap_or_else(|p| p.into_inner()).news(f);
@@ -588,15 +597,22 @@ impl Pane {
             if !is_exit {
                 let hold_until = resize_hold_until_ns.load(std::sync::atomic::Ordering::Relaxed);
                 let now_ns = Shown::monotonic_ns();
-                if hold_until > now_ns && (urgent || output) {
-                    let pass = ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT);
-                    let mut asked = asked.lock().unwrap_or_else(|p| p.into_inner());
-                    if asked.1 == pass && asked.0 >= hold_until {
+                if hold_until > now_ns {
+                    if redraw_done {
+                        resize_hold_until_ns.store(0, std::sync::atomic::Ordering::Relaxed);
+                        ctx.request_repaint();
                         return;
                     }
-                    *asked = (hold_until, pass);
-                    ctx.request_repaint_after(Duration::from_nanos(hold_until - now_ns));
-                    return;
+                    if urgent || output {
+                        let pass = ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT);
+                        let mut asked = asked.lock().unwrap_or_else(|p| p.into_inner());
+                        if asked.1 == pass && asked.0 >= hold_until {
+                            return;
+                        }
+                        *asked = (hold_until, pass);
+                        ctx.request_repaint_after(Duration::from_nanos(hold_until - now_ns));
+                        return;
+                    }
                 }
             }
             if urgent {
@@ -845,6 +861,8 @@ impl Pane {
     /// Keys typed or text pasted by the user.
     pub fn input(&mut self, bytes: Vec<u8>) {
         self.typed = true;
+        // User input must echo immediately: never hold back painting behind a resize snapshot.
+        self.resize_hold_until_ns.store(0, std::sync::atomic::Ordering::Relaxed);
         self.write(bytes);
     }
 
@@ -1490,6 +1508,26 @@ impl Pane {
     pub fn take_for_quit(&mut self) -> Option<Arc<tc_term::pty::LocalPty>> {
         self.closing = true;
         self.session.take().map(|s| s.pty)
+    }
+
+    /// Whether this pane is currently inside its brief post-`SIGWINCH` redraw hold window.
+    pub fn is_holding_resize_redraw(&self) -> bool {
+        let hold_until = self.resize_hold_until_ns.load(std::sync::atomic::Ordering::Relaxed);
+        hold_until > Shown::monotonic_ns()
+    }
+
+    /// How the terminal widget should paint and handle resize for this pane on the current frame.
+    pub fn resize_paint(&self) -> tc_term::widget::ResizePaint {
+        use tc_term::widget::ResizePaint;
+        if !self.defer_resize_during_layout() {
+            ResizePaint::Immediate
+        } else if self.is_holding_resize_redraw() {
+            ResizePaint::HoldSnapshot
+        } else if self.pending_resize.is_some() {
+            ResizePaint::DeferPending
+        } else {
+            ResizePaint::Defer
+        }
     }
 
     /// Whether this pane should defer grid mutation during layout/drag frames until resize settles.

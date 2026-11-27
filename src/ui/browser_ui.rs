@@ -1191,12 +1191,16 @@ impl App {
     /// A new page of the user's in `project`'s panel at `url` ("": its address field takes the
     /// keyboard), in view.
     pub fn browser_tab_at(&mut self, project: tc_core::ProjectId, url: &str) {
+        let keep_focus = self.browser_focus.is_some();
         let id = self.add_page(project, url, None);
         self.active = Some(project);
         self.show_page(project, id);
         if url.is_empty() {
             self.release_page_keyboard();
             self.browser_edit = Some(id);
+        } else if keep_focus {
+            self.browser_focus = Some(id);
+            self.browser_focus_request = Some(id);
         }
         self.show_focus();
     }
@@ -1611,7 +1615,9 @@ impl App {
                 {
                     let _ = v.focus_parent();
                 }
-                if typing_in == Some(b.id) {
+                let on_screen = !covered && pages.contains_key(&b.id);
+                let pending_focus = !covered && self.browser_focus_request == Some(b.id);
+                if typing_in == Some(b.id) && !on_screen && !pending_focus {
                     typing_in = None;
                 }
             }
@@ -1683,21 +1689,48 @@ impl App {
             }
             self.window_in_front = front;
         }
-        // A pane asked to be focused: its page takes the keyboard.
-        if let Some(id) = self.browser_focus_request.take()
-            && let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref())
-        {
-            let _ = v.focus();
-            self.browser_focus = Some(id);
-        }
-        // A click in the app (not on a page) gives it the keyboard back.
+        // A click in the app (not on a page) gives it the keyboard back, unless a browser
+        // control (such as clicking a browser tab) just requested focus on a page this frame.
         if let Some(id) = self.browser_focus
+            && self.browser_focus_request.is_none()
             && ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| !pages.values().any(|r| r.contains(pos))))
         {
             if let Some(v) = self.browsers.get(&id).and_then(|b| b.view.as_ref()) {
                 let _ = v.focus_parent();
             }
             self.browser_focus = None;
+        }
+        // A pane asked to be focused: its page takes the keyboard once it is visible (if an
+        // asleep or newly promoted tab is waking on the next frame, keep the request until then).
+        if let Some(id) = self.browser_focus_request {
+            let active_front = self.active.and_then(|p| self.panel_page(p)) == Some(id);
+            match self.browsers.get(&id) {
+                None => {
+                    self.browser_focus_request = None;
+                }
+                Some(_) if covered => {
+                    self.browser_focus_request = None;
+                }
+                Some(b) if b.shown => {
+                    if let Some(v) = &b.view {
+                        let _ = v.focus();
+                    }
+                    self.browser_focus = Some(id);
+                    self.browser_focus_request = None;
+                }
+                Some(b) if pages.contains_key(&id) && (b.url.is_empty() || b.down) => {
+                    // Empty new tab or offline card has no native web view yet: keep logical focus
+                    // so ⌘W still targets this browser tab.
+                    self.browser_focus = Some(id);
+                    self.browser_focus_request = None;
+                }
+                Some(_) if active_front => {
+                    ctx.request_repaint();
+                }
+                Some(_) => {
+                    self.browser_focus_request = None;
+                }
+            }
         }
         self.tell_key_watch();
     }

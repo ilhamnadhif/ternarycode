@@ -403,6 +403,9 @@ pub struct App {
     pub browser_focus: Option<PaneId>,
     /// A browser pane whose page is to take the keyboard (it was focused).
     pub browser_focus_request: Option<PaneId>,
+    /// When the last Browser page or last Code Editor file was just closed via keyboard: briefly
+    /// guards against an accidental extra `⌘W` tap closing the user's running terminal/agent pane.
+    pub last_panel_close_at: Option<Instant>,
     /// The window had the keyboard in the last frame (Windows, Linux: a page inside it takes it
     /// back when the window comes to the front again).
     pub window_in_front: bool,
@@ -795,6 +798,7 @@ impl App {
             browser_pages: HashMap::new(),
             browser_focus: None,
             browser_focus_request: None,
+            last_panel_close_at: None,
             window_in_front: true,
             dialog_focus: None,
             browser_edit: None,
@@ -1533,6 +1537,55 @@ impl App {
         ctx.memory(|m| m.focused()) == Some(egui::Id::new(("editor-text", path)))
     }
 
+    /// The browser page that currently owns keyboard focus — either its web view (`browser_focus`)
+    /// or its address / find bar in the active project's Browser panel.
+    fn browser_focused_page(&self, ctx: &egui::Context) -> Option<PaneId> {
+        if let Some(id) = self.browser_focus.filter(|id| self.browsers.contains_key(id)) {
+            return Some(id);
+        }
+        let focused = ctx.memory(|m| m.focused())?;
+        let shown = self.active.and_then(|p| self.panel_page(p))?;
+        if focused == egui::Id::new(("browser-address", shown)) || focused == egui::Id::new(("browser-find", shown)) {
+            return Some(shown);
+        }
+        None
+    }
+
+    /// Closes file `index` in `project`'s Code Editor. When `refocus_editor` is true (keyboard
+    /// close), hands keyboard focus to the surviving active file so repeated `⌘W` keeps closing
+    /// editor tabs; when the last file closes, returns focus to the terminal with a brief guard.
+    fn close_editor_file(&mut self, ctx: &egui::Context, project: ProjectId, index: usize, refocus_editor: bool) {
+        let next = {
+            let Some(e) = self.editors.get_mut(&project) else { return };
+            if index >= e.files.len() {
+                return;
+            }
+            e.close(index);
+            if e.visible {
+                e.file().map(|f| (f.path.clone(), f.doc.is_some()))
+            } else {
+                None
+            }
+        };
+        if !refocus_editor {
+            return;
+        }
+        if let Some((path, is_doc)) = next {
+            let fid = if is_doc {
+                egui::Id::new(("doc-view", project))
+            } else {
+                egui::Id::new(("editor-text", path))
+            };
+            ctx.memory_mut(|m| m.request_focus(fid));
+            self.editor_keyboard = true;
+            self.editor_seen = true;
+        } else {
+            self.editor_keyboard = false;
+            self.focus_request = self.current_pane();
+            self.last_panel_close_at = Some(Instant::now());
+        }
+    }
+
     /// True when any modal overlay or popover covers the workspace stage and should own Escape/keys.
     pub fn overlay_open(&self) -> bool {
         self.dialog.is_some()
@@ -1751,6 +1804,7 @@ impl App {
         let Some(project) = self.panes.get(&pane).map(|p| p.project) else {
             return;
         };
+        self.last_panel_close_at = None;
         if let Some(p) = self.project_mut(project)
             && let Some(tab) = p.tab_of(pane)
         {
@@ -2214,10 +2268,9 @@ impl App {
         let close: Vec<ProjectId> = self.close_after_save.iter().filter(|(_, p, at)| p == path && recent(at)).map(|(id, ..)| *id).collect();
         self.close_after_save.retain(|(_, p, at)| p != path && recent(at));
         for id in close {
-            if let Some(e) = self.editors.get_mut(&id)
-                && let Some(i) = e.files.iter().position(|f| f.path == path && !f.dirty())
-            {
-                e.close(i);
+            if let Some(i) = self.editors.get(&id).and_then(|e| e.files.iter().position(|f| f.path == path && !f.dirty())) {
+                let ctx = self.ctx.clone();
+                self.close_editor_file(&ctx, id, i, self.active == Some(id));
             }
         }
     }
@@ -3563,7 +3616,8 @@ impl App {
             }
             Action::ClosePane => {
                 // ⌘W closes what has the keyboard: the file or document in the editor, else the
-                // pane typed into (in the Grid, the tile), asking first when a program runs there.
+                // browser page (including its address/find bar), else the terminal pane typed into
+                // (in the Grid, the tile), asking first when a program runs there.
                 if (self.editor_keyboard || self.editor_has_keyboard(ctx))
                     && self.view == View::Focus
                     && !self.overlay_open()
@@ -3572,16 +3626,26 @@ impl App {
                     self.dispatch(ctx, Action::CloseFile(i));
                     return;
                 }
-                // A page with the keyboard: that page.
+                // A page with the keyboard (web view, address bar, or find bar): that page.
                 if !self.overlay_open()
-                    && let Some(id) = self.browser_focus.filter(|id| self.browsers.contains_key(id))
+                    && let Some(id) = self.browser_focused_page(ctx)
                 {
-                    self.close_page(id);
+                    ctx.memory_mut(|m| {
+                        if let Some(f) = m.focused() {
+                            m.surrender_focus(f);
+                        }
+                    });
+                    self.close_page_from_keyboard(id);
                     return;
                 }
                 if self.terminals_take_keys()
                     && let Some(id) = self.target_pane()
                 {
+                    // Brief safety cooldown right after closing the last Browser tab or Editor
+                    // file so an extra reflex ⌘W tap never kills a running Agent/terminal pane.
+                    if self.last_panel_close_at.is_some_and(|t| t.elapsed() < Duration::from_millis(450)) {
+                        return;
+                    }
                     match self.panes.get(&id).and_then(Pane::busy_with) {
                         Some(what) => self.dialog = Some(Dialog::ConfirmClosePane(id, what)),
                         None => self.close_pane(ctx, id),
@@ -3896,27 +3960,29 @@ impl App {
             }
             Action::Ide(cmd) => self.ide_cmd(ctx, cmd),
             Action::CloseFile(i) => {
-                if let Some(e) = self.editor_mut()
-                    && i < e.files.len()
-                {
-                    // Unsaved edits are kept until saved or reloaded: closing asks nothing but
-                    // never drops a dirty buffer silently.
-                    if e.files[i].dirty() {
-                        e.active = i;
-                        let (name, path) = (e.files[i].name(), e.files[i].path.clone());
-                        if let Some(project) = self.active {
-                            self.dialog = Some(Dialog::ConfirmCloseFile(project, path, name));
+                let had_editor_focus = self.editor_keyboard || self.editor_has_keyboard(ctx);
+                let Some(project) = self.active else { return };
+                let dirty_info = self
+                    .editors
+                    .get_mut(&project)
+                    .filter(|e| i < e.files.len())
+                    .and_then(|e| {
+                        if e.files[i].dirty() {
+                            e.active = i;
+                            Some((e.files[i].name(), e.files[i].path.clone()))
+                        } else {
+                            None
                         }
-                    } else {
-                        e.close(i);
-                    }
+                    });
+                if let Some((name, path)) = dirty_info {
+                    self.dialog = Some(Dialog::ConfirmCloseFile(project, path, name));
+                } else {
+                    self.close_editor_file(ctx, project, i, had_editor_focus);
                 }
             }
             Action::DiscardAndCloseFile(project, path) => {
-                if let Some(e) = self.editors.get_mut(&project)
-                    && let Some(i) = e.files.iter().position(|f| f.path == path)
-                {
-                    e.close(i);
+                if let Some(i) = self.editors.get(&project).and_then(|e| e.files.iter().position(|f| f.path == path)) {
+                    self.close_editor_file(ctx, project, i, self.active == Some(project));
                 }
             }
             Action::SaveAndCloseFile(project, path) => {
@@ -4963,9 +5029,12 @@ impl App {
     /// Terminals answer colour queries (OSC 4/10/11) with the scheme in use: programs that ask
     /// after a theme switch, or after the system turned dark under "System", get the new one.
     fn sync_term_palette(&mut self, ctx: &egui::Context) {
-        let scheme = self.scheme(ctx.global_style().visuals.dark_mode);
+        let dark = ctx.global_style().visuals.dark_mode;
+        let scheme = self.scheme(dark);
         if self.term_scheme != scheme.name {
             self.term_scheme = scheme.name;
+            let bg = ui::style::palette(dark).chrome;
+            platform::set_window_background(bg.r(), bg.g(), bg.b());
             for p in self.panes.values() {
                 *p.shared.palette.lock() = scheme.into();
             }
@@ -5057,13 +5126,18 @@ impl App {
 
     fn schedule_wakeups(&mut self, ctx: &egui::Context, commit_resizes: bool) {
         let now = Instant::now();
-        let dragging = ctx.input(|i| i.pointer.any_down());
+        let live_window_resize = platform::window_in_live_resize();
+        let dragging = ctx.input(|i| i.pointer.any_down()) || live_window_resize;
         let just_released = commit_resizes && self.was_pointer_down && !dragging;
         if commit_resizes {
             self.was_pointer_down = dragging;
         }
         let mut resize_due: Option<Instant> = None;
+        let mut any_pending_resize = false;
         for pane in self.panes.values_mut() {
+            if pane.pending_resize.is_some() {
+                any_pending_resize = true;
+            }
             let due = if commit_resizes {
                 pane.apply_resize(now, dragging, just_released)
             } else {
@@ -5072,6 +5146,13 @@ impl App {
             if let Some(d) = due {
                 resize_due = Some(resize_due.map_or(d, |x| x.min(d)));
             }
+        }
+        // During macOS live window resize, AppKit may not fire an extra frame when the user
+        // releases the mouse without moving it; poll gently so `inLiveResize() == false` is
+        // noticed within ~32 ms and commits the settled resize promptly.
+        if live_window_resize && any_pending_resize {
+            let poll = now + Duration::from_millis(32);
+            resize_due = Some(resize_due.map_or(poll, |x| x.min(poll)));
         }
         // In `frame_logic` (`!commit_resizes`), avoid scheduling a 0 ms repaint for an already-due
         // resize: `frame_ui` runs right after in the same pass, commits the resize + SIGWINCH, and

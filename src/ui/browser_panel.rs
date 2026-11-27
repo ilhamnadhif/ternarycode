@@ -122,8 +122,20 @@ impl App {
     /// Closes a page: its web view goes (Reopen Closed Page brings it back). An agent's next
     /// call opens it another.
     pub fn close_page(&mut self, id: PaneId) {
+        self.close_page_inner(id, false);
+    }
+
+    /// Closes a page via keyboard shortcut (`⌘W` / `Ctrl+Shift+W`), handing keyboard focus to the
+    /// next surviving page in the panel (or returning to the terminal with a brief close guard
+    /// when closing the last page).
+    pub fn close_page_from_keyboard(&mut self, id: PaneId) {
+        self.close_page_inner(id, true);
+    }
+
+    fn close_page_inner(&mut self, id: PaneId, from_keyboard: bool) {
         let Some(b) = self.browsers.get(&id) else { return };
         let project = b.project;
+        let had_focus = from_keyboard || self.browser_focus == Some(id);
         if !b.url.is_empty() && b.url != "about:blank" {
             self.closed_pages.push(crate::browser::ClosedPage { project, url: b.url.clone(), title: b.title.clone() });
             if self.closed_pages.len() > crate::browser::CLOSED_PAGES {
@@ -135,7 +147,17 @@ impl App {
             panel.remove(id);
         }
         self.drop_pane(id);
-        if self.panel_of(project).is_some_and(|p| p.pages.is_empty()) {
+        let surviving = self.panel_of(project).and_then(Panel::shown);
+        if had_focus {
+            if let Some(next) = surviving {
+                self.browser_focus = Some(next);
+                self.browser_focus_request = Some(next);
+                self.ctx.request_repaint();
+            } else {
+                self.focus_request = self.current_pane();
+                self.last_panel_close_at = Some(std::time::Instant::now());
+            }
+        } else if self.panel_of(project).is_some_and(|p| p.pages.is_empty()) {
             self.focus_request = self.current_pane();
         }
         self.mark_dirty();
@@ -149,12 +171,17 @@ impl App {
             self.toast(t("No closed page to reopen").to_string());
             return;
         };
+        let keep_focus = self.browser_focus.is_some();
         let id = self.add_page(closed.project, &closed.url, None);
         if let Some(b) = self.browsers.get_mut(&id) {
             b.title = closed.title;
         }
         self.active = Some(closed.project);
         self.show_page(closed.project, id);
+        if keep_focus {
+            self.browser_focus = Some(id);
+            self.browser_focus_request = Some(id);
+        }
         self.show_focus();
     }
 
@@ -373,6 +400,13 @@ impl App {
             && let Some(x) = self.panel_mut(project)
         {
             x.front = Some(id);
+            self.browser_focus = Some(id);
+            self.browser_focus_request = Some(id);
+            ui.memory_mut(|m| {
+                if let Some(f) = m.focused() {
+                    m.surrender_focus(f);
+                }
+            });
         }
         if let Some(id) = close {
             self.close_page(id);

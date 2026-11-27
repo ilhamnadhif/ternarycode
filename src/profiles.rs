@@ -614,48 +614,158 @@ const RATE_LIMIT_PATTERNS: &[&str] = &[
     "usage_limit_reached",
     "claude usage limit",
     "rate limit exceeded",
+    "rate limit reached",
     "rate_limit_error",
+    "rate_limit_exceeded",
     "rate_limit_reached",
     "429 too many requests",
     "status 429",
     "http 429",
     "error 429",
     "error: 429",
-    "too many requests",
     "quota exceeded",
     "individual quota reached",
     "insufficient_quota",
     "resource_exhausted",
-    "resource exhausted",
     "exceeded your current quota",
-    "spending cap",
+    "spending cap reached",
+    "hit your spending cap",
     "credit balance is too low",
     "overloaded_error",
     "limit reached · resets",
     "limit reached. resets",
 ];
 
-/// Returns true if a terminal line clearly looks like source code, diff output, or test logs
-/// rather than a genuine CLI rate-limit error banner.
+/// Returns true if a terminal line clearly looks like source code, diff output, markdown prose,
+/// or test logs rather than a genuine CLI rate-limit error banner.
 fn looks_like_code_or_test(trimmed: &str) -> bool {
+    let numbered_list = trimmed
+        .bytes()
+        .take_while(|b| b.is_ascii_digit())
+        .count()
+        .checked_sub(1)
+        .is_some_and(|last| {
+            trimmed.as_bytes().get(last + 1) == Some(&b'.')
+                && trimmed.as_bytes().get(last + 2) == Some(&b' ')
+        });
     trimmed.starts_with("+//")
         || trimmed.starts_with("-//")
         || trimmed.starts_with("//")
         || trimmed.starts_with("+ ")
         || trimmed.starts_with("- ")
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("• ")
+        || trimmed.starts_with("> ")
+        || trimmed.starts_with('#')
         || trimmed.starts_with("| ")
         || trimmed.starts_with('"')
         || trimmed.starts_with('\'')
         || trimmed.starts_with("test ")
         || trimmed.starts_with("assert")
+        || numbered_list
+        || trimmed.contains(" | ")
         || trimmed.contains("fn ")
         || trimmed.contains("let ")
         || trimmed.contains("pub fn ")
         || trimmed.contains("detect_rate_limit")
 }
 
-fn match_rate_limit_pattern(lower: &str) -> Option<&'static str> {
-    RATE_LIMIT_PATTERNS.iter().copied().find(|p| lower.contains(p))
+/// Allowed lowercase tokens that can precede a rate-limit pattern on a genuine CLI error banner
+/// (e.g. `"API Error: 429 ..."`, `"Error: Your credit balance is too low"`, `"[12:00:00] Error:"`).
+/// Conversational prose sentences explaining rate limits (in any language) fail this check.
+fn is_error_prefix_token(raw: &str) -> bool {
+    let tok = raw.trim_matches(|c: char| matches!(c, ':' | '-' | '—' | '–' | '·' | '[' | ']' | '(' | ')' | ',' | '.' | '!'));
+    if tok.is_empty() {
+        return true;
+    }
+    // Timestamps (`12:25:47`), HTTP status codes (`429`, `529`), or error codes (`e429`).
+    if tok.bytes().all(|b| b.is_ascii_digit() || b == b':') {
+        return true;
+    }
+    matches!(
+        tok,
+        "error"
+            | "err"
+            | "api"
+            | "fatal"
+            | "warn"
+            | "warning"
+            | "notice"
+            | "failed"
+            | "request"
+            | "call"
+            | "turn"
+            | "http"
+            | "https"
+            | "status"
+            | "code"
+            | "response"
+            | "claude"
+            | "anthropic"
+            | "codex"
+            | "chatgpt"
+            | "openai"
+            | "gemini"
+            | "antigravity"
+            | "agy"
+            | "google"
+            | "model"
+            | "account"
+            | "provider"
+            | "limit"
+            | "you"
+            | "you've"
+            | "you're"
+            | "your"
+            | "have"
+            | "has"
+            | "we"
+    )
+}
+
+fn match_rate_limit_pattern(trimmed: &str) -> Option<&'static str> {
+    let cleaned = trimmed
+        .trim_start_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(c, '│' | '┃' | '■' | '▪' | '●' | '✕' | '✗' | '×' | '✖' | '⚠' | '▲' | '⎿' | '!' | '›' | '❯')
+        })
+        .trim_end_matches(['│', '┃'])
+        .trim();
+    if cleaned.is_empty() || looks_like_code_or_test(cleaned) {
+        return None;
+    }
+    let lower = cleaned.to_ascii_lowercase();
+    let (pattern, pos) = RATE_LIMIT_PATTERNS
+        .iter()
+        .copied()
+        .filter_map(|p| lower.find(p).map(|pos| (p, pos)))
+        .min_by_key(|(_, pos)| *pos)?;
+
+    // Structured JSON API error payloads (e.g. `API Error: 429 {"type":"error","error":{"type":"rate_limit_error"...}}`).
+    let is_json_error = lower.contains('{')
+        && (lower.contains("\"error\"")
+            || lower.contains("\"rate_limit")
+            || lower.contains("\"overloaded_error\"")
+            || lower.contains("\"insufficient_quota\"")
+            || lower.contains("\"resource_exhausted\""));
+    if is_json_error {
+        return Some(pattern);
+    }
+
+    let prefix = &lower[..pos];
+    // Reject mentions wrapped inside quotes or backticks (e.g. `` `HTTP 429` ``, `"usage limit reached"`).
+    if prefix.chars().next_back().is_some_and(|c| matches!(c, '`' | '"' | '\'' | '“' | '‘')) {
+        return None;
+    }
+    // Reject parenthetical explanations like `(hanya mendeteksi error Usage Limit Reached / 429 ...)`.
+    if prefix.matches('(').count() > prefix.matches(')').count() {
+        return None;
+    }
+    let tokens: Vec<&str> = prefix.split_whitespace().collect();
+    if tokens.len() > 5 || !tokens.iter().all(|t| is_error_prefix_token(t)) {
+        return None;
+    }
+    Some(pattern)
 }
 
 /// Counts how many non-code lines in the recent scan window (last 10 non-empty lines) contain
@@ -667,7 +777,7 @@ pub fn count_rate_limit_lines(tail: &str) -> usize {
         .take(10)
         .map(str::trim)
         .filter(|l| !l.is_empty() && !looks_like_code_or_test(l))
-        .filter(|l| match_rate_limit_pattern(&l.to_ascii_lowercase()).is_some())
+        .filter(|l| match_rate_limit_pattern(l).is_some())
         .count()
 }
 
@@ -678,8 +788,7 @@ pub fn collect_rate_limit_lines(tail: &str) -> Vec<(&'static str, String)> {
         .map(str::trim)
         .filter(|l| !l.is_empty() && !looks_like_code_or_test(l))
         .filter_map(|trimmed| {
-            let lower = trimmed.to_ascii_lowercase();
-            let pattern = match_rate_limit_pattern(&lower)?;
+            let pattern = match_rate_limit_pattern(trimmed)?;
             Some((pattern, trimmed.chars().take(120).collect()))
         })
         .collect()
@@ -687,7 +796,7 @@ pub fn collect_rate_limit_lines(tail: &str) -> Vec<(&'static str, String)> {
 
 /// Scans recent agent terminal lines for genuine rate-limit / usage-limit pauses across Claude
 /// Code, Codex / ChatGPT, and Antigravity CLI, supporting 2-line wrapped error messages while skipping
-/// source code / diff / test false positives.
+/// source code, diffs, tests, and conversational prose false positives.
 pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
     let lines: Vec<&str> = tail
         .lines()
@@ -697,14 +806,14 @@ pub fn detect_rate_limit(tail: &str) -> Option<RateLimitHit> {
         .filter(|l| !l.is_empty() && !looks_like_code_or_test(l))
         .collect();
     for (idx, trimmed) in lines.iter().enumerate() {
-        let lower = trimmed.to_ascii_lowercase();
-        if let Some(pattern) = match_rate_limit_pattern(&lower) {
+        if let Some(pattern) = match_rate_limit_pattern(trimmed) {
+            let lower = trimmed.to_ascii_lowercase();
             // Check both the matched line and the following line (idx - 1 in reversed order) in
             // case the reset timer wrapped across a narrow terminal width.
             let combined = if idx > 0 {
                 format!("{lower} {}", lines[idx - 1].to_ascii_lowercase())
             } else {
-                lower.clone()
+                lower
             };
             let retry_after = parse_retry_duration(&combined);
             let reason: String = trimmed.chars().take(120).collect();
@@ -1065,11 +1174,22 @@ mod tests {
         let hit4 = detect_rate_limit("HTTP 429 Too Many Requests from api.example.com").unwrap();
         assert_eq!(hit4.retry_after, None);
 
-        // Must NOT trigger false positives on source code, git diffs, or cargo test output!
+        // Must NOT trigger false positives on source code, git diffs, test logs, or agent prose!
         assert!(detect_rate_limit("Running cargo test --workspace\nok 42 passed").is_none());
         assert!(detect_rate_limit("+ // Error: 429 Too Many Requests\n- let s = \"rate limit exceeded\";").is_none());
         assert!(detect_rate_limit("test profiles::tests::rate_limit_exceeded ... ok").is_none());
         assert!(detect_rate_limit("fn detect_rate_limit() { \"usage limit reached\" }").is_none());
+        assert!(detect_rate_limit("gagal), karena endpoint usage Claude sangat ketat dan mudah membalas HTTP 429 selama berjam-jam kalau terlalu sering di-").is_none());
+        assert!(detect_rate_limit("kuota Gemini (hanya mendeteksi error Usage Limit Reached / 429 saat turn").is_none());
+        assert!(detect_rate_limit("If the API returns HTTP 429 Too Many Requests, back off and retry.").is_none());
+        assert!(detect_rate_limit("• Handles `Usage Limit Reached` and \"rate limit exceeded\" cleanly.").is_none());
+        assert!(detect_rate_limit("### Handling 429 Too Many Requests").is_none());
+
+        // Real CLI banners (boxed/bulleted/JSON API errors) MUST still match!
+        assert!(detect_rate_limit("■ You've hit your usage limit. Upgrade to Plus or try again in 3 hours.").is_some());
+        assert!(detect_rate_limit("API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Rate limit exceeded\"}}").is_some());
+        assert!(detect_rate_limit("✕ Error: Your credit balance is too low to access the Anthropic API.").is_some());
+        assert!(detect_rate_limit("RESOURCE_EXHAUSTED: Quota exceeded for quota metric").is_some());
 
         // Stale rate-limit line scrolled >10 non-empty lines above active agent work must NOT re-trigger.
         let mut stale = String::from("Individual quota reached. Resets in 3h23m50s.\n");

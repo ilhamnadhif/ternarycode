@@ -321,6 +321,8 @@ pub struct Fed {
     pub reply: Vec<u8>,
     /// The screen changed (not everything was held back by a synchronized update).
     pub repaint: bool,
+    /// A DEC Mode 2026 synchronized update (`CSI ? 2026 l`) completed in this chunk.
+    pub sync_ended: bool,
     /// OSC signals `vte` does not report (notifications, shell integration, the directory).
     pub signals: Vec<OscSignal>,
     /// The program rang the bell.
@@ -362,10 +364,13 @@ impl Feeder {
         let mut servers = Vec::new();
         self.servers.scan(bytes, &mut servers);
         let mut repaint = false;
+        let mut sync_ended = false;
         let mut done = 0;
         for (end, signal) in &found {
             if matches!(signal, OscSignal::Prompt(_) | OscSignal::PromptRedraw(_)) && *end > done {
-                repaint |= self.advance(&bytes[done..*end]);
+                let (r, s) = self.advance(&bytes[done..*end]);
+                repaint |= r;
+                sync_ended |= s;
                 done = *end;
             }
             match signal {
@@ -374,26 +379,32 @@ impl Feeder {
                 _ => {}
             }
         }
-        repaint |= self.advance(&bytes[done..]);
+        let (r, s) = self.advance(&bytes[done..]);
+        repaint |= r;
+        sync_ended |= s;
         let signals = found.into_iter().map(|(_, s)| s).collect();
         let reply = self.drain_events();
         Fed {
             reply,
             repaint,
+            sync_ended,
             signals,
             bell: std::mem::take(&mut self.bell),
             servers,
         }
     }
 
-    /// Parses `bytes`; returns whether the screen changed.
-    fn advance(&mut self, mut bytes: &[u8]) -> bool {
+    /// Parses `bytes`; returns `(repaint, sync_ended)`.
+    fn advance(&mut self, mut bytes: &[u8]) -> (bool, bool) {
         let mut repaint = false;
+        let mut sync_ended = false;
         while !bytes.is_empty() {
             // A chunk, or up to the keyboard mode push after which the stacks are emptied.
             let (len, full) = self.pushes.scan(&bytes[..bytes.len().min(FEED_CHUNK)]);
             let (chunk, rest) = bytes.split_at(len);
             bytes = rest;
+            let was_sync = self.parser.sync_bytes_count() > 0;
+            let has_sync_end = chunk.windows(8).any(|w| w == b"\x1b[?2026l");
             let mut term = self.shared.term.lock();
             let room = self.make_room(&mut term);
             self.parser.advance(&mut *term, chunk);
@@ -424,9 +435,13 @@ impl Feeder {
                 }
             }
             drop(term);
+            let now_sync = self.parser.sync_bytes_count() > 0;
+            if has_sync_end || (was_sync && !now_sync) {
+                sync_ended = true;
+            }
             repaint |= self.parser.sync_bytes_count() < chunk.len();
         }
-        repaint
+        (repaint, sync_ended)
     }
 
     /// While the shell waits at its prompt, gives the history room for a screen of new lines and

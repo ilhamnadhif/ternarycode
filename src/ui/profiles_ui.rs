@@ -298,16 +298,12 @@ impl App {
     pub(super) fn accounts_page(&mut self, ui: &mut Ui, search: &str) {
         // Countdowns tick while the page is open.
         ui.ctx().request_repaint_after(Duration::from_secs(1));
-        // Esc closes the editor (or cancels a drag) before Settings.
+        // Esc cancels an active drag before closing Settings.
         let drag_id = egui::Id::new("profiles-drag-idx");
-        if (self.profile_draft.is_some() || ui.data(|d| d.get_temp::<usize>(drag_id).is_some()))
+        if ui.data(|d| d.get_temp::<usize>(drag_id).is_some())
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
-            if ui.data(|d| d.get_temp::<usize>(drag_id).is_some()) {
-                ui.data_mut(|d| d.remove::<usize>(drag_id));
-            } else {
-                self.profile_draft = None;
-            }
+            ui.data_mut(|d| d.remove::<usize>(drag_id));
         }
         let summary = [(t("Agents running"), ""), (t("Healthy accounts"), ""), (t("Rate-limited"), ""), (t("Tokens · 5h"), ""), (t("Tokens · week"), "")];
         if any_hit(search, &summary) {
@@ -315,9 +311,7 @@ impl App {
         }
         self.failover_policy(ui, search);
         self.accounts_list(ui, search);
-        if self.profile_draft.is_some() {
-            self.profile_editor(ui);
-        } else if hit(search, t("Add account"), "") {
+        if hit(search, t("Add account"), "") {
             gap(ui);
             ui.horizontal(|ui| {
                 let add = kit::button_ex(ui, kit::Kind::Secondary, Some(icons::PLUS), t("Add account"), true);
@@ -326,7 +320,6 @@ impl App {
                 if add.clicked() {
                     let existing = self.effective_profiles();
                     self.profile_draft = Some(ProfileDraft::new_for(AgentKind::Claude, &existing));
-                    ui.data_mut(|d| d.insert_temp(egui::Id::new("profile-editor-scroll"), true));
                 }
             });
         }
@@ -772,10 +765,11 @@ impl App {
         self.toast(tf("Removed account {}.", &[id]));
     }
 
-    /// The account being added or edited, as rows; saved with its button (an id must be free).
-    fn profile_editor(&mut self, ui: &mut Ui) {
-        let p = style::pal(ui);
+    /// Centered Slate pop-up modal for adding or editing an account (rendered over Settings).
+    pub(super) fn profile_editor_modal(&mut self, ctx: &egui::Context) {
         let Some(mut draft) = self.profile_draft.clone() else { return };
+        let dark = ctx.global_style().visuals.dark_mode;
+        let p = style::palette(dark);
         let mut save = false;
         let mut cancel = false;
         let existing = self.effective_profiles();
@@ -793,133 +787,141 @@ impl App {
             Some(id) => tf("Edit {}", &[id]),
             None => t("New account").to_string(),
         };
-        gap(ui);
-        group_head(ui, &title, None);
-        let resp = card(ui, "", |c| {
-            let agent_picker = |ui: &mut Ui, draft: &mut ProfileDraft| {
-                let providers = [
-                    (AgentKind::Claude, "Claude Code"),
-                    (AgentKind::Codex, "Codex"),
-                    (AgentKind::Antigravity, "Antigravity CLI"),
-                ];
-                let names: Vec<&str> = providers.iter().map(|(_, n)| *n).collect();
-                let cur = providers.iter().find(|(k, _)| *k == draft.agent).map_or("Claude Code", |(_, n)| *n);
-                if let Some(i) = kit::select(ui, "prof-agent", cur, &names, 165.0) {
-                    let new_agent = providers[i].0;
-                    if new_agent != draft.agent {
-                        // A new account's suggested id and name follow the agent (claude2 → chatgpt2 → agy1).
-                        if draft.editing_id.is_none() {
-                            let (old_id, old_name) = ProfileDraft::suggest_id_and_name(draft.agent, &existing);
-                            let (nid, nname) = ProfileDraft::suggest_id_and_name(new_agent, &existing);
-                            if draft.id == old_id || draft.id.trim().is_empty() {
-                                draft.id = nid;
-                            }
-                            if draft.name == old_name || draft.name.trim().is_empty() {
-                                draft.name = nname;
-                            }
-                        }
-                        draft.agent = new_agent;
-                        if !profiles::supports_multi_profile(new_agent) {
-                            draft.use_default_auth = true;
-                            draft.config_dir.clear();
-                        }
-                    }
+        let sub = if draft.editing_id.is_some() {
+            t("Update this account's name, limits, or credentials.")
+        } else {
+            t("Sign in and track usage separately for this agent.")
+        };
+        let ok = !id_empty && !id_dup && !agy_dup;
+        let body_h = (ctx.content_rect().height() - 190.0).clamp(260.0, 560.0);
+
+        let modal = egui::Modal::new(egui::Id::new("profile-editor-modal"))
+            .frame(super::dialogs::frame(ctx))
+            .backdrop_color(super::dialogs::scrim(dark))
+            .show(ctx, |ui| {
+                super::dialogs::begin(ui, 580.0);
+                if super::dialogs::header(ui, icons::USER_CIRCLE, p.accent, &title, Some(sub)) {
+                    cancel = true;
                 }
-            };
-            if agy_dup {
-                c.row_note(t("Agent"), t("Antigravity CLI supports 1 account only (Google policy)."), p.err, |ui| {
-                    agent_picker(ui, &mut draft);
-                });
-            } else {
-                c.row(t("Agent"), t("Which agent signs in with this account."), |ui| {
-                    agent_picker(ui, &mut draft);
-                });
-            }
-            if id_dup {
-                c.row_note(t("Account id"), t("Another account has this id."), p.err, |ui| {
-                    mono_field(ui, egui::Id::new("prof-id"), &mut draft.id, "claude2", 140.0, false);
-                });
-            } else {
-                c.row(t("Account id"), t("A short name for panes and menus."), |ui| {
-                    mono_field(ui, egui::Id::new("prof-id"), &mut draft.id, "claude2", 140.0, false);
-                });
-            }
-            c.row(t("Name"), "", |ui| {
-                kit::field(ui, egui::Id::new("prof-name"), &mut draft.name, None, "Claude 2", 200.0, false);
-            });
-            c.row(t("Email or note"), t("Optional, to tell accounts apart."), |ui| {
-                kit::field(ui, egui::Id::new("prof-hint"), &mut draft.account_hint, None, "work@acme.dev", 220.0, false);
-            });
-            c.row(t("Token limits"), t("Claude and Codex report their own limits. Set caps only for other plans: 500k, 2M."), |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                text(ui, "5h", style::mono(style::DATA), p.text_faint, 14.0, false);
-                mono_field(ui, egui::Id::new("prof-lim-5h"), &mut draft.limit_5h_text, "500k", 80.0, false);
-                ui.add_space(4.0);
-                text(ui, "Wk", style::mono(style::DATA), p.text_faint, 14.0, false);
-                mono_field(ui, egui::Id::new("prof-lim-wk"), &mut draft.limit_weekly_text, "5M", 80.0, false);
-            });
-            if single_account {
-                c.row(
-                    t("Use the agent's own sign-in folder"),
-                    t("Antigravity uses its single system sign-in (~/.gemini/antigravity-cli)."),
-                    |ui| {
-                        ui.add_enabled_ui(false, |ui| {
-                            let mut on = true;
-                            kit::switch(ui, &mut on);
+                super::dialogs::body(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("profile-editor-scroll")
+                        .min_scrolled_height(body_h)
+                        .max_height(body_h)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            card(ui, "", |c| {
+                                let agent_picker = |ui: &mut Ui, draft: &mut ProfileDraft| {
+                                    let providers = [
+                                        (AgentKind::Claude, "Claude Code"),
+                                        (AgentKind::Codex, "Codex"),
+                                        (AgentKind::Antigravity, "Antigravity CLI"),
+                                    ];
+                                    let names: Vec<&str> = providers.iter().map(|(_, n)| *n).collect();
+                                    let cur = providers.iter().find(|(k, _)| *k == draft.agent).map_or("Claude Code", |(_, n)| *n);
+                                    if let Some(i) = kit::select(ui, "prof-agent", cur, &names, 165.0) {
+                                        let new_agent = providers[i].0;
+                                        if new_agent != draft.agent {
+                                            // A new account's suggested id and name follow the agent (claude2 → chatgpt2 → agy1).
+                                            if draft.editing_id.is_none() {
+                                                let (old_id, old_name) = ProfileDraft::suggest_id_and_name(draft.agent, &existing);
+                                                let (nid, nname) = ProfileDraft::suggest_id_and_name(new_agent, &existing);
+                                                if draft.id == old_id || draft.id.trim().is_empty() {
+                                                    draft.id = nid;
+                                                }
+                                                if draft.name == old_name || draft.name.trim().is_empty() {
+                                                    draft.name = nname;
+                                                }
+                                                draft.use_default_auth = !profiles::supports_multi_profile(new_agent);
+                                            }
+                                            draft.agent = new_agent;
+                                            if !profiles::supports_multi_profile(new_agent) {
+                                                draft.use_default_auth = true;
+                                                draft.config_dir.clear();
+                                            }
+                                        }
+                                    }
+                                };
+                                if agy_dup {
+                                    c.row_note(t("Agent"), t("Antigravity CLI supports 1 account only (Google policy)."), p.err, |ui| {
+                                        agent_picker(ui, &mut draft);
+                                    });
+                                } else {
+                                    c.row(t("Agent"), t("Which agent signs in with this account."), |ui| {
+                                        agent_picker(ui, &mut draft);
+                                    });
+                                }
+                                if id_dup {
+                                    c.row_note(t("Account id"), t("Another account has this id."), p.err, |ui| {
+                                        mono_field(ui, egui::Id::new("prof-id"), &mut draft.id, "claude2", 140.0, false);
+                                    });
+                                } else {
+                                    c.row(t("Account id"), t("A short name for panes and menus."), |ui| {
+                                        mono_field(ui, egui::Id::new("prof-id"), &mut draft.id, "claude2", 140.0, false);
+                                    });
+                                }
+                                c.row(t("Name"), "", |ui| {
+                                    kit::field(ui, egui::Id::new("prof-name"), &mut draft.name, None, "Claude 2", 200.0, false);
+                                });
+                                c.row(t("Email or note"), t("Optional, to tell accounts apart."), |ui| {
+                                    kit::field(ui, egui::Id::new("prof-hint"), &mut draft.account_hint, None, "work@acme.dev", 220.0, false);
+                                });
+                                c.row(t("Token limits"), t("Claude and Codex report their own limits. Set caps only for other plans: 500k, 2M."), |ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    text(ui, "5h", style::mono(style::DATA), p.text_faint, 14.0, false);
+                                    mono_field(ui, egui::Id::new("prof-lim-5h"), &mut draft.limit_5h_text, "500k", 76.0, false);
+                                    ui.add_space(4.0);
+                                    text(ui, "Wk", style::mono(style::DATA), p.text_faint, 14.0, false);
+                                    mono_field(ui, egui::Id::new("prof-lim-wk"), &mut draft.limit_weekly_text, "5M", 76.0, false);
+                                });
+                                if !single_account && !draft.use_default_auth {
+                                    let hint = crate::paths::contract_tilde(&crate::paths::data_dir().join("profiles").join(&sanitized_id));
+                                    c.row(t("Sign-in folder"), t("Where this account keeps its sign-in."), |ui| {
+                                        kit::field(ui, egui::Id::new("prof-dir"), &mut draft.config_dir, Some(icons::FOLDER), &hint, 236.0, false);
+                                    });
+                                }
+                                c.row(t("API key"), t("Optional: used instead of signing in."), |ui| {
+                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                    key_field(ui, egui::Id::new("prof-key"), &mut draft.api_key, draft.reveal_key, 200.0);
+                                    if kit::icon_button_ex(ui, icons::EYE, t("Show/Hide Key"), draft.reveal_key, 28.0).clicked() {
+                                        draft.reveal_key = !draft.reveal_key;
+                                    }
+                                });
+                                c.row(t("Extra environment"), t("KEY=value, one per line."), |ui| {
+                                    mono_field(ui, egui::Id::new("prof-extra-env"), &mut draft.extra_env_text, "ANTHROPIC_BASE_URL=https://…", 236.0, true);
+                                });
+                                c.row(t("In the failover order"), t("Off: the account is kept but never picked."), |ui| {
+                                    kit::switch(ui, &mut draft.enabled);
+                                });
+                            });
                         });
+                });
+                super::dialogs::footer_left(
+                    ui,
+                    super::dialogs::esc_hint,
+                    |ui| {
+                        let label = if draft.editing_id.is_some() { t("Save account") } else { t("Add account") };
+                        let s = ui.add_enabled_ui(ok, |ui| kit::button_ex(ui, kit::Kind::Primary, None, label, false)).inner;
+                        #[cfg(debug_assertions)]
+                        crate::devtest::record("profile-save", s.rect);
+                        if s.clicked() {
+                            save = true;
+                        }
+                        if kit::secondary(ui, None, t("Cancel")).clicked() {
+                            cancel = true;
+                        }
                     },
                 );
-            } else {
-                c.row(t("Use the agent's own sign-in folder"), t("~/.claude or ~/.codex, shared with the agent outside TernaryCode."), |ui| {
-                    kit::switch(ui, &mut draft.use_default_auth);
-                });
-                let hint = crate::paths::contract_tilde(&crate::paths::data_dir().join("profiles").join(&sanitized_id));
-                c.row(t("Sign-in folder"), t("Where this account keeps its sign-in."), |ui| {
-                    ui.add_enabled_ui(!draft.use_default_auth, |ui| {
-                        kit::field(ui, egui::Id::new("prof-dir"), &mut draft.config_dir, Some(icons::FOLDER), &hint, 260.0, false);
-                    });
-                });
-            }
-            c.row(t("API key"), t("Optional: used instead of signing in."), |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                key_field(ui, egui::Id::new("prof-key"), &mut draft.api_key, draft.reveal_key, 200.0);
-                if kit::icon_button_ex(ui, icons::EYE, t("Show/Hide Key"), draft.reveal_key, 28.0).clicked() {
-                    draft.reveal_key = !draft.reveal_key;
-                }
             });
-            c.row(t("Extra environment"), t("KEY=value, one per line."), |ui| {
-                mono_field(ui, egui::Id::new("prof-extra-env"), &mut draft.extra_env_text, "ANTHROPIC_BASE_URL=https://…", 260.0, true);
-            });
-            c.row(t("In the failover order"), t("Off: the account is kept but never picked."), |ui| {
-                kit::switch(ui, &mut draft.enabled);
-            });
-            c.block(&[], egui::Margin::symmetric(16, 12), |ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    let ok = !id_empty && !id_dup && !agy_dup;
-                    let label = if draft.editing_id.is_some() { t("Save account") } else { t("Add account") };
-                    let s = ui.add_enabled_ui(ok, |ui| kit::button_ex(ui, kit::Kind::Primary, None, label, false)).inner;
-                    #[cfg(debug_assertions)]
-                    crate::devtest::record("profile-save", s.rect);
-                    if s.clicked() {
-                        save = true;
-                    }
-                    if kit::button_ex(ui, kit::Kind::Secondary, None, t("Cancel"), false).clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-        });
-        // Just opened: brought into view.
-        let scroll_id = egui::Id::new("profile-editor-scroll");
-        if ui.data(|d| d.get_temp::<bool>(scroll_id).is_some()) {
-            ui.data_mut(|d| d.remove::<bool>(scroll_id));
-            ui.scroll_to_rect(resp.rect, Some(egui::Align::Min));
+        #[cfg(debug_assertions)]
+        crate::devtest::record("profile-editor-modal", modal.response.rect);
+        if modal.should_close() {
+            cancel = true;
         }
 
         if cancel {
             self.profile_draft = None;
-        } else if save && !id_empty && !id_dup && !agy_dup {
+        } else if save && ok {
             self.ensure_mutable_profiles();
             let editing = draft.editing_id.clone();
             let next_order = self.settings.profiles.iter().map(|x| x.fallback_order).max().unwrap_or(0) + 1;
