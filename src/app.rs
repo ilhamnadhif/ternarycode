@@ -510,8 +510,6 @@ pub struct App {
     pub files_rect: Option<egui::Rect>,
     /// Visible rows in the Files tree `(target_dir, row_rect)` for drag-and-drop copy into folders.
     pub files_drop_rows: Vec<(PathBuf, egui::Rect)>,
-    /// True after the user clicked/selected in the Files tree (until they focus a terminal or editor text).
-    pub files_focused: bool,
     /// Files are dragged over the window: where they would land if dropped.
     pub drag_over: Option<DropTarget>,
     /// How each pane is drawn this frame (see [`crate::pane::Shown`]).
@@ -852,7 +850,6 @@ impl App {
             term_rects: Vec::new(),
             files_rect: None,
             files_drop_rows: Vec::new(),
-            files_focused: false,
             drag_over: None,
             shown_now: HashMap::new(),
             watchers: crate::watch::Watchers::default(),
@@ -1508,12 +1505,24 @@ impl App {
         self.command_pane().and_then(|id| self.panes.get(&id)).map(|p| p.project).or(self.active)
     }
 
-    /// A widget other than a terminal pane has the keyboard (a text field, the editor).
+    fn is_terminal_widget(&self, id: egui::Id) -> bool {
+        self.panes.keys().any(|p| tc_term::widget::pane_widget_id(*p) == id)
+    }
+
+    fn is_files_tree_widget(&self, id: egui::Id) -> bool {
+        self.projects.iter().any(|p| ui::explorer_ui::files_tree_focus_id(p.id) == id)
+    }
+
+    /// A terminal pane currently owns egui keyboard focus.
+    fn terminal_focused(&self, ctx: &egui::Context) -> bool {
+        ctx.memory(|m| m.focused()).is_some_and(|id| self.is_terminal_widget(id))
+    }
+
+    /// A widget other than a terminal pane or the Files tree has the keyboard (a text field, the
+    /// editor, a document/sheet viewer, a diff view).
     fn text_field_focused(&self, ctx: &egui::Context) -> bool {
-        match ctx.memory(|m| m.focused()) {
-            Some(id) => !self.panes.keys().any(|p| tc_term::widget::pane_widget_id(*p) == id),
-            None => false,
-        }
+        ctx.memory(|m| m.focused())
+            .is_some_and(|id| !self.is_terminal_widget(id) && !self.is_files_tree_widget(id))
     }
 
     /// The editor's text has the keyboard.
@@ -1724,7 +1733,12 @@ impl App {
     // ----- focus ------------------------------------------------------------------------------
 
     pub fn focus_pane(&mut self, pane: PaneId) {
-        self.files_focused = false;
+        if let Some(fid) = self.ctx.memory(|m| m.focused())
+            && self.is_files_tree_widget(fid)
+        {
+            self.ctx.memory_mut(|m| m.surrender_focus(fid));
+        }
+        self.ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().clear_selection();
         // A page: its project's Browser panel shows it, and it takes the keyboard.
         if let Some(project) = self.browsers.get(&pane).map(|b| b.project) {
             self.active = Some(project);
@@ -2658,6 +2672,7 @@ impl App {
         let in_focused_grid_tile = self.view == View::Grid && self.grid_focus == Some(id);
         let take_focus = self.terminals_take_keys()
             && !self.text_field_focused(ctx)
+            && !self.files_tree_owns_clipboard(ctx)
             && (active_tab_of_open_project || in_focused_grid_tile);
         let Some(p) = self.project_mut(project_id) else {
             return;
@@ -3112,8 +3127,7 @@ impl App {
         if !e.visible || e.file().and_then(|f| f.doc.as_ref()).is_none() {
             return false;
         }
-        let focused = ctx.memory(|m| m.focused());
-        !self.panes.keys().any(|id| focused == Some(tc_term::widget::pane_widget_id(*id)))
+        !self.terminal_focused(ctx)
     }
 
     /// Starts the update's installer and quits; the new version opens by itself and restores
@@ -3313,7 +3327,6 @@ impl App {
                     // A folder that could not be watched (not there at launch) is tried again.
                     self.watchers.watch(id, path, self.app_tx.clone(), ctx.clone());
                     self.active = Some(id);
-                    self.files_focused = false;
                     self.show_focus();
                     self.focus_request = self.current_pane();
                     self.mark_dirty();
@@ -4291,14 +4304,12 @@ impl App {
             Action::Paste if self.page_has_keys("paste") => {}
             Action::SelectAll if self.page_has_keys("selectAll") => {}
             Action::Copy => {
-                // The menu takes ⌘C before any widget: a text field (the editor, a dialog, the
-                // palette) or text selected in a document gets it as egui's own copy; when the
-                // Code Editor file tree is focused, copy the selected files onto the OS clipboard;
-                // else the terminal copies its selection when terminals own keyboard focus.
-                if self.text_field_focused(ctx) || ui::docview_ui::has_doc_selection(ctx) {
+                // Route ⌘C strictly by keyboard focus (single source of truth in egui's focused
+                // widget) so a highlighted file in the Files tree or a lingering document label
+                // selection never hijacks Copy from a focused terminal pane.
+                if self.text_field_focused(ctx) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy);
-                } else if self.files_focused
-                    && self.files_tree_owns_clipboard(ctx)
+                } else if self.files_tree_owns_clipboard(ctx)
                     && let Some(pid) = self.active
                     && let Some(ex) = self.explorers.get_mut(&pid)
                 {
@@ -4307,23 +4318,29 @@ impl App {
                         self.copy_files_action(paths);
                     }
                 } else if self.terminals_take_keys()
+                    && self.terminal_focused(ctx)
+                    && let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id))
+                {
+                    tc_term::widget::copy_selection(ctx, &p.shared);
+                } else if ui::docview_ui::has_doc_selection(ctx) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy);
+                } else if self.terminals_take_keys()
                     && let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id))
                 {
                     tc_term::widget::copy_selection(ctx, &p.shared);
                 }
             }
             Action::Paste => {
-                // When the Code Editor file tree is focused (or hovered without a text field
-                // owning the keyboard) and the OS clipboard holds files (e.g. copied from Finder),
-                // paste them straight into the selected folder.
-                if self.files_tree_owns_clipboard(ctx)
-                    && let Some(dir) = self.files_paste_target_dir()
-                {
-                    let files = platform::clipboard_files();
-                    if !files.is_empty() {
-                        self.paste_files_into(dir, files);
-                        return;
+                // Only paste files when the Files tree itself owns keyboard focus (never on
+                // incidental mouse hover while typing in a terminal or editor).
+                if self.files_tree_owns_clipboard(ctx) {
+                    if let Some(dir) = self.files_paste_target_dir() {
+                        let files = platform::clipboard_files();
+                        if !files.is_empty() {
+                            self.paste_files_into(dir, files);
+                        }
                     }
+                    return;
                 }
                 // A terminal pastes the clipboard as text (on Windows and Linux a paste event
                 // without Shift would reach it as a typed Ctrl+V); a text field gets egui's own.
@@ -4345,6 +4362,8 @@ impl App {
                             modifiers: egui::Modifiers::COMMAND,
                         })
                     });
+                } else if self.files_tree_owns_clipboard(ctx) {
+                    // Files tree owns focus: do not leak ⌘A into an unfocused terminal.
                 } else if self.terminals_take_keys()
                     && let Some(p) = self.target_pane().and_then(|id| self.panes.get(&id))
                 {
@@ -4676,18 +4695,20 @@ impl App {
         }
     }
 
-    /// Whether the Code Editor's Files tree is visible and eligible to handle file Copy/Paste.
+    /// Whether the Code Editor's Files tree is visible and currently owns keyboard focus for
+    /// file Copy/Paste. Never triggered by mere mouse hover while a terminal or editor is focused.
     fn files_tree_owns_clipboard(&self, ctx: &egui::Context) -> bool {
-        let Some(rect) = self.files_rect else { return false };
-        if self.view != View::Focus
+        if self.files_rect.is_none()
+            || self.view != View::Focus
             || self.overlay_open()
-            || self.text_field_focused(ctx)
             || egui::Popup::is_any_open(ctx)
             || self.browser_focus.is_some()
         {
             return false;
         }
-        self.files_focused || ctx.input(|i| i.pointer.latest_pos().is_some_and(|p| rect.contains(p)))
+        self.active.is_some_and(|pid| {
+            ctx.memory(|m| m.focused()) == Some(ui::explorer_ui::files_tree_focus_id(pid))
+        })
     }
 
     /// The destination folder for pasting files in the active project's Files tree: the selected
@@ -5132,9 +5153,6 @@ impl App {
         self.term_rects.clear();
         self.files_rect = None;
         self.files_drop_rows.clear();
-        if self.text_field_focused(&ctx) {
-            self.files_focused = false;
-        }
         // A drag the view it began in no longer sees (⌘0 or ⌘B while dragging) ends with the
         // button: otherwise its ghost would follow the pointer, repainting, until a later click.
         if !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
@@ -5144,6 +5162,22 @@ impl App {
             self.end_tab_drag_view();
         }
         self.draw(ui);
+        // Release Files tree focus whenever the tree is no longer shown, the active project
+        // changed, or the user clicked outside the tree on non-focusable window chrome.
+        if let Some(fid) = ctx.memory(|m| m.focused())
+            && self.is_files_tree_widget(fid)
+        {
+            let hidden_or_other = self.files_rect.is_none()
+                || self.active.is_none_or(|pid| ui::explorer_ui::files_tree_focus_id(pid) != fid);
+            let clicked_outside = !self.overlay_open()
+                && !egui::Popup::is_any_open(&ctx)
+                && ctx
+                    .input(|i| i.pointer.primary_pressed().then(|| i.pointer.interact_pos()).flatten())
+                    .is_some_and(|pos| self.files_rect.is_none_or(|r| !r.contains(pos)));
+            if hidden_or_other || clicked_outside {
+                ctx.memory_mut(|m| m.surrender_focus(fid));
+            }
+        }
         if platform::custom_caption() {
             ui::caption::resize_edges(&ctx);
         }

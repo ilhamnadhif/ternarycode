@@ -974,7 +974,8 @@ impl App {
         let resp = widget::show_readable(ui, rect, &mut pane.view, &pane.shared, style, input_enabled, alive, min_scale, wheel);
         let how = crate::pane::Shown::of(ui, pane_id, &pane.view, crate::pane::Shown::Preview);
         self.shown_now.insert(pane_id, how);
-        if !resp.input.is_empty() {
+        let typed = !resp.input.is_empty();
+        if typed {
             if resp.input.contains(&b'\r') {
                 pane.entered(std::time::Instant::now());
             }
@@ -992,6 +993,9 @@ impl App {
         {
             self.actions.push(Action::FocusPane(pane_id));
             self.actions.push(open);
+        }
+        if resp.activated || typed {
+            ui.ctx().plugin::<egui::text_selection::LabelSelectionState>().lock().clear_selection();
         }
         // Clicked: the keyboard goes here, whatever was asked for before.
         if resp.activated && self.focus_request.is_some_and(|f| f != pane_id) {

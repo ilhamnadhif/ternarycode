@@ -37,6 +37,12 @@ enum EditOutcome {
     Cancel,
 }
 
+/// Focus identity for a project's Files tree (single source of truth in `egui::Memory::focused`,
+/// mutually exclusive with terminal panes, the code editor, and document viewers).
+pub fn files_tree_focus_id(pid: tc_core::ProjectId) -> egui::Id {
+    egui::Id::new(("files-tree", pid))
+}
+
 /// The Files filter's matches: what they were found for (project, filter, file list) and the
 /// best of them.
 type FilterHits = Option<((tc_core::ProjectId, String, u64), std::rc::Rc<Vec<PathBuf>>)>;
@@ -53,6 +59,13 @@ impl App {
         let p = style::pal(ui);
         let Some(pid) = self.active else { return };
         self.files_rect = Some(area);
+        // Register the Files tree's focus ID in egui's `used_ids` each frame while the column is
+        // visible (zero-size noninteractive hitbox so row clicks/drags are never intercepted).
+        let _ = ui.interact(
+            Rect::from_min_size(area.min, egui::Vec2::ZERO),
+            files_tree_focus_id(pid),
+            Sense::focusable_noninteractive(),
+        );
         ui.painter().vline(area.right() - 0.5, area.y_range(), egui::Stroke::new(1.0, p.border));
         let root = self.project(pid).map(|x| x.path.clone()).unwrap_or_default();
         let git = self.project(pid).and_then(|pr| pr.git.clone());
@@ -234,6 +247,7 @@ impl App {
         } else {
             Vec::new()
         };
+        let mut filtered_interacted = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(area.shrink2(vec2(PAD_X, 0.0))), |ui| {
             let sa = egui::ScrollArea::vertical().id_salt(("filtered", pid)).auto_shrink([false, false]);
             kit::show_rows(sa, ui, ROW_PITCH, hits.len(), |ui, range| {
@@ -264,6 +278,7 @@ impl App {
                     let g = ui.painter().layout_job(job);
                     ui.painter().galley(pos2(rect.left() + 8.0 + 14.0 + 6.0, rect.center().y - g.size().y / 2.0), g, p.text);
                     if resp.clicked() {
+                        filtered_interacted = true;
                         if mods.shift {
                             click = Some(Click::RangeSelect(abs.clone()));
                         } else if mods.command {
@@ -272,11 +287,13 @@ impl App {
                             click = Some(Click::Open(abs.clone()));
                         }
                     }
-                    if resp.secondary_clicked()
-                        && let Some(ex) = self.explorers.get_mut(&pid)
-                        && !(ex.selected_many.len() > 1 && ex.selected_many.contains(&abs))
-                    {
-                        ex.select_only(abs.clone());
+                    if resp.secondary_clicked() {
+                        filtered_interacted = true;
+                        if let Some(ex) = self.explorers.get_mut(&pid)
+                            && !(ex.selected_many.len() > 1 && ex.selected_many.contains(&abs))
+                        {
+                            ex.select_only(abs.clone());
+                        }
                     }
                     if multi_ordered.len() > 1 && multi_set.contains(&abs) {
                         resp.context_menu(|ui| {
@@ -286,11 +303,8 @@ impl App {
                 }
             });
         });
-        if click.is_some() {
-            self.files_focused = true;
-            if let Some(fid) = ui.memory(|m| m.focused()) {
-                ui.memory_mut(|m| m.surrender_focus(fid));
-            }
+        if filtered_interacted {
+            ui.memory_mut(|m| m.request_focus(files_tree_focus_id(pid)));
         }
         match click {
             Some(Click::Open(path)) => {
@@ -620,13 +634,9 @@ impl App {
             }
         });
         self.files_drop_rows = drop_rows;
-        if tree_interacted {
-            self.files_focused = true;
-            if self.explorers.get(&pid).is_none_or(|e| e.edit.is_none())
-                && let Some(fid) = ui.memory(|m| m.focused())
-            {
-                ui.memory_mut(|m| m.surrender_focus(fid));
-            }
+        let tree_focus = files_tree_focus_id(pid);
+        if tree_interacted && self.explorers.get(&pid).is_none_or(|e| e.edit.is_none()) {
+            ui.memory_mut(|m| m.request_focus(tree_focus));
         }
         // Persist drag-block anchor cleanly outside any lock.
         ui.data_mut(|d| {
@@ -641,14 +651,18 @@ impl App {
         {
             ex.select_range_from(&anchor, &target);
         }
-        // Pressing Esc clears multi-selection when the pointer is over the tree and no overlay/edit is open.
-        if multi_active
-            && !self.overlay_open()
-            && ui.rect_contains_pointer(tree)
+        // Pressing Esc clears multi-selection first, then returns keyboard focus to the terminal.
+        let tree_has_focus = ui.memory(|m| m.focused() == Some(tree_focus));
+        if !self.overlay_open()
             && self.explorers.get(&pid).is_none_or(|e| e.edit.is_none())
+            && ((multi_active && (tree_has_focus || ui.rect_contains_pointer(tree))) || tree_has_focus)
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
-            clear_multi = true;
+            if multi_active {
+                clear_multi = true;
+            } else if tree_has_focus {
+                ui.memory_mut(|m| m.surrender_focus(tree_focus));
+            }
         }
         match click {
             Some(Click::Toggle(dir)) => {

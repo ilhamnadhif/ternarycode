@@ -498,6 +498,12 @@ printf 'dropped-from-finder\n' > "$EXT/dropped.txt"
 printf 'fn main() {}\n' > "$FCP/src/main.rs"
 run files-copy-paste 60 "sleep 1000;; action add-project $FCP;; sleep 1200;; action editor;; sleep 600;; wait-tree assets;; set-clipboard-files $EXT/logo.txt|$EXT/icons;; click tree:assets;; sleep 300;; key cmd+v;; sleep 700;; expect-file $FCP/assets/logo.txt hello-from-finder;; expect-file $FCP/assets/icons/sub/arrow.svg <svg/>;; wait-tree assets/logo.txt;; click tree:assets;; sleep 250;; key cmd+v;; wait-toast Pasted 2 items into assets;; click tree:assets/logo.txt;; sleep 250;; key cmd+c;; sleep 300;; click tree:src;; sleep 250;; key cmd+v;; sleep 700;; expect-file $FCP/src/logo.txt hello-from-finder;; drop tree:src $EXT/dropped.txt;; sleep 700;; expect-file $FCP/src/dropped.txt dropped-from-finder;; shot e2e-files-copy-paste;; quit"
 
+# Regression guard: selecting text in the Terminal while a PDF is open and highlighted in the
+# Files tree must copy the selected terminal text (never the PDF file), and pressing Cmd+V in
+# the focused Terminal while hovering over the Files tree must paste text into the terminal
+# rather than duplicating files on disk.
+run terminal-copy-over-pdf 60 "sleep 1000;; action add-project $DOCS;; sleep 1200;; action editor;; sleep 600;; wait-tree report.pdf;; click tree:report.pdf;; wait-doc kind=pdf state=ready;; key cmd+c;; wait-toast Copied report.pdf to clipboard;; click pane:2;; sleep 250;; keys clear; printf 'ID_65633574\\n'\\r;; wait-screen ID_65633574;; click tree:report.pdf;; sleep 200;; mouse down pane:2@0.01,0.015;; sleep 80;; mouse drag pane:2@0.75,0.18;; sleep 100;; mouse up pane:2@0.75,0.18;; sleep 200;; mouse move tree:report.pdf@0.5,0.5;; sleep 150;; key cmd+c;; sleep 250;; keys cat > $WORK/term-pasted.txt\\r;; sleep 200;; key cmd+v;; sleep 250;; key enter;; key ctrl+d;; sleep 400;; expect-file $WORK/term-pasted.txt ID_65633574;; keys [ ! -e '$DOCS/report copy.pdf' ] && echo NO_DUP_PDF > $WORK/no-dup.txt\\r;; sleep 300;; expect-file $WORK/no-dup.txt NO_DUP_PDF;; shot e2e-terminal-copy-over-pdf;; quit"
+
 # Editor viewers hardening:
 # - Opening a 2.6 MB single-line minified HTML (like Draw.io exports) renders cleanly in the
 #   virtualized fast viewer with 0 crash and offers Open in Browser,

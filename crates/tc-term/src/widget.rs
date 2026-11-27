@@ -1174,7 +1174,13 @@ fn show_inner(
         ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
     }
     let response = ui.interact(rect, id, Sense::click_and_drag());
-    if response.clicked_by(PointerButton::Primary)
+    let pressed_on_term = input_enabled
+        && response.is_pointer_button_down_on()
+        && ui.input(|i| i.pointer.any_pressed());
+    if pressed_on_term
+        || response.clicked_by(PointerButton::Primary)
+        || response.double_clicked()
+        || response.triple_clicked()
         || response.drag_started_by(PointerButton::Primary)
         || response.clicked_by(PointerButton::Secondary)
         || response.clicked_by(PointerButton::Middle)
@@ -2479,5 +2485,60 @@ mod tests {
         assert_eq!(rows_to_skip(50, 20, 2, 49), 2);
         // Text below the cursor reaching beyond one view: the cursor stays on the first row.
         assert_eq!(rows_to_skip(50, 20, 10, 45), 10);
+    }
+
+    #[test]
+    fn pointer_press_in_terminal_reclaims_focus_from_other_widget() {
+        let shared = term_with(40, 10, b"");
+        let ctx = egui::Context::default();
+        let term_id = pane_widget_id(42);
+        let files_id = egui::Id::new(("files-tree", 1u64));
+        let mut view = TermView::new(term_id);
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 200.0));
+        let style = TermStyle {
+            font_size: 13.0,
+            cell: vec2(8.0, 16.0),
+            scheme: &SCHEMES[0],
+            real_bold: false,
+            real_italic: false,
+            option_as_meta: false,
+            copy_on_select: false,
+            cursor_blink: false,
+        };
+
+        // Seed focus on another widget (e.g. Files tree): terminal must NOT steal focus on its own.
+        ctx.memory_mut(|m| m.request_focus(files_id));
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(rect), focused: true, ..Default::default() }, |ui| {
+            let _ = ui.interact(Rect::from_min_size(Pos2::ZERO, egui::Vec2::ZERO), files_id, Sense::focusable_noninteractive());
+            let r = show(ui, rect, &mut view, &shared, &style, true, true, true);
+            assert!(!r.activated);
+            assert!(!r.focused);
+        });
+        out.textures_delta.clear();
+        assert_eq!(ctx.memory(|m| m.focused()), Some(files_id));
+
+        // Pressing the mouse inside the terminal immediately reclaims focus to the terminal.
+        let press = egui::RawInput {
+            screen_rect: Some(rect),
+            focused: true,
+            events: vec![
+                Event::PointerMoved(rect.center()),
+                Event::PointerButton {
+                    pos: rect.center(),
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(press, |ui| {
+            let _ = ui.interact(Rect::from_min_size(Pos2::ZERO, egui::Vec2::ZERO), files_id, Sense::focusable_noninteractive());
+            let r = show(ui, rect, &mut view, &shared, &style, true, true, true);
+            assert!(r.activated);
+            assert!(r.focused);
+        });
+        out.textures_delta.clear();
+        assert_eq!(ctx.memory(|m| m.focused()), Some(term_id));
     }
 }

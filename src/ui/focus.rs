@@ -633,7 +633,8 @@ impl App {
             if let Some((size, w, h)) = resp.resized {
                 pane.resize_pty(size, w, h);
             }
-            if !resp.input.is_empty() {
+            let typed = !resp.input.is_empty();
+            if typed {
                 if resp.input.contains(&b'\r') {
                     pane.entered(now);
                 }
@@ -641,6 +642,11 @@ impl App {
             }
             if let Some(bytes) = resp.paste_without_text {
                 pane.paste_without_text(bytes);
+            }
+            if resp.activated || typed {
+                // Clear any lingering Office/label selection so a previous document drag cannot
+                // hijack ⌘C after the user moves back to the terminal.
+                ui.ctx().plugin::<egui::text_selection::LabelSelectionState>().lock().clear_selection();
             }
             if resp.activated && !is_focused {
                 self.actions.push(Action::FocusPane(pane_id));
